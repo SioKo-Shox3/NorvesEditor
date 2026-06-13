@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/object.getSnapshot.result.schema.json",
+  "title": "object.getSnapshot response result",
+  "description": "Serialized property snapshot of one scene object. A DTO copy of generic values, not a reference into engine live memory.",
+  "type": "object",
+  "required": ["objectId", "properties"],
+  "additionalProperties": false,
+  "properties": {
+    "objectId": {
+      "description": "Object this snapshot describes.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    },
+    "name": {
+      "description": "Optional human-readable object name.",
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "description": "Optional generic object classification (free-form, not a NorvesLib type name).",
+      "type": "string",
+      "minLength": 1
+    },
+    "properties": {
+      "description": "Serialized property entries for this object. May be empty.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/propertyBag"
+    }
+  }
+}

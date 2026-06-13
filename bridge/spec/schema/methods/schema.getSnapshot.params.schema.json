@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/schema.getSnapshot.params.schema.json",
+  "title": "schema.getSnapshot request params",
+  "description": "Request a snapshot of the generic type schema the engine exposes. No arguments.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {}
+}

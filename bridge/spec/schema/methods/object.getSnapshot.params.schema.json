@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/object.getSnapshot.params.schema.json",
+  "title": "object.getSnapshot request params",
+  "description": "Request a serialized property snapshot of one scene object.",
+  "type": "object",
+  "required": ["objectId"],
+  "additionalProperties": false,
+  "properties": {
+    "objectId": {
+      "description": "Object to snapshot.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/schema.getSnapshot.result.schema.json",
+  "title": "schema.getSnapshot response result",
+  "description": "Serialized snapshot of the engine's generic type schema. A DTO copy of generic type descriptors, not a reference into engine live memory.",
+  "type": "object",
+  "required": ["types"],
+  "additionalProperties": false,
+  "properties": {
+    "types": {
+      "description": "Generic type descriptors the engine exposes. May be empty.",
+      "type": "array",
+      "items": {
+        "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/typeDescriptor"
+      }
+    }
+  }
+}

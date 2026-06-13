@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/object.setProperty.params.schema.json",
+  "title": "object.setProperty request params",
+  "description": "Request to set one generic property on a scene object. The value is a snapshot copy, never a reference into engine live memory.",
+  "type": "object",
+  "required": ["objectId", "property", "value"],
+  "additionalProperties": false,
+  "properties": {
+    "objectId": {
+      "description": "Object to modify.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    },
+    "property": {
+      "description": "Generic name of the property to set.",
+      "type": "string",
+      "minLength": 1
+    },
+    "value": {
+      "description": "New value to apply, as a generic snapshot value.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/propertyValue"
+    }
+  }
+}
