@@ -24,6 +24,30 @@ NorvesEditor agent guide — 詳細規約。要点と参照は CLAUDE.md（worki
 5. **実装レビュー** — 実 diff を承認済み計画と突き合わせる。
 6. **統合・検証・コミット** — 関連検証を実行し、ブランチ方針とコミット境界に沿ってコミットする。
 
+### サブエージェントの起動方法（定義と実行）
+
+6 つの役割は `.claude/agents/` に定義する（frontmatter の `name` / `description` /
+`tools` / `model` ＋ 役割本文）:
+
+```text
+researcher / planner / plan-reviewer / implementer / impl-reviewer / verifier
+```
+
+起動は次の優先順で行う:
+
+1. **標準パス**: Agent ツールの `subagent_type` に役割名（`researcher` 等）を渡す。
+   ランタイムが project の `.claude/agents/` を subagent type として公開している場合
+   はこれを使う。`model` は定義ファイルの frontmatter が適用される。
+2. **フォールバック**: ランタイムが `.claude/agents/` を subagent type として公開せず
+   `subagent_type: <役割>` が "Agent type not found" になる場合は、`general-purpose`
+   を起動し、プロンプト冒頭で「まず `.claude/agents/<役割>.md` を読み、その役割定義を
+   完全に引き受けよ」と指示する。あわせて Agent ツールの `model` パラメータを
+   下記モデル方針どおりに明示指定する（定義ファイルの `model` が効かないため）。
+
+どちらの経路でも **実装担当とレビュー担当・計画担当と計画レビュー担当は必ず別エージェント**
+にする原則は変わらない。read-only 役割（researcher/planner/plan-reviewer/impl-reviewer/
+verifier）には編集系ツールを渡さない。
+
 ### 計画に必ず含める項目
 
 ```text
