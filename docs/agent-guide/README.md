@@ -7,7 +7,7 @@
 - [architecture.md](./architecture.md) — プロジェクト概要、アルファ版の到達点、ディレクトリ責務、全体アーキテクチャ規約。
 - [build-and-verify.md](./build-and-verify.md) — ビルドと検証の標準コマンド・検証ゲート。
 - [protocol-schema.md](./protocol-schema.md) — Bridge protocol / JSON Schema / fixture の規約。
-- [memory-buffer.md](./memory-buffer.md) — Memory / Buffer ownership と寿命の規約。
+- Memory / Buffer 規約は [`docs/memory-buffer-policy.md`](../memory-buffer-policy.md) を参照（agent-guide 外の正典）。
 - [rust.md](./rust.md) — Rust（Tauri backend / bridge crates）の規約。
 - [typescript.md](./typescript.md) — TypeScript / UI の規約。
 - [cpp.md](./cpp.md) — C++ Engine SDK の規約。

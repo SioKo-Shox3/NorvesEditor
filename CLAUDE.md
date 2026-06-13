@@ -42,7 +42,7 @@ never depend on it. Full plan: `docs/alpha-project-plan.md`,
 - UI never touches a raw WebSocket; it goes through Tauri command/event wrappers.
   The **Rust backend owns** the Bridge connection and process lifecycle.
 - Engine live memory is never sent over the transport — convert to snapshots/DTOs
-  first. See `docs/agent-guide/memory-buffer.md`.
+  first. See `docs/memory-buffer-policy.md`.
 
 ## Workflow (how every non-trivial change happens)
 
@@ -118,6 +118,6 @@ Detail: `docs/agent-guide/branching-and-commits.md`.
 
 Read the one relevant to your layer/phase before working in it — see
 `docs/agent-guide/README.md` for the index: `architecture`, `protocol-schema`,
-`memory-buffer`, `rust`, `typescript`, `cpp`, `norveslib-adapter`,
+`rust`, `typescript`, `cpp`, `norveslib-adapter`,
 `tauri-security`, `coding-style`, `branching-and-commits`, `orchestration`,
 `build-and-verify`, `external-references`.
