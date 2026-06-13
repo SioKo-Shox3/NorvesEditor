@@ -59,6 +59,110 @@
       "description": "Which side produced an event or error. Lifecycle events may be engine-wire or editor-backend-synthesized; see protocol-overview.md.",
       "type": "string",
       "enum": ["engine", "editor-backend"]
+    },
+    "objectId": {
+      "description": "Opaque identifier of a scene object/node. Generic string handle; not a live-memory reference or engine pointer.",
+      "type": "string",
+      "minLength": 1
+    },
+    "propertyValue": {
+      "description": "Generic serialized property value: a plain JSON value (string/number/boolean/null/array/object). A snapshot copy, never a reference into engine live memory. Structured values use generic arrays/objects without engine-specific type names.",
+      "type": ["string", "number", "boolean", "null", "array", "object"]
+    },
+    "propertyEntry": {
+      "description": "One generic name->value entry in an object property snapshot.",
+      "type": "object",
+      "required": ["name", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Generic property name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "description": "Snapshot copy of the property value.",
+          "$ref": "#/$defs/propertyValue"
+        },
+        "valueType": {
+          "description": "Optional free-form type label sharing the same vocabulary as schema.getSnapshot's valueType. Not enumerated, to avoid binding to one engine's type set.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "propertyBag": {
+      "description": "Ordered collection of generic property entries forming an object's serialized property snapshot. May be empty.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/propertyEntry" }
+    },
+    "propertyDefinition": {
+      "description": "Generic definition of one property exposed by a type in schema.getSnapshot. Describes name and value type, not a concrete value.",
+      "type": "object",
+      "required": ["name", "valueType"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Generic property name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "valueType": {
+          "description": "Free-form generic type label for this property's value.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "typeDescriptor": {
+      "description": "Generic description of one object/component type the engine exposes. typeName is a free-form generic label; no NorvesLib-specific names appear.",
+      "type": "object",
+      "required": ["typeName"],
+      "additionalProperties": false,
+      "properties": {
+        "typeName": {
+          "description": "Free-form generic name of the type.",
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "description": "Optional generic classification, e.g. object or component. Free-form.",
+          "type": "string",
+          "minLength": 1
+        },
+        "properties": {
+          "description": "Optional property definitions for this type.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/propertyDefinition" }
+        }
+      }
+    },
+    "sceneNode": {
+      "description": "Recursive generic node in a scene tree snapshot. A serialized DTO copy, not a live engine pointer. children self-references this $def.",
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Opaque identifier of this node.",
+          "$ref": "#/$defs/objectId"
+        },
+        "name": {
+          "description": "Optional human-readable node name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "description": "Optional generic node classification (free-form, not a NorvesLib type name).",
+          "type": "string",
+          "minLength": 1
+        },
+        "children": {
+          "description": "Optional child nodes; recursion via self-$ref. Absent or empty means a leaf.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/sceneNode" }
+        }
+      }
     }
   }
 }

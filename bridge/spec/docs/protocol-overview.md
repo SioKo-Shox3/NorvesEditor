@@ -1,6 +1,6 @@
 # NorvesEditor Bridge Protocol Overview
 
-Status: alpha, phases C1–C3 (envelope + handshake/capabilities/status/log payloads + runtime control)
+Status: alpha, phases C1–C4 (envelope + handshake/capabilities/status/log payloads + runtime control + scene/object/schema)
 
 This document gives a high-level overview of the NorvesEditor Bridge protocol.
 The exact envelope structure is specified in
@@ -43,8 +43,9 @@ Events never carry an `id`.
 
 These names are the planned alpha surface. Phase C1 specifies only the envelope.
 Per-method and per-event `params`/`result` schemas are added incrementally:
-phase C2 covers handshake/capabilities/status/log and phase C3 adds runtime
-control (see [`message-payloads.md`](./message-payloads.md) and
+phase C2 covers handshake/capabilities/status/log, phase C3 adds runtime
+control, and phase C4 adds the scene/object/schema methods (see
+[`message-payloads.md`](./message-payloads.md) and
 [`capabilities.md`](./capabilities.md)).
 
 The runtime/viewport surface follows a deliberate namespace split: the focus
@@ -66,6 +67,10 @@ runtime.stop
 runtime.focusViewport
 log.subscribe
 log.unsubscribe
+scene.getTree
+object.getSnapshot
+object.setProperty
+schema.getSnapshot
 ```
 
 Events:
@@ -81,8 +86,10 @@ log.message
 error.reported
 ```
 
-Scene, object, and schema methods are alpha-optional and are **not** part of this
-phase.
+Scene, object, and schema methods (`scene.getTree`, `object.getSnapshot`,
+`object.setProperty`, `schema.getSnapshot`) are added in phase C4. They carry
+serialized snapshots/DTOs only — never references into engine live memory (see
+[`docs/memory-buffer-policy.md`](../../../docs/memory-buffer-policy.md)).
 
 ## Lifecycle events: engine wire vs editor-backend synthesized
 

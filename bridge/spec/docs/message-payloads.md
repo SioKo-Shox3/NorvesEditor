@@ -1,6 +1,6 @@
 # NorvesEditor Bridge Message Payloads
 
-Status: alpha, phase C3 (hello / capabilities / status / log + runtime control)
+Status: alpha, phase C4 (hello / capabilities / status / log + runtime control + scene/object/schema)
 
 This document is the payload reference for the phase C2 Bridge surface: the
 `params`/`result` shapes carried inside the
@@ -13,9 +13,12 @@ the schema and its golden fixtures win.
 Phase C2 covered handshake, capabilities, status, launch info, and logging.
 Phase C3 adds runtime control (`runtime.play`/`pause`/`stop`/`focusViewport` and
 the `runtime.stateChanged`/`viewport.stateChanged` events), which is specified
-here. Scene/object/schema methods are alpha-optional. The full error model
-(`error-model.md`) is **phase C5**; until then the surface reuses the provisional
-error object from the envelope schema.
+here. Phase C4 adds the scene/object/schema methods (`scene.getTree`,
+`object.getSnapshot`, `object.setProperty`, `schema.getSnapshot`), also specified
+here; they carry serialized snapshots/DTOs only, never references into engine live
+memory (see [`docs/memory-buffer-policy.md`](../../../docs/memory-buffer-policy.md)).
+The full error model (`error-model.md`) is **phase C5**; until then the surface
+reuses the provisional error object from the envelope schema.
 
 All payload field names are `camelCase`, matching the frontend-facing DTO
 convention in `AGENTS.md` / `CLAUDE.md`.
@@ -35,6 +38,13 @@ convention in `AGENTS.md` / `CLAUDE.md`.
 | `runtimeState` | `edit` \| `playing` \| `paused` \| `stopped` \| `unknown`. |
 | `viewportState` | `focused` \| `visible` \| `hidden` \| `minimized` \| `unknown`. |
 | `origin` | `engine` \| `editor-backend`. |
+| `objectId` | opaque non-empty string handle for a scene object/node. |
+| `propertyValue` | generic JSON value (string/number/boolean/null/array/object). |
+| `propertyEntry` | `{ name, value, valueType? }` property snapshot entry. |
+| `propertyBag` | array of `propertyEntry` (may be empty). |
+| `propertyDefinition` | `{ name, valueType }` schema property definition. |
+| `typeDescriptor` | `{ typeName, kind?, properties? }` generic type description. |
+| `sceneNode` | recursive `{ id, name?, kind?, children? }` scene tree node. |
 
 ## Methods
 
@@ -173,6 +183,86 @@ window, so no target is specified. Schemas:
 | field | type | required | description |
 | --- | --- | --- | --- |
 | `focused` | boolean | yes | `true` when the window was focused/raised; `false` when it could not be honored. |
+
+### scene.getTree
+
+Snapshot of the engine's scene tree. The result is a serialized DTO copy, not a
+reference into engine live memory (see
+[`docs/memory-buffer-policy.md`](../../../docs/memory-buffer-policy.md)). Schemas:
+[params](../schema/methods/scene.getTree.params.schema.json),
+[result](../schema/methods/scene.getTree.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `rootId` | `objectId` | no | start node; absent means the whole scene root. |
+| `maxDepth` | integer ≥ 0 | no | maximum child depth to include; `0` means root only. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `root` | `sceneNode` | yes | root of the snapshotted (sub)tree; `children` recurses via `sceneNode`. |
+
+### object.getSnapshot
+
+Serialized property snapshot of one scene object. The result is a DTO copy of
+generic values, not a reference into engine live memory. Schemas:
+[params](../schema/methods/object.getSnapshot.params.schema.json),
+[result](../schema/methods/object.getSnapshot.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `objectId` | `objectId` | yes | object to snapshot. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `objectId` | `objectId` | yes | object this snapshot describes. |
+| `name` | string | no | human-readable object name. |
+| `kind` | string | no | generic object classification (free-form). |
+| `properties` | `propertyBag` | yes | serialized property entries; may be empty. |
+
+### object.setProperty
+
+Set one generic property on a scene object. The request `value` and the
+response `appliedValue` are snapshot copies, never references into engine live
+memory. Schemas:
+[params](../schema/methods/object.setProperty.params.schema.json),
+[result](../schema/methods/object.setProperty.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `objectId` | `objectId` | yes | object to modify. |
+| `property` | non-empty string | yes | generic name of the property to set. |
+| `value` | `propertyValue` | yes | new value to apply, as a generic snapshot value. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `accepted` | boolean | yes | whether the engine accepted and applied the change. |
+| `appliedValue` | `propertyValue` | no | snapshot of the value actually applied (may be normalized). |
+
+### schema.getSnapshot
+
+Snapshot of the engine's generic type schema. The result is a DTO copy of
+generic type descriptors, not a reference into engine live memory. Schemas:
+[params](../schema/methods/schema.getSnapshot.params.schema.json),
+[result](../schema/methods/schema.getSnapshot.result.schema.json).
+
+- `params`: empty object (no parameters).
+- `result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `types` | array of `typeDescriptor` | yes | generic type descriptors the engine exposes; may be empty. |
 
 ## Events
 

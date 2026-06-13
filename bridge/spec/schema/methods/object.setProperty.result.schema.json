@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/object.setProperty.result.schema.json",
+  "title": "object.setProperty response result",
+  "description": "Acknowledgement of an object.setProperty request. appliedValue, when present, is a snapshot copy of the value the engine actually stored, not a reference into engine live memory.",
+  "type": "object",
+  "required": ["accepted"],
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "description": "Whether the engine accepted and applied the property change.",
+      "type": "boolean"
+    },
+    "appliedValue": {
+      "description": "Optional snapshot copy of the value actually applied, which may be normalized from the requested value.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/propertyValue"
+    }
+  }
+}
