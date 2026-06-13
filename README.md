@@ -20,7 +20,7 @@ NorvesEditor
   - Bridge subsystem
 
 C++ Engine
-  - NorvesBridge-compatible endpoint
+  - NorvesEditor Bridge-compatible endpoint
   - scene/runtime/log/status provider
   - external native game viewport
 ```
@@ -239,7 +239,8 @@ Protocol validation:
   golden fixtures
 
 Engine SDK:
-  C++20 or C++23
+  C++20 minimum
+  C++23 only after ADR/toolchain policy
   CMake
   standalone from NorvesLib
 ```
@@ -299,28 +300,41 @@ Example event shape:
   "bridge": "norves.editor.bridge",
   "version": "0.1",
   "kind": "event",
-  "event": "engine.log",
+  "event": "log.message",
   "params": {
     "level": "info",
+    "category": "Engine",
     "message": "Engine started"
   }
 }
 ```
 
-Alpha method/event candidates:
+Required alpha methods:
 
 ```text
 bridge.hello
 bridge.getCapabilities
-engine.status
-engine.log
+engine.getStatus
+engine.launchInfo
 runtime.play
 runtime.pause
 runtime.stop
-runtime.getState
-process.started
-process.exited
-connection.stateChanged
+runtime.focusViewport
+log.subscribe
+log.unsubscribe
+```
+
+Required alpha events:
+
+```text
+bridge.connected
+bridge.disconnected
+engine.statusChanged
+engine.processExited
+runtime.stateChanged
+viewport.stateChanged
+log.message
+error.reported
 ```
 
 Scene hierarchy, object snapshots, inspector editing, and asset browser integration are intentionally later work unless they become necessary for the alpha vertical slice.
@@ -475,4 +489,5 @@ Before implementing non-trivial changes, create or update the relevant plan and 
 
 ## License
 
-License is not finalized yet. Add the final license before public release.
+This repository currently uses the Apache License 2.0. See `LICENSE`.
+Confirm project copyright and NOTICE metadata before public release.
