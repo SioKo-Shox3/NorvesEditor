@@ -7,7 +7,7 @@
   "result": {
     "types": [
       {
-        "typeName": "Camera",
+        "typeName": "TypeA",
         "kind": "object",
         "properties": [
           {
@@ -21,7 +21,7 @@
         ]
       },
       {
-        "typeName": "Transform",
+        "typeName": "TypeB",
         "kind": "component"
       }
     ]

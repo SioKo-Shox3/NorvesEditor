@@ -6,12 +6,12 @@
   "sessionId": "sess-7f3a",
   "result": {
     "objectId": "n-1",
-    "name": "Camera",
+    "name": "NodeA",
     "kind": "object",
     "properties": [
       {
         "name": "label",
-        "value": "Main Camera",
+        "value": "Example Name",
         "valueType": "string"
       },
       {
