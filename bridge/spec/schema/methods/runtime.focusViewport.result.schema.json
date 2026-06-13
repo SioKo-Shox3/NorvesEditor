@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/runtime.focusViewport.result.schema.json",
+  "title": "runtime.focusViewport response result",
+  "description": "Outcome of the best-effort focus/raise. true means the window was focused; false means it could not be honored.",
+  "type": "object",
+  "required": ["focused"],
+  "additionalProperties": false,
+  "properties": {
+    "focused": {
+      "description": "Whether the engine window was focused/raised.",
+      "type": "boolean"
+    }
+  }
+}

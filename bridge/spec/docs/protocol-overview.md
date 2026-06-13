@@ -1,6 +1,6 @@
 # NorvesEditor Bridge Protocol Overview
 
-Status: alpha, phases C1–C2 (envelope + handshake/capabilities/status/log payloads)
+Status: alpha, phases C1–C3 (envelope + handshake/capabilities/status/log payloads + runtime control)
 
 This document gives a high-level overview of the NorvesEditor Bridge protocol.
 The exact envelope structure is specified in
@@ -43,9 +43,15 @@ Events never carry an `id`.
 
 These names are the planned alpha surface. Phase C1 specifies only the envelope.
 Per-method and per-event `params`/`result` schemas are added incrementally:
-phase C2 covers handshake/capabilities/status/log (see
-[`message-payloads.md`](./message-payloads.md) and
-[`capabilities.md`](./capabilities.md)); runtime control follows in phase C3.
+phase C2 covers handshake/capabilities/status/log and phase C3 adds runtime
+control (see [`message-payloads.md`](./message-payloads.md) and
+[`capabilities.md`](./capabilities.md)).
+
+The runtime/viewport surface follows a deliberate namespace split: the focus
+*operation* is the runtime method `runtime.focusViewport`, while the resulting
+window *state notification* is the `viewport.stateChanged` event. Their capability
+tokens mirror this — `viewport.focus` gates the focus operation and
+`runtime.control` gates the play/pause/stop methods.
 
 Methods (editor → engine):
 

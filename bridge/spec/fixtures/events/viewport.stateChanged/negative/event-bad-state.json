@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "event": "viewport.stateChanged",
+  "sessionId": "sess-7f3a",
+  "seq": 34,
+  "params": {
+    "state": "fullscreen"
+  }
+}

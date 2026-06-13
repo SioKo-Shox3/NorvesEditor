@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "request",
+  "id": "req-53",
+  "method": "runtime.focusViewport",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "windowId": 1
+  }
+}
