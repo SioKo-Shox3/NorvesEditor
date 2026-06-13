@@ -1,0 +1,13 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-42",
+  "result": {
+    "ok": true
+  },
+  "error": {
+    "code": "METHOD_NOT_SUPPORTED",
+    "message": "Cannot carry both result and error."
+  }
+}

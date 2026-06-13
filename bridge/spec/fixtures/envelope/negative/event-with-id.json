@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "id": "req-42",
+  "event": "log.message",
+  "params": {
+    "level": "info",
+    "message": "Game started"
+  }
+}

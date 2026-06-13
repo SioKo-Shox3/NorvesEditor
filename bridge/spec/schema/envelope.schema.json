@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/envelope.schema.json",
+  "title": "NorvesEditor Bridge Envelope",
+  "description": "Canonical wire envelope for the NorvesEditor Bridge control channel. Inspired by JSON-RPC request/response/notification patterns but not strict JSON-RPC 2.0. Every Bridge message is one of three kinds: request, response, or event. Per-method and per-event payload schemas are defined in later phases; this schema validates only the envelope structure. additionalProperties is false for alpha so that typos and unplanned fields are rejected; adding a new envelope field is a protocol change that requires review per AGENTS.md.",
+  "type": "object",
+  "required": ["bridge", "version", "kind"],
+  "additionalProperties": false,
+  "properties": {
+    "bridge": {
+      "description": "Protocol marker. Constant for the NorvesEditor Bridge.",
+      "const": "norves.editor.bridge"
+    },
+    "version": {
+      "description": "Protocol version string, MAJOR.MINOR.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "kind": {
+      "description": "Envelope discriminator.",
+      "enum": ["request", "response", "event"]
+    },
+    "id": {
+      "description": "Request/response correlation id. Present on requests and on the matching response.",
+      "$ref": "#/$defs/correlationId"
+    },
+    "method": {
+      "description": "Method name on a request. Namespaced, e.g. runtime.play. The method registry is enforced by per-method schemas in later phases.",
+      "$ref": "#/$defs/methodName"
+    },
+    "event": {
+      "description": "Event name on an event envelope. Namespaced, e.g. log.message. The event registry is enforced by per-event schemas in later phases.",
+      "$ref": "#/$defs/eventName"
+    },
+    "params": {
+      "description": "Method or event payload. Shape is validated by per-method/per-event schemas in later phases.",
+      "type": "object"
+    },
+    "result": {
+      "description": "Success payload on a response. Mutually exclusive with error."
+    },
+    "error": {
+      "description": "Error payload on a response. Mutually exclusive with result.",
+      "$ref": "#/$defs/error"
+    },
+    "sessionId": {
+      "description": "Optional session id assigned during the handshake. May appear on any kind once a session exists.",
+      "type": "string",
+      "minLength": 1
+    },
+    "seq": {
+      "description": "Optional monotonically increasing per-connection message sequence number.",
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "kind": { "const": "request" } }
+      },
+      "then": {
+        "required": ["id", "method"],
+        "not": {
+          "anyOf": [
+            { "required": ["result"] },
+            { "required": ["error"] },
+            { "required": ["event"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "response" } }
+      },
+      "then": {
+        "required": ["id"],
+        "oneOf": [
+          { "required": ["result"] },
+          { "required": ["error"] }
+        ],
+        "not": {
+          "anyOf": [
+            { "required": ["method"] },
+            { "required": ["event"] },
+            { "required": ["params"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "event" } }
+      },
+      "then": {
+        "required": ["event"],
+        "not": {
+          "anyOf": [
+            { "required": ["id"] },
+            { "required": ["method"] },
+            { "required": ["result"] },
+            { "required": ["error"] }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "correlationId": {
+      "description": "Correlation id for request/response pairing. Alpha uses non-empty strings.",
+      "type": "string",
+      "minLength": 1
+    },
+    "methodName": {
+      "description": "Namespaced method name, e.g. bridge.hello or runtime.play.",
+      "type": "string",
+      "pattern": "^[a-z][a-zA-Z0-9]*\\.[a-zA-Z0-9]+$"
+    },
+    "eventName": {
+      "description": "Namespaced event name, e.g. log.message or bridge.connected.",
+      "type": "string",
+      "pattern": "^[a-z][a-zA-Z0-9]*\\.[a-zA-Z0-9]+$"
+    },
+    "error": {
+      "description": "Provisional error object. The full error model (code registry, retryability, data shape) is formalized in error-model.md in a later phase. additionalProperties is false for alpha strictness.",
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "Symbolic, screaming-snake-case error code, e.g. BRIDGE_PROTOCOL_ERROR.",
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "message": {
+          "description": "Human-readable error message.",
+          "type": "string",
+          "minLength": 1
+        },
+        "data": {
+          "description": "Optional structured error detail. Shape is error-code specific and defined later."
+        }
+      }
+    }
+  }
+}

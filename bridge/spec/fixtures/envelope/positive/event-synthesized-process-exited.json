@@ -1,0 +1,10 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "event": "engine.processExited",
+  "params": {
+    "exitCode": 0,
+    "origin": "editor-backend"
+  }
+}

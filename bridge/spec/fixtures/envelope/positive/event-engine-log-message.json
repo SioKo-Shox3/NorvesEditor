@@ -1,0 +1,13 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "event": "log.message",
+  "sessionId": "sess-7f3a",
+  "seq": 12,
+  "params": {
+    "level": "info",
+    "category": "Engine",
+    "message": "Game started"
+  }
+}

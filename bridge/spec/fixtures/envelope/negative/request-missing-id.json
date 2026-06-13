@@ -1,0 +1,7 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "request",
+  "method": "runtime.play",
+  "params": {}
+}

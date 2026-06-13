@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "event": "bridge.connected",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "endpoint": "ws://127.0.0.1:38080",
+    "origin": "editor-backend"
+  }
+}

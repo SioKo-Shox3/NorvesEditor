@@ -1,0 +1,13 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-42",
+  "error": {
+    "code": "METHOD_NOT_SUPPORTED",
+    "message": "Engine does not support runtime.play in the current state.",
+    "data": {
+      "method": "runtime.play"
+    }
+  }
+}
