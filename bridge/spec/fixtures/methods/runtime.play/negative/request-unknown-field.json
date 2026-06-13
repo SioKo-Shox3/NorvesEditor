@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "request",
+  "id": "req-50",
+  "method": "runtime.play",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "force": true
+  }
+}

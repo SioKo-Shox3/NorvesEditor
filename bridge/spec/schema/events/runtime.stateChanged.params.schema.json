@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/events/runtime.stateChanged.params.schema.json",
+  "title": "runtime.stateChanged event params",
+  "description": "Sent by the engine over the wire when its play/pause/stop runtime state changes.",
+  "type": "object",
+  "required": ["state"],
+  "additionalProperties": false,
+  "properties": {
+    "state": {
+      "description": "New runtime state.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/runtimeState"
+    },
+    "previous": {
+      "description": "Optional previous runtime state.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/runtimeState"
+    }
+  }
+}
