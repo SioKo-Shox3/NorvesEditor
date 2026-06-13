@@ -64,9 +64,10 @@ reference.
   - `event-engine-*` — produced by the engine over the WebSocket wire.
   - `event-synthesized-*` — synthesized by the editor backend (no wire frame).
   See the lifecycle table in `../docs/protocol-overview.md`.
-- Negative fixtures are named after the rule they violate, e.g.
-  `request-missing-id.json`, `response-result-and-error.json`,
-  `unknown-field.json`, `event-invalid-level.json`.
+- Negative fixtures are named after the rule they violate (envelope-group
+  examples: `request-missing-id.json`, `response-result-and-error.json`,
+  `unknown-field.json`; method/event-group examples: `request-missing-role.json`,
+  `event-invalid-level.json`).
 
 ## Validation
 

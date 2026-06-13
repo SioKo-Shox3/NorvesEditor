@@ -1,0 +1,12 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "event": "engine.statusChanged",
+  "sessionId": "sess-7f3a",
+  "seq": 9,
+  "params": {
+    "engineState": "running",
+    "runtimeState": "fast-forward"
+  }
+}
