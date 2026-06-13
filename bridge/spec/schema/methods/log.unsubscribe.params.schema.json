@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/log.unsubscribe.params.schema.json",
+  "title": "log.unsubscribe request params",
+  "description": "Cancel a previously established log subscription.",
+  "type": "object",
+  "required": ["subscriptionId"],
+  "additionalProperties": false,
+  "properties": {
+    "subscriptionId": {
+      "description": "The id returned by the matching log.subscribe.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

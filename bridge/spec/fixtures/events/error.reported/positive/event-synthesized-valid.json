@@ -1,0 +1,13 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "event": "error.reported",
+  "params": {
+    "error": {
+      "code": "BRIDGE_TRANSPORT_ERROR",
+      "message": "WebSocket connection was reset."
+    },
+    "origin": "editor-backend"
+  }
+}

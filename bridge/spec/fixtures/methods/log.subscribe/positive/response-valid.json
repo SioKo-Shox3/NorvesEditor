@@ -1,0 +1,13 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-5",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "subscriptionId": "sub-1",
+    "effectiveFilter": {
+      "minLevel": "info"
+    }
+  }
+}

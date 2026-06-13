@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/bridge.hello.result.schema.json",
+  "title": "bridge.hello response result",
+  "description": "Engine reply to the handshake. Validates the `result` payload of the bridge.hello response. The session id assigned here is also echoed at the envelope level on subsequent messages.",
+  "type": "object",
+  "required": ["sessionId", "protocolVersion", "server"],
+  "additionalProperties": false,
+  "properties": {
+    "sessionId": {
+      "description": "Session id assigned by the engine for this connection.",
+      "type": "string",
+      "minLength": 1
+    },
+    "protocolVersion": {
+      "description": "Protocol version the engine selected from the client's offered protocolVersions.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/versionString"
+    },
+    "server": {
+      "description": "Identity of the engine endpoint. Generic fields only; engine-specific identity stays in adapters.",
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Engine endpoint product/integration name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "description": "Optional engine endpoint version.",
+          "type": "string",
+          "minLength": 1
+        },
+        "engine": {
+          "description": "Optional generic engine identifier (free-form label, not a NorvesLib-specific type).",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "capabilities": {
+      "description": "Optional capability descriptors advertised by the engine. The authoritative list is also retrievable via bridge.getCapabilities.",
+      "type": "array",
+      "items": {
+        "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/capabilityDescriptor"
+      }
+    }
+  }
+}

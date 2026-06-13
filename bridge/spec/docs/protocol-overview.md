@@ -1,6 +1,6 @@
 # NorvesEditor Bridge Protocol Overview
 
-Status: alpha, phase C1 (envelope only)
+Status: alpha, phases C1–C2 (envelope + handshake/capabilities/status/log payloads)
 
 This document gives a high-level overview of the NorvesEditor Bridge protocol.
 The exact envelope structure is specified in
@@ -41,8 +41,11 @@ Events never carry an `id`.
 
 ## Alpha method and event surface
 
-These names are the planned alpha surface. Phase C1 specifies only the envelope;
-per-method and per-event `params`/`result` schemas arrive in later phases (C2/C3).
+These names are the planned alpha surface. Phase C1 specifies only the envelope.
+Per-method and per-event `params`/`result` schemas are added incrementally:
+phase C2 covers handshake/capabilities/status/log (see
+[`message-payloads.md`](./message-payloads.md) and
+[`capabilities.md`](./capabilities.md)); runtime control follows in phase C3.
 
 Methods (editor → engine):
 
@@ -118,4 +121,7 @@ python scripts/validate-bridge-fixtures.py
 ```
 
 Positive fixtures must validate against the envelope schema; negative fixtures
-must fail. See [`bridge/spec/fixtures/README.md`](../fixtures/README.md).
+must fail. From phase C2 the validator also applies a payload layer to
+`methods/` and `events/` fixtures; see
+[`bridge/spec/fixtures/README.md`](../fixtures/README.md) and
+[`message-payloads.md`](./message-payloads.md).

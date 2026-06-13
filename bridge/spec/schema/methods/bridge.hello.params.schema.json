@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/bridge.hello.params.schema.json",
+  "title": "bridge.hello request params",
+  "description": "Handshake initiated by the editor (client) toward the engine endpoint. Validates the `params` object of a bridge.hello request envelope.",
+  "type": "object",
+  "required": ["role", "clientName", "protocolVersions"],
+  "additionalProperties": false,
+  "properties": {
+    "role": {
+      "description": "Role of the connecting peer. For the alpha the editor is always the client that says hello.",
+      "type": "string",
+      "enum": ["editor"]
+    },
+    "clientName": {
+      "description": "Human-readable client product name, e.g. NorvesEditor.",
+      "type": "string",
+      "minLength": 1
+    },
+    "clientVersion": {
+      "description": "Optional client product version.",
+      "type": "string",
+      "minLength": 1
+    },
+    "protocolVersions": {
+      "description": "Protocol versions the client supports, in preference order. The server selects one and echoes it in the result.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/versionString"
+      }
+    },
+    "capabilities": {
+      "description": "Optional capability tokens the client offers or requests. Negotiation semantics are described in docs/capabilities.md.",
+      "type": "array",
+      "items": {
+        "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/capabilityToken"
+      }
+    }
+  }
+}

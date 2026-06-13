@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "request",
+  "id": "req-6",
+  "method": "log.unsubscribe",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "subscriptionId": "sub-1"
+  }
+}

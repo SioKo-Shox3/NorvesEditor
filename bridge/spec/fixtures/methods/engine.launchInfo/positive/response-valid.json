@@ -1,0 +1,15 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-4",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "pid": 48213,
+    "title": "Mock Game",
+    "endpoint": "ws://127.0.0.1:38080",
+    "executable": "mock-engine",
+    "argv": ["--bridge", "ws://127.0.0.1:38080"],
+    "startedAt": "2026-06-14T10:00:00Z"
+  }
+}

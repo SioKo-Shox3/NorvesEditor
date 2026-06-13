@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/log.subscribe.params.schema.json",
+  "title": "log.subscribe request params",
+  "description": "Subscribe to engine log.message events, optionally filtered. An absent filter means subscribe to everything.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "filter": {
+      "description": "Optional server-side filter applied before log.message events are emitted.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "minLevel": {
+          "description": "Minimum severity to deliver. Lines below this level are dropped.",
+          "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/logLevel"
+        },
+        "categories": {
+          "description": "If present and non-empty, deliver only these log categories.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

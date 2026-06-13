@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/log.unsubscribe.result.schema.json",
+  "title": "log.unsubscribe response result",
+  "description": "Acknowledgement that a subscription was cancelled.",
+  "type": "object",
+  "required": ["ok"],
+  "additionalProperties": false,
+  "properties": {
+    "ok": {
+      "description": "True when the subscription was found and removed.",
+      "type": "boolean"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "event": "bridge.connected",
+  "params": {
+    "origin": "editor-backend"
+  }
+}

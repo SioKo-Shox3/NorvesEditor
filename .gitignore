@@ -8,6 +8,10 @@ Thumbs.db
 # Logs
 *.log
 
+# Python (dev tooling: fixture validator)
+__pycache__/
+*.pyc
+
 # Node / Tauri frontend
 node_modules/
 .pnpm-store/

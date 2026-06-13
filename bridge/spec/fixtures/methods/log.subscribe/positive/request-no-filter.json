@@ -1,0 +1,9 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "request",
+  "id": "req-5",
+  "method": "log.subscribe",
+  "sessionId": "sess-7f3a",
+  "params": {}
+}
