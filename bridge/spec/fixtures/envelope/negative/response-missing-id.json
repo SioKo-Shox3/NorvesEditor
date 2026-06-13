@@ -1,0 +1,8 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "result": {
+    "ok": true
+  }
+}
