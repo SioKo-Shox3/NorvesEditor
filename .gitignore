@@ -5,6 +5,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Claude Code: share agent definitions, keep local/personal settings out
+.claude/settings.local.json
+
 # Logs
 *.log
 
