@@ -1,0 +1,10 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-1",
+  "result": {
+    "sessionId": "sess-7f3a",
+    "protocolVersion": "0.1"
+  }
+}

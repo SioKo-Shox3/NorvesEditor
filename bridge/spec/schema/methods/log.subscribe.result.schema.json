@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/log.subscribe.result.schema.json",
+  "title": "log.subscribe response result",
+  "description": "Acknowledgement of a log subscription. The subscriptionId is used to cancel via log.unsubscribe.",
+  "type": "object",
+  "required": ["subscriptionId"],
+  "additionalProperties": false,
+  "properties": {
+    "subscriptionId": {
+      "description": "Opaque id identifying this subscription.",
+      "type": "string",
+      "minLength": 1
+    },
+    "effectiveFilter": {
+      "description": "Optional echo of the filter the engine actually applied, after normalization.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "minLevel": {
+          "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/logLevel"
+        },
+        "categories": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

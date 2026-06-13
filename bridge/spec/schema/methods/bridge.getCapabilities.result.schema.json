@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/bridge.getCapabilities.result.schema.json",
+  "title": "bridge.getCapabilities response result",
+  "description": "Authoritative list of capabilities advertised by the engine endpoint.",
+  "type": "object",
+  "required": ["capabilities"],
+  "additionalProperties": false,
+  "properties": {
+    "capabilities": {
+      "description": "Capability descriptors supported by the engine.",
+      "type": "array",
+      "items": {
+        "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/capabilityDescriptor"
+      }
+    }
+  }
+}

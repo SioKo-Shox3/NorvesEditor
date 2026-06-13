@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/events/bridge.disconnected.params.schema.json",
+  "title": "bridge.disconnected event params",
+  "description": "Synthesized by the editor backend on socket close/drop, including cases where the engine sent nothing.",
+  "type": "object",
+  "required": ["reason"],
+  "additionalProperties": false,
+  "properties": {
+    "reason": {
+      "description": "Human-readable reason for the disconnect.",
+      "type": "string",
+      "minLength": 1
+    },
+    "code": {
+      "description": "Optional symbolic disconnect code, screaming-snake-case, e.g. SOCKET_CLOSED.",
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*$"
+    },
+    "willReconnect": {
+      "description": "Optional hint that the editor backend will attempt to reconnect.",
+      "type": "boolean"
+    },
+    "origin": {
+      "description": "Producer marker. Always editor-backend for this synthesized event.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/origin"
+    }
+  }
+}

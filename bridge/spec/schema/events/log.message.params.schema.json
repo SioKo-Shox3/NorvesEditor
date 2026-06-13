@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/events/log.message.params.schema.json",
+  "title": "log.message event params",
+  "description": "A single engine log line forwarded to the editor over the wire.",
+  "type": "object",
+  "required": ["level", "message"],
+  "additionalProperties": false,
+  "properties": {
+    "level": {
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/logLevel"
+    },
+    "message": {
+      "description": "Log text.",
+      "type": "string"
+    },
+    "category": {
+      "description": "Optional log category/channel, e.g. Engine, Render, Audio.",
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "description": "Optional engine-side timestamp (ISO 8601 string).",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
