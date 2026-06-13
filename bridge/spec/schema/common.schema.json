@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/common.schema.json",
+  "title": "NorvesEditor Bridge Common Definitions",
+  "description": "Shared $defs reused by per-method and per-event payload schemas. This file defines no top-level instance shape; consumers reference its $defs by absolute $id, e.g. https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/logLevel. Generic protocol only: no NorvesLib-specific fields appear here.",
+  "$defs": {
+    "versionString": {
+      "description": "Protocol or product version string in MAJOR.MINOR form.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "capabilityToken": {
+      "description": "Namespaced capability token, e.g. runtime.control or log.stream. Same lowerCamel.member shape as method/event names.",
+      "type": "string",
+      "pattern": "^[a-z][a-zA-Z0-9]*\\.[a-zA-Z0-9]+$"
+    },
+    "capabilityDescriptor": {
+      "description": "Authoritative description of one capability the engine endpoint advertises.",
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Capability token.",
+          "$ref": "#/$defs/capabilityToken"
+        },
+        "version": {
+          "description": "Optional capability version, MAJOR.MINOR.",
+          "$ref": "#/$defs/versionString"
+        },
+        "description": {
+          "description": "Optional human-readable explanation of the capability.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "logLevel": {
+      "description": "Severity of a log line.",
+      "type": "string",
+      "enum": ["trace", "debug", "info", "warn", "error"]
+    },
+    "engineState": {
+      "description": "Engine lifecycle state from the engine's own perspective. Distinct from the editor-backend-owned process state.",
+      "type": "string",
+      "enum": ["initializing", "ready", "running", "error"]
+    },
+    "runtimeState": {
+      "description": "Runtime play/pause state reported by the engine. Runtime CONTROL methods/events (runtime.play/pause/stop, runtime.stateChanged) are specified in phase C3; this enum only types status snapshots in C2.",
+      "type": "string",
+      "enum": ["edit", "playing", "paused", "stopped", "unknown"]
+    },
+    "origin": {
+      "description": "Which side produced an event or error. Lifecycle events may be engine-wire or editor-backend-synthesized; see protocol-overview.md.",
+      "type": "string",
+      "enum": ["engine", "editor-backend"]
+    }
+  }
+}

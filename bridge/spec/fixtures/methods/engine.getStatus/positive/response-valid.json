@@ -1,0 +1,14 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-3",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "engineState": "ready",
+    "runtimeState": "edit",
+    "engineName": "MockEngine",
+    "engineVersion": "0.1.0",
+    "title": "Mock Game"
+  }
+}

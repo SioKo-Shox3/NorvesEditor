@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/engine.getStatus.result.schema.json",
+  "title": "engine.getStatus response result",
+  "description": "Snapshot of engine and runtime status as the engine sees it. The editor backend separately owns process state; that is not part of this engine-served snapshot.",
+  "type": "object",
+  "required": ["engineState", "runtimeState"],
+  "additionalProperties": false,
+  "properties": {
+    "engineState": {
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/engineState"
+    },
+    "runtimeState": {
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/runtimeState"
+    },
+    "engineName": {
+      "description": "Optional engine integration name.",
+      "type": "string",
+      "minLength": 1
+    },
+    "engineVersion": {
+      "description": "Optional engine version.",
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "description": "Optional current engine/game window title.",
+      "type": "string"
+    }
+  }
+}

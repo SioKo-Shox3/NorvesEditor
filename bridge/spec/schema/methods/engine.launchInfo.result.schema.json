@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/engine.launchInfo.result.schema.json",
+  "title": "engine.launchInfo response result",
+  "description": "Information about the running engine process and its external native window/endpoint, as reported by the engine. The editor backend may already know pid/endpoint from launching the process; this method exposes the engine's own view.",
+  "type": "object",
+  "required": ["pid", "title"],
+  "additionalProperties": false,
+  "properties": {
+    "pid": {
+      "description": "Operating-system process id of the engine.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "title": {
+      "description": "Engine/game external window title.",
+      "type": "string"
+    },
+    "endpoint": {
+      "description": "Optional Bridge WebSocket endpoint the engine is listening on, e.g. ws://127.0.0.1:38080.",
+      "type": "string",
+      "minLength": 1
+    },
+    "executable": {
+      "description": "Optional path or name of the engine executable as the engine reports it.",
+      "type": "string",
+      "minLength": 1
+    },
+    "argv": {
+      "description": "Optional launch arguments as the engine reports them.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "startedAt": {
+      "description": "Optional engine start timestamp (ISO 8601 string).",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

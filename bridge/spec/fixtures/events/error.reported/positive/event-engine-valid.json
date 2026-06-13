@@ -1,0 +1,17 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "event": "error.reported",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "error": {
+      "code": "ENGINE_ASSET_LOAD_FAILED",
+      "message": "Failed to load level asset.",
+      "data": {
+        "asset": "levels/intro"
+      }
+    },
+    "origin": "engine"
+  }
+}
