@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/runtime.pause.params.schema.json",
+  "title": "runtime.pause request params",
+  "description": "Request a transition into the pause runtime state. No arguments in alpha.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {}
+}

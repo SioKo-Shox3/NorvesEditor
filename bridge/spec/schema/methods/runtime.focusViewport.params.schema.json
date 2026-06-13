@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/runtime.focusViewport.params.schema.json",
+  "title": "runtime.focusViewport request params",
+  "description": "Best-effort request to focus/raise the external engine window. Alpha has a single window, so no target needs to be specified. No arguments in alpha.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {}
+}
