@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "request",
+  "id": "req-63",
+  "method": "schema.getSnapshot",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "includeBuiltins": true
+  }
+}

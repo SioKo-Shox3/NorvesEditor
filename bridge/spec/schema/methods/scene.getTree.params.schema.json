@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/scene.getTree.params.schema.json",
+  "title": "scene.getTree request params",
+  "description": "Request a snapshot of the engine's scene tree. Optionally scoped to a subtree and bounded in depth.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "rootId": {
+      "description": "Optional node to start the snapshot from. Absent means the whole scene root.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    },
+    "maxDepth": {
+      "description": "Optional maximum depth of children to include. 0 means the root node only.",
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "request",
+  "id": "req-60",
+  "method": "scene.getTree",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "rootId": "n-0",
+    "includeHidden": true
+  }
+}

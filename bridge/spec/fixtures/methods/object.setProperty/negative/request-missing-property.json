@@ -1,0 +1,12 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "request",
+  "id": "req-62",
+  "method": "object.setProperty",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "objectId": "n-1",
+    "value": 75
+  }
+}

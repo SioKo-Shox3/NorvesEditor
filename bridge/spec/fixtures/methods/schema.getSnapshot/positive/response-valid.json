@@ -1,0 +1,29 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-63",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "types": [
+      {
+        "typeName": "Camera",
+        "kind": "object",
+        "properties": [
+          {
+            "name": "fieldOfView",
+            "valueType": "number"
+          },
+          {
+            "name": "enabled",
+            "valueType": "boolean"
+          }
+        ]
+      },
+      {
+        "typeName": "Transform",
+        "kind": "component"
+      }
+    ]
+  }
+}
