@@ -1,0 +1,32 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-60",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "root": {
+      "id": "n-0",
+      "name": "Scene",
+      "kind": "object",
+      "children": [
+        {
+          "id": "n-1",
+          "name": "Camera",
+          "kind": "object"
+        },
+        {
+          "id": "n-2",
+          "name": "Group",
+          "kind": "object",
+          "children": [
+            {
+              "id": "n-3",
+              "name": "Light"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

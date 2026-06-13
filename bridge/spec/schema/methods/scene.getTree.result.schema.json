@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/scene.getTree.result.schema.json",
+  "title": "scene.getTree response result",
+  "description": "Serialized snapshot of the scene tree. A DTO copy, not a reference into engine live memory.",
+  "type": "object",
+  "required": ["root"],
+  "additionalProperties": false,
+  "properties": {
+    "root": {
+      "description": "Root node of the snapshotted (sub)tree.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/sceneNode"
+    }
+  }
+}
