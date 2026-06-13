@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/events/engine.processExited.params.schema.json",
+  "title": "engine.processExited event params",
+  "description": "Synthesized by the editor backend, which owns the process handle. A dead engine cannot send this over the wire.",
+  "type": "object",
+  "required": ["exitCode"],
+  "additionalProperties": false,
+  "properties": {
+    "exitCode": {
+      "description": "Process exit code. May be non-zero or negative on abnormal termination.",
+      "type": "integer"
+    },
+    "signal": {
+      "description": "Optional termination signal name on platforms that report one.",
+      "type": "string",
+      "minLength": 1
+    },
+    "origin": {
+      "description": "Producer marker. Always editor-backend for this synthesized event.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/origin"
+    }
+  }
+}

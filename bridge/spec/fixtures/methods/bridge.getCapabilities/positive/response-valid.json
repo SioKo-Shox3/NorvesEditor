@@ -1,0 +1,14 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-2",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "capabilities": [
+      { "name": "runtime.control", "version": "0.1", "description": "Play/pause/stop control." },
+      { "name": "log.stream" },
+      { "name": "viewport.focus" }
+    ]
+  }
+}

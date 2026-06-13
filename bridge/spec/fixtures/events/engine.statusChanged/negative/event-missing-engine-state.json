@@ -1,0 +1,9 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "event": "engine.statusChanged",
+  "params": {
+    "previous": "ready"
+  }
+}

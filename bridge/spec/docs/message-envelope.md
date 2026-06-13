@@ -50,7 +50,8 @@ change that requires review (per `AGENTS.md` / `CLAUDE.md`).
 lower-camel namespace, a dot, then a member, e.g. `bridge.hello`,
 `engine.statusChanged`. The envelope schema validates only the *shape* of the
 name. Which names are legal, and their `params`/`result` payloads, is enforced by
-per-method and per-event schemas in later phases.
+per-method and per-event schemas. The phase C2 payloads (handshake, capabilities,
+status, log) are specified in [`message-payloads.md`](./message-payloads.md).
 
 ### Error object
 

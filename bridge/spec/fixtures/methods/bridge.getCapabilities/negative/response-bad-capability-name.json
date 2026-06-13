@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-2",
+  "result": {
+    "capabilities": [
+      { "name": "RuntimeControl" }
+    ]
+  }
+}

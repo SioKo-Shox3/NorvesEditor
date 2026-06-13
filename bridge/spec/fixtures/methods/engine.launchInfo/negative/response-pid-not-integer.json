@@ -1,0 +1,10 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-4",
+  "result": {
+    "pid": "48213",
+    "title": "Mock Game"
+  }
+}

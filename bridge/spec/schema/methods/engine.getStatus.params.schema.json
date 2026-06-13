@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/engine.getStatus.params.schema.json",
+  "title": "engine.getStatus request params",
+  "description": "engine.getStatus takes no parameters. The params object, if present, must be empty.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {}
+}

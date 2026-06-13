@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/events/engine.statusChanged.params.schema.json",
+  "title": "engine.statusChanged event params",
+  "description": "Sent by the engine over the wire when its engine-side status changes. Carries the new engineState and optionally a runtime snapshot. Runtime CONTROL state transitions have their own runtime.stateChanged event in phase C3.",
+  "type": "object",
+  "required": ["engineState"],
+  "additionalProperties": false,
+  "properties": {
+    "engineState": {
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/engineState"
+    },
+    "previous": {
+      "description": "Optional previous engineState.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/engineState"
+    },
+    "runtimeState": {
+      "description": "Optional current runtime state snapshot.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/runtimeState"
+    },
+    "title": {
+      "description": "Optional current engine/game window title.",
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "event": "log.message",
+  "params": {
+    "level": "fatal",
+    "message": "Game started"
+  }
+}

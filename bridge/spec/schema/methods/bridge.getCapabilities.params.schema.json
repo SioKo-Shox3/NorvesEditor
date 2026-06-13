@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/bridge.getCapabilities.params.schema.json",
+  "title": "bridge.getCapabilities request params",
+  "description": "bridge.getCapabilities takes no parameters. The params object, if present, must be empty.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {}
+}

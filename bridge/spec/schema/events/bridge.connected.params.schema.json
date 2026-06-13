@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/events/bridge.connected.params.schema.json",
+  "title": "bridge.connected event params",
+  "description": "Synthesized by the editor backend when the WebSocket session is established. Not sent by the engine over the wire.",
+  "type": "object",
+  "required": ["endpoint"],
+  "additionalProperties": false,
+  "properties": {
+    "endpoint": {
+      "description": "The Bridge endpoint that was connected, e.g. ws://127.0.0.1:38080.",
+      "type": "string",
+      "minLength": 1
+    },
+    "origin": {
+      "description": "Producer marker. Always editor-backend for this synthesized event.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/origin"
+    }
+  }
+}

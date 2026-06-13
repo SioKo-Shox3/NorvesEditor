@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/events/error.reported.params.schema.json",
+  "title": "error.reported event params",
+  "description": "An out-of-band error notification. Produced by the engine (engine-side errors over the wire) or synthesized by the editor backend (transport/process errors). The error object reuses the provisional error definition from the envelope schema; the full error model (code registry) is formalized in error-model.md in phase C5.",
+  "type": "object",
+  "required": ["error"],
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "description": "The reported error, using the shared envelope error object.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/envelope.schema.json#/$defs/error"
+    },
+    "origin": {
+      "description": "Which side reported the error.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/origin"
+    }
+  }
+}
