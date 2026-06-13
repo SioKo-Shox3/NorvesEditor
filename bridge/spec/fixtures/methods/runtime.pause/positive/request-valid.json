@@ -1,0 +1,9 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "request",
+  "id": "req-51",
+  "method": "runtime.pause",
+  "sessionId": "sess-7f3a",
+  "params": {}
+}

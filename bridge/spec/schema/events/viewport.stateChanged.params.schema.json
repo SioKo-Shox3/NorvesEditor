@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/events/viewport.stateChanged.params.schema.json",
+  "title": "viewport.stateChanged event params",
+  "description": "Sent by the engine over the wire when the state of its external native viewport window changes.",
+  "type": "object",
+  "required": ["state"],
+  "additionalProperties": false,
+  "properties": {
+    "state": {
+      "description": "New viewport window state.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/viewportState"
+    },
+    "previous": {
+      "description": "Optional previous viewport window state.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/viewportState"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "event",
+  "event": "runtime.stateChanged",
+  "sessionId": "sess-7f3a",
+  "seq": 21,
+  "params": {
+    "state": "playing",
+    "previous": "edit"
+  }
+}

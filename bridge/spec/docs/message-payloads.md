@@ -1,6 +1,6 @@
 # NorvesEditor Bridge Message Payloads
 
-Status: alpha, phase C2 (hello / capabilities / status / log)
+Status: alpha, phase C3 (hello / capabilities / status / log + runtime control)
 
 This document is the payload reference for the phase C2 Bridge surface: the
 `params`/`result` shapes carried inside the
@@ -10,12 +10,12 @@ and composed by the fixture validator (see
 [two-layer validation](#two-layer-validation)). Where prose and schema disagree,
 the schema and its golden fixtures win.
 
-Phase C2 covers handshake, capabilities, status, launch info, and logging.
-Runtime control (`runtime.play`/`pause`/`stop`/`focusViewport` and
-`runtime.stateChanged`/`viewport.stateChanged`) is **phase C3** and is not
-specified here. Scene/object/schema methods are alpha-optional. The full error
-model (`error-model.md`) is **phase C5**; C2 reuses the provisional error object
-from the envelope schema.
+Phase C2 covered handshake, capabilities, status, launch info, and logging.
+Phase C3 adds runtime control (`runtime.play`/`pause`/`stop`/`focusViewport` and
+the `runtime.stateChanged`/`viewport.stateChanged` events), which is specified
+here. Scene/object/schema methods are alpha-optional. The full error model
+(`error-model.md`) is **phase C5**; until then the surface reuses the provisional
+error object from the envelope schema.
 
 All payload field names are `camelCase`, matching the frontend-facing DTO
 convention in `AGENTS.md` / `CLAUDE.md`.
@@ -33,6 +33,7 @@ convention in `AGENTS.md` / `CLAUDE.md`.
 | `logLevel` | `trace` \| `debug` \| `info` \| `warn` \| `error`. |
 | `engineState` | `initializing` \| `ready` \| `running` \| `error`. |
 | `runtimeState` | `edit` \| `playing` \| `paused` \| `stopped` \| `unknown`. |
+| `viewportState` | `focused` \| `visible` \| `hidden` \| `minimized` \| `unknown`. |
 | `origin` | `engine` \| `editor-backend`. |
 
 ## Methods
@@ -138,6 +139,41 @@ normalized filter the engine applied.
 `log.unsubscribe` `params`: `{ subscriptionId }` (the id from a prior subscribe).
 `result`: `{ ok: boolean }` — `true` when the subscription was found and removed.
 
+### runtime.play / runtime.pause / runtime.stop
+
+Runtime control requests. Each asks the engine to transition into the named
+runtime state; the request is accepted or rejected synchronously, while the
+actual state change is reported asynchronously by the
+[`runtime.stateChanged`](#events) event. Schemas:
+[play params](../schema/methods/runtime.play.params.schema.json),
+[play result](../schema/methods/runtime.play.result.schema.json),
+[pause params](../schema/methods/runtime.pause.params.schema.json),
+[pause result](../schema/methods/runtime.pause.result.schema.json),
+[stop params](../schema/methods/runtime.stop.params.schema.json),
+[stop result](../schema/methods/runtime.stop.result.schema.json).
+
+- `params`: empty object (no parameters) for all three.
+- `result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `accepted` | boolean | yes | whether the engine accepted the transition request. |
+| `requestedState` | `runtimeState` | no | runtime state the engine is targeting (`playing` / `paused` / `stopped`). |
+
+### runtime.focusViewport
+
+Best-effort request to focus/raise the external engine window. Alpha has a single
+window, so no target is specified. Schemas:
+[params](../schema/methods/runtime.focusViewport.params.schema.json),
+[result](../schema/methods/runtime.focusViewport.result.schema.json).
+
+- `params`: empty object.
+- `result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `focused` | boolean | yes | `true` when the window was focused/raised; `false` when it could not be honored. |
+
 ## Events
 
 Events are one-way notifications. Some arrive over the engine **wire**; others
@@ -151,6 +187,8 @@ cases; the producer column below mirrors the lifecycle table in
 | `bridge.disconnected` | editor backend (synthesized) | [schema](../schema/events/bridge.disconnected.params.schema.json) | `reason`; optional `code` (screaming-snake-case), `willReconnect`, `origin`. |
 | `engine.statusChanged` | engine (wire) | [schema](../schema/events/engine.statusChanged.params.schema.json) | `engineState`; optional `previous`, `runtimeState`, `title`. |
 | `engine.processExited` | editor backend (synthesized) | [schema](../schema/events/engine.processExited.params.schema.json) | `exitCode`; optional `signal`, `origin`. |
+| `runtime.stateChanged` | engine (wire) | [schema](../schema/events/runtime.stateChanged.params.schema.json) | `state` (`runtimeState`); optional `previous`. |
+| `viewport.stateChanged` | engine (wire) | [schema](../schema/events/viewport.stateChanged.params.schema.json) | `state` (`viewportState`); optional `previous`. |
 | `log.message` | engine (wire) | [schema](../schema/events/log.message.params.schema.json) | `level`, `message`; optional `category`, `timestamp`. |
 | `error.reported` | both | [schema](../schema/events/error.reported.params.schema.json) | `error` (envelope error object); optional `origin`. |
 
