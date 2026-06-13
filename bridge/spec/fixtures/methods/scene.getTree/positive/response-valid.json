@@ -7,22 +7,22 @@
   "result": {
     "root": {
       "id": "n-0",
-      "name": "Scene",
+      "name": "Root",
       "kind": "object",
       "children": [
         {
           "id": "n-1",
-          "name": "Camera",
+          "name": "NodeA",
           "kind": "object"
         },
         {
           "id": "n-2",
-          "name": "Group",
+          "name": "GroupNode",
           "kind": "object",
           "children": [
             {
               "id": "n-3",
-              "name": "Light"
+              "name": "NodeB"
             }
           ]
         }

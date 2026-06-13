@@ -7,7 +7,7 @@
   "result": {
     "types": [
       {
-        "typeName": "Camera",
+        "typeName": "TypeA",
         "properties": [
           {
             "name": "fieldOfView"
