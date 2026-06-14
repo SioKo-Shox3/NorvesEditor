@@ -3,6 +3,7 @@ add_library(norves_bridge_engine_sdk STATIC
     src/json_value.cpp
     src/envelope.cpp
     src/codec.cpp
+    src/server.cpp
 )
 
 target_include_directories(norves_bridge_engine_sdk

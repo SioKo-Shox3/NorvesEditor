@@ -36,3 +36,18 @@ if(MSVC)
 endif()
 
 add_test(NAME fixtures_roundtrip_test COMMAND fixtures_roundtrip_test)
+
+# Dispatch / version-negotiation test for BridgeEngineServer (F3). Uses the SDK
+# public headers only (incl. JsonValue::parse for value-equal comparison), so it
+# does not link nlohmann directly and the public-header boundary is unaffected.
+add_executable(dispatch_test dispatch_test.cpp)
+
+target_link_libraries(dispatch_test PRIVATE norves_bridge_engine_sdk)
+
+target_include_directories(dispatch_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+if(MSVC)
+    target_compile_options(dispatch_test PRIVATE /W4)
+endif()
+
+add_test(NAME dispatch_test COMMAND dispatch_test)
