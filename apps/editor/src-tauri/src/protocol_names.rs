@@ -2,9 +2,13 @@
 //! bridge/ts/packages/bridge-ui/src/{commands,events}.ts -- verified by
 //! scripts/check-protocol-names.mjs.
 //!
-//! These constants are not yet wired to command handlers (P5 does that).
-//! The `dead_code` allow below prevents clippy -D warnings from failing on
-//! unused consts until P5 references them.
+//! P5 wires the `events::*` constants into the backend event relay. The
+//! `commands::*` constants stay as the source-of-truth assertions verified by
+//! scripts/check-protocol-names.mjs and the tests below; the command handlers
+//! themselves are matched to these values by fn NAME (Tauri derives the IPC
+//! name from the fn), so the command consts have no runtime referent. The
+//! `dead_code` allow keeps clippy -D warnings clean for those assertion-only
+//! consts.
 #![allow(dead_code)]
 
 /// Tauri command names.
@@ -103,7 +107,10 @@ mod tests {
 
     #[test]
     fn event_runtime_state_changed() {
-        assert_eq!(events::RUNTIME_STATE_CHANGED, "bridge:runtime-state-changed");
+        assert_eq!(
+            events::RUNTIME_STATE_CHANGED,
+            "bridge:runtime-state-changed"
+        );
     }
 
     #[test]
@@ -118,12 +125,18 @@ mod tests {
 
     #[test]
     fn event_engine_process_exited() {
-        assert_eq!(events::ENGINE_PROCESS_EXITED, "bridge:engine-process-exited");
+        assert_eq!(
+            events::ENGINE_PROCESS_EXITED,
+            "bridge:engine-process-exited"
+        );
     }
 
     #[test]
     fn event_viewport_state_changed() {
-        assert_eq!(events::VIEWPORT_STATE_CHANGED, "bridge:viewport-state-changed");
+        assert_eq!(
+            events::VIEWPORT_STATE_CHANGED,
+            "bridge:viewport-state-changed"
+        );
     }
 
     #[test]
