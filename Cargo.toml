@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "bridge/crates/norves-bridge-core",
     "bridge/crates/norves-bridge-editor-client",
+    "bridge/crates/norves-bridge-tools",
 ]
 
 [workspace.package]
@@ -28,3 +29,10 @@ tracing = "0.1"
 tokio-tungstenite = "0.29"
 futures-util = "0.3"
 norves-bridge-core = { path = "bridge/crates/norves-bridge-core" }
+# CLI argument parser for norves-bridge-tools. `derive` enables the proc-macro
+# derive API; `cargo` feature is not needed (no cargo-specific helpers used).
+clap = { version = "4", features = ["derive"] }
+# Error handling helper for CLI binaries (tools only — never for library crates).
+anyhow = "1"
+# tracing-subscriber initializes the tracing backend in CLI binaries.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
