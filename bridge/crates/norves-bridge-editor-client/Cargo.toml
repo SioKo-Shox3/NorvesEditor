@@ -10,7 +10,15 @@ norves-bridge-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+# The WS transport (G2) needs a real I/O driver, so this crate (and only this
+# crate) overrides the workspace tokio features to add `net`/`io-util`. The
+# workspace default stays I/O-free for any consumer that uses only the trait /
+# loopback transport. tokio-tungstenite 0.29 drives over a tokio TcpStream, which
+# requires the `net` driver; `io-util` is included for the AsyncRead/AsyncWrite
+# adapters it layers on top.
+tokio = { workspace = true, features = ["net", "io-util"] }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
