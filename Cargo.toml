@@ -4,6 +4,7 @@ members = [
     "bridge/crates/norves-bridge-core",
     "bridge/crates/norves-bridge-editor-client",
     "bridge/crates/norves-bridge-tools",
+    "bridge/crates/norves-bridge-dump",
 ]
 
 [workspace.package]
