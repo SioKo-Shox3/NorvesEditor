@@ -497,7 +497,7 @@ Deliverables:
 - docs/protocol-overview.md.
 - docs/message-envelope.md.
 - docs/capabilities.md.
-- docs/error-model.md.
+- bridge/spec/docs/error-model.md.
 ```
 
 Suggested phases:
