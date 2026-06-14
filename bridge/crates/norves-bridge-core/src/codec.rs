@@ -12,7 +12,7 @@
 //!   [`Envelope::validate`], rejecting structurally invalid envelopes.
 //! * [`encode_envelope`] — serialize an [`Envelope`] back to a JSON string.
 
-use crate::envelope::Envelope;
+use crate::envelope::{Envelope, ValidatedEnvelope};
 use crate::error::CodecError;
 
 /// Deserializes a JSON string into an [`Envelope`].
@@ -58,6 +58,23 @@ pub fn decode_validated(json: &str) -> Result<Envelope, CodecError> {
     Ok(envelope)
 }
 
+/// Deserializes a JSON string directly into a type-safe [`ValidatedEnvelope`].
+///
+/// Equivalent to [`decode_envelope`] followed by
+/// [`ValidatedEnvelope::try_from`], which runs [`Envelope::validate`]
+/// internally. The kind-dependent field combinations are thus encoded in the
+/// returned type rather than re-checked by the caller.
+///
+/// # Errors
+///
+/// Returns [`CodecError::Json`] on a deserialization failure, or the error from
+/// [`Envelope::validate`] (typically [`CodecError::StructuralViolation`]) when
+/// the envelope is structurally invalid for its `kind`.
+pub fn decode_typed(json: &str) -> Result<ValidatedEnvelope, CodecError> {
+    let envelope = decode_envelope(json)?;
+    ValidatedEnvelope::try_from(envelope)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +116,31 @@ mod tests {
         assert!(matches!(
             decode_envelope("{ not json"),
             Err(CodecError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn decode_typed_lifts_valid_envelope() {
+        let typed = decode_typed(REQUEST).unwrap();
+        assert!(matches!(
+            typed,
+            crate::envelope::ValidatedEnvelope::Request { .. }
+        ));
+    }
+
+    #[test]
+    fn decode_typed_rejects_structural_violation() {
+        // Event carrying `id` deserializes but fails validation.
+        let json = r#"{
+            "bridge": "norves.editor.bridge",
+            "version": "0.1",
+            "kind": "event",
+            "id": "req-42",
+            "event": "log.message"
+        }"#;
+        assert!(matches!(
+            decode_typed(json),
+            Err(CodecError::StructuralViolation(_))
         ));
     }
 }
