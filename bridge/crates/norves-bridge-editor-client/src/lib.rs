@@ -1,16 +1,27 @@
 //! `norves-bridge-editor-client` — editor-side Bridge runtime built on `norves-bridge-core`.
 //!
-//! Phase D4 adds the pure (sans-I/O, synchronous) domain layer: the
+//! Phase D4 added the pure (sans-I/O, synchronous) domain layer: the
 //! `bridge.hello` handshake params/result types, `engine.getStatus` and
 //! `log.message` payload extraction, and a thin wrapper over the core
-//! [`norves_bridge_core::SeqMonitor`]. No `tokio` / `tracing` yet — the async
-//! transport and logging arrive in a later phase.
+//! [`norves_bridge_core::SeqMonitor`].
+//!
+//! Phase D5a adds the async runtime layer on top: a [`Transport`] trait (the
+//! frame boundary), a [`Dispatcher`] actor task that drives the core
+//! [`norves_bridge_core::PendingTable`] for request/response correlation and
+//! broadcasts inbound events, and a [`DispatchHandle`] front end with a
+//! timeout-bounded `request` and a `shutdown` path. An in-memory
+//! [`LoopbackTransport`] (via [`loopback_pair`]) is provided to drive and test
+//! the dispatcher; engine response logic and round-trip integration land in a
+//! later phase.
 
+pub mod dispatcher;
 pub mod handshake;
 pub mod log;
 pub mod seq;
 pub mod status;
+pub mod transport;
 
+pub use dispatcher::{DispatchHandle, Dispatcher, RequestError};
 pub use handshake::{
     hello_error_to_handshake, parse_hello_result, HandshakeError, HelloOutcome, HelloParams,
     HelloRole,
@@ -18,3 +29,4 @@ pub use handshake::{
 pub use log::{parse_log_message, LogError, LogMessage};
 pub use seq::observe_event_seq;
 pub use status::{parse_status_result, StatusError, StatusSnapshot};
+pub use transport::{loopback_pair, LoopbackTransport, Transport, TransportError};
