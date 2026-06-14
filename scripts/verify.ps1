@@ -90,6 +90,16 @@ try {
     }
 
     # -------------------------------------------------------------------------
+    # 3b. Protocol name cross-language equality guard (P3)
+    # -------------------------------------------------------------------------
+    Write-Host ""
+    Write-Host "=== [3b] Protocol name cross-language check ===" -ForegroundColor Yellow
+    Invoke-Gate "check-protocol-names" {
+        Write-Host "    node scripts/check-protocol-names.mjs" -ForegroundColor DarkGray
+        node scripts/check-protocol-names.mjs
+    }
+
+    # -------------------------------------------------------------------------
     # 4. Frontend (pnpm workspace; -r --if-present tolerates zero packages)
     # -------------------------------------------------------------------------
     Write-Host ""

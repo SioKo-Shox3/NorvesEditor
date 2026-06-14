@@ -45,3 +45,13 @@ export async function subscribeEvent<TPayload>(
 
 // Re-export bridge-types for consumer convenience.
 export type * from '@norves/bridge-types';
+
+// Re-export IPC name constants and derived types (P3).
+export {
+  BRIDGE_COMMANDS,
+  type BridgeCommandName,
+} from './commands.js';
+export {
+  BRIDGE_EVENTS,
+  type BridgeEventName,
+} from './events.js';
