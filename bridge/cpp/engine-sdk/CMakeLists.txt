@@ -4,6 +4,7 @@ add_library(norves_bridge_engine_sdk STATIC
     src/envelope.cpp
     src/codec.cpp
     src/server.cpp
+    src/bounded_queue.cpp
 )
 
 target_include_directories(norves_bridge_engine_sdk
