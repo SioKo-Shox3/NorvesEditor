@@ -1,0 +1,73 @@
+{
+  "$comment": [
+    "Workstream H-D: declarative conformance scenario driven by tests/conformance.rs.",
+    "",
+    "Each step is one wire interaction against the residential mock engine. The runner",
+    "spawns norves_mock_engine (env NORVES_MOCK_ENGINE), connects the real WS transport,",
+    "spawns the Dispatcher, then executes the steps in order.",
+    "",
+    "Schema (one object per step):",
+    "  kind             'request' | 'event'                                 (required)",
+    "  method           method name, e.g. 'bridge.hello'                    (required when kind=request)",
+    "  event            event name, e.g. 'log.message'                      (required when kind=event)",
+    "  request_fixture  spec fixture path (relative to bridge/spec/fixtures) (required when kind=request)",
+    "                   its /params object is sent as the request params",
+    "  expect_fixture   spec fixture path (relative to bridge/spec/fixtures) (required)",
+    "                   request: its /result is the expected value",
+    "                   event:   its /params is the expected value",
+    "  ignore           list of JSON Pointers, relative to the compared value root,",
+    "                   removed from BOTH the actual and expected value before comparison.",
+    "                   Every field NOT listed in ignore is compared with strict value-equality;",
+    "                   any drift there fails the conformance run. That strictness is the point:",
+    "                   a protocol change to a non-ignored field is always detected.",
+    "",
+    "Per-step ignore rationale (actual mock response vs spec positive fixture):",
+    "  bridge.hello         /sessionId   mock returns 'sess-mock-1', fixture pins 'sess-7f3a' (non-deterministic id).",
+    "                       /capabilities mock HelloResult carries no capabilities field; fixture lists two.",
+    "                       After masking both, the remaining {protocolVersion, server} match exactly.",
+    "  bridge.getCapabilities none - the mock getCapabilities was aligned to the spec positive fixture, so",
+    "                       the full result (the three capabilityDescriptors runtime.control, log.stream,",
+    "                       viewport.focus) is strict-compared. Any drift on this method is detected.",
+    "  engine.getStatus     none - mock StatusSnapshot equals the fixture result field-for-field.",
+    "  runtime.play         none - mock PlayAck {accepted:true,requestedState:'playing'} equals the fixture.",
+    "  log.message          /timestamp mock LogMessageEvent leaves timestamp unset (omitted); the fixture pins",
+    "                       a wall-clock value. After masking, {level, category, message} match exactly."
+  ],
+  "scenario": "alpha-method-sequence",
+  "steps": [
+    {
+      "kind": "request",
+      "method": "bridge.hello",
+      "request_fixture": "methods/bridge.hello/positive/request-valid.json",
+      "expect_fixture": "methods/bridge.hello/positive/response-valid.json",
+      "ignore": ["/sessionId", "/capabilities"]
+    },
+    {
+      "kind": "request",
+      "method": "bridge.getCapabilities",
+      "request_fixture": "methods/bridge.getCapabilities/positive/request-valid.json",
+      "expect_fixture": "methods/bridge.getCapabilities/positive/response-valid.json",
+      "ignore": []
+    },
+    {
+      "kind": "request",
+      "method": "engine.getStatus",
+      "request_fixture": "methods/engine.getStatus/positive/request-valid.json",
+      "expect_fixture": "methods/engine.getStatus/positive/response-valid.json",
+      "ignore": []
+    },
+    {
+      "kind": "request",
+      "method": "runtime.play",
+      "request_fixture": "methods/runtime.play/positive/request-valid.json",
+      "expect_fixture": "methods/runtime.play/positive/response-valid.json",
+      "ignore": []
+    },
+    {
+      "kind": "event",
+      "event": "log.message",
+      "expect_fixture": "events/log.message/positive/event-engine-valid.json",
+      "ignore": ["/timestamp"]
+    }
+  ]
+}
