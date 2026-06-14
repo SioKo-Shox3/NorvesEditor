@@ -12,3 +12,27 @@ if(MSVC)
 endif()
 
 add_test(NAME smoke_test COMMAND smoke_test)
+
+# Fixture-driven codec conformance test. Uses nlohmann/json for value-equal
+# comparison; this is a TEST TU only, so the public-header boundary is unaffected.
+add_executable(fixtures_roundtrip_test fixtures_roundtrip_test.cpp)
+
+target_link_libraries(fixtures_roundtrip_test
+    PRIVATE
+        norves_bridge_engine_sdk
+        nlohmann::json
+)
+
+target_include_directories(fixtures_roundtrip_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# bridge/cpp is the CMake source root, so fixtures live at ../spec/fixtures.
+target_compile_definitions(fixtures_roundtrip_test
+    PRIVATE
+        "NORVES_FIXTURES_DIR=\"${CMAKE_SOURCE_DIR}/../spec/fixtures\""
+)
+
+if(MSVC)
+    target_compile_options(fixtures_roundtrip_test PRIVATE /W4)
+endif()
+
+add_test(NAME fixtures_roundtrip_test COMMAND fixtures_roundtrip_test)
