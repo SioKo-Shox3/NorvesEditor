@@ -84,21 +84,32 @@ implementer, impl-reviewer, verifier). Full rules:
 
 ## Quality gates (must pass before a phase is "Done", with evidence)
 
+Use `scripts/verify.ps1` as the preferred aggregate runner:
+
+```powershell
+./scripts/verify.ps1          # fixtures + Rust (C++ skipped unless -Cpp)
+./scripts/verify.ps1 -Cpp     # also run cmake/ctest (requires build/cpp configured)
+```
+
+Individual gates for reference:
+
 ```powershell
 # Protocol fixtures
 python scripts/validate-bridge-fixtures.py
-# Rust
+# Rust (root workspace = bridge crates only; apps/editor/src-tauri is a separate workspace)
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-# C++ engine SDK / mock engine
+# C++ engine SDK / mock engine (after cmake configure)
 ctest --test-dir build/cpp -C Debug --output-on-failure
+# Frontend (pnpm -r --if-present tolerates zero packages)
+pnpm -r --if-present typecheck
 ```
 
-Prefer `scripts/verify.ps1` once it exists. Run only the gates relevant to what
-changed, and say which you ran. Never commit generated/build output
-(`node_modules`, Cargo `target/`, CMake build dirs, Tauri generated schema,
-`__pycache__`). Detail: `docs/agent-guide/build-and-verify.md`.
+Run only the gates relevant to what changed, and say which you ran. Never commit
+generated/build output (`node_modules`, Cargo `target/`, CMake build dirs, Tauri
+generated schema, `__pycache__`). `pnpm-lock.yaml` and `Cargo.lock` ARE
+committed. Detail: `docs/agent-guide/build-and-verify.md`.
 
 ## Branches & commits
 
