@@ -1,0 +1,22 @@
+[package]
+name = "norves-bridge-dump"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# IMPORTANT: Do NOT add tokio or any async runtime to this crate.
+# bridge-dump is a synchronous CLI that depends only on norves-bridge-core
+# (which is itself tokio-free). Keeping tokio out is mechanically verified by
+# `cargo tree -p norves-bridge-dump | grep -i tokio` returning no matches.
+[dependencies]
+norves-bridge-core = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+# Synchronous argument parsing via the derive API. clap itself has no async
+# runtime dependency, so adding it does not pull in tokio.
+clap = { workspace = true }
+
+[[bin]]
+name = "bridge-dump"
+path = "src/main.rs"
