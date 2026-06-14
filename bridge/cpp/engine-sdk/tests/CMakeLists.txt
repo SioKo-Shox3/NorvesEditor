@@ -111,3 +111,23 @@ target_include_directories(ws_server_transport_test PRIVATE
 # headers, which do not build clean under /W4; the SDK's own TUs keep /W4.
 
 add_test(NAME ws_server_transport_test COMMAND ws_server_transport_test)
+
+# G4 end-to-end test harness: a standalone WebSocket engine SERVER executable
+# that the Rust editor-client e2e test (ws_roundtrip.rs) launches as a separate
+# process and drives over a real local socket. It links the SDK and uses only
+# the lws-free public seams (ws_server_transport.hpp / server / DTOs), so it
+# does NOT include libwebsockets directly and the public-header boundary is
+# unaffected.
+#
+# Deliberately NOT registered with add_test: Rust spawns this binary itself, so a
+# CTest entry would double-run it. The CMake target exists only so the build
+# produces the executable the Rust harness points NORVES_WS_TEST_SERVER at.
+add_executable(ws_test_server ws_test_server.cpp)
+
+target_link_libraries(ws_test_server PRIVATE norves_bridge_engine_sdk Threads::Threads)
+
+target_include_directories(ws_test_server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+if(MSVC)
+    target_compile_options(ws_test_server PRIVATE /W4)
+endif()
