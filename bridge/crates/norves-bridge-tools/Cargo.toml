@@ -1,0 +1,27 @@
+[package]
+name = "norves-bridge-tools"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+norves-bridge-core = { workspace = true }
+norves-bridge-editor-client = { path = "../norves-bridge-editor-client" }
+# CLI tools use anyhow for ergonomic error handling (per rust.md: binary/tool は anyhow 可).
+anyhow = { workspace = true }
+# Argument parsing via the derive API.
+clap = { workspace = true }
+serde_json = { workspace = true }
+# Async runtime: rt-multi-thread + macros for #[tokio::main]; net + io-util for
+# WsClientTransport which requires real I/O; time for connect_with_retry.
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util"] }
+# Diagnostic logging backend (per rust.md: logging は tracing を使う).
+tracing = { workspace = true }
+# Initializes the tracing subscriber in the binary entry point (env-filter
+# enables RUST_LOG-based level filtering without additional dependencies).
+tracing-subscriber = { workspace = true }
+
+[[bin]]
+name = "bridge-cli"
+path = "src/bin/bridge_cli.rs"
