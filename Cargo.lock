@@ -322,6 +322,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "norves-bridge-dump"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "norves-bridge-core",
+ "serde_json",
+]
+
+[[package]]
 name = "norves-bridge-editor-client"
 version = "0.1.0"
 dependencies = [
