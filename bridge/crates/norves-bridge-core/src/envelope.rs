@@ -160,9 +160,239 @@ impl From<EventName> for String {
     }
 }
 
-// TODO(D3): provide a type-safe ValidatedEnvelope enum after validate() so
-// that the kind-dependent field combinations are encoded in the type system
-// instead of re-checked at runtime.
+/// A structurally validated envelope with kind-dependent fields encoded in the
+/// type system.
+///
+/// Where [`Envelope`] is a flat struct whose per-kind field combinations are
+/// only enforced at runtime by [`Envelope::validate`], `ValidatedEnvelope`
+/// lifts those combinations into the type system: each variant carries exactly
+/// the fields its kind permits, with the `Option`s that `validate` guarantees
+/// present already unwrapped.
+///
+/// Construct it via [`TryFrom<Envelope>`], which runs [`Envelope::validate`]
+/// internally and therefore inherits its structural guarantees. Convert back
+/// with [`From<ValidatedEnvelope>`] for [`Envelope`]; the two directions are
+/// round-trip equivalent.
+///
+/// `#[non_exhaustive]` so that adding a future kind is not a breaking change.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValidatedEnvelope {
+    /// A method request. `id` and `method` are always present.
+    Request {
+        /// Protocol version string, `MAJOR.MINOR`.
+        version: VersionString,
+        /// Request/response correlation id.
+        id: CorrelationId,
+        /// Method name being invoked.
+        method: MethodName,
+        /// Optional method payload.
+        params: Option<serde_json::Map<String, serde_json::Value>>,
+        /// Optional session id assigned during the handshake.
+        session_id: Option<String>,
+        /// Optional monotonically increasing per-connection sequence number.
+        seq: Option<u64>,
+    },
+    /// A response to a request. Carries exactly one of result / error via
+    /// [`ResponsePayload`].
+    Response {
+        /// Protocol version string, `MAJOR.MINOR`.
+        version: VersionString,
+        /// Request/response correlation id.
+        id: CorrelationId,
+        /// The success or error payload (exactly one).
+        payload: ResponsePayload,
+        /// Optional session id assigned during the handshake.
+        session_id: Option<String>,
+        /// Optional monotonically increasing per-connection sequence number.
+        seq: Option<u64>,
+    },
+    /// A one-way event. `event` is always present.
+    Event {
+        /// Protocol version string, `MAJOR.MINOR`.
+        version: VersionString,
+        /// Event name.
+        event: EventName,
+        /// Optional event payload.
+        params: Option<serde_json::Map<String, serde_json::Value>>,
+        /// Optional session id assigned during the handshake.
+        session_id: Option<String>,
+        /// Optional monotonically increasing per-connection sequence number.
+        seq: Option<u64>,
+    },
+}
+
+/// The mutually-exclusive payload of a response [`ValidatedEnvelope::Response`].
+///
+/// `Envelope::validate` guarantees a response carries exactly one of `result`
+/// or `error`; this enum makes that exclusivity total instead of a runtime
+/// invariant.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponsePayload {
+    /// Success payload (the envelope's `result` field).
+    Result(serde_json::Value),
+    /// Error payload (the envelope's `error` field).
+    Error(BridgeError),
+}
+
+impl TryFrom<Envelope> for ValidatedEnvelope {
+    type Error = CodecError;
+
+    /// Validates `env` via [`Envelope::validate`] and lifts it into the typed
+    /// representation.
+    ///
+    /// Reuses [`Envelope::validate`] for all structural checks, so this never
+    /// duplicates the per-kind rules. After validation succeeds the `Option`s
+    /// that the validated kind guarantees present are unwrapped; the defensive
+    /// `Err(violation(...))` arms below can only be reached if `validate` and
+    /// this destructuring disagree, which the round-trip tests pin down.
+    fn try_from(env: Envelope) -> Result<Self, <Self as TryFrom<Envelope>>::Error> {
+        env.validate()?;
+
+        let Envelope {
+            bridge: _,
+            version,
+            kind,
+            id,
+            method,
+            event,
+            params,
+            result,
+            error,
+            session_id,
+            seq,
+        } = env;
+
+        match kind {
+            Kind::Request => match (id, method) {
+                (Some(id), Some(method)) => Ok(ValidatedEnvelope::Request {
+                    version,
+                    id,
+                    method,
+                    params,
+                    session_id,
+                    seq,
+                }),
+                // `validate` guarantees both are present for a request.
+                _ => Err(violation("request envelope requires `id` and `method`")),
+            },
+            Kind::Response => {
+                let id = match id {
+                    Some(id) => id,
+                    // `validate` guarantees `id` is present for a response.
+                    None => return Err(violation("response envelope requires `id`")),
+                };
+                let payload = match (result, error) {
+                    (Some(result), None) => ResponsePayload::Result(result),
+                    (None, Some(error)) => ResponsePayload::Error(error),
+                    // `validate` guarantees exactly one of result / error.
+                    _ => {
+                        return Err(violation(
+                            "response envelope requires exactly one of `result` or `error`",
+                        ))
+                    }
+                };
+                Ok(ValidatedEnvelope::Response {
+                    version,
+                    id,
+                    payload,
+                    session_id,
+                    seq,
+                })
+            }
+            Kind::Event => match event {
+                Some(event) => Ok(ValidatedEnvelope::Event {
+                    version,
+                    event,
+                    params,
+                    session_id,
+                    seq,
+                }),
+                // `validate` guarantees `event` is present for an event.
+                None => Err(violation("event envelope requires `event`")),
+            },
+        }
+    }
+}
+
+impl From<ValidatedEnvelope> for Envelope {
+    /// Flattens a [`ValidatedEnvelope`] back into a wire [`Envelope`].
+    ///
+    /// Because a `ValidatedEnvelope` can only be constructed through
+    /// [`TryFrom<Envelope>`], which enforces [`Envelope::validate`], every
+    /// `Envelope` produced here already satisfies those invariants and is thus
+    /// guaranteed to pass [`Envelope::validate`] with `Ok`. The two conversions
+    /// are round-trip equivalent (typed -> flat -> typed and
+    /// flat -> typed -> flat preserve meaning).
+    fn from(validated: ValidatedEnvelope) -> Self {
+        match validated {
+            ValidatedEnvelope::Request {
+                version,
+                id,
+                method,
+                params,
+                session_id,
+                seq,
+            } => Envelope {
+                bridge: BridgeMarker,
+                version,
+                kind: Kind::Request,
+                id: Some(id),
+                method: Some(method),
+                event: None,
+                params,
+                result: None,
+                error: None,
+                session_id,
+                seq,
+            },
+            ValidatedEnvelope::Response {
+                version,
+                id,
+                payload,
+                session_id,
+                seq,
+            } => {
+                let (result, error) = match payload {
+                    ResponsePayload::Result(result) => (Some(result), None),
+                    ResponsePayload::Error(error) => (None, Some(error)),
+                };
+                Envelope {
+                    bridge: BridgeMarker,
+                    version,
+                    kind: Kind::Response,
+                    id: Some(id),
+                    method: None,
+                    event: None,
+                    params: None,
+                    result,
+                    error,
+                    session_id,
+                    seq,
+                }
+            }
+            ValidatedEnvelope::Event {
+                version,
+                event,
+                params,
+                session_id,
+                seq,
+            } => Envelope {
+                bridge: BridgeMarker,
+                version,
+                kind: Kind::Event,
+                id: None,
+                method: None,
+                event: Some(event),
+                params,
+                result: None,
+                error: None,
+                session_id,
+                seq,
+            },
+        }
+    }
+}
 
 /// The canonical Bridge wire envelope.
 ///
@@ -506,5 +736,173 @@ mod tests {
             "error": { "message": "no code" }
         }"#;
         assert!(serde_json::from_str::<Envelope>(json).is_err());
+    }
+
+    fn envelope_of(json: &str) -> Envelope {
+        serde_json::from_str(json).expect("fixture JSON deserializes")
+    }
+
+    #[test]
+    fn try_from_request_lifts_fields() {
+        let validated = ValidatedEnvelope::try_from(envelope_of(REQUEST))
+            .expect("valid request lifts to typed");
+        match validated {
+            ValidatedEnvelope::Request {
+                version,
+                id,
+                method,
+                params,
+                session_id,
+                seq,
+            } => {
+                assert_eq!(version.as_str(), "0.1");
+                assert_eq!(id.as_str(), "req-42");
+                assert_eq!(method.as_str(), "runtime.play");
+                assert_eq!(params, Some(serde_json::Map::new()));
+                assert_eq!(session_id, None);
+                assert_eq!(seq, None);
+            }
+            other => panic!("expected Request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_from_response_result_lifts_to_result_payload() {
+        let validated = ValidatedEnvelope::try_from(envelope_of(RESPONSE_RESULT))
+            .expect("valid response(result) lifts to typed");
+        match validated {
+            ValidatedEnvelope::Response {
+                id,
+                payload,
+                session_id,
+                ..
+            } => {
+                assert_eq!(id.as_str(), "req-1");
+                assert_eq!(session_id.as_deref(), Some("sess-7f3a"));
+                match payload {
+                    ResponsePayload::Result(value) => {
+                        assert_eq!(value, serde_json::json!({ "ok": true }));
+                    }
+                    ResponsePayload::Error(_) => panic!("expected Result payload"),
+                }
+            }
+            other => panic!("expected Response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_from_response_error_lifts_to_error_payload() {
+        let validated = ValidatedEnvelope::try_from(envelope_of(RESPONSE_ERROR))
+            .expect("valid response(error) lifts to typed");
+        match validated {
+            ValidatedEnvelope::Response { payload, .. } => match payload {
+                ResponsePayload::Error(err) => {
+                    assert_eq!(err.code.as_str(), "METHOD_NOT_SUPPORTED");
+                }
+                ResponsePayload::Result(_) => panic!("expected Error payload"),
+            },
+            other => panic!("expected Response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_from_event_lifts_fields() {
+        let validated =
+            ValidatedEnvelope::try_from(envelope_of(EVENT)).expect("valid event lifts to typed");
+        match validated {
+            ValidatedEnvelope::Event {
+                event,
+                session_id,
+                seq,
+                ..
+            } => {
+                assert_eq!(event.as_str(), "log.message");
+                assert_eq!(session_id.as_deref(), Some("sess-7f3a"));
+                assert_eq!(seq, Some(12));
+            }
+            other => panic!("expected Event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_from_rejects_structurally_invalid() {
+        // Event carrying `id` is a structural violation.
+        let bad_event = envelope_of(
+            r#"{
+                "bridge": "norves.editor.bridge",
+                "version": "0.1",
+                "kind": "event",
+                "id": "req-42",
+                "event": "log.message"
+            }"#,
+        );
+        assert!(matches!(
+            ValidatedEnvelope::try_from(bad_event),
+            Err(CodecError::StructuralViolation(_))
+        ));
+
+        // Request missing `method` is a structural violation.
+        let bad_request = envelope_of(
+            r#"{
+                "bridge": "norves.editor.bridge",
+                "version": "0.1",
+                "kind": "request",
+                "id": "req-42"
+            }"#,
+        );
+        assert!(matches!(
+            ValidatedEnvelope::try_from(bad_request),
+            Err(CodecError::StructuralViolation(_))
+        ));
+
+        // Response with both result and error is a structural violation.
+        let bad_response = envelope_of(
+            r#"{
+                "bridge": "norves.editor.bridge",
+                "version": "0.1",
+                "kind": "response",
+                "id": "req-42",
+                "result": { "ok": true },
+                "error": { "code": "METHOD_NOT_SUPPORTED", "message": "both" }
+            }"#,
+        );
+        assert!(matches!(
+            ValidatedEnvelope::try_from(bad_response),
+            Err(CodecError::StructuralViolation(_))
+        ));
+    }
+
+    #[test]
+    fn from_validated_always_passes_validate() {
+        for json in [REQUEST, RESPONSE_RESULT, RESPONSE_ERROR, EVENT] {
+            let validated =
+                ValidatedEnvelope::try_from(envelope_of(json)).expect("fixture lifts to typed");
+            let restored = Envelope::from(validated);
+            restored
+                .validate()
+                .expect("Envelope from ValidatedEnvelope must always validate Ok");
+        }
+    }
+
+    #[test]
+    fn typed_flat_typed_round_trip_is_identity() {
+        for json in [REQUEST, RESPONSE_RESULT, RESPONSE_ERROR, EVENT] {
+            let validated =
+                ValidatedEnvelope::try_from(envelope_of(json)).expect("fixture lifts to typed");
+            let restored = Envelope::from(validated.clone());
+            let again = ValidatedEnvelope::try_from(restored).expect("flattened envelope re-lifts");
+            assert_eq!(validated, again, "typed -> flat -> typed must be identity");
+        }
+    }
+
+    #[test]
+    fn flat_typed_flat_round_trip_is_identity() {
+        for json in [REQUEST, RESPONSE_RESULT, RESPONSE_ERROR, EVENT] {
+            let original = envelope_of(json);
+            let validated =
+                ValidatedEnvelope::try_from(original.clone()).expect("fixture lifts to typed");
+            let restored = Envelope::from(validated);
+            assert_eq!(original, restored, "flat -> typed -> flat must be identity");
+        }
     }
 }
