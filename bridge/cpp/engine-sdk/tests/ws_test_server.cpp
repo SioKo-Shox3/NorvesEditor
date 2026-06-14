@@ -22,17 +22,31 @@
 //   * recv() returning nullopt means the client closed; the loop ends and the
 //     process exits 0.
 //
+// G5 additions (test-only, no src change):
+//   * --inject-malformed: after the FIRST inbound frame is handled and its
+//     response sent, the harness sends exactly one malformed (non-JSON) text
+//     frame, then continues normal operation. This lets the Rust e2e prove the
+//     dispatcher treats an undecodable frame as log-and-drop (non-fatal) and
+//     keeps serving subsequent requests.
+//   * Bind retry: a kill->same-port-restart from the Rust reconnect test can hit
+//     a transient bind failure (TIME_WAIT etc.). The harness retries the bind a
+//     few times with short sleeps before giving up, so "kill -> re-bind same
+//     port -> reconnect" is not flaky. This is harness-only; the G3
+//     WebSocketServerTransport src is unchanged.
+//
 // The boundary rule (no libwebsockets type under the SDK public include/) is
 // untouched: this TU includes only SDK public headers, and the only third-party
 // surface is hidden behind the ITransport pImpl.
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include "norves/bridge/adapter.hpp"
 #include "norves/bridge/dto/common.hpp"
@@ -200,6 +214,37 @@ std::optional<std::uint16_t> parse_port(int argc, char** argv) {
     return std::nullopt;
 }
 
+// True when --inject-malformed is present on the command line.
+bool has_inject_malformed(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--inject-malformed") {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Binds the WebSocket server, retrying a transient bind failure a few times with
+// short sleeps. A kill->same-port-restart (the Rust reconnect test) can briefly
+// fail to bind while the OS releases the previous listener; retrying absorbs that
+// without flakiness. Returns nullptr only if every attempt fails.
+std::unique_ptr<ITransport> bind_with_retry(std::uint16_t port,
+                                            std::size_t send_cap,
+                                            std::size_t recv_cap,
+                                            ILogSink* sink) {
+    constexpr int kMaxAttempts = 20;
+    constexpr auto kRetryDelay = std::chrono::milliseconds(100);
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        std::unique_ptr<ITransport> transport =
+            make_websocket_server_transport(port, send_cap, recv_cap, sink);
+        if (transport != nullptr) {
+            return transport;
+        }
+        std::this_thread::sleep_for(kRetryDelay);
+    }
+    return nullptr;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -208,12 +253,13 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    const bool inject_malformed = has_inject_malformed(argc, argv);
+
     constexpr std::size_t kSendCap = 256;
     constexpr std::size_t kRecvCap = 256;
 
     StderrSink sink;
-    std::unique_ptr<ITransport> transport =
-        make_websocket_server_transport(*port, kSendCap, kRecvCap, &sink);
+    std::unique_ptr<ITransport> transport = bind_with_retry(*port, kSendCap, kRecvCap, &sink);
     if (transport == nullptr) {
         std::cerr << "ws_test_server: failed to bind WebSocket server on port " << *port << '\n';
         return 3;
@@ -236,6 +282,10 @@ int main(int argc, char** argv) {
     std::cout << "READY " << *port << '\n';
     std::cout.flush();
 
+    // When --inject-malformed is set, send exactly one undecodable frame after
+    // the first response so the Rust side can prove log-and-drop is non-fatal.
+    bool malformed_pending = inject_malformed;
+
     // Single recv loop. handleFrame and the adapter run on this thread, so the
     // emit_log_burst flag set inside logSubscribe is visible right after
     // handleFrame returns. We send the subscribe ack first, then the burst, so
@@ -249,6 +299,16 @@ int main(int argc, char** argv) {
         std::optional<std::string> response = server.handleFrame(*frame);
         if (response.has_value()) {
             if (!transport->send(std::move(*response))) {
+                break;  // peer gone mid-flight.
+            }
+        }
+
+        // Inject a single malformed frame AFTER the first real response is sent,
+        // so a client is definitely connected. The dispatcher must log-and-drop
+        // it (non-fatal) and keep serving; normal operation continues below.
+        if (malformed_pending) {
+            malformed_pending = false;
+            if (!transport->send(std::string("{not valid json"))) {
                 break;  // peer gone mid-flight.
             }
         }
