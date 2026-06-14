@@ -10,3 +10,10 @@ norves-bridge-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# test-util gives deterministic time (time::pause/advance) for the timeout test;
+# rt-multi-thread exercises the dispatcher task under a real multi-thread spawn.
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
