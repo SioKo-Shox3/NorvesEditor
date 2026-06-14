@@ -64,15 +64,16 @@ phase only fixes the **shape** and the negotiation flow, not a closed token list
 Tokens the client offers in `bridge.hello` that the engine does not advertise are
 simply not in the effective set; this is not an error. Invoking a method that
 depends on an unadvertised capability is answered with an error response (the
-error model is formalized in `error-model.md`, phase C5).
+error model is formalized in [`error-model.md`](./error-model.md)).
 
 ## Versioning relationship
 
 Protocol version (`version` envelope field, `MAJOR.MINOR`) governs the envelope
 and the required surface. Capability `version` governs an individual optional
 feature and moves independently. Protocol compatibility and version negotiation
-rules in full are a phase C5 concern; this phase only establishes that
-capabilities are negotiated per connection during the handshake.
+rules in full — including the canonical capability backward-compatibility rules —
+are specified in [`error-model.md`](./error-model.md); this document only
+establishes that capabilities are negotiated per connection during the handshake.
 
 ## Fixtures
 

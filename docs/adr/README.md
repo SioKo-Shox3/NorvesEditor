@@ -12,6 +12,7 @@ Initial ADRs:
 0003-websocket-json-bridge-control-channel.md
 0004-cpp-engine-sdk.md
 0005-external-engine-viewport-for-alpha.md
+0006-bridge-error-model-and-versioning.md
 ```
 
 Each ADR should record:
