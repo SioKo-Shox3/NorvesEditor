@@ -59,10 +59,16 @@ class MockAdapter : public norves::bridge::IBridgeEngineAdapter {
 
     norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
     getCapabilities(const norves::bridge::JsonValue& /*params*/) override {
-        // Shape matches bridge.getCapabilities.result: a capabilityDescriptor
-        // with a namespaced name token and a MAJOR.MINOR version.
+        // Value-equal to the spec positive fixture
+        // (methods/bridge.getCapabilities/positive/response-valid.json)
+        // result.capabilities so the H-D conformance runner can strict-compare
+        // the whole result and detect any drift on this method.
         return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::ok(
-            parse_or_die(R"({"capabilities":[{"name":"runtime.control","version":"0.1"}]})"));
+            parse_or_die(
+                R"({"capabilities":[)"
+                R"({"name":"runtime.control","version":"0.1","description":"Play/pause/stop control."},)"
+                R"({"name":"log.stream"},)"
+                R"({"name":"viewport.focus"}]})"));
     }
 
     norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
