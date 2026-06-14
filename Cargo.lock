@@ -28,6 +28,9 @@ name = "norves-bridge-editor-client"
 version = "0.1.0"
 dependencies = [
  "norves-bridge-core",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
