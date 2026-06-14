@@ -20,4 +20,11 @@ thiserror = "2"
 # editor-client (and never the core crate) may pull tokio/tracing in.
 tokio = { version = "1", default-features = false, features = ["rt", "sync", "time", "macros"] }
 tracing = "0.1"
+# Real WebSocket client transport for the editor-client (G2). TLS is left at the
+# crate default (off): the editor only ever dials a local ws://127.0.0.1:<port>
+# engine, so no native-tls/rustls stack is pulled in. `futures-util` supplies the
+# StreamExt/SinkExt/.split() used to drive the WebSocketStream. Both stay
+# editor-client-only; the core crate must never gain a WS/I/O dependency.
+tokio-tungstenite = "0.29"
+futures-util = "0.3"
 norves-bridge-core = { path = "bridge/crates/norves-bridge-core" }
