@@ -6,6 +6,9 @@ members = [
     "bridge/crates/norves-bridge-tools",
     "bridge/crates/norves-bridge-dump",
 ]
+# The Tauri Rust crate (created in P1) is its own standalone Cargo workspace;
+# exclude it here so the root workspace never auto-absorbs it.
+exclude = ["apps/editor/src-tauri"]
 
 [workspace.package]
 edition = "2021"
