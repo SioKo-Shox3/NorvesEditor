@@ -7,6 +7,7 @@ add_library(norves_bridge_engine_sdk STATIC
     src/bounded_queue.cpp
     src/dto_codec.cpp
     src/loopback_transport.cpp
+    src/ws_server_transport.cpp
 )
 
 target_include_directories(norves_bridge_engine_sdk
@@ -22,6 +23,16 @@ target_compile_features(norves_bridge_engine_sdk PUBLIC cxx_std_20)
 # Linking it PRIVATE keeps the type out of every public header: include/ depends
 # on std + the SDK's own value types only. The boundary is grep-verified in CI.
 target_link_libraries(norves_bridge_engine_sdk PRIVATE nlohmann::json)
+
+# libwebsockets backs ws_server_transport.cpp only. Linked PRIVATE (and its
+# include dir PRIVATE) so the lws types never leak through include/: the boundary
+# (grep lws_|libwebsockets|websockets under include/ == 0 hits) is grep-verified.
+# The static lws target FetchContent exports is named "websockets" (ADR 0007).
+target_link_libraries(norves_bridge_engine_sdk PRIVATE websockets)
+target_include_directories(norves_bridge_engine_sdk PRIVATE
+    "${libwebsockets_SOURCE_DIR}/include"
+    "${libwebsockets_BINARY_DIR}"
+)
 
 # MSVC: stricter warnings on our own code only (PRIVATE). No /WX yet (staged).
 if(MSVC)
