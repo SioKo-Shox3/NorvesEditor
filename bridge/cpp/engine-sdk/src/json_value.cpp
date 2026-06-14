@@ -1,9 +1,15 @@
 #include "norves/bridge/json_value.hpp"
 
 #include <memory>
+#include <string>
+#include <string_view>
 #include <utility>
 
+#include <nlohmann/json.hpp>
+
 #include "json_value_impl.hpp"
+#include "norves/bridge/codec_error.hpp"
+#include "norves/bridge/result.hpp"
 
 // nlohmann/json is confined to this translation unit (and codec.cpp), reached
 // only via the src-private json_value_impl.hpp. The public header exposes only
@@ -67,5 +73,26 @@ bool JsonValue::operator==(const JsonValue& other) const {
 }
 
 bool JsonValue::is_null() const { return impl_ == nullptr || impl_->json.is_null(); }
+
+// --- Text parse / dump (nlohmann confined to this TU) ------------------------
+
+Result<JsonValue, CodecError> JsonValue::parse(std::string_view text) {
+    nlohmann::json parsed =
+        nlohmann::json::parse(text, /*cb=*/nullptr, /*allow_exceptions=*/false);
+    if (parsed.is_discarded()) {
+        return Result<JsonValue, CodecError>::err(CodecError::parse("malformed JSON"));
+    }
+    auto impl = std::make_unique<detail::JsonValueImpl>(std::move(parsed));
+    return Result<JsonValue, CodecError>::ok(make_json_value(std::move(impl)));
+}
+
+std::string JsonValue::dump() const {
+    // A moved-from value has a null impl_; serialize it as JSON null, matching
+    // the is_null / operator== treatment of a moved-from value.
+    if (impl_ == nullptr) {
+        return "null";
+    }
+    return impl_->json.dump();
+}
 
 }  // namespace norves::bridge

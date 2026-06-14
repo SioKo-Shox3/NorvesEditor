@@ -2,6 +2,11 @@
 #define NORVES_BRIDGE_JSON_VALUE_HPP
 
 #include <memory>
+#include <string>
+#include <string_view>
+
+#include "norves/bridge/codec_error.hpp"
+#include "norves/bridge/result.hpp"
 
 // Opaque JSON value wrapper for the engine SDK.
 //
@@ -51,6 +56,16 @@ class JsonValue {
 
     // True iff this value is JSON `null`.
     [[nodiscard]] bool is_null() const;
+
+    // Parses JSON text into an opaque JsonValue. The vendored JSON library is
+    // used only inside the .cpp implementation, so this exposes nothing but the
+    // SDK's own value types. Returns a CodecError (kind Parse) on malformed
+    // input. Any valid JSON value (object, array, scalar, null) is accepted.
+    [[nodiscard]] static Result<JsonValue, CodecError> parse(std::string_view text);
+
+    // Serializes this value to compact JSON text (no pretty-printing). A live
+    // value always serializes; a moved-from value serializes as JSON `null`.
+    [[nodiscard]] std::string dump() const;
 
   private:
     // The codec / json_value .cpp TUs construct JsonValue from a concrete
