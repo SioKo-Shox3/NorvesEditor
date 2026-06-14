@@ -51,3 +51,20 @@ if(MSVC)
 endif()
 
 add_test(NAME dispatch_test COMMAND dispatch_test)
+
+# BoundedFrameQueue test (F4). Uses std::thread; SDK public headers only, so it
+# does not link nlohmann directly and the public-header boundary is unaffected.
+add_executable(bounded_queue_test bounded_queue_test.cpp)
+
+target_link_libraries(bounded_queue_test PRIVATE norves_bridge_engine_sdk)
+
+target_include_directories(bounded_queue_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+find_package(Threads REQUIRED)
+target_link_libraries(bounded_queue_test PRIVATE Threads::Threads)
+
+if(MSVC)
+    target_compile_options(bounded_queue_test PRIVATE /W4)
+endif()
+
+add_test(NAME bounded_queue_test COMMAND bounded_queue_test)
