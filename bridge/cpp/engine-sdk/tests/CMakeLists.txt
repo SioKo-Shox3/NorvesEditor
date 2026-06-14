@@ -86,3 +86,28 @@ if(MSVC)
 endif()
 
 add_test(NAME loopback_roundtrip_test COMMAND loopback_roundtrip_test)
+
+# G3 WebSocket server transport test. Stands up an in-process libwebsockets
+# CLIENT in this TEST TU and round-trips against the SDK's lws-free server seam.
+# The client needs lws directly; that is allowed in a TEST TU (the boundary rule
+# only forbids lws under the SDK's public include/). The SDK header it includes
+# (ws_server_transport.hpp) still exposes no lws type.
+add_executable(ws_server_transport_test ws_server_transport_test.cpp)
+
+target_link_libraries(ws_server_transport_test
+    PRIVATE
+        norves_bridge_engine_sdk
+        websockets
+        Threads::Threads
+)
+
+target_include_directories(ws_server_transport_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${libwebsockets_SOURCE_DIR}/include"
+    "${libwebsockets_BINARY_DIR}"
+)
+
+# NOTE: /W4 is intentionally NOT applied here. This TU includes libwebsockets
+# headers, which do not build clean under /W4; the SDK's own TUs keep /W4.
+
+add_test(NAME ws_server_transport_test COMMAND ws_server_transport_test)
