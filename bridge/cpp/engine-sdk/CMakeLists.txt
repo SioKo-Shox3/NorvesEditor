@@ -5,6 +5,8 @@ add_library(norves_bridge_engine_sdk STATIC
     src/codec.cpp
     src/server.cpp
     src/bounded_queue.cpp
+    src/dto_codec.cpp
+    src/loopback_transport.cpp
 )
 
 target_include_directories(norves_bridge_engine_sdk
