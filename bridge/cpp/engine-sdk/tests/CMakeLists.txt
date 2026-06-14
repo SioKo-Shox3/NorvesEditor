@@ -68,3 +68,21 @@ if(MSVC)
 endif()
 
 add_test(NAME bounded_queue_test COMMAND bounded_queue_test)
+
+# F5 end-to-end loopback round-trip test. Drives the typed DTOs and the loopback
+# transport against a BridgeEngineServer on a second thread. Uses std::thread and
+# the SDK public headers only (incl. JsonValue::parse), so it does not link
+# nlohmann directly and the public-header boundary is unaffected.
+add_executable(loopback_roundtrip_test loopback_roundtrip_test.cpp)
+
+target_link_libraries(loopback_roundtrip_test PRIVATE norves_bridge_engine_sdk)
+
+target_include_directories(loopback_roundtrip_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+target_link_libraries(loopback_roundtrip_test PRIVATE Threads::Threads)
+
+if(MSVC)
+    target_compile_options(loopback_roundtrip_test PRIVATE /W4)
+endif()
+
+add_test(NAME loopback_roundtrip_test COMMAND loopback_roundtrip_test)
