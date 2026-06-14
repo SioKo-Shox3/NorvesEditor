@@ -13,6 +13,7 @@ Initial ADRs:
 0004-cpp-engine-sdk.md
 0005-external-engine-viewport-for-alpha.md
 0006-bridge-error-model-and-versioning.md
+0007-cpp-websocket-library-libwebsockets.md
 ```
 
 Each ADR should record:
