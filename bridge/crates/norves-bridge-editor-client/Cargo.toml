@@ -1,0 +1,9 @@
+[package]
+name = "norves-bridge-editor-client"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+norves-bridge-core = { workspace = true }
