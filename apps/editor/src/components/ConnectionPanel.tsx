@@ -1,58 +1,72 @@
 /**
  * ConnectionPanel — bridge connection controls.
  *
- * P4: static / inert shell. The endpoint input has local uncontrolled state
- * but performs NO backend call. Buttons are rendered disabled.
- * P6 will lift the endpoint value, wire Connect/Disconnect handlers, and
- * supply live connection status.
+ * P6: wired to real bridge state and useBridge actions.
+ * Connection is by PORT (numeric), not ws:// URL — the Rust backend
+ * builds the WebSocket URL from the port internally.
+ *
+ * ConnectionStatus is the UI-level concept from the state store.
  */
 
-import type React from "react";
-import { useState } from "react";
+import type React from 'react';
+import { useState } from 'react';
+import type { ConnectionStatus } from '../state/store.js';
 
-export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
-
+// Status label / CSS map covers ALL ConnectionStatus values (no fall-through).
 const STATUS_LABELS: Record<ConnectionStatus, string> = {
-  disconnected: "Disconnected",
-  connecting:   "Connecting...",
-  connected:    "Connected",
-  error:        "Connection error",
+  disconnected: 'Disconnected',
+  connecting:   'Connecting...',
+  connected:    'Connected',
+  error:        'Connection error',
 };
 
 const STATUS_CSS: Record<ConnectionStatus, string> = {
-  disconnected: "status-badge--disconnected",
-  connecting:   "status-badge--warning",
-  connected:    "status-badge--connected",
-  error:        "status-badge--error",
+  disconnected: 'status-badge--disconnected',
+  connecting:   'status-badge--warning',
+  connected:    'status-badge--connected',
+  error:        'status-badge--error',
 };
 
 export interface ConnectionPanelProps {
-  /** P6: live connection status from bridge */
-  status?: ConnectionStatus;
-  /** P6: initial or externally controlled endpoint value */
-  defaultEndpoint?: string;
-  /** P6: called when user clicks Connect */
-  onConnect?: (endpoint: string) => void;
-  /** P6: called when user clicks Disconnect */
+  /** Live connection status from bridge state store. */
+  status: ConnectionStatus;
+  /** Server name shown when connected. */
+  serverName?: string;
+  /** Session id shown when connected. */
+  sessionId?: string;
+  /** Default port value (editable by the user). */
+  defaultPort?: number;
+  /** Called when user clicks Connect — receives the numeric port. */
+  onConnect?: (port: number) => void;
+  /** Called when user clicks Disconnect. */
   onDisconnect?: () => void;
-  /** P4 default: controls disabled until P6 wires real handlers */
-  disabled?: boolean;
+  /** Called when user clicks Reconnect. */
+  onReconnect?: () => void;
 }
 
 export function ConnectionPanel({
-  status = "disconnected",
-  defaultEndpoint = "ws://127.0.0.1:9001",
+  status,
+  serverName,
+  sessionId,
+  defaultPort = 9001,
   onConnect,
   onDisconnect,
-  disabled = true,
+  onReconnect,
 }: ConnectionPanelProps): React.JSX.Element {
-  // Local uncontrolled state for the input (P6 may lift this or replace entirely).
-  const [endpoint, setEndpoint] = useState<string>(defaultEndpoint);
+  const [port, setPort] = useState<number>(defaultPort);
 
-  const isConnected = status === "connected";
+  const isConnected  = status === 'connected';
+  const isConnecting = status === 'connecting';
 
   function handleConnect(): void {
-    onConnect?.(endpoint);
+    onConnect?.(port);
+  }
+
+  function handlePortChange(e: React.ChangeEvent<HTMLInputElement>): void {
+    const n = Number(e.target.value);
+    if (!Number.isNaN(n) && n > 0 && n <= 65535) {
+      setPort(n);
+    }
   }
 
   return (
@@ -71,31 +85,50 @@ export function ConnectionPanel({
           </span>
         </div>
 
+        {/* Server info when connected */}
+        {isConnected && (serverName !== undefined || sessionId !== undefined) && (
+          <div className="col" style={{ gap: 2 }}>
+            {serverName !== undefined && (
+              <div className="row">
+                <span className="label">Server:</span>
+                <span style={{ fontSize: 12 }}>{serverName}</span>
+              </div>
+            )}
+            {sessionId !== undefined && (
+              <div className="row">
+                <span className="label">Session:</span>
+                <span style={{ fontSize: 12 }}>{sessionId}</span>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="divider" />
 
-        {/* Endpoint input */}
+        {/* Port input */}
         <div className="col" style={{ gap: 4 }}>
-          <label className="label" htmlFor="conn-endpoint">
-            Bridge endpoint
+          <label className="label" htmlFor="conn-port">
+            Bridge port
           </label>
           <input
-            id="conn-endpoint"
+            id="conn-port"
             className="input"
-            type="text"
-            value={endpoint}
-            onChange={(e) => setEndpoint(e.target.value)}
-            placeholder="ws://127.0.0.1:9001"
-            disabled={disabled || isConnected}
+            type="number"
+            min={1}
+            max={65535}
+            value={port}
+            onChange={handlePortChange}
+            disabled={isConnected || isConnecting}
             spellCheck={false}
           />
         </div>
 
-        {/* Connect / Disconnect */}
+        {/* Connect / Disconnect / Reconnect */}
         <div className="row">
           <button
             className="btn btn--primary"
             type="button"
-            disabled={disabled || isConnected}
+            disabled={isConnected || isConnecting}
             onClick={handleConnect}
           >
             Connect
@@ -103,10 +136,18 @@ export function ConnectionPanel({
           <button
             className="btn btn--danger"
             type="button"
-            disabled={disabled || !isConnected}
+            disabled={!isConnected}
             onClick={onDisconnect}
           >
             Disconnect
+          </button>
+          <button
+            className="btn"
+            type="button"
+            disabled={status === 'disconnected'}
+            onClick={onReconnect}
+          >
+            Reconnect
           </button>
         </div>
       </div>

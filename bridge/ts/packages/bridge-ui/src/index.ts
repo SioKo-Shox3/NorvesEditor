@@ -55,3 +55,6 @@ export {
   BRIDGE_EVENTS,
   type BridgeEventName,
 } from './events.js';
+
+// Re-export IPC contract types (P6).
+export type { ConnectionStatePayload } from './ipc-types.js';

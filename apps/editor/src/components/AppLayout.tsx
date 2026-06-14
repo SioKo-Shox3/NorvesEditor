@@ -1,7 +1,10 @@
 /**
- * AppLayout — 4-panel static shell for NorvesEditor.
+ * AppLayout — 4-panel layout for NorvesEditor.
  *
- * Layout (CSS grid, desktop editor):
+ * P6: reads live state from BridgeContext and wires useBridge actions
+ * to each panel. The store Provider and useBridge mount are in App.tsx.
+ *
+ * Layout (CSS grid):
  *
  *   +---------------------------+------------------+
  *   |                           |                  |
@@ -14,55 +17,72 @@
  *   |           Log             |                  |
  *   |      (full width)         |                  |
  *   +---------------------------+------------------+
- *
- * Game View takes the dominant left column (~60 %).
- * Right sidebar has Connection (top) and Settings (bottom).
- * Log occupies the bottom strip across the full width.
- *
- * P6 will pass live state/handlers as props down to each panel.
  */
 
-import type React from "react";
-import { GameViewPanel } from "./GameViewPanel";
-import { LogPanel }      from "./LogPanel";
-import { ConnectionPanel } from "./ConnectionPanel";
-import { SettingsPanel } from "./SettingsPanel";
+import type React from 'react';
+import { GameViewPanel }    from './GameViewPanel.js';
+import { LogPanel }         from './LogPanel.js';
+import { ConnectionPanel }  from './ConnectionPanel.js';
+import { SettingsPanel }    from './SettingsPanel.js';
+import { useBridgeState }   from '../state/BridgeContext.js';
+import { useBridge }        from '../hooks/useBridge.js';
 
 const layoutStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "1fr 280px",
-  gridTemplateRows:    "1fr 220px",
-  gap:    "4px",
-  padding: "4px",
-  height: "100%",
-  width:  "100%",
-  overflow: "hidden",
+  display: 'grid',
+  gridTemplateColumns: '1fr 280px',
+  gridTemplateRows:    '1fr 220px',
+  gap:    '4px',
+  padding: '4px',
+  height: '100%',
+  width:  '100%',
+  overflow: 'hidden',
 };
 
 const rightColumnStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateRows: "1fr 1fr",
-  gap: "4px",
+  display: 'grid',
+  gridTemplateRows: '1fr 1fr',
+  gap: '4px',
   minHeight: 0,
 };
 
 export function AppLayout(): React.JSX.Element {
+  const state   = useBridgeState();
+  const actions = useBridge();
+
+  const connected = state.connection.status === 'connected';
+
   return (
     <div style={layoutStyle}>
-      {/* Top-left: Game View (spans 1 column, 1 row) */}
-      <div style={{ gridColumn: "1", gridRow: "1", minHeight: 0, display: "flex", flexDirection: "column" }}>
-        <GameViewPanel />
+      {/* Top-left: Game View */}
+      <div style={{ gridColumn: '1', gridRow: '1', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        <GameViewPanel
+          engineState={state.engineState}
+          runtimeState={state.runtimeState}
+          connected={connected}
+          onReconnect={() => { void actions.reconnect(); }}
+          onPlay={() => { void actions.play(); }}
+          onPause={() => { void actions.pause(); }}
+          onStopRuntime={() => { void actions.stop(); }}
+          onFocusViewport={() => { void actions.focusViewport(); }}
+        />
       </div>
 
       {/* Right sidebar: Connection + Settings stacked */}
-      <div style={{ gridColumn: "2", gridRow: "1 / span 2", minHeight: 0, ...rightColumnStyle }}>
-        <ConnectionPanel />
+      <div style={{ gridColumn: '2', gridRow: '1 / span 2', minHeight: 0, ...rightColumnStyle }}>
+        <ConnectionPanel
+          status={state.connection.status}
+          serverName={state.connection.serverName}
+          sessionId={state.connection.sessionId}
+          onConnect={(port) => { void actions.connect(port); }}
+          onDisconnect={() => { void actions.disconnect(); }}
+          onReconnect={() => { void actions.reconnect(); }}
+        />
         <SettingsPanel />
       </div>
 
-      {/* Bottom: Log (full left width) */}
-      <div style={{ gridColumn: "1", gridRow: "2", minHeight: 0, display: "flex", flexDirection: "column" }}>
-        <LogPanel />
+      {/* Bottom: Log */}
+      <div style={{ gridColumn: '1', gridRow: '2', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        <LogPanel entries={state.logs} />
       </div>
     </div>
   );

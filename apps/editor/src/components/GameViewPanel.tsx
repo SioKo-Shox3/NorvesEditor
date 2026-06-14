@@ -1,63 +1,92 @@
 /**
  * GameViewPanel — primary control panel for the engine process.
  *
- * P4: all buttons are rendered disabled / inert (static shell).
- * P6 will supply real handlers and live state via props.
+ * P6: wired to real bridge state and hook actions.
+ * Types come from @norves/bridge-types (not local placeholders).
  *
  * NOTE: Alpha has NO embedded viewport. The engine renders in its own
  * external window. This panel drives the process and runtime only.
+ *
+ * Process lifecycle (Launch / Stop-process) is Workstream J and is NOT
+ * wired here. Those buttons are present but disabled with a comment.
+ * Reconnect IS wired (bridge-ui action).
  */
 
-import type React from "react";
-
-/** Engine process lifecycle state label (placeholder for P6 state). */
-export type EngineState = "stopped" | "starting" | "running" | "error";
-
-/** Runtime / simulation state label (placeholder for P6 state). */
-export type RuntimeState = "idle" | "playing" | "paused";
+import type React from 'react';
+import type { EngineState, RuntimeState } from '@norves/bridge-types';
 
 export interface GameViewPanelProps {
-  /** P6: current engine process state */
+  /** Current engine process state (from bridge state store). */
   engineState?: EngineState;
-  /** P6: current runtime simulation state */
+  /** Current runtime simulation state (from bridge state store). */
   runtimeState?: RuntimeState;
-  /** P6: process lifecycle handlers */
-  onLaunch?: () => void;
-  onStopProcess?: () => void;
+  /** Whether the bridge is connected (gates runtime controls). */
+  connected: boolean;
+  /** Reconnect to the bridge (wired to useBridge.reconnect). */
   onReconnect?: () => void;
-  /** P6: runtime simulation handlers */
+  /** Runtime simulation handlers (wired to useBridge). */
   onPlay?: () => void;
   onPause?: () => void;
   onStopRuntime?: () => void;
   onFocusViewport?: () => void;
-  /** P4 default: everything disabled until P6 wires state + handlers */
-  disabled?: boolean;
+  // onLaunch / onStopProcess reserved for Workstream J (process lifecycle).
 }
 
+// -------------------------------------------------------------------------
+// Label / class maps covering ALL enum values (no silent fall-through)
+// -------------------------------------------------------------------------
+
+const ENGINE_LABELS: Record<EngineState, string> = {
+  initializing: 'Initializing...',
+  ready:        'Ready',
+  running:      'Running',
+  error:        'Error',
+};
+
+const RUNTIME_LABELS: Record<RuntimeState, string> = {
+  edit:    'Edit',
+  playing: 'Playing',
+  paused:  'Paused',
+  stopped: 'Stopped',
+  unknown: 'Unknown',
+};
+
+// CSS modifier for the status badge
+function engineChipClass(state: EngineState): string {
+  switch (state) {
+    case 'running':      return 'status-badge--connected';
+    case 'ready':        return 'status-badge--connected';
+    case 'initializing': return 'status-badge--warning';
+    case 'error':        return 'status-badge--error';
+  }
+}
+
+function runtimeChipClass(state: RuntimeState): string {
+  switch (state) {
+    case 'playing': return 'status-badge--connected';
+    case 'paused':  return 'status-badge--warning';
+    case 'edit':    return 'status-badge--disconnected';
+    case 'stopped': return 'status-badge--disconnected';
+    case 'unknown': return 'status-badge--disconnected';
+  }
+}
+
+// -------------------------------------------------------------------------
+// Component
+// -------------------------------------------------------------------------
+
 export function GameViewPanel({
-  engineState = "stopped",
-  runtimeState = "idle",
-  onLaunch,
-  onStopProcess,
+  engineState,
+  runtimeState,
+  connected,
   onReconnect,
   onPlay,
   onPause,
   onStopRuntime,
   onFocusViewport,
-  disabled = true,
 }: GameViewPanelProps): React.JSX.Element {
-  const engineLabel: Record<EngineState, string> = {
-    stopped:  "Stopped",
-    starting: "Starting...",
-    running:  "Running",
-    error:    "Error",
-  };
-
-  const runtimeLabel: Record<RuntimeState, string> = {
-    idle:    "Idle",
-    playing: "Playing",
-    paused:  "Paused",
-  };
+  // Runtime controls disabled when not connected
+  const runtimeDisabled = !connected;
 
   return (
     <div className="panel">
@@ -79,34 +108,48 @@ export function GameViewPanel({
         <div className="divider" />
         <div className="row" style={{ gap: 16 }}>
           <span className="label">Engine:</span>
-          <StatusChip state={engineState} label={engineLabel[engineState]} />
+          {engineState !== undefined ? (
+            <StatusChip cssClass={engineChipClass(engineState)} label={ENGINE_LABELS[engineState]} />
+          ) : (
+            <span className="status-badge status-badge--disconnected">
+              <span className="status-badge__dot" />
+              --
+            </span>
+          )}
           <span className="label" style={{ marginLeft: 8 }}>Runtime:</span>
-          <StatusChip state={runtimeState} label={runtimeLabel[runtimeState]} />
+          {runtimeState !== undefined ? (
+            <StatusChip cssClass={runtimeChipClass(runtimeState)} label={RUNTIME_LABELS[runtimeState]} />
+          ) : (
+            <span className="status-badge status-badge--disconnected">
+              <span className="status-badge__dot" />
+              --
+            </span>
+          )}
         </div>
 
-        {/* Process controls */}
+        {/* Process controls — Launch/Stop are Workstream J (not wired). Reconnect is wired. */}
         <div className="divider" />
         <div className="label">Process</div>
         <div className="row">
           <button
             className="btn btn--primary"
-            disabled={disabled}
-            onClick={onLaunch}
+            disabled={true}
+            title="Process lifecycle: Workstream J"
             type="button"
           >
             Launch
           </button>
           <button
             className="btn btn--danger"
-            disabled={disabled}
-            onClick={onStopProcess}
+            disabled={true}
+            title="Process lifecycle: Workstream J"
             type="button"
           >
             Stop
           </button>
           <button
             className="btn"
-            disabled={disabled}
+            disabled={!connected}
             onClick={onReconnect}
             type="button"
           >
@@ -120,7 +163,7 @@ export function GameViewPanel({
         <div className="row">
           <button
             className="btn"
-            disabled={disabled}
+            disabled={runtimeDisabled}
             onClick={onPlay}
             type="button"
           >
@@ -128,7 +171,7 @@ export function GameViewPanel({
           </button>
           <button
             className="btn"
-            disabled={disabled}
+            disabled={runtimeDisabled}
             onClick={onPause}
             type="button"
           >
@@ -136,7 +179,7 @@ export function GameViewPanel({
           </button>
           <button
             className="btn"
-            disabled={disabled}
+            disabled={runtimeDisabled}
             onClick={onStopRuntime}
             type="button"
           >
@@ -144,7 +187,7 @@ export function GameViewPanel({
           </button>
           <button
             className="btn"
-            disabled={disabled}
+            disabled={runtimeDisabled}
             onClick={onFocusViewport}
             type="button"
           >
@@ -156,27 +199,18 @@ export function GameViewPanel({
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Internal sub-component                                               */
-/* ------------------------------------------------------------------ */
-
-type ChipState = EngineState | RuntimeState;
-
-function chipClass(state: ChipState): string {
-  if (state === "running" || state === "playing") return "status-badge--connected";
-  if (state === "error")                           return "status-badge--error";
-  if (state === "starting" || state === "paused")  return "status-badge--warning";
-  return "status-badge--disconnected";
-}
+// -------------------------------------------------------------------------
+// Internal sub-component
+// -------------------------------------------------------------------------
 
 interface StatusChipProps {
-  state: ChipState;
+  cssClass: string;
   label: string;
 }
 
-function StatusChip({ state, label }: StatusChipProps): React.JSX.Element {
+function StatusChip({ cssClass, label }: StatusChipProps): React.JSX.Element {
   return (
-    <span className={`status-badge ${chipClass(state)}`}>
+    <span className={`status-badge ${cssClass}`}>
       <span className="status-badge__dot" />
       {label}
     </span>
