@@ -1,7 +1,10 @@
 # Standalone Cargo workspace: the empty [workspace] table makes this crate its
 # own workspace root, so the repo-root bridge workspace (which `exclude`s this
-# path) never auto-absorbs it. Keep deps minimal for the P1 skeleton: no bridge
-# crate and no async/transport stack yet. Those arrive in later phases.
+# path) never auto-absorbs it. P5 wires the real editor-client runtime: path
+# deps on the two bridge crates plus a tokio runtime for spawning the relay task
+# and awaiting requests. Tauri provides an ambient multi-thread runtime, so we
+# prefer `tauri::async_runtime::spawn` for tasks; tokio is depended on directly
+# for the sync primitives (Mutex/Notify) and Duration-bounded request awaits.
 [workspace]
 
 [package]
@@ -28,3 +31,12 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2.11", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Bridge crates: src-tauri is a separate workspace, so reference the bridge
+# crates by explicit relative path (no workspace inheritance available here).
+norves-bridge-editor-client = { path = "../../../bridge/crates/norves-bridge-editor-client" }
+norves-bridge-core = { path = "../../../bridge/crates/norves-bridge-core" }
+# rt-multi-thread + macros: parity with the runtime Tauri spins up. sync: the
+# Mutex/Notify guarding the connection state. time: Duration-bounded request
+# awaits. net/io-util are pulled transitively by the editor-client WS transport.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1"
