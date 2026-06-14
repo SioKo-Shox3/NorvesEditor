@@ -1,0 +1,14 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-1",
+  "error": {
+    "code": "PROTOCOL_VERSION_UNSUPPORTED",
+    "message": "None of the offered protocol versions are supported by this engine.",
+    "data": {
+      "offered": ["2.0"],
+      "supported": ["0.1", "1.0"]
+    }
+  }
+}
