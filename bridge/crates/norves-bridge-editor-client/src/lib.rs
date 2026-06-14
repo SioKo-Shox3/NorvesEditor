@@ -20,6 +20,7 @@ pub mod log;
 pub mod seq;
 pub mod status;
 pub mod transport;
+pub mod ws_transport;
 
 pub use dispatcher::{DispatchHandle, Dispatcher, RequestError};
 pub use handshake::{
@@ -30,3 +31,4 @@ pub use log::{parse_log_message, LogError, LogMessage};
 pub use seq::observe_event_seq;
 pub use status::{parse_status_result, StatusError, StatusSnapshot};
 pub use transport::{loopback_pair, LoopbackTransport, Transport, TransportError};
+pub use ws_transport::WsClientTransport;
