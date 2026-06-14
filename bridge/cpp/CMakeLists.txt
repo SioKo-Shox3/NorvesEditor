@@ -56,4 +56,6 @@ add_subdirectory(third_party)
 # Engine SDK static library + its tests.
 add_subdirectory(engine-sdk)
 
-# examples/mock-engine is owned by Workstream H; intentionally NOT added here.
+# Examples (owned by Workstream H): the residential WebSocket mock engine the
+# editor backend can launch/attach/drive, plus a CTest-registered loopback smoke.
+add_subdirectory(examples)
