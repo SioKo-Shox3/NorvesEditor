@@ -1,0 +1,30 @@
+# Standalone Cargo workspace: the empty [workspace] table makes this crate its
+# own workspace root, so the repo-root bridge workspace (which `exclude`s this
+# path) never auto-absorbs it. Keep deps minimal for the P1 skeleton: no bridge
+# crate and no async/transport stack yet. Those arrive in later phases.
+[workspace]
+
+[package]
+name = "norves-editor"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+description = "NorvesEditor Tauri desktop application"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "norves_editor_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "norves-editor"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

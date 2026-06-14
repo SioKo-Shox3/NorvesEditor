@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal core capabilities for the main window (P1 skeleton).",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:event:default"]
+}

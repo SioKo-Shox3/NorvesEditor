@@ -1,3 +1,8 @@
 packages:
   - "apps/*"
   - "bridge/ts/packages/*"
+
+# Approve build scripts for trusted deps so `pnpm install` exits clean.
+# esbuild's postinstall verifies its prebuilt native binary (used by Vite).
+onlyBuiltDependencies:
+  - esbuild
