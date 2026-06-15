@@ -25,6 +25,8 @@ pub mod commands {
     pub const RUNTIME_PAUSE: &str = "runtime_pause";
     pub const RUNTIME_STOP: &str = "runtime_stop";
     pub const FOCUS_VIEWPORT: &str = "focus_viewport";
+    pub const LAUNCH_ENGINE: &str = "launch_engine";
+    pub const STOP_ENGINE: &str = "stop_engine";
 }
 
 /// Tauri event names (backend -> frontend).
@@ -89,6 +91,16 @@ mod tests {
     #[test]
     fn command_focus_viewport() {
         assert_eq!(commands::FOCUS_VIEWPORT, "focus_viewport");
+    }
+
+    #[test]
+    fn command_launch_engine() {
+        assert_eq!(commands::LAUNCH_ENGINE, "launch_engine");
+    }
+
+    #[test]
+    fn command_stop_engine() {
+        assert_eq!(commands::STOP_ENGINE, "stop_engine");
     }
 
     // -----------------------------------------------------------------------
@@ -164,6 +176,8 @@ mod tests {
             commands::RUNTIME_PAUSE,
             commands::RUNTIME_STOP,
             commands::FOCUS_VIEWPORT,
+            commands::LAUNCH_ENGINE,
+            commands::STOP_ENGINE,
         ];
         let mut sorted = all;
         sorted.sort_unstable();
