@@ -10,8 +10,9 @@
 //! lifetime / thread / process concerns without re-litigating the parsing and
 //! precedence rules, which are fully covered by the tests at the bottom of this
 //! file.
-// J3 consumes these; allow until then.
-#![allow(dead_code)]
+//!
+//! J3 (`process_runtime.rs`) now consumes every public item here, so the former
+//! crate-wide `#![allow(dead_code)]` is gone; these functions are live.
 
 use std::path::{Path, PathBuf};
 
