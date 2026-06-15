@@ -60,6 +60,9 @@ export function AppLayout(): React.JSX.Element {
           runtimeState={state.runtimeState}
           connected={connected}
           connectionStatus={state.connection.status}
+          viewportState={state.viewportState}
+          lastError={state.lastError}
+          onDismissError={actions.dismissError}
           onReconnect={() => { void actions.reconnect(); }}
           onPlay={() => { void actions.play(); }}
           onPause={() => { void actions.pause(); }}
