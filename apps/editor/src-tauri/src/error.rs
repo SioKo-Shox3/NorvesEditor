@@ -37,6 +37,10 @@ pub enum BackendError {
     /// version negotiation).
     #[serde(rename_all = "camelCase")]
     Handshake { message: String },
+    /// A process-lifecycle failure (engine path resolution/validation, spawn,
+    /// or the READY-handshake) before or around launching the engine.
+    #[serde(rename_all = "camelCase")]
+    Process { message: String },
 }
 
 impl std::fmt::Display for BackendError {
@@ -52,6 +56,7 @@ impl std::fmt::Display for BackendError {
                 write!(f, "engine error {code}: {message}")
             }
             BackendError::Handshake { message } => write!(f, "handshake failed: {message}"),
+            BackendError::Process { message } => write!(f, "{message}"),
         }
     }
 }
