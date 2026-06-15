@@ -59,11 +59,14 @@ export function AppLayout(): React.JSX.Element {
           engineState={state.engineState}
           runtimeState={state.runtimeState}
           connected={connected}
+          connectionStatus={state.connection.status}
           onReconnect={() => { void actions.reconnect(); }}
           onPlay={() => { void actions.play(); }}
           onPause={() => { void actions.pause(); }}
           onStopRuntime={() => { void actions.stop(); }}
           onFocusViewport={() => { void actions.focusViewport(); }}
+          onLaunch={() => { void actions.launch(); }}
+          onStopProcess={() => { void actions.stopProcess(); }}
         />
       </div>
 

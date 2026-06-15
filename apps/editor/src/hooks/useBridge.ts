@@ -78,6 +78,10 @@ export interface BridgeActions {
   pause: () => Promise<void>;
   stop: () => Promise<void>;
   focusViewport: () => Promise<void>;
+  /** Spawn a new engine process and connect to it (Workstream J). */
+  launch: () => Promise<void>;
+  /** Terminate the running engine process (Workstream J). */
+  stopProcess: () => Promise<void>;
 }
 
 export function useBridge(): BridgeActions {
@@ -345,5 +349,39 @@ export function useBridge(): BridgeActions {
     }
   }, [dispatch]);
 
-  return { connect, disconnect, reconnect, getStatus, play, pause, stop, focusViewport };
+  const launch = useCallback(async (): Promise<void> => {
+    dispatch({ type: 'commandPending' });
+    try {
+      const result = await invokeCommand<ConnectionStatePayload>(
+        BRIDGE_COMMANDS.launchEngine,
+      );
+      dispatch({ type: 'connectionStateChanged', payload: result });
+    } catch (err: unknown) {
+      const { kind, message } = extractBackendError(err);
+      dispatch({
+        type: 'errorReported',
+        payload: {
+          error: { code: kind ?? 'LAUNCH_FAILED', message },
+        },
+      });
+    }
+  }, [dispatch]);
+
+  const stopProcess = useCallback(async (): Promise<void> => {
+    try {
+      await invokeCommand(BRIDGE_COMMANDS.stopEngine);
+      // The backend will emit a disconnected connectionState event which updates
+      // the store. No optimistic dispatch needed; the event subscription handles it.
+    } catch (err: unknown) {
+      const { kind, message } = extractBackendError(err);
+      dispatch({
+        type: 'errorReported',
+        payload: {
+          error: { code: kind ?? 'STOP_PROCESS_FAILED', message },
+        },
+      });
+    }
+  }, [dispatch]);
+
+  return { connect, disconnect, reconnect, getStatus, play, pause, stop, focusViewport, launch, stopProcess };
 }

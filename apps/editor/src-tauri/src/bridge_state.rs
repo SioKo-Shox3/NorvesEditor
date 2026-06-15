@@ -375,14 +375,24 @@ async fn send_method(
 // Tauri commands. Fn names MUST equal the P3 `protocol_names::commands` consts.
 // ===========================================================================
 
-/// `bridge_connect`: dial `port`, handshake, store the connection, emit state.
+/// Shared connect entrypoint used by BOTH `bridge_connect` and the process
+/// runtime's `launch_engine` (plan J3).
 ///
-/// Rejects with [`BackendError::AlreadyConnected`] if already connected or a
-/// connect is in progress (the transient `Connecting` phase).
-#[tauri::command]
-pub async fn bridge_connect(
-    state: State<'_, BridgeState>,
+/// This is exactly `bridge_connect`'s body, factored out so the process module
+/// can establish a connection WITHOUT duplicating the phase-transition guard or
+/// the `Phase` type (which stays private to this module). It:
+///
+/// 1. briefly locks to transition `Disconnected -> Connecting` (rejecting an
+///    overlapping connect/launch with [`BackendError::AlreadyConnected`]), drops
+///    the guard, then
+/// 2. runs the full connect flow WITHOUT the lock held, then
+/// 3. on success briefly locks to store the `Connected` phase and emits
+///    `CONNECTION_STATE`; on failure resets the phase to `Disconnected`.
+///
+/// No lock is ever held across the connect `.await` (see module docs).
+pub(crate) async fn connect_on_port(
     app: AppHandle,
+    state: &BridgeState,
     port: u16,
 ) -> Result<ConnectionStatePayload, BackendError> {
     // Brief lock: transition Disconnected -> Connecting, reject overlap.
@@ -395,7 +405,7 @@ pub async fn bridge_connect(
     } // guard dropped: connect I/O runs WITHOUT the lock.
 
     let endpoint = ws_url_for_port(port);
-    let result = run_connect_flow(app.clone(), state.inner(), endpoint).await;
+    let result = run_connect_flow(app.clone(), state, endpoint).await;
 
     match result {
         Ok(conn) => {
@@ -420,6 +430,43 @@ pub async fn bridge_connect(
             }
             Err(err)
         }
+    }
+}
+
+/// `bridge_connect`: dial `port`, handshake, store the connection, emit state.
+///
+/// Rejects with [`BackendError::AlreadyConnected`] if already connected or a
+/// connect is in progress (the transient `Connecting` phase). Delegates to the
+/// shared [`connect_on_port`] so `launch_engine` reuses the identical logic.
+#[tauri::command]
+pub async fn bridge_connect(
+    state: State<'_, BridgeState>,
+    app: AppHandle,
+    port: u16,
+) -> Result<ConnectionStatePayload, BackendError> {
+    connect_on_port(app, state.inner(), port).await
+}
+
+/// Tears down a live bridge connection WITHOUT emitting a connection-state event,
+/// resetting the phase to `Disconnected`. Used by `stop_engine` (plan J3) for a
+/// best-effort graceful WS close before the engine is killed; a no-op if nothing
+/// is connected.
+///
+/// This does NOT emit, and CANNOT rely on the relay to emit: `tear_down` ABORTS
+/// the relay task before its `Closed` self-heal path can run, so that path's
+/// disconnected emit never fires. The CALLER is therefore responsible for
+/// emitting the disconnected `CONNECTION_STATE` (`stop_engine` does so, as its
+/// single source).
+pub(crate) async fn disconnect_quietly(state: &BridgeState) {
+    let taken = {
+        let mut guard = state.inner.lock().await;
+        match std::mem::replace(&mut *guard, Phase::Disconnected) {
+            Phase::Connected(conn) => Some(conn),
+            _ => None,
+        }
+    };
+    if let Some(conn) = taken {
+        tear_down(conn).await;
     }
 }
 

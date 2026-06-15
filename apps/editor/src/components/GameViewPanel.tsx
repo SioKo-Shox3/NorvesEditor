@@ -7,13 +7,17 @@
  * NOTE: Alpha has NO embedded viewport. The engine renders in its own
  * external window. This panel drives the process and runtime only.
  *
- * Process lifecycle (Launch / Stop-process) is Workstream J and is NOT
- * wired here. Those buttons are present but disabled with a comment.
+ * Process lifecycle (Launch / Stop-process) wired in Workstream J4.
+ * - onLaunch: spawns + connects a new engine process (via launch_engine command).
+ * - onStopProcess: terminates the running engine process (via stop_engine command).
+ * - The ConnectionPanel's connect(port) path (attach to existing engine) is
+ *   separate and unaffected.
  * Reconnect IS wired (bridge-ui action).
  */
 
 import type React from 'react';
 import type { EngineState, RuntimeState } from '@norves/bridge-types';
+import type { ConnectionStatus } from '../state/store.js';
 
 export interface GameViewPanelProps {
   /** Current engine process state (from bridge state store). */
@@ -22,6 +26,8 @@ export interface GameViewPanelProps {
   runtimeState?: RuntimeState;
   /** Whether the bridge is connected (gates runtime controls). */
   connected: boolean;
+  /** Full connection status — used to derive process-button disabled logic. */
+  connectionStatus?: ConnectionStatus;
   /** Reconnect to the bridge (wired to useBridge.reconnect). */
   onReconnect?: () => void;
   /** Runtime simulation handlers (wired to useBridge). */
@@ -29,7 +35,10 @@ export interface GameViewPanelProps {
   onPause?: () => void;
   onStopRuntime?: () => void;
   onFocusViewport?: () => void;
-  // onLaunch / onStopProcess reserved for Workstream J (process lifecycle).
+  /** Spawn + connect a new engine process (wired to useBridge.launch). */
+  onLaunch?: () => void;
+  /** Terminate the running engine process (wired to useBridge.stopProcess). */
+  onStopProcess?: () => void;
 }
 
 // -------------------------------------------------------------------------
@@ -79,14 +88,25 @@ export function GameViewPanel({
   engineState,
   runtimeState,
   connected,
+  connectionStatus,
   onReconnect,
   onPlay,
   onPause,
   onStopRuntime,
   onFocusViewport,
+  onLaunch,
+  onStopProcess,
 }: GameViewPanelProps): React.JSX.Element {
   // Runtime controls disabled when not connected
   const runtimeDisabled = !connected;
+
+  // Launch is only meaningful when there is no active connection (process not running).
+  // Disable while connecting/connected/launching (status 'connecting' or 'connected').
+  const launchDisabled =
+    connectionStatus === 'connected' || connectionStatus === 'connecting';
+
+  // Stop-process is only meaningful when a process is running (connected).
+  const stopProcessDisabled = !connected;
 
   return (
     <div className="panel">
@@ -127,22 +147,24 @@ export function GameViewPanel({
           )}
         </div>
 
-        {/* Process controls — Launch/Stop are Workstream J (not wired). Reconnect is wired. */}
+        {/* Process controls — Launch/Stop wired (Workstream J4). Reconnect is wired. */}
         <div className="divider" />
         <div className="label">Process</div>
         <div className="row">
           <button
             className="btn btn--primary"
-            disabled={true}
-            title="Process lifecycle: Workstream J"
+            disabled={launchDisabled}
+            onClick={onLaunch}
+            title="Spawn and connect a new engine process"
             type="button"
           >
             Launch
           </button>
           <button
             className="btn btn--danger"
-            disabled={true}
-            title="Process lifecycle: Workstream J"
+            disabled={stopProcessDisabled}
+            onClick={onStopProcess}
+            title="Terminate the running engine process"
             type="button"
           >
             Stop

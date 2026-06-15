@@ -30,6 +30,12 @@ describe('BRIDGE_COMMANDS literal values', () => {
   it('focusViewport = focus_viewport', () => {
     expect(BRIDGE_COMMANDS.focusViewport).toBe('focus_viewport');
   });
+  it('launchEngine = launch_engine', () => {
+    expect(BRIDGE_COMMANDS.launchEngine).toBe('launch_engine');
+  });
+  it('stopEngine = stop_engine', () => {
+    expect(BRIDGE_COMMANDS.stopEngine).toBe('stop_engine');
+  });
 });
 
 describe('BRIDGE_EVENTS literal values', () => {

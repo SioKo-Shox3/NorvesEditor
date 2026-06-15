@@ -38,5 +38,7 @@ norves-bridge-core = { path = "../../../bridge/crates/norves-bridge-core" }
 # rt-multi-thread + macros: parity with the runtime Tauri spins up. sync: the
 # Mutex/Notify guarding the connection state. time: Duration-bounded request
 # awaits. net/io-util are pulled transitively by the editor-client WS transport.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# process: tokio::process::Command for spawning/awaiting the engine child
+# process (Workstream J).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
 tracing = "0.1"
