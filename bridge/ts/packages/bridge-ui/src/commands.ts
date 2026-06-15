@@ -21,6 +21,8 @@ export const BRIDGE_COMMANDS = {
   runtimePause: 'runtime_pause',
   runtimeStop: 'runtime_stop',
   focusViewport: 'focus_viewport',
+  launchEngine: 'launch_engine',
+  stopEngine: 'stop_engine',
 } as const;
 
 /** Union of all valid Tauri command name strings. */
