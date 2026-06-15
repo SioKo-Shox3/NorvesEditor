@@ -239,6 +239,39 @@ describe('engineProcessExited', () => {
 });
 
 // -------------------------------------------------------------------------
+// dismissError
+// -------------------------------------------------------------------------
+
+describe('dismissError', () => {
+  it('clears lastError when set', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      lastError: { kind: 'process', message: 'engine executable not found' },
+    };
+    const next = applyAction({ type: 'dismissError' }, state);
+    expect(next.lastError).toBeUndefined();
+  });
+
+  it('leaves connection unchanged when clearing lastError', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'error' },
+      lastError: { kind: 'connect', message: 'refused' },
+    };
+    const next = applyAction({ type: 'dismissError' }, state);
+    // lastError cleared, connection.status unchanged
+    expect(next.lastError).toBeUndefined();
+    expect(next.connection.status).toBe('error');
+  });
+
+  it('is a no-op when lastError is already undefined', () => {
+    const next = applyAction({ type: 'dismissError' });
+    expect(next.lastError).toBeUndefined();
+    expect(next.connection.status).toBe('disconnected');
+  });
+});
+
+// -------------------------------------------------------------------------
 // viewportStateChanged
 // -------------------------------------------------------------------------
 
