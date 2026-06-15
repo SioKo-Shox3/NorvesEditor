@@ -182,3 +182,122 @@ describe('useBridge actions — error mapping', () => {
     });
   });
 });
+
+// -------------------------------------------------------------------------
+// (d) launch() — invokes BRIDGE_COMMANDS.launchEngine, dispatches payload,
+//                maps rejection to lastError without throwing
+// -------------------------------------------------------------------------
+
+describe('useBridge actions — launch', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('launch() invokes launch_engine with no args and dispatches the returned ConnectionStatePayload', async () => {
+    setupListenMock();
+
+    const fakePayload = {
+      connected: true,
+      sessionId: 'sess-abc',
+      serverName: 'NorvesLib',
+      endpoint: '127.0.0.1:9001',
+      reason: undefined,
+    };
+    (tauriCore.invoke as Mock).mockResolvedValue(fakePayload);
+
+    function useTestHook() {
+      const actions = useBridge();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.actions.launch()).resolves.toBeUndefined();
+    });
+
+    // invoke must have been called with 'launch_engine' and no args (no second param or empty obj)
+    expect(tauriCore.invoke).toHaveBeenCalledWith('launch_engine', undefined);
+
+    // Store must reflect connected state
+    expect(result.current.state.connection.status).toBe('connected');
+    expect(result.current.state.connection.sessionId).toBe('sess-abc');
+  });
+
+  it('launch() rejection maps to lastError + connection status error without throwing', async () => {
+    setupListenMock();
+
+    const fakeErr = { kind: 'process', message: 'Engine binary not found' };
+    (tauriCore.invoke as Mock).mockRejectedValue(fakeErr);
+
+    function useTestHook() {
+      const actions = useBridge();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    // Must NOT throw
+    await act(async () => {
+      await expect(result.current.actions.launch()).resolves.toBeUndefined();
+    });
+
+    expect(result.current.state.connection.status).toBe('error');
+    expect(result.current.state.lastError).toMatchObject({
+      kind: 'process',
+      message: 'Engine binary not found',
+    });
+  });
+});
+
+// -------------------------------------------------------------------------
+// (e) stopProcess() — invokes BRIDGE_COMMANDS.stopEngine with no args
+// -------------------------------------------------------------------------
+
+describe('useBridge actions — stopProcess', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('stopProcess() invokes stop_engine with no args and resolves without throwing', async () => {
+    setupListenMock();
+
+    (tauriCore.invoke as Mock).mockResolvedValue(null);
+
+    const { result } = renderHook(() => useBridge(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.stopProcess()).resolves.toBeUndefined();
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('stop_engine', undefined);
+  });
+
+  it('stopProcess() rejection maps to lastError without throwing', async () => {
+    setupListenMock();
+
+    const fakeErr = { kind: 'process', message: 'Process already dead' };
+    (tauriCore.invoke as Mock).mockRejectedValue(fakeErr);
+
+    function useTestHook() {
+      const actions = useBridge();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.actions.stopProcess()).resolves.toBeUndefined();
+    });
+
+    expect(result.current.state.lastError).toMatchObject({
+      kind: 'process',
+      message: 'Process already dead',
+    });
+  });
+});
