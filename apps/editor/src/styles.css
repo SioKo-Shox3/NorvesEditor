@@ -224,6 +224,47 @@ html, body, #root {
   margin: 8px 0;
 }
 
+/* ---- error banner ---- */
+.error-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 6px 10px;
+  background: #3b0e0e;
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: #fca5a5;
+  flex-wrap: wrap;
+}
+
+.error-banner__kind {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.error-banner__message {
+  color: var(--color-text);
+  word-break: break-word;
+  flex: 1;
+}
+
+.error-banner__dismiss {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.error-banner__dismiss:hover {
+  color: var(--color-text);
+}
+
 /* ---- log list ---- */
 .log-list {
   list-style: none;
