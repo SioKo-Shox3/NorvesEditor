@@ -10,6 +10,7 @@ mod bridge_state;
 mod dto;
 mod error;
 mod events_map;
+mod process;
 
 use bridge_state::BridgeState;
 
