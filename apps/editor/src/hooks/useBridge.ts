@@ -82,6 +82,8 @@ export interface BridgeActions {
   launch: () => Promise<void>;
   /** Terminate the running engine process (Workstream J). */
   stopProcess: () => Promise<void>;
+  /** Dismiss (clear) the current lastError from the store. */
+  dismissError: () => void;
 }
 
 export function useBridge(): BridgeActions {
@@ -383,5 +385,9 @@ export function useBridge(): BridgeActions {
     }
   }, [dispatch]);
 
-  return { connect, disconnect, reconnect, getStatus, play, pause, stop, focusViewport, launch, stopProcess };
+  const dismissError = useCallback((): void => {
+    dispatch({ type: 'dismissError' });
+  }, [dispatch]);
+
+  return { connect, disconnect, reconnect, getStatus, play, pause, stop, focusViewport, launch, stopProcess, dismissError };
 }

@@ -101,7 +101,8 @@ export type BridgeAction =
   | { type: 'engineStatusChanged'; payload: EngineStatusChangedEvent }
   | { type: 'errorReported'; payload: ErrorReportedEvent }
   | { type: 'engineProcessExited'; payload: EngineProcessExitedEvent }
-  | { type: 'viewportStateChanged'; payload: ViewportStateChangedEvent };
+  | { type: 'viewportStateChanged'; payload: ViewportStateChangedEvent }
+  | { type: 'dismissError' };
 
 // -------------------------------------------------------------------------
 // Pure reducer
@@ -205,6 +206,10 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
 
     case 'viewportStateChanged': {
       return { ...state, viewportState: action.payload.state };
+    }
+
+    case 'dismissError': {
+      return { ...state, lastError: undefined };
     }
 
     default: {
