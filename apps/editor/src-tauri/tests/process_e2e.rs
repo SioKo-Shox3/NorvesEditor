@@ -749,3 +749,130 @@ async fn engine_event_streaming_contract() {
     eprintln!("[PASS] engine_event_streaming_contract: all steps passed");
     // _guard drops here, killing the engine process.
 }
+
+// ---------------------------------------------------------------------------
+// engine_launch_info_schema_compliance_contract
+// ---------------------------------------------------------------------------
+
+/// Schema compliance contract for `engine.launchInfo` against the real NorvesLib engine.
+///
+/// Opt-in via `NORVES_NORVESLIB_ENGINE_PATH`; skips (passes) when unset or
+/// pointing at a non-file path.  The env var is shared with
+/// `engine_runtime_control_contract` and `engine_event_streaming_contract`.
+///
+/// This test explicitly contrasts the NorvesLib adapter's schema-compliant
+/// `{pid, title}` result against the reference mock engine's non-compliant
+/// `{launched: true}` response, verifying that the adapter returns
+/// `additionalProperties:false` compliant output.
+///
+/// Steps:
+///  1. Spawn real engine, wait for READY.
+///  2. connect_with_retry -> single persistent connection.
+///  3. bridge.hello -> session established (session_id non-empty).
+///  4. engine.launchInfo (params: None) -> result with pid and title.
+///  5. Assert pid is Some(i64) >= 0 (NorvesLib returns GetCurrentProcessId).
+///  6. Assert title is Some(&str) and non-empty (no hardcoded value).
+///  7. Assert "launched" key is absent (mock non-compliance artifact).
+///  8. handle.shutdown().
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_launch_info_schema_compliance_contract() {
+    // Opt-in gate: set NORVES_NORVESLIB_ENGINE_PATH to the real engine binary.
+    let exe = match std::env::var("NORVES_NORVESLIB_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_launch_info_schema_compliance_contract: \
+                 set NORVES_NORVESLIB_ENGINE_PATH to the NorvesLib engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_launch_info_schema_compliance_contract: \
+             NORVES_NORVESLIB_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    // --- Step 1: spawn and wait for READY ---
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+    eprintln!("[PASS] engine_launch_info_schema_compliance_contract: READY port={port}");
+
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+
+    // --- Step 2: open a single persistent connection ---
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    // --- Step 3: bridge.hello ---
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    let hello_outcome = parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+    assert!(
+        !hello_outcome.session_id.is_empty(),
+        "[bridge.hello] session_id must be non-empty"
+    );
+    eprintln!(
+        "[PASS] bridge.hello: session_id={}",
+        hello_outcome.session_id
+    );
+
+    // --- Step 4: engine.launchInfo ---
+    // params schema has no properties and additionalProperties:false, so params=None is correct.
+    let launch_info_value = send_and_expect_result(
+        &handle,
+        request_envelope("li-1", "engine.launchInfo", None),
+        "engine.launchInfo",
+    )
+    .await;
+
+    // --- Step 5: pid must be present and >= 0 ---
+    // NorvesLib adapter returns GetCurrentProcessId() which is always a non-negative integer.
+    let pid = launch_info_value["pid"].as_i64().unwrap_or_else(|| {
+        panic!(
+            "[engine.launchInfo] expected 'pid' as integer, got: {}",
+            launch_info_value
+        )
+    });
+    assert!(pid >= 0, "[engine.launchInfo] pid must be >= 0, got: {pid}");
+
+    // --- Step 6: title must be present and non-empty ---
+    // The exact string is engine-specific ("NorvesLib Game" or similar); we do not hardcode it.
+    let title = launch_info_value["title"].as_str().unwrap_or_else(|| {
+        panic!(
+            "[engine.launchInfo] expected 'title' as string, got: {}",
+            launch_info_value
+        )
+    });
+    assert!(
+        !title.is_empty(),
+        "[engine.launchInfo] title must be non-empty"
+    );
+
+    // --- Step 7: "launched" key must be absent ---
+    // The reference mock engine (norves_mock_engine) returns {launched: true}, which violates
+    // additionalProperties:false in the schema. The NorvesLib adapter must NOT include this key.
+    // Asserting its absence proves schema compliance and documents the mock/real contrast.
+    assert!(
+        launch_info_value.get("launched").is_none(),
+        "[engine.launchInfo] 'launched' key must be absent (schema: additionalProperties:false); \
+         got: {}",
+        launch_info_value
+    );
+
+    eprintln!("[PASS] engine.launchInfo: pid={pid} title={title:?}");
+
+    // --- Step 8: orderly shutdown ---
+    handle.shutdown().await;
+    eprintln!("[PASS] engine_launch_info_schema_compliance_contract: all steps passed");
+    // _guard drops here, killing the engine process.
+}
