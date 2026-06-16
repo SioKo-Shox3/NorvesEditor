@@ -4,7 +4,7 @@ NorvesEditor は、C++ ゲームエンジンと接続して利用することを
 
 最初の大目標は、完全なシーンエディターではなく、**エンジンを起動・接続・制御できるアルファ版**です。NorvesEditor から外部エンジンプロセスを起動し、Bridge 接続を確立し、Game View パネルからゲーム実行状態を操作できるところまでを最初の成功ラインにします。
 
-> Status: planning / pre-alpha
+> Status: alpha
 
 ---
 
@@ -37,7 +37,7 @@ Minimum happy path:
 
 ```text
 1. NorvesEditor を起動する。
-2. workspace / engine executable を設定する。
+2. NORVES_ENGINE_PATH でエンジン実行ファイルを指定する。
 3. Game View パネルから engine process を起動する。
 4. Engine が local Bridge endpoint を公開する。
 5. NorvesEditor が WebSocket + JSON で接続する。
@@ -46,9 +46,87 @@ Minimum happy path:
 8. Launch / Stop Process / Reconnect / Play / Pause / Stop / Focus Window を操作できる。
 ```
 
-Alpha における “viewport” は、Tauri window 内に Vulkan / DirectX の native viewport を埋め込むものではありません。Engine は外部ネイティブウィンドウを持ち、NorvesEditor の Game View パネルは、その起動・接続・制御・状態表示を担当します。
+Alpha における "viewport" は、Tauri window 内に Vulkan / DirectX の native viewport を埋め込むものではありません。Engine は外部ネイティブウィンドウを持ち、NorvesEditor の Game View パネルは、その起動・接続・制御・状態表示を担当します。
 
-Native viewport embedding、shared GPU texture、frame streaming、docked render target composition は post-alpha research とします。
+Native viewport embedding、shared GPU texture、frame streaming、docked render target composition は post-alpha とします。
+
+---
+
+## Alpha Quick Start
+
+### 前提ツール
+
+| ツール | バージョン | 備考 |
+|---|---|---|
+| Rust (rustup) | stable | `rustup update stable` |
+| Node.js + pnpm | pnpm 11.6.0 | `npm install -g pnpm@11.6.0` |
+| CMake | 3.21+ | |
+| Visual Studio 2022 | MSVC ツールセット付き | C++ engine SDK のビルドに必要 |
+| Python 3 + jsonschema | — | `pip install jsonschema` |
+| Vulkan SDK | — | **NorvesLib を使う場合のみ**。mock engine では不要 |
+
+### ステップ 1: JS 依存のインストール
+
+```powershell
+# リポジトリルートで実行
+pnpm install
+```
+
+### ステップ 2: C++ mock engine のビルド
+
+初回 configure では libwebsockets (v4.3.3) を FetchContent でダウンロードするため、ネットワーク接続が必要です。
+
+```powershell
+# configure
+cmake -S bridge/cpp -B build/cpp -G "Visual Studio 17 2022"
+
+# build
+cmake --build build/cpp --config Debug
+```
+
+成果物: `build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe`
+
+### ステップ 3: エディターの開発起動
+
+```powershell
+cd apps/editor
+pnpm tauri dev
+```
+
+このコマンドは `tauri.conf.json` の `beforeDevCommand` によって Vite dev server（localhost:1420）を先に起動し、その後 Tauri ウィンドウを開きます。
+
+> **注意:** `pnpm tauri dev` の動作は実機での最終確認を推奨します。ビルド環境・ドライバ構成によって挙動が異なる場合があります。
+
+### ステップ 4: Game View からエンジンを起動して動作確認
+
+```powershell
+# PowerShell で環境変数を設定し、mock engine の絶対パスを指定する
+$env:NORVES_ENGINE_PATH = "C:\path\to\NorvesEditor\build\cpp\examples\mock-engine\Debug\norves_mock_engine.exe"
+
+# その後 pnpm tauri dev を実行（またはすでに起動中のターミナルと同じセッションで起動）
+```
+
+エディターが起動したら、Game View パネルから **Launch** を押してエンジンを起動します。接続後、status / log / runtime 制御（Play / Pause / Stop / Focus Window）が使えます。
+
+エンジンパスの Settings UI は alpha 未実装です。`NORVES_ENGINE_PATH` 環境変数での指定が唯一の方法です。
+
+---
+
+## Verification
+
+集約ランナーを使うのが最も簡単です。
+
+```powershell
+# protocol fixtures + Rust（C++ 未構成でも通る）
+./scripts/verify.ps1
+
+# C++ も含めて検証（build/cpp が cmake configure 済みの場合のみ）
+./scripts/verify.ps1 -Cpp
+```
+
+個別ゲートの詳細は [`docs/agent-guide/build-and-verify.md`](docs/agent-guide/build-and-verify.md) を参照してください。
+
+生成物（`node_modules/`、Cargo `target/`、CMake build ディレクトリ、Tauri 生成ファイル、`__pycache__`）はコミットしないでください。`pnpm-lock.yaml` と `Cargo.lock` はコミット対象です。
 
 ---
 
@@ -70,13 +148,9 @@ Alpha では、以下を対象外にします。
 - general-purpose public bridge standardization
 ```
 
-Bridge subsystem は将来的に切り出せる境界を保ちますが、Alpha では独立 repository にはしません。
-
 ---
 
 ## Repository Layout
-
-Recommended initial tree:
 
 ```text
 NorvesEditor/
@@ -86,23 +160,23 @@ NorvesEditor/
 
   docs/
     vision.md
+    alpha-project-plan.md
     alpha-scope.md
     architecture.md
     technology-decisions.md
     engine-integration.md
     viewport-strategy.md
     memory-buffer-policy.md
+    agent-guide/
+      build-and-verify.md
+      norveslib-adapter.md
+      rust.md   (他のレイヤーガイド)
     adr/
-      0001-editor-owned-bridge-subsystem.md
-      0002-tauri-rust-editor-backend.md
-      0003-websocket-json-bridge-control-channel.md
-      0004-cpp-engine-sdk.md
-      0005-external-engine-viewport-for-alpha.md
 
   apps/
     editor/
       src/                 # TypeScript frontend
-      src-tauri/           # Tauri Rust backend
+      src-tauri/           # Tauri Rust backend（独立 Cargo workspace）
 
   bridge/
     spec/
@@ -114,6 +188,7 @@ NorvesEditor/
       norves-bridge-core/
       norves-bridge-editor-client/
       norves-bridge-tools/
+      norves-bridge-dump/
 
     ts/
       packages/
@@ -125,18 +200,13 @@ NorvesEditor/
       examples/
         mock-engine/
 
-    tools/
-      bridge-inspector/
-
-    conformance/
-      fixtures/
-      runners/
-
   scripts/
-  tests/
+    verify.ps1             # 集約ゲートランナー
+    validate-bridge-fixtures.py
+    check-protocol-names.mjs
 ```
 
-`bridge/` は NorvesEditor repository 内のサブシステムです。UI と混ぜず、protocol / transport / SDK / conformance / mock engine を扱う別レイヤーとして管理します。
+`bridge/` は NorvesEditor リポジトリ内のサブシステムです。UI と混ぜず、protocol / transport / SDK / conformance / mock engine を扱う別レイヤーとして管理します。
 
 ---
 
@@ -152,7 +222,6 @@ Alpha architecture:
 │    - Game View panel                         │
 │    - Log panel                               │
 │    - Connection state                        │
-│    - Workspace/settings UI                   │
 │        │                                     │
 │        │ Tauri commands / events             │
 │        ▼                                     │
@@ -175,10 +244,8 @@ Alpha architecture:
 │        ▼                                     │
 │  Engine Adapter                               │
 │    - capabilities                             │
-│    - runtime status                           │
-│    - logs                                     │
+│    - runtime status / logs                   │
 │    - runtime commands                         │
-│    - optional scene/object data later         │
 │                                              │
 │  External Native Viewport Window              │
 └──────────────────────────────────────────────┘
@@ -206,218 +273,72 @@ NorvesLib adapter:
   NorvesLib-specific mapping. Not part of the generic bridge SDK.
 ```
 
-The TypeScript UI must not own raw WebSocket state. The Tauri Rust backend owns engine process state and Bridge connection state. The C++ engine SDK must not depend on Tauri, React, TypeScript, or NorvesLib internals.
+TypeScript UI は raw WebSocket state を持ちません。Tauri Rust backend がエンジンプロセス状態と Bridge 接続状態を所有します。C++ engine SDK は Tauri、React、TypeScript、NorvesLib に依存してはいけません。
 
 ---
 
 ## Technology Stack
-
-Planned Alpha stack:
 
 ```text
 Application shell:
   Tauri 2
 
 Editor backend:
-  Rust
-  Tokio
-  serde
-  tracing
+  Rust / Tokio / serde / tracing
 
 Editor frontend:
-  TypeScript
-  Vite
-  React by default unless an ADR changes it
+  TypeScript / Vite / React
 
 Bridge control channel:
-  WebSocket
-  JSON text messages
-  JSON-RPC inspired envelope
+  WebSocket + JSON text messages (JSON-RPC inspired envelope)
 
 Protocol validation:
-  JSON Schema
-  golden fixtures
+  JSON Schema + golden fixtures
 
 Engine SDK:
-  C++20 minimum
-  C++23 only after ADR/toolchain policy
-  CMake
-  standalone from NorvesLib
+  C++20 / CMake（standalone from NorvesLib）
 ```
-
-### Why Tauri
-
-NorvesEditor needs a modern UI, native process/filesystem integration, and a backend that can safely own long-lived engine connections. Tauri gives the editor a web-based UI surface while keeping process management and Bridge runtime in Rust.
-
-### Why Rust on the Editor side
-
-The Editor backend owns async process lifecycle, connection state, reconnection, heartbeat, event fan-out, and file/workspace operations. Rust and Tokio are a good fit for these long-lived, stateful, asynchronous tasks.
-
-### Why C++ on the Engine side
-
-Most target engines, including NorvesLib, are expected to have C++ cores. The engine-side SDK should be easy to embed into a C++ engine without requiring Rust runtime, Cargo integration, or FFI at the engine boundary.
-
-### Why WebSocket + JSON first
-
-Alpha prioritizes visibility, debuggability, and iteration speed. WebSocket + JSON lets the Editor and Engine exchange reliable request / response / event messages while keeping the wire format easy to inspect and validate.
-
-Binary codecs, Protobuf, UDP telemetry, shared memory, and frame streaming are post-alpha topics.
 
 ---
 
-## Bridge Protocol Direction
+## Known Limitations
 
-The Bridge protocol is JSON-RPC inspired but not strict JSON-RPC 2.0.
+Alpha の既知の制限事項（詳細は各ドキュメントを参照）:
 
-Every wire message should be represented by:
-
-```text
-- JSON Schema
-- positive golden fixture
-- negative fixture when validation behavior matters
-- Rust test
-- TypeScript test or type validation
-- C++ test when engine-side handling is involved
-```
-
-Example request shape:
-
-```json
-{
-  "bridge": "norves.editor.bridge",
-  "version": "0.1",
-  "kind": "request",
-  "id": "req-42",
-  "method": "runtime.play",
-  "params": {}
-}
-```
-
-Example event shape:
-
-```json
-{
-  "bridge": "norves.editor.bridge",
-  "version": "0.1",
-  "kind": "event",
-  "event": "log.message",
-  "params": {
-    "level": "info",
-    "category": "Engine",
-    "message": "Engine started"
-  }
-}
-```
-
-Required alpha methods:
-
-```text
-bridge.hello
-bridge.getCapabilities
-engine.getStatus
-engine.launchInfo
-runtime.play
-runtime.pause
-runtime.stop
-runtime.focusViewport
-log.subscribe
-log.unsubscribe
-```
-
-Required alpha events:
-
-```text
-bridge.connected
-bridge.disconnected
-engine.statusChanged
-engine.processExited
-runtime.stateChanged
-viewport.stateChanged
-log.message
-error.reported
-```
-
-Scene hierarchy, object snapshots, inspector editing, and asset browser integration are intentionally later work unless they become necessary for the alpha vertical slice.
+1. **Native viewport 非対応** — エンジンが外部ネイティブウィンドウを持つ。Tauri 内への埋め込みは post-alpha（[`docs/viewport-strategy.md`](docs/viewport-strategy.md)）。
+2. **scene/object/schema 系は alpha 対象外** — `scene.getTree` / `object.*` / `schema.*` は `not_supported`（[`docs/alpha-project-plan.md`](docs/alpha-project-plan.md)）。
+3. **エンジンパスの Settings UI 未実装** — `NORVES_ENGINE_PATH` 環境変数のみ。
+4. **log フィルタ未対応** — サーバー側フィルタなし、クライアント側フィルタのみ、単一購読のみ。
+5. **オーファンリスク** — エディター強制終了時のエンジンプロセス残留（Windows Job Object は post-alpha）。
+6. **NorvesLib は Windows + Vulkan SDK 必須** — mock engine は Vulkan 不要。
+7. **C++ configure 初回はネットワーク必要** — libwebsockets を FetchContent で取得（v4.3.3）。
+8. **localhost 専用** — `ws://127.0.0.1` のみ。remote エンドポイントは未対応。
 
 ---
 
-## Memory and Buffer Policy
+## Documentation Map
 
-Editor connection traffic is not expected to be game-runtime critical, so small control messages may be copied. However, APIs must not make later optimization impossible.
-
-Rules:
-
-```text
-- Do not expose live engine memory to the transport layer.
-- Engine adapters must convert engine state into snapshots, DTOs, or serialized values.
-- Buffer ownership must be explicit in public APIs.
-- Borrowed views are valid only for the documented callback scope.
-- Owned buffers remain valid until send completion, release, or explicit drop.
-- Large payload paths must define size limits and queue limits.
-- Large binary payloads should use attachments, streaming, file references, or later transport-specific mechanisms.
-```
-
-Alpha does not optimize for zero-copy transport. It does optimize for safe ownership boundaries.
-
----
-
-## Development Workflow
-
-This project is expected to be implemented with coding agents such as Codex. Read `AGENTS.md` before making changes.
-
-High-level workflow:
-
-```text
-1. Investigation
-2. Planning
-3. Plan Review
-4. Implementation
-5. Implementation Review
-6. Integration / Verification / Commit
-```
-
-Non-trivial tasks should be split into reviewable phases. Implementation and review should be performed by separate agents when using multi-agent orchestration.
-
-`AGENTS.md` and `CLAUDE.md` must be kept identical. If one is changed, apply the same change to the other.
-
----
-
-## Build and Verification
-
-The exact commands will be finalized when the repository is initialized. The expected shape is:
-
-```powershell
-# Frontend / Tauri app
-pnpm install
-pnpm --filter @norves/editor dev
-pnpm --filter @norves/editor build
-pnpm lint
-pnpm test
-
-# Rust workspace
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-
-# C++ engine SDK / mock engine
-cmake -S bridge/cpp -B build/cpp -G "Visual Studio 17 2022"
-cmake --build build/cpp --config Debug
-ctest --test-dir build/cpp -C Debug --output-on-failure
-```
-
-Once available, the preferred full verification command should be:
-
-```powershell
-./scripts/verify.ps1
-```
-
-Generated outputs such as `node_modules/`, Cargo `target/`, CMake build directories, Tauri generated files, logs, and packaged binaries must not be committed.
+| ドキュメント | 内容 |
+|---|---|
+| [`docs/alpha-project-plan.md`](docs/alpha-project-plan.md) | Alpha 全体計画・Workstream 一覧 |
+| [`docs/engine-integration.md`](docs/engine-integration.md) | 接続契約（Connection Contract）・Launch Sequence・検証済みメソッド/イベント一覧 |
+| [`docs/build.md`](docs/build.md) | ビルド・検証手順（人間向け quick build）と troubleshooting |
+| [`docs/engine-profile.md`](docs/engine-profile.md) | エンジン実行ファイルのパス解決と env（`NORVES_ENGINE_PATH`） |
+| [`docs/protocol-debugging.md`](docs/protocol-debugging.md) | Bridge プロトコルのデバッグ（schema/fixtures・bridge-dump・ログの見方） |
+| [`docs/norveslib-integration.md`](docs/norveslib-integration.md) | NorvesLib を参照エンジンとして接続・ビルドする手順 |
+| [`docs/viewport-strategy.md`](docs/viewport-strategy.md) | Viewport 戦略（alpha: 外部ウィンドウ、post-alpha: 埋め込み研究） |
+| [`docs/architecture.md`](docs/architecture.md) | アーキテクチャ詳細 |
+| [`docs/memory-buffer-policy.md`](docs/memory-buffer-policy.md) | メモリ・バッファ所有権ポリシー |
+| [`docs/agent-guide/build-and-verify.md`](docs/agent-guide/build-and-verify.md) | ビルド・検証ゲートの詳細規約 |
+| [`docs/agent-guide/norveslib-adapter.md`](docs/agent-guide/norveslib-adapter.md) | NorvesLib adapter 規約 |
+| [`docs/agent-guide/README.md`](docs/agent-guide/README.md) | agent-guide インデックス |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records |
 
 ---
 
 ## Alpha Workstreams
 
-Alpha development is organized into workstreams. Workstreams are planning areas, not necessarily single implementation tasks.
+Alpha development is organized into workstreams:
 
 ```text
 A. Repository foundation
@@ -436,20 +357,7 @@ M. Documentation and developer experience
 N. Post-alpha foundations
 ```
 
-Recommended order:
-
-```text
-repository foundation
-→ architecture docs / ADRs
-→ bridge protocol fixtures
-→ Rust editor client runtime
-→ C++ engine SDK and mock engine
-→ WebSocket connection
-→ Tauri app shell
-→ engine process lifecycle
-→ Game View panel
-→ NorvesLib adapter
-```
+詳細: [`docs/alpha-project-plan.md`](docs/alpha-project-plan.md)
 
 ---
 
@@ -470,9 +378,19 @@ Norves-gRPC / NorvesOnline:
 
 ---
 
+## Development Workflow
+
+このプロジェクトは coding agents（Codex / Claude Code）を使って実装されています。変更を加える前に `AGENTS.md`（または `CLAUDE.md`）を読んでください。
+
+ワークフロー: Investigation → Planning → Plan Review → Implementation → Implementation Review → Integration / Verification / Commit
+
+詳細: [`docs/agent-guide/orchestration.md`](docs/agent-guide/orchestration.md)
+
+---
+
 ## Contributing
 
-This repository is in early planning. Contributions should preserve the core boundaries:
+アーキテクチャ境界を守ってください:
 
 ```text
 - Bridge protocol and SDK must not be mixed into UI components.
@@ -483,7 +401,7 @@ This repository is in early planning. Contributions should preserve the core bou
 - Memory and buffer ownership must be explicit.
 ```
 
-Before implementing non-trivial changes, create or update the relevant plan and ADR.
+非自明な変更を加える前に、関連する plan と ADR を作成・更新してください。
 
 ---
 
