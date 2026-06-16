@@ -43,7 +43,7 @@
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use norves_bridge_core::{
@@ -51,9 +51,10 @@ use norves_bridge_core::{
     VersionString,
 };
 use norves_bridge_editor_client::{
-    connect_with_retry, parse_hello_result, parse_status_result, HelloParams, RequestError,
-    RetryConfig,
+    connect_with_retry, parse_hello_result, parse_log_message, parse_status_result, HelloParams,
+    RequestError, RetryConfig,
 };
+use tokio::sync::broadcast;
 
 /// How long to wait for the engine's `READY <port>` stdout line.
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -526,4 +527,225 @@ async fn engine_launch_kill_relaunch_contract() {
     // RAII guard kills + reaps the second engine on drop.
     drop(guard2);
     eprintln!("[PASS] Kill 2: second engine reaped -- relaunch contract verified");
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for event streaming tests
+// ---------------------------------------------------------------------------
+
+/// Waits for the next broadcast event whose `event` name matches `name`,
+/// skipping non-matching events. Returns the `params` map on success, or
+/// `None` when `timeout` elapses before a matching event arrives.
+///
+/// `Lagged` errors (slow consumer fell behind the broadcast ring) are treated
+/// as advisory: the receiver resumes from the next available event and keeps
+/// waiting. `Closed` (broadcaster gone) breaks the loop and returns `None`.
+async fn wait_for_event(
+    events: &mut broadcast::Receiver<Arc<ValidatedEnvelope>>,
+    name: &str,
+    timeout: Duration,
+) -> Option<Option<serde_json::Map<String, serde_json::Value>>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(remaining, events.recv()).await {
+            Err(_elapsed) => return None,
+            Ok(Ok(env)) => {
+                if let ValidatedEnvelope::Event { event, params, .. } = &*env {
+                    if event.as_str() == name {
+                        return Some(params.clone());
+                    }
+                }
+                // Non-matching event: keep waiting.
+            }
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
+                // Fell behind; resume reading from next available slot.
+                continue;
+            }
+            Ok(Err(broadcast::error::RecvError::Closed)) => return None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// engine_event_streaming_contract
+// ---------------------------------------------------------------------------
+
+/// Server-initiated event streaming contract against the real NorvesLib engine.
+///
+/// Opt-in via `NORVES_NORVESLIB_ENGINE_PATH`; skips (passes) when unset or
+/// pointing at a non-file path.  The env var is the same as
+/// `engine_runtime_control_contract`.
+///
+/// Steps:
+///  1. Spawn real engine, wait for READY.
+///  2. connect_with_retry -> subscribe_events() BEFORE bridge.hello so no
+///     event is missed.
+///  3. bridge.hello -> session established.
+///  4. log.subscribe (params: None -> empty object params allowed by schema)
+///     -> subscriptionId non-empty string.
+///  5. runtime.play -> accepted=true.
+///  6. Wait for runtime.stateChanged event; assert params["state"]=="playing".
+///  7. Wait for log.message event; parse with parse_log_message, assert
+///     message non-empty and level is a valid LogLevel.
+///  8. log.unsubscribe (params: {subscriptionId}) -> ok=true.
+///  9. handle.shutdown().
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_event_streaming_contract() {
+    // --- Opt-in gate ---
+    let exe = match std::env::var("NORVES_NORVESLIB_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_event_streaming_contract: \
+                 set NORVES_NORVESLIB_ENGINE_PATH to the NorvesLib engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_event_streaming_contract: \
+             NORVES_NORVESLIB_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    // How long each event wait is allowed to take.
+    const EVENT_TIMEOUT: Duration = Duration::from_secs(10);
+
+    // --- Step 1: spawn and wait for READY ---
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+    eprintln!("[PASS] engine_event_streaming_contract: READY port={port}");
+
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+
+    // --- Step 2: connect and subscribe to events BEFORE hello ---
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    // Subscribe before sending any request so no event can be lost.
+    let mut events = handle.subscribe_events();
+
+    // --- Step 3: bridge.hello ---
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    let hello_outcome = parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+    assert!(
+        !hello_outcome.session_id.is_empty(),
+        "[bridge.hello] session_id must be non-empty"
+    );
+    eprintln!(
+        "[PASS] bridge.hello: session_id={}",
+        hello_outcome.session_id
+    );
+
+    // --- Step 4: log.subscribe ---
+    // Schema: params object is optional (all properties optional), so we send
+    // an empty params map (Some({})) to satisfy "type": "object" while
+    // providing no filter — equivalent to "subscribe to everything".
+    let log_sub_value = send_and_expect_result(
+        &handle,
+        request_envelope("es-log-sub", "log.subscribe", Some(serde_json::Map::new())),
+        "log.subscribe",
+    )
+    .await;
+    let subscription_id = log_sub_value["subscriptionId"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!("[log.subscribe] expected non-empty subscriptionId string, got: {log_sub_value}")
+        })
+        .to_owned();
+    assert!(
+        !subscription_id.is_empty(),
+        "[log.subscribe] subscriptionId must be non-empty"
+    );
+    eprintln!("[PASS] log.subscribe: subscriptionId={subscription_id}");
+
+    // --- Step 5: runtime.play ---
+    let play_value = send_and_expect_result(
+        &handle,
+        request_envelope("es-play", "runtime.play", None),
+        "runtime.play",
+    )
+    .await;
+    assert_eq!(
+        play_value["accepted"].as_bool(),
+        Some(true),
+        "[runtime.play] expected accepted=true, got: {play_value}"
+    );
+    eprintln!("[PASS] runtime.play: accepted=true");
+
+    // --- Step 6: wait for runtime.stateChanged ---
+    let state_changed_params = wait_for_event(&mut events, "runtime.stateChanged", EVENT_TIMEOUT)
+        .await
+        .unwrap_or_else(|| {
+            panic!("[runtime.stateChanged] event did not arrive within {EVENT_TIMEOUT:?}")
+        });
+    let params_map =
+        state_changed_params.unwrap_or_else(|| panic!("[runtime.stateChanged] params was None"));
+    let state_val = params_map.get("state").unwrap_or_else(|| {
+        panic!("[runtime.stateChanged] params missing 'state' key: {params_map:?}")
+    });
+    assert_eq!(
+        state_val.as_str(),
+        Some("playing"),
+        "[runtime.stateChanged] expected state=playing, got: {state_val}"
+    );
+    eprintln!("[PASS] runtime.stateChanged: state=playing");
+
+    // --- Step 7: wait for log.message ---
+    let log_params = wait_for_event(&mut events, "log.message", EVENT_TIMEOUT)
+        .await
+        .unwrap_or_else(|| panic!("[log.message] event did not arrive within {EVENT_TIMEOUT:?}"));
+    let log_params_map = log_params.unwrap_or_else(|| panic!("[log.message] params was None"));
+    let log_value = serde_json::Value::Object(log_params_map);
+    let log_msg = parse_log_message(&log_value)
+        .unwrap_or_else(|e| panic!("[log.message] parse_log_message failed: {e}"));
+    assert!(
+        !log_msg.message.is_empty(),
+        "[log.message] message must be non-empty"
+    );
+    // LogLevel is a closed enum (Trace/Debug/Info/Warn/Error); parse success
+    // already proves the level is one of the five valid values.
+    eprintln!(
+        "[PASS] log.message: level={:?} message={:?}",
+        log_msg.level, log_msg.message
+    );
+
+    // --- Step 8: log.unsubscribe ---
+    // Schema: subscriptionId is required in params.
+    let mut unsub_params = serde_json::Map::new();
+    unsub_params.insert(
+        "subscriptionId".to_owned(),
+        serde_json::Value::String(subscription_id.clone()),
+    );
+    let unsub_value = send_and_expect_result(
+        &handle,
+        request_envelope("es-log-unsub", "log.unsubscribe", Some(unsub_params)),
+        "log.unsubscribe",
+    )
+    .await;
+    assert_eq!(
+        unsub_value["ok"].as_bool(),
+        Some(true),
+        "[log.unsubscribe] expected ok=true, got: {unsub_value}"
+    );
+    eprintln!("[PASS] log.unsubscribe: ok=true");
+
+    // --- Step 9: orderly shutdown ---
+    handle.shutdown().await;
+    eprintln!("[PASS] engine_event_streaming_contract: all steps passed");
+    // _guard drops here, killing the engine process.
 }
