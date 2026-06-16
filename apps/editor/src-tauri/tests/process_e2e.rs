@@ -43,15 +43,18 @@
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use norves_bridge_core::{
-    CorrelationId, MethodName, ResponsePayload, ValidatedEnvelope, VersionString,
+    CorrelationId, EngineState, MethodName, ResponsePayload, RuntimeState, ValidatedEnvelope,
+    VersionString,
 };
 use norves_bridge_editor_client::{
-    connect_with_retry, parse_hello_result, HelloParams, RequestError, RetryConfig,
+    connect_with_retry, parse_hello_result, parse_log_message, parse_status_result, HelloParams,
+    RequestError, RetryConfig,
 };
+use tokio::sync::broadcast;
 
 /// How long to wait for the engine's `READY <port>` stdout line.
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -206,6 +209,258 @@ async fn handshake_on_port(port: u16) -> String {
     outcome.session_id
 }
 
+/// Builds a generic request [`ValidatedEnvelope`] with the given `id`, `method`,
+/// and optional params map. Reuses the same version string as [`hello_envelope`].
+fn request_envelope(
+    id: &str,
+    method: &str,
+    params: Option<serde_json::Map<String, serde_json::Value>>,
+) -> ValidatedEnvelope {
+    let version = VersionString::try_from("0.1".to_owned()).expect("0.1 is a valid version");
+    ValidatedEnvelope::Request {
+        version,
+        id: CorrelationId::try_from(id.to_owned()).expect("non-empty id"),
+        method: MethodName::try_from(method.to_owned()).expect("namespaced method"),
+        params,
+        session_id: None,
+        seq: None,
+    }
+}
+
+/// Sends `envelope` through `handle` and extracts the `serde_json::Value` result,
+/// panicking with `step` in the message on any failure.
+async fn send_and_expect_result(
+    handle: &norves_bridge_editor_client::DispatchHandle,
+    envelope: ValidatedEnvelope,
+    step: &str,
+) -> serde_json::Value {
+    let response = tokio::time::timeout(RECV_TIMEOUT, handle.request(envelope, RECV_TIMEOUT))
+        .await
+        .unwrap_or_else(|_| panic!("[{step}] timed out waiting for response"))
+        .unwrap_or_else(|e: RequestError| panic!("[{step}] request error: {e}"));
+    match response {
+        ResponsePayload::Result(value) => value,
+        ResponsePayload::Error(err) => {
+            panic!("[{step}] engine returned protocol error: {err:?}")
+        }
+    }
+}
+
+/// Runtime control contract test against the real NorvesLib engine.
+///
+/// Opt-in via `NORVES_NORVESLIB_ENGINE_PATH`; skips (passes) when unset or
+/// pointing at a non-file path. The env var is distinct from `NORVES_ENGINE_PATH`
+/// (used by the mock engine) because the mock returns runtimeState=Edit and
+/// never transitions, so play/pause/stop assertions would always fail against it.
+///
+/// Steps performed over a **single** persistent connection:
+/// 1. bridge.hello   → session established
+/// 2. engine.getStatus → engineState=Running, runtimeState=Edit
+/// 3. runtime.play   → accepted=true
+/// 4. engine.getStatus → runtimeState=Playing
+/// 5. runtime.pause  → accepted=true
+/// 6. engine.getStatus → runtimeState=Paused
+/// 7. runtime.stop   → accepted=true
+/// 8. engine.getStatus → runtimeState=Stopped
+/// 9. runtime.focusViewport → focused key present (bool, value not fixed)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_runtime_control_contract() {
+    // Opt-in gate: set NORVES_NORVESLIB_ENGINE_PATH to the real engine binary.
+    let exe = match std::env::var("NORVES_NORVESLIB_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_runtime_control_contract: \
+                 set NORVES_NORVESLIB_ENGINE_PATH to the NorvesLib engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_runtime_control_contract: \
+             NORVES_NORVESLIB_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    // Launch the real engine and wait for its READY <port> line.
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+
+    // Open a single persistent connection; do NOT shut it down between steps.
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    // --- Step 1: bridge.hello ---
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    let hello_outcome = parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+    assert!(
+        !hello_outcome.session_id.is_empty(),
+        "[bridge.hello] session_id must be non-empty"
+    );
+    eprintln!(
+        "[PASS] bridge.hello: session_id={}",
+        hello_outcome.session_id
+    );
+
+    // --- Step 2: engine.getStatus (initial: Edit) ---
+    let status_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-status-1", "engine.getStatus", None),
+        "engine.getStatus#1",
+    )
+    .await;
+    let snapshot = parse_status_result(&status_value)
+        .unwrap_or_else(|e| panic!("[engine.getStatus#1] parse_status_result failed: {e}"));
+    assert_eq!(
+        snapshot.engine_state,
+        EngineState::Running,
+        "[engine.getStatus#1] expected engineState=Running, got {:?}",
+        snapshot.engine_state
+    );
+    assert_eq!(
+        snapshot.runtime_state,
+        RuntimeState::Edit,
+        "[engine.getStatus#1] expected runtimeState=Edit, got {:?}",
+        snapshot.runtime_state
+    );
+    eprintln!(
+        "[PASS] engine.getStatus#1: engineState={:?} runtimeState={:?}",
+        snapshot.engine_state, snapshot.runtime_state
+    );
+
+    // --- Step 3: runtime.play ---
+    let play_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-play", "runtime.play", None),
+        "runtime.play",
+    )
+    .await;
+    assert_eq!(
+        play_value["accepted"].as_bool(),
+        Some(true),
+        "[runtime.play] expected accepted=true, got: {}",
+        play_value
+    );
+    eprintln!("[PASS] runtime.play: accepted=true");
+
+    // --- Step 4: engine.getStatus (Playing) ---
+    let status_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-status-2", "engine.getStatus", None),
+        "engine.getStatus#2",
+    )
+    .await;
+    let snapshot = parse_status_result(&status_value)
+        .unwrap_or_else(|e| panic!("[engine.getStatus#2] parse_status_result failed: {e}"));
+    assert_eq!(
+        snapshot.runtime_state,
+        RuntimeState::Playing,
+        "[engine.getStatus#2] expected runtimeState=Playing, got {:?}",
+        snapshot.runtime_state
+    );
+    eprintln!("[PASS] engine.getStatus#2: runtimeState=Playing");
+
+    // --- Step 5: runtime.pause ---
+    let pause_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-pause", "runtime.pause", None),
+        "runtime.pause",
+    )
+    .await;
+    assert_eq!(
+        pause_value["accepted"].as_bool(),
+        Some(true),
+        "[runtime.pause] expected accepted=true, got: {}",
+        pause_value
+    );
+    eprintln!("[PASS] runtime.pause: accepted=true");
+
+    // --- Step 6: engine.getStatus (Paused) ---
+    let status_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-status-3", "engine.getStatus", None),
+        "engine.getStatus#3",
+    )
+    .await;
+    let snapshot = parse_status_result(&status_value)
+        .unwrap_or_else(|e| panic!("[engine.getStatus#3] parse_status_result failed: {e}"));
+    assert_eq!(
+        snapshot.runtime_state,
+        RuntimeState::Paused,
+        "[engine.getStatus#3] expected runtimeState=Paused, got {:?}",
+        snapshot.runtime_state
+    );
+    eprintln!("[PASS] engine.getStatus#3: runtimeState=Paused");
+
+    // --- Step 7: runtime.stop ---
+    let stop_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-stop", "runtime.stop", None),
+        "runtime.stop",
+    )
+    .await;
+    assert_eq!(
+        stop_value["accepted"].as_bool(),
+        Some(true),
+        "[runtime.stop] expected accepted=true, got: {}",
+        stop_value
+    );
+    eprintln!("[PASS] runtime.stop: accepted=true");
+
+    // --- Step 8: engine.getStatus (Stopped) ---
+    let status_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-status-4", "engine.getStatus", None),
+        "engine.getStatus#4",
+    )
+    .await;
+    let snapshot = parse_status_result(&status_value)
+        .unwrap_or_else(|e| panic!("[engine.getStatus#4] parse_status_result failed: {e}"));
+    assert_eq!(
+        snapshot.runtime_state,
+        RuntimeState::Stopped,
+        "[engine.getStatus#4] expected runtimeState=Stopped, got {:?}",
+        snapshot.runtime_state
+    );
+    eprintln!("[PASS] engine.getStatus#4: runtimeState=Stopped");
+
+    // --- Step 9: runtime.focusViewport ---
+    // Value is not fixed: headless / focus-competition may yield false.
+    // Only key existence and bool type are asserted.
+    let focus_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-focus", "runtime.focusViewport", None),
+        "runtime.focusViewport",
+    )
+    .await;
+    assert!(
+        focus_value["focused"].as_bool().is_some(),
+        "[runtime.focusViewport] expected 'focused' key with bool value, got: {}",
+        focus_value
+    );
+    eprintln!(
+        "[PASS] runtime.focusViewport: focused={:?}",
+        focus_value["focused"].as_bool()
+    );
+
+    // Orderly shutdown of the connection.
+    handle.shutdown().await;
+    eprintln!("[PASS] engine_runtime_control_contract: all steps passed");
+    // _guard drops here, killing the engine process.
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn engine_launch_kill_relaunch_contract() {
     // Opt-in gate: without NORVES_ENGINE_PATH set (or when the path is not a
@@ -272,4 +527,352 @@ async fn engine_launch_kill_relaunch_contract() {
     // RAII guard kills + reaps the second engine on drop.
     drop(guard2);
     eprintln!("[PASS] Kill 2: second engine reaped -- relaunch contract verified");
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for event streaming tests
+// ---------------------------------------------------------------------------
+
+/// Waits for the next broadcast event whose `event` name matches `name`,
+/// skipping non-matching events. Returns the `params` map on success, or
+/// `None` when `timeout` elapses before a matching event arrives.
+///
+/// `Lagged` errors (slow consumer fell behind the broadcast ring) are treated
+/// as advisory: the receiver resumes from the next available event and keeps
+/// waiting. `Closed` (broadcaster gone) breaks the loop and returns `None`.
+async fn wait_for_event(
+    events: &mut broadcast::Receiver<Arc<ValidatedEnvelope>>,
+    name: &str,
+    timeout: Duration,
+) -> Option<Option<serde_json::Map<String, serde_json::Value>>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(remaining, events.recv()).await {
+            Err(_elapsed) => return None,
+            Ok(Ok(env)) => {
+                if let ValidatedEnvelope::Event { event, params, .. } = &*env {
+                    if event.as_str() == name {
+                        return Some(params.clone());
+                    }
+                }
+                // Non-matching event: keep waiting.
+            }
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
+                // Fell behind; resume reading from next available slot.
+                continue;
+            }
+            Ok(Err(broadcast::error::RecvError::Closed)) => return None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// engine_event_streaming_contract
+// ---------------------------------------------------------------------------
+
+/// Server-initiated event streaming contract against the real NorvesLib engine.
+///
+/// Opt-in via `NORVES_NORVESLIB_ENGINE_PATH`; skips (passes) when unset or
+/// pointing at a non-file path.  The env var is the same as
+/// `engine_runtime_control_contract`.
+///
+/// Steps:
+///  1. Spawn real engine, wait for READY.
+///  2. connect_with_retry -> subscribe_events() BEFORE bridge.hello so no
+///     event is missed.
+///  3. bridge.hello -> session established.
+///  4. log.subscribe (params: None -> empty object params allowed by schema)
+///     -> subscriptionId non-empty string.
+///  5. runtime.play -> accepted=true.
+///  6. Wait for runtime.stateChanged event; assert params["state"]=="playing".
+///  7. Wait for log.message event; parse with parse_log_message, assert
+///     message non-empty and level is a valid LogLevel.
+///  8. log.unsubscribe (params: {subscriptionId}) -> ok=true.
+///  9. handle.shutdown().
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_event_streaming_contract() {
+    // --- Opt-in gate ---
+    let exe = match std::env::var("NORVES_NORVESLIB_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_event_streaming_contract: \
+                 set NORVES_NORVESLIB_ENGINE_PATH to the NorvesLib engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_event_streaming_contract: \
+             NORVES_NORVESLIB_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    // How long each event wait is allowed to take.
+    const EVENT_TIMEOUT: Duration = Duration::from_secs(10);
+
+    // --- Step 1: spawn and wait for READY ---
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+    eprintln!("[PASS] engine_event_streaming_contract: READY port={port}");
+
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+
+    // --- Step 2: connect and subscribe to events BEFORE hello ---
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    // Subscribe before sending any request so no event can be lost.
+    let mut events = handle.subscribe_events();
+
+    // --- Step 3: bridge.hello ---
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    let hello_outcome = parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+    assert!(
+        !hello_outcome.session_id.is_empty(),
+        "[bridge.hello] session_id must be non-empty"
+    );
+    eprintln!(
+        "[PASS] bridge.hello: session_id={}",
+        hello_outcome.session_id
+    );
+
+    // --- Step 4: log.subscribe ---
+    // Schema: params object is optional (all properties optional), so we send
+    // an empty params map (Some({})) to satisfy "type": "object" while
+    // providing no filter — equivalent to "subscribe to everything".
+    let log_sub_value = send_and_expect_result(
+        &handle,
+        request_envelope("es-log-sub", "log.subscribe", Some(serde_json::Map::new())),
+        "log.subscribe",
+    )
+    .await;
+    let subscription_id = log_sub_value["subscriptionId"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!("[log.subscribe] expected non-empty subscriptionId string, got: {log_sub_value}")
+        })
+        .to_owned();
+    assert!(
+        !subscription_id.is_empty(),
+        "[log.subscribe] subscriptionId must be non-empty"
+    );
+    eprintln!("[PASS] log.subscribe: subscriptionId={subscription_id}");
+
+    // --- Step 5: runtime.play ---
+    let play_value = send_and_expect_result(
+        &handle,
+        request_envelope("es-play", "runtime.play", None),
+        "runtime.play",
+    )
+    .await;
+    assert_eq!(
+        play_value["accepted"].as_bool(),
+        Some(true),
+        "[runtime.play] expected accepted=true, got: {play_value}"
+    );
+    eprintln!("[PASS] runtime.play: accepted=true");
+
+    // --- Step 6: wait for runtime.stateChanged ---
+    let state_changed_params = wait_for_event(&mut events, "runtime.stateChanged", EVENT_TIMEOUT)
+        .await
+        .unwrap_or_else(|| {
+            panic!("[runtime.stateChanged] event did not arrive within {EVENT_TIMEOUT:?}")
+        });
+    let params_map =
+        state_changed_params.unwrap_or_else(|| panic!("[runtime.stateChanged] params was None"));
+    let state_val = params_map.get("state").unwrap_or_else(|| {
+        panic!("[runtime.stateChanged] params missing 'state' key: {params_map:?}")
+    });
+    assert_eq!(
+        state_val.as_str(),
+        Some("playing"),
+        "[runtime.stateChanged] expected state=playing, got: {state_val}"
+    );
+    eprintln!("[PASS] runtime.stateChanged: state=playing");
+
+    // --- Step 7: wait for log.message ---
+    let log_params = wait_for_event(&mut events, "log.message", EVENT_TIMEOUT)
+        .await
+        .unwrap_or_else(|| panic!("[log.message] event did not arrive within {EVENT_TIMEOUT:?}"));
+    let log_params_map = log_params.unwrap_or_else(|| panic!("[log.message] params was None"));
+    let log_value = serde_json::Value::Object(log_params_map);
+    let log_msg = parse_log_message(&log_value)
+        .unwrap_or_else(|e| panic!("[log.message] parse_log_message failed: {e}"));
+    assert!(
+        !log_msg.message.is_empty(),
+        "[log.message] message must be non-empty"
+    );
+    // LogLevel is a closed enum (Trace/Debug/Info/Warn/Error); parse success
+    // already proves the level is one of the five valid values.
+    eprintln!(
+        "[PASS] log.message: level={:?} message={:?}",
+        log_msg.level, log_msg.message
+    );
+
+    // --- Step 8: log.unsubscribe ---
+    // Schema: subscriptionId is required in params.
+    let mut unsub_params = serde_json::Map::new();
+    unsub_params.insert(
+        "subscriptionId".to_owned(),
+        serde_json::Value::String(subscription_id.clone()),
+    );
+    let unsub_value = send_and_expect_result(
+        &handle,
+        request_envelope("es-log-unsub", "log.unsubscribe", Some(unsub_params)),
+        "log.unsubscribe",
+    )
+    .await;
+    assert_eq!(
+        unsub_value["ok"].as_bool(),
+        Some(true),
+        "[log.unsubscribe] expected ok=true, got: {unsub_value}"
+    );
+    eprintln!("[PASS] log.unsubscribe: ok=true");
+
+    // --- Step 9: orderly shutdown ---
+    handle.shutdown().await;
+    eprintln!("[PASS] engine_event_streaming_contract: all steps passed");
+    // _guard drops here, killing the engine process.
+}
+
+// ---------------------------------------------------------------------------
+// engine_launch_info_schema_compliance_contract
+// ---------------------------------------------------------------------------
+
+/// Schema compliance contract for `engine.launchInfo` against the real NorvesLib engine.
+///
+/// Opt-in via `NORVES_NORVESLIB_ENGINE_PATH`; skips (passes) when unset or
+/// pointing at a non-file path.  The env var is shared with
+/// `engine_runtime_control_contract` and `engine_event_streaming_contract`.
+///
+/// This test explicitly contrasts the NorvesLib adapter's schema-compliant
+/// `{pid, title}` result against the reference mock engine's non-compliant
+/// `{launched: true}` response, verifying that the adapter returns
+/// `additionalProperties:false` compliant output.
+///
+/// Steps:
+///  1. Spawn real engine, wait for READY.
+///  2. connect_with_retry -> single persistent connection.
+///  3. bridge.hello -> session established (session_id non-empty).
+///  4. engine.launchInfo (params: None) -> result with pid and title.
+///  5. Assert pid is Some(i64) >= 0 (NorvesLib returns GetCurrentProcessId).
+///  6. Assert title is Some(&str) and non-empty (no hardcoded value).
+///  7. Assert "launched" key is absent (mock non-compliance artifact).
+///  8. handle.shutdown().
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_launch_info_schema_compliance_contract() {
+    // Opt-in gate: set NORVES_NORVESLIB_ENGINE_PATH to the real engine binary.
+    let exe = match std::env::var("NORVES_NORVESLIB_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_launch_info_schema_compliance_contract: \
+                 set NORVES_NORVESLIB_ENGINE_PATH to the NorvesLib engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_launch_info_schema_compliance_contract: \
+             NORVES_NORVESLIB_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    // --- Step 1: spawn and wait for READY ---
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+    eprintln!("[PASS] engine_launch_info_schema_compliance_contract: READY port={port}");
+
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+
+    // --- Step 2: open a single persistent connection ---
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    // --- Step 3: bridge.hello ---
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    let hello_outcome = parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+    assert!(
+        !hello_outcome.session_id.is_empty(),
+        "[bridge.hello] session_id must be non-empty"
+    );
+    eprintln!(
+        "[PASS] bridge.hello: session_id={}",
+        hello_outcome.session_id
+    );
+
+    // --- Step 4: engine.launchInfo ---
+    // params schema has no properties and additionalProperties:false, so params=None is correct.
+    let launch_info_value = send_and_expect_result(
+        &handle,
+        request_envelope("li-1", "engine.launchInfo", None),
+        "engine.launchInfo",
+    )
+    .await;
+
+    // --- Step 5: pid must be present and >= 0 ---
+    // NorvesLib adapter returns GetCurrentProcessId() which is always a non-negative integer.
+    let pid = launch_info_value["pid"].as_i64().unwrap_or_else(|| {
+        panic!(
+            "[engine.launchInfo] expected 'pid' as integer, got: {}",
+            launch_info_value
+        )
+    });
+    assert!(pid >= 0, "[engine.launchInfo] pid must be >= 0, got: {pid}");
+
+    // --- Step 6: title must be present and non-empty ---
+    // The exact string is engine-specific ("NorvesLib Game" or similar); we do not hardcode it.
+    let title = launch_info_value["title"].as_str().unwrap_or_else(|| {
+        panic!(
+            "[engine.launchInfo] expected 'title' as string, got: {}",
+            launch_info_value
+        )
+    });
+    assert!(
+        !title.is_empty(),
+        "[engine.launchInfo] title must be non-empty"
+    );
+
+    // --- Step 7: "launched" key must be absent ---
+    // The reference mock engine (norves_mock_engine) returns {launched: true}, which violates
+    // additionalProperties:false in the schema. The NorvesLib adapter must NOT include this key.
+    // Asserting its absence proves schema compliance and documents the mock/real contrast.
+    assert!(
+        launch_info_value.get("launched").is_none(),
+        "[engine.launchInfo] 'launched' key must be absent (schema: additionalProperties:false); \
+         got: {}",
+        launch_info_value
+    );
+
+    eprintln!("[PASS] engine.launchInfo: pid={pid} title={title:?}");
+
+    // --- Step 8: orderly shutdown ---
+    handle.shutdown().await;
+    eprintln!("[PASS] engine_launch_info_schema_compliance_contract: all steps passed");
+    // _guard drops here, killing the engine process.
 }

@@ -39,4 +39,9 @@ if(MSVC)
     target_compile_options(norves_bridge_engine_sdk PRIVATE /W4)
 endif()
 
-add_subdirectory(tests)
+# Tests are gated (Workstream L-P0) so a nested parent build can opt out: this
+# also prevents the fixtures test's ${CMAKE_SOURCE_DIR}/../spec/fixtures path from
+# resolving against the wrong root when bridge/cpp is not the CMake source root.
+if(NORVES_BRIDGE_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()
