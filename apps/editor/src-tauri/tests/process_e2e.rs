@@ -47,10 +47,12 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use norves_bridge_core::{
-    CorrelationId, MethodName, ResponsePayload, ValidatedEnvelope, VersionString,
+    CorrelationId, EngineState, MethodName, ResponsePayload, RuntimeState, ValidatedEnvelope,
+    VersionString,
 };
 use norves_bridge_editor_client::{
-    connect_with_retry, parse_hello_result, HelloParams, RequestError, RetryConfig,
+    connect_with_retry, parse_hello_result, parse_status_result, HelloParams, RequestError,
+    RetryConfig,
 };
 
 /// How long to wait for the engine's `READY <port>` stdout line.
@@ -204,6 +206,258 @@ async fn handshake_on_port(port: u16) -> String {
 
     handle.shutdown().await;
     outcome.session_id
+}
+
+/// Builds a generic request [`ValidatedEnvelope`] with the given `id`, `method`,
+/// and optional params map. Reuses the same version string as [`hello_envelope`].
+fn request_envelope(
+    id: &str,
+    method: &str,
+    params: Option<serde_json::Map<String, serde_json::Value>>,
+) -> ValidatedEnvelope {
+    let version = VersionString::try_from("0.1".to_owned()).expect("0.1 is a valid version");
+    ValidatedEnvelope::Request {
+        version,
+        id: CorrelationId::try_from(id.to_owned()).expect("non-empty id"),
+        method: MethodName::try_from(method.to_owned()).expect("namespaced method"),
+        params,
+        session_id: None,
+        seq: None,
+    }
+}
+
+/// Sends `envelope` through `handle` and extracts the `serde_json::Value` result,
+/// panicking with `step` in the message on any failure.
+async fn send_and_expect_result(
+    handle: &norves_bridge_editor_client::DispatchHandle,
+    envelope: ValidatedEnvelope,
+    step: &str,
+) -> serde_json::Value {
+    let response = tokio::time::timeout(RECV_TIMEOUT, handle.request(envelope, RECV_TIMEOUT))
+        .await
+        .unwrap_or_else(|_| panic!("[{step}] timed out waiting for response"))
+        .unwrap_or_else(|e: RequestError| panic!("[{step}] request error: {e}"));
+    match response {
+        ResponsePayload::Result(value) => value,
+        ResponsePayload::Error(err) => {
+            panic!("[{step}] engine returned protocol error: {err:?}")
+        }
+    }
+}
+
+/// Runtime control contract test against the real NorvesLib engine.
+///
+/// Opt-in via `NORVES_NORVESLIB_ENGINE_PATH`; skips (passes) when unset or
+/// pointing at a non-file path. The env var is distinct from `NORVES_ENGINE_PATH`
+/// (used by the mock engine) because the mock returns runtimeState=Edit and
+/// never transitions, so play/pause/stop assertions would always fail against it.
+///
+/// Steps performed over a **single** persistent connection:
+/// 1. bridge.hello   → session established
+/// 2. engine.getStatus → engineState=Running, runtimeState=Edit
+/// 3. runtime.play   → accepted=true
+/// 4. engine.getStatus → runtimeState=Playing
+/// 5. runtime.pause  → accepted=true
+/// 6. engine.getStatus → runtimeState=Paused
+/// 7. runtime.stop   → accepted=true
+/// 8. engine.getStatus → runtimeState=Stopped
+/// 9. runtime.focusViewport → focused key present (bool, value not fixed)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_runtime_control_contract() {
+    // Opt-in gate: set NORVES_NORVESLIB_ENGINE_PATH to the real engine binary.
+    let exe = match std::env::var("NORVES_NORVESLIB_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_runtime_control_contract: \
+                 set NORVES_NORVESLIB_ENGINE_PATH to the NorvesLib engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_runtime_control_contract: \
+             NORVES_NORVESLIB_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    // Launch the real engine and wait for its READY <port> line.
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+
+    // Open a single persistent connection; do NOT shut it down between steps.
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    // --- Step 1: bridge.hello ---
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    let hello_outcome = parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+    assert!(
+        !hello_outcome.session_id.is_empty(),
+        "[bridge.hello] session_id must be non-empty"
+    );
+    eprintln!(
+        "[PASS] bridge.hello: session_id={}",
+        hello_outcome.session_id
+    );
+
+    // --- Step 2: engine.getStatus (initial: Edit) ---
+    let status_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-status-1", "engine.getStatus", None),
+        "engine.getStatus#1",
+    )
+    .await;
+    let snapshot = parse_status_result(&status_value)
+        .unwrap_or_else(|e| panic!("[engine.getStatus#1] parse_status_result failed: {e}"));
+    assert_eq!(
+        snapshot.engine_state,
+        EngineState::Running,
+        "[engine.getStatus#1] expected engineState=Running, got {:?}",
+        snapshot.engine_state
+    );
+    assert_eq!(
+        snapshot.runtime_state,
+        RuntimeState::Edit,
+        "[engine.getStatus#1] expected runtimeState=Edit, got {:?}",
+        snapshot.runtime_state
+    );
+    eprintln!(
+        "[PASS] engine.getStatus#1: engineState={:?} runtimeState={:?}",
+        snapshot.engine_state, snapshot.runtime_state
+    );
+
+    // --- Step 3: runtime.play ---
+    let play_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-play", "runtime.play", None),
+        "runtime.play",
+    )
+    .await;
+    assert_eq!(
+        play_value["accepted"].as_bool(),
+        Some(true),
+        "[runtime.play] expected accepted=true, got: {}",
+        play_value
+    );
+    eprintln!("[PASS] runtime.play: accepted=true");
+
+    // --- Step 4: engine.getStatus (Playing) ---
+    let status_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-status-2", "engine.getStatus", None),
+        "engine.getStatus#2",
+    )
+    .await;
+    let snapshot = parse_status_result(&status_value)
+        .unwrap_or_else(|e| panic!("[engine.getStatus#2] parse_status_result failed: {e}"));
+    assert_eq!(
+        snapshot.runtime_state,
+        RuntimeState::Playing,
+        "[engine.getStatus#2] expected runtimeState=Playing, got {:?}",
+        snapshot.runtime_state
+    );
+    eprintln!("[PASS] engine.getStatus#2: runtimeState=Playing");
+
+    // --- Step 5: runtime.pause ---
+    let pause_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-pause", "runtime.pause", None),
+        "runtime.pause",
+    )
+    .await;
+    assert_eq!(
+        pause_value["accepted"].as_bool(),
+        Some(true),
+        "[runtime.pause] expected accepted=true, got: {}",
+        pause_value
+    );
+    eprintln!("[PASS] runtime.pause: accepted=true");
+
+    // --- Step 6: engine.getStatus (Paused) ---
+    let status_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-status-3", "engine.getStatus", None),
+        "engine.getStatus#3",
+    )
+    .await;
+    let snapshot = parse_status_result(&status_value)
+        .unwrap_or_else(|e| panic!("[engine.getStatus#3] parse_status_result failed: {e}"));
+    assert_eq!(
+        snapshot.runtime_state,
+        RuntimeState::Paused,
+        "[engine.getStatus#3] expected runtimeState=Paused, got {:?}",
+        snapshot.runtime_state
+    );
+    eprintln!("[PASS] engine.getStatus#3: runtimeState=Paused");
+
+    // --- Step 7: runtime.stop ---
+    let stop_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-stop", "runtime.stop", None),
+        "runtime.stop",
+    )
+    .await;
+    assert_eq!(
+        stop_value["accepted"].as_bool(),
+        Some(true),
+        "[runtime.stop] expected accepted=true, got: {}",
+        stop_value
+    );
+    eprintln!("[PASS] runtime.stop: accepted=true");
+
+    // --- Step 8: engine.getStatus (Stopped) ---
+    let status_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-status-4", "engine.getStatus", None),
+        "engine.getStatus#4",
+    )
+    .await;
+    let snapshot = parse_status_result(&status_value)
+        .unwrap_or_else(|e| panic!("[engine.getStatus#4] parse_status_result failed: {e}"));
+    assert_eq!(
+        snapshot.runtime_state,
+        RuntimeState::Stopped,
+        "[engine.getStatus#4] expected runtimeState=Stopped, got {:?}",
+        snapshot.runtime_state
+    );
+    eprintln!("[PASS] engine.getStatus#4: runtimeState=Stopped");
+
+    // --- Step 9: runtime.focusViewport ---
+    // Value is not fixed: headless / focus-competition may yield false.
+    // Only key existence and bool type are asserted.
+    let focus_value = send_and_expect_result(
+        &handle,
+        request_envelope("rc-focus", "runtime.focusViewport", None),
+        "runtime.focusViewport",
+    )
+    .await;
+    assert!(
+        focus_value["focused"].as_bool().is_some(),
+        "[runtime.focusViewport] expected 'focused' key with bool value, got: {}",
+        focus_value
+    );
+    eprintln!(
+        "[PASS] runtime.focusViewport: focused={:?}",
+        focus_value["focused"].as_bool()
+    );
+
+    // Orderly shutdown of the connection.
+    handle.shutdown().await;
+    eprintln!("[PASS] engine_runtime_control_contract: all steps passed");
+    // _guard drops here, killing the engine process.
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
