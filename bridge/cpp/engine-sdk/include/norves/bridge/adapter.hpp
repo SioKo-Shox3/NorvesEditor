@@ -46,7 +46,7 @@ namespace norves::bridge
 
         // bridge.hello. `selectedProtocolVersion` is the version the server already
         // chose by intersecting the client's offered protocolVersions (in client
-        // preference order) with this SDK's kSupportedProtocolVersions. The adapter
+        // preference order) with this SDK's SupportedProtocolVersions. The adapter
         // builds the result payload (sessionId / protocolVersion / server /
         // optional capabilities) as a JsonValue and is responsible for placing
         // `selectedProtocolVersion` into the result's protocolVersion field.
@@ -127,7 +127,7 @@ namespace norves::bridge
         static Result<JsonValue, BridgeError> not_supported(const JsonValue& /*params*/)
         {
             return Result<JsonValue, BridgeError>::err(
-                BridgeError{std::string(kErrorMethodNotSupported),
+                BridgeError{std::string(ErrorMethodNotSupported),
                             "Method is not supported by this engine adapter.", std::nullopt});
         }
     };

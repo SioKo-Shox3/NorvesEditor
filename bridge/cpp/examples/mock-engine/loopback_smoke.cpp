@@ -56,9 +56,9 @@ namespace
     // Matches the residential recv loop's behaviour: after sending a response, if the
     // adapter flagged a log.subscribe, emit the log.message burst. Ends on clean EOF
     // (client close), mirroring main.cpp's loop termination via close().
-    constexpr int kLogBurst = 3;
+    constexpr int LogBurst = 3;
 
-    Envelope decode_or_fail(std::string_view wire)
+    Envelope DecodeOrFail(std::string_view wire)
     {
         auto decoded = decode_envelope(wire);
         if (decoded.is_err())
@@ -71,8 +71,8 @@ namespace
 
     // Engine read loop, structurally identical to main.cpp's residential loop but
     // driven over the loopback transport. Returns when recv() reports clean EOF.
-    void run_engine(ITransport& engine, BridgeEngineServer& server, MockAdapter& adapter,
-                    const std::string& log_event_frame)
+    void RunEngine(ITransport& engine, BridgeEngineServer& server, MockAdapter& adapter,
+                   const std::string& logEventFrame)
     {
         while (true)
         {
@@ -91,9 +91,9 @@ namespace
             }
             if (adapter.emit_log_burst.exchange(false))
             {
-                for (int i = 0; i < kLogBurst; ++i)
+                for (int i = 0; i < LogBurst; ++i)
                 {
-                    if (!engine.send(std::string(log_event_frame)))
+                    if (!engine.send(std::string(logEventFrame)))
                     {
                         return;
                     }
@@ -103,8 +103,8 @@ namespace
     }
 
     // Builds a request wire frame (same shape as the SDK tests' helper).
-    std::string request_frame(std::string_view id, std::string_view method,
-                              std::string_view params_json)
+    std::string RequestFrame(std::string_view id, std::string_view method,
+                             std::string_view paramsJson)
     {
         std::string frame =
             R"({"bridge":"norves.editor.bridge","version":"0.1","kind":"request","id":")";
@@ -112,16 +112,16 @@ namespace
         frame += R"(","method":")";
         frame += std::string(method);
         frame += R"(")";
-        if (!params_json.empty())
+        if (!paramsJson.empty())
         {
             frame += R"(,"params":)";
-            frame += std::string(params_json);
+            frame += std::string(paramsJson);
         }
         frame += "}";
         return frame;
     }
 
-    void test_mock_engine_loopback()
+    void TestMockEngineLoopback()
     {
         auto [client, engine] = make_loopback_pair(16);
 
@@ -132,13 +132,13 @@ namespace
         log.level = LogLevel::Info;
         log.message = "Game started";
         log.category = "Engine";
-        const std::string log_event_frame = server.emitEvent("log.message", log.to_json());
+        const std::string logEventFrame = server.emitEvent("log.message", log.to_json());
 
-        std::thread engine_thread(run_engine, std::ref(*engine), std::ref(server),
-                                  std::ref(adapter), std::cref(log_event_frame));
+        std::thread engineThread(RunEngine, std::ref(*engine), std::ref(server), std::ref(adapter),
+                                 std::cref(logEventFrame));
 
         // 1. bridge.hello -------------------------------------------------------
-        client->send(request_frame(
+        client->send(RequestFrame(
             "req-hello", "bridge.hello",
             R"({"role":"editor","clientName":"NorvesEditor","protocolVersions":["0.1"]})"));
         {
@@ -146,7 +146,7 @@ namespace
             NORVES_CHECK(resp.has_value());
             if (resp.has_value())
             {
-                const Envelope env = decode_or_fail(*resp);
+                const Envelope env = DecodeOrFail(*resp);
                 NORVES_CHECK(env.kind == Kind::Response);
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-hello"});
                 NORVES_CHECK(env.result.has_value());
@@ -167,13 +167,13 @@ namespace
         }
 
         // 2. runtime.play -------------------------------------------------------
-        client->send(request_frame("req-play", "runtime.play", "{}"));
+        client->send(RequestFrame("req-play", "runtime.play", "{}"));
         {
             std::optional<std::string> resp = client->recv();
             NORVES_CHECK(resp.has_value());
             if (resp.has_value())
             {
-                const Envelope env = decode_or_fail(*resp);
+                const Envelope env = DecodeOrFail(*resp);
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-play"});
                 NORVES_CHECK(env.result.has_value());
                 if (env.result.has_value())
@@ -192,25 +192,25 @@ namespace
         }
 
         // 3. log.subscribe + log.message burst ----------------------------------
-        client->send(request_frame("req-logsub", "log.subscribe", ""));
+        client->send(RequestFrame("req-logsub", "log.subscribe", ""));
         {
             std::optional<std::string> ack = client->recv();
             NORVES_CHECK(ack.has_value());  // the log.subscribe response.
             if (ack.has_value())
             {
-                const Envelope env = decode_or_fail(*ack);
+                const Envelope env = DecodeOrFail(*ack);
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-logsub"});
                 NORVES_CHECK(env.result.has_value());
             }
 
-            // The engine emits kLogBurst log.message events after the ack, in order.
-            for (int i = 0; i < kLogBurst; ++i)
+            // The engine emits LogBurst log.message events after the ack, in order.
+            for (int i = 0; i < LogBurst; ++i)
             {
                 std::optional<std::string> event = client->recv();
                 NORVES_CHECK(event.has_value());
                 if (event.has_value())
                 {
-                    const Envelope env = decode_or_fail(*event);
+                    const Envelope env = DecodeOrFail(*event);
                     NORVES_CHECK(env.kind == Kind::Event);
                     NORVES_CHECK_EQ(env.event, std::optional<std::string>{"log.message"});
                     NORVES_CHECK(env.params.has_value());
@@ -232,13 +232,13 @@ namespace
         // Orderly teardown: close the client's outbound direction so the engine's
         // recv() drains to nullopt, ending its loop; then join (no hang).
         client->close();
-        engine_thread.join();
+        engineThread.join();
     }
 
 }  // namespace
 
 int main()
 {
-    test_mock_engine_loopback();
+    TestMockEngineLoopback();
     return norves::test::summary();
 }

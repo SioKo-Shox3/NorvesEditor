@@ -61,7 +61,7 @@ namespace
     using norves::bridge::dto::ServerInfo;
     using norves::bridge::dto::StatusSnapshot;
 
-    JsonValue parse_or_fail(std::string_view text)
+    JsonValue ParseOrFail(std::string_view text)
     {
         auto parsed = JsonValue::parse(text);
         if (parsed.is_err())
@@ -92,7 +92,7 @@ namespace
         Result<JsonValue, BridgeError> getCapabilities(const JsonValue& /*params*/) override
         {
             return Result<JsonValue, BridgeError>::ok(
-                parse_or_fail(R"({"capabilities":[{"name":"runtime.control"}]})"));
+                ParseOrFail(R"({"capabilities":[{"name":"runtime.control"}]})"));
         }
 
         Result<JsonValue, BridgeError> getStatus(const JsonValue& /*params*/) override
@@ -108,7 +108,7 @@ namespace
 
         Result<JsonValue, BridgeError> launchInfo(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_fail(R"({"launched":true})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"launched":true})"));
         }
 
         Result<JsonValue, BridgeError> runtimePlay(const JsonValue& /*params*/) override
@@ -121,35 +121,33 @@ namespace
 
         Result<JsonValue, BridgeError> runtimePause(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(
-                parse_or_fail(R"({"runtimeState":"paused"})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"runtimeState":"paused"})"));
         }
 
         Result<JsonValue, BridgeError> runtimeStop(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(
-                parse_or_fail(R"({"runtimeState":"stopped"})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"runtimeState":"stopped"})"));
         }
 
         Result<JsonValue, BridgeError> runtimeFocusViewport(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_fail(R"({"focused":true})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"focused":true})"));
         }
 
         Result<JsonValue, BridgeError> logSubscribe(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_fail(R"({})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({})"));
         }
 
         Result<JsonValue, BridgeError> logUnsubscribe(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_fail(R"({})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({})"));
         }
     };
 
     // Wire request builder (same shape as dispatch_test's helper).
-    std::string request_frame(std::string_view id, std::string_view method,
-                              std::string_view params_json)
+    std::string RequestFrame(std::string_view id, std::string_view method,
+                             std::string_view paramsJson)
     {
         std::string frame =
             R"({"bridge":"norves.editor.bridge","version":"0.1","kind":"request","id":")";
@@ -157,16 +155,16 @@ namespace
         frame += R"(","method":")";
         frame += std::string(method);
         frame += R"(")";
-        if (!params_json.empty())
+        if (!paramsJson.empty())
         {
             frame += R"(,"params":)";
-            frame += std::string(params_json);
+            frame += std::string(paramsJson);
         }
         frame += "}";
         return frame;
     }
 
-    Envelope decode_or_fail(std::string_view wire)
+    Envelope DecodeOrFail(std::string_view wire)
     {
         auto decoded = decode_envelope(wire);
         if (decoded.is_err())
@@ -180,8 +178,8 @@ namespace
     // The engine read loop: pull a frame, dispatch through the server, send any
     // response back. Returns when recv() reports clean EOF (client closed), so the
     // spawning test can join it deterministically.
-    void run_engine(ITransport& engine, BridgeEngineServer& server,
-                    const std::string& log_event_frame, std::atomic<bool>& emit_log)
+    void RunEngine(ITransport& engine, BridgeEngineServer& server, const std::string& logEventFrame,
+                   std::atomic<bool>& emitLog)
     {
         while (true)
         {
@@ -198,15 +196,15 @@ namespace
                     return;  // peer gone mid-flight.
                 }
             }
-            // The client sets emit_log just before sending log.subscribe, so the
+            // The client sets emitLog just before sending log.subscribe, so the
             // iteration that handles the subscribe frame sees the flag. On that
             // iteration we emit exactly one log.message event AFTER sending the
             // subscribe response above. Emitting strictly after the response keeps
             // delivery deterministic: the ack reaches the client's inbound queue
             // before the event, so the client recv()s them in that fixed order.
-            if (emit_log.exchange(false))
+            if (emitLog.exchange(false))
             {
-                if (!engine.send(std::string(log_event_frame)))
+                if (!engine.send(std::string(logEventFrame)))
                 {
                     return;
                 }
@@ -216,7 +214,7 @@ namespace
 
     // --- End-to-end round trip ---------------------------------------------------
 
-    void test_loopback_round_trip()
+    void TestLoopbackRoundTrip()
     {
         auto [client, engine] = make_loopback_pair(16);
 
@@ -228,25 +226,25 @@ namespace
         log.level = LogLevel::Info;
         log.message = "Game started";
         log.category = "Engine";
-        const std::string log_event_frame = server.emitEvent("log.message", log.to_json());
+        const std::string logEventFrame = server.emitEvent("log.message", log.to_json());
 
-        std::atomic<bool> emit_log{false};
-        std::thread engine_thread(run_engine, std::ref(*engine), std::ref(server),
-                                  std::cref(log_event_frame), std::ref(emit_log));
+        std::atomic<bool> emitLog{false};
+        std::thread engineThread(RunEngine, std::ref(*engine), std::ref(server),
+                                 std::cref(logEventFrame), std::ref(emitLog));
 
         // 1. bridge.hello -------------------------------------------------------
         HelloParams hello;
         hello.role = "editor";
         hello.clientName = "NorvesEditor";
         hello.protocolVersions = {"0.1"};
-        client->send(request_frame("req-hello", "bridge.hello", hello.to_json().dump()));
+        client->send(RequestFrame("req-hello", "bridge.hello", hello.to_json().dump()));
 
         {
             std::optional<std::string> resp = client->recv();
             NORVES_CHECK(resp.has_value());
             if (resp.has_value())
             {
-                const Envelope env = decode_or_fail(*resp);
+                const Envelope env = DecodeOrFail(*resp);
                 NORVES_CHECK(env.kind == Kind::Response);
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-hello"});
                 NORVES_CHECK(env.result.has_value());
@@ -267,13 +265,13 @@ namespace
         }
 
         // 2. engine.getStatus ---------------------------------------------------
-        client->send(request_frame("req-status", "engine.getStatus", ""));
+        client->send(RequestFrame("req-status", "engine.getStatus", ""));
         {
             std::optional<std::string> resp = client->recv();
             NORVES_CHECK(resp.has_value());
             if (resp.has_value())
             {
-                const Envelope env = decode_or_fail(*resp);
+                const Envelope env = DecodeOrFail(*resp);
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-status"});
                 NORVES_CHECK(env.result.has_value());
                 if (env.result.has_value())
@@ -293,13 +291,13 @@ namespace
         }
 
         // 3. runtime.play (empty params) ----------------------------------------
-        client->send(request_frame("req-play", "runtime.play", "{}"));
+        client->send(RequestFrame("req-play", "runtime.play", "{}"));
         {
             std::optional<std::string> resp = client->recv();
             NORVES_CHECK(resp.has_value());
             if (resp.has_value())
             {
-                const Envelope env = decode_or_fail(*resp);
+                const Envelope env = DecodeOrFail(*resp);
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-play"});
                 NORVES_CHECK(env.result.has_value());
                 if (env.result.has_value())
@@ -320,14 +318,14 @@ namespace
         // 4. log.message event --------------------------------------------------
         // Subscribe, then the engine emits one event after acking. The ack and the
         // event both arrive on the client's inbound queue, in that order.
-        emit_log.store(true);
-        client->send(request_frame("req-logsub", "log.subscribe", ""));
+        emitLog.store(true);
+        client->send(RequestFrame("req-logsub", "log.subscribe", ""));
         {
             std::optional<std::string> ack = client->recv();
             NORVES_CHECK(ack.has_value());  // the log.subscribe response.
             if (ack.has_value())
             {
-                const Envelope env = decode_or_fail(*ack);
+                const Envelope env = DecodeOrFail(*ack);
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-logsub"});
                 NORVES_CHECK(env.result.has_value());
             }
@@ -336,7 +334,7 @@ namespace
             NORVES_CHECK(event.has_value());  // the log.message event.
             if (event.has_value())
             {
-                const Envelope env = decode_or_fail(*event);
+                const Envelope env = DecodeOrFail(*event);
                 NORVES_CHECK(env.kind == Kind::Event);
                 NORVES_CHECK_EQ(env.event, std::optional<std::string>{"log.message"});
                 NORVES_CHECK(env.params.has_value());
@@ -357,12 +355,12 @@ namespace
         // Orderly teardown: close the client's outbound direction so the engine's
         // recv() drains and returns nullopt, ending its loop; then join.
         client->close();
-        engine_thread.join();
+        engineThread.join();
     }
 
     // --- DTO round-trip + unknown-key rejection ----------------------------------
 
-    void test_dto_round_trips()
+    void TestDtoRoundTrips()
     {
         {
             HelloParams x;
@@ -427,47 +425,47 @@ namespace
         }
     }
 
-    void test_unknown_key_rejected()
+    void TestUnknownKeyRejected()
     {
         // Top-level unknown key.
         {
-            auto bad = HelloResult::from_json(parse_or_fail(
+            auto bad = HelloResult::from_json(ParseOrFail(
                 R"({"sessionId":"s","protocolVersion":"0.1","server":{"name":"E"},"extra":1})"));
             NORVES_CHECK(bad.is_err());
         }
         // Unknown key in the nested `server` object (recursive additionalProperties).
         {
-            auto bad = HelloResult::from_json(parse_or_fail(
+            auto bad = HelloResult::from_json(ParseOrFail(
                 R"({"sessionId":"s","protocolVersion":"0.1","server":{"name":"E","rogue":true}})"));
             NORVES_CHECK(bad.is_err());
         }
         // Unknown key in params.
         {
-            auto bad = HelloParams::from_json(parse_or_fail(
+            auto bad = HelloParams::from_json(ParseOrFail(
                 R"({"role":"editor","clientName":"N","protocolVersions":["0.1"],"caps":[]})"));
             NORVES_CHECK(bad.is_err());
         }
         // Unknown key in status snapshot.
         {
             auto bad = StatusSnapshot::from_json(
-                parse_or_fail(R"({"engineState":"ready","runtimeState":"edit","weird":0})"));
+                ParseOrFail(R"({"engineState":"ready","runtimeState":"edit","weird":0})"));
             NORVES_CHECK(bad.is_err());
         }
         // Unknown key in log event.
         {
             auto bad = LogMessageEvent::from_json(
-                parse_or_fail(R"({"level":"info","message":"m","mystery":1})"));
+                ParseOrFail(R"({"level":"info","message":"m","mystery":1})"));
             NORVES_CHECK(bad.is_err());
         }
         // Required-field omission is also rejected.
         {
-            auto bad = StatusSnapshot::from_json(parse_or_fail(R"({"engineState":"ready"})"));
+            auto bad = StatusSnapshot::from_json(ParseOrFail(R"({"engineState":"ready"})"));
             NORVES_CHECK(bad.is_err());
         }
         // Out-of-enum value is rejected.
         {
             auto bad = StatusSnapshot::from_json(
-                parse_or_fail(R"({"engineState":"booting","runtimeState":"edit"})"));
+                ParseOrFail(R"({"engineState":"booting","runtimeState":"edit"})"));
             NORVES_CHECK(bad.is_err());
         }
     }
@@ -476,8 +474,8 @@ namespace
 
 int main()
 {
-    test_loopback_round_trip();
-    test_dto_round_trips();
-    test_unknown_key_rejected();
+    TestLoopbackRoundTrip();
+    TestDtoRoundTrips();
+    TestUnknownKeyRejected();
     return norves::test::summary();
 }

@@ -22,7 +22,7 @@ namespace norves::bridge
 {
 
     // Protocol marker constant for the NorvesEditor Bridge.
-    inline constexpr std::string_view kBridgeMarker = "norves.editor.bridge";
+    inline constexpr std::string_view BridgeMarker = "norves.editor.bridge";
 
     // Envelope discriminator. Schema: enum ["request", "response", "event"].
     enum class Kind
@@ -37,7 +37,7 @@ namespace norves::bridge
     // mirror Envelope::validate in the Rust reference.
     struct Envelope
     {
-        // Protocol marker. Always the constant kBridgeMarker on the wire; carried as
+        // Protocol marker. Always the constant BridgeMarker on the wire; carried as
         // a string so the value round-trips verbatim.
         std::string bridge;
         // Protocol version string, MAJOR.MINOR.

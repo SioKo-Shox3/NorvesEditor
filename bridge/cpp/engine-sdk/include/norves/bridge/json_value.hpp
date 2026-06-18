@@ -75,13 +75,13 @@ namespace norves::bridge
         friend struct detail::JsonValueImpl;
         explicit JsonValue(std::unique_ptr<detail::JsonValueImpl> impl);
 
-        std::unique_ptr<detail::JsonValueImpl> impl_;
+        std::unique_ptr<detail::JsonValueImpl> m_Impl;
 
         // Internal accessors used only by implementation TUs (codec.cpp,
         // json_value.cpp). They return the opaque impl pointer; callers outside
         // those TUs cannot complete `detail::JsonValueImpl`, so this leaks nothing.
-        [[nodiscard]] const detail::JsonValueImpl* impl() const { return impl_.get(); }
-        [[nodiscard]] detail::JsonValueImpl* impl() { return impl_.get(); }
+        [[nodiscard]] const detail::JsonValueImpl* impl() const { return m_Impl.get(); }
+        [[nodiscard]] detail::JsonValueImpl* impl() { return m_Impl.get(); }
 
         // Implementation-side free helpers (defined in the .cpp TUs) reach the
         // private members through these.

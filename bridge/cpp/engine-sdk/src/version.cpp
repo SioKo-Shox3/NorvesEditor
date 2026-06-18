@@ -6,8 +6,8 @@
 namespace norves::bridge::detail
 {
 
-    static_assert(!kSupportedProtocolVersions.empty(),
+    static_assert(!SupportedProtocolVersions.empty(),
                   "the SDK must support at least one protocol version");
-    static_assert(!kSdkVersion.empty(), "kSdkVersion must be non-empty");
+    static_assert(!SdkVersion.empty(), "SdkVersion must be non-empty");
 
 }  // namespace norves::bridge::detail

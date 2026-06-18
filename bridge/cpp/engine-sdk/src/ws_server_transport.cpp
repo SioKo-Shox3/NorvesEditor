@@ -28,13 +28,13 @@
 // Threading model (one service thread owns ALL libwebsockets state):
 //   - service thread: lws_create_context -> lws_service loop -> lws_context_
 //     destroy. Receives frames (LWS_CALLBACK_RECEIVE), reassembles fragments,
-//     pushes them onto recv_queue_. Drains send_queue_ and performs every
+//     pushes them onto m_RecvQueue. Drains m_SendQueue and performs every
 //     lws_write inside LWS_CALLBACK_SERVER_WRITEABLE, with partial-write
 //     re-arming so a frame is finished before the next one starts (order
 //     preserved). Owns the single active wsi; clears it on LWS_CALLBACK_CLOSED.
-//   - external send(): push onto send_queue_ (OverflowPolicy::Reject => false on
+//   - external send(): push onto m_SendQueue (OverflowPolicy::Reject => false on
 //     full) and lws_cancel_service() to wake the loop. NEVER touches wsi/context.
-//   - consumer recv(): wait_and_pop() on recv_queue_; nullopt after close+drain.
+//   - consumer recv(): wait_and_pop() on m_RecvQueue; nullopt after close+drain.
 //   - close(): set the close flag + lws_cancel_service(); shut down both queues
 //     so a blocked recv() wakes and drains to nullopt and send() returns false.
 //     Real wsi/context teardown happens on the service thread. Idempotent: the
@@ -59,7 +59,7 @@ namespace norves::bridge
             std::size_t sent = 0;  // payload bytes already written
         };
 
-        OutFrame make_out_frame(const std::string& payload)
+        OutFrame MakeOutFrame(const std::string& payload)
         {
             OutFrame f;
             f.buf.resize(LWS_PRE + payload.size());
@@ -74,16 +74,16 @@ namespace norves::bridge
         class WebSocketServerTransport : public ITransport
         {
         public:
-            WebSocketServerTransport(std::size_t send_capacity, std::size_t recv_capacity,
-                                     ILogSink* log_sink)
-                : log_sink_(log_sink),
+            WebSocketServerTransport(std::size_t sendCapacity, std::size_t recvCapacity,
+                                     ILogSink* logSink)
+                : m_LogSink(logSink),
                   // Send: back-pressure. A full send queue makes send() return false
                   // rather than evicting frames.
-                  send_queue_(send_capacity, OverflowPolicy::Reject, log_sink),
+                  m_SendQueue(sendCapacity, OverflowPolicy::Reject, logSink),
                   // Receive: never silently drop. We treat overflow as fatal ourselves
                   // (close the connection); Reject means push() returns false so the
                   // service thread can detect the overflow and act on it.
-                  recv_queue_(recv_capacity, OverflowPolicy::Reject, log_sink)
+                  m_RecvQueue(recvCapacity, OverflowPolicy::Reject, logSink)
             {
             }
 
@@ -105,47 +105,47 @@ namespace norves::bridge
                 std::memset(&info, 0, sizeof(info));
                 info.port = static_cast<int>(port);
                 info.iface = "127.0.0.1";  // loopback only; never 0.0.0.0
-                info.protocols = protocols_;
+                info.protocols = m_Protocols;
                 info.gid = -1;
                 info.uid = -1;
                 info.user = this;  // reachable from the static callback via lws_context_user
 
-                context_ = lws_create_context(&info);
-                if (context_ == nullptr)
+                m_Context = lws_create_context(&info);
+                if (m_Context == nullptr)
                 {
                     warn("failed to create lws context / bind 127.0.0.1:" + std::to_string(port) +
                          " (port in use?)");
                     return false;
                 }
 
-                service_thread_ = std::thread([this] { service_loop(); });
+                m_ServiceThread = std::thread([this] { service_loop(); });
                 return true;
             }
 
             bool send(std::string frame) override
             {
-                if (closed_.load(std::memory_order_acquire))
+                if (m_bClosed.load(std::memory_order_acquire))
                 {
                     return false;
                 }
                 // Push onto the send queue (Reject => false on full = back-pressure) and
                 // wake the service thread. We do NOT touch wsi/context here.
-                if (!send_queue_.push(std::move(frame)))
+                if (!m_SendQueue.push(std::move(frame)))
                 {
                     return false;
                 }
-                if (context_ != nullptr)
+                if (m_Context != nullptr)
                 {
-                    lws_cancel_service(context_);
+                    lws_cancel_service(m_Context);
                 }
                 return true;
             }
 
             std::optional<std::string> recv() override
             {
-                // Blocks until a frame arrives or recv_queue_ is shut down (close()),
+                // Blocks until a frame arrives or m_RecvQueue is shut down (close()),
                 // after which it drains remaining frames and yields nullopt.
-                return recv_queue_.wait_and_pop();
+                return m_RecvQueue.wait_and_pop();
             }
 
             void close() override
@@ -153,25 +153,25 @@ namespace norves::bridge
                 // Idempotent: only the first caller flips the flag, shuts the queues,
                 // wakes the service loop and joins it.
                 bool expected = false;
-                if (!closed_.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+                if (!m_bClosed.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
                 {
                     return;
                 }
 
                 // Wake a blocked recv() so it drains and returns nullopt, and make
                 // subsequent send() (after the flag) return false.
-                recv_queue_.shutdown();
-                send_queue_.shutdown();
+                m_RecvQueue.shutdown();
+                m_SendQueue.shutdown();
 
                 // Ask the service thread to leave its loop. lws_cancel_service is the
                 // only cross-thread-safe lws call; the real teardown is on that thread.
-                if (context_ != nullptr)
+                if (m_Context != nullptr)
                 {
-                    lws_cancel_service(context_);
+                    lws_cancel_service(m_Context);
                 }
-                if (service_thread_.joinable())
+                if (m_ServiceThread.joinable())
                 {
-                    service_thread_.join();
+                    m_ServiceThread.join();
                 }
             }
 
@@ -180,36 +180,36 @@ namespace norves::bridge
 
             void service_loop()
             {
-                while (!closed_.load(std::memory_order_acquire))
+                while (!m_bClosed.load(std::memory_order_acquire))
                 {
                     // Returns on the timeout, on incoming traffic, or when woken by
                     // lws_cancel_service (send() / close()). All wsi/write work happens
                     // in callbacks dispatched from here.
-                    lws_service(context_, 50);
+                    lws_service(m_Context, 50);
                     pump_writable();
                 }
                 // Drain a final time so a frame enqueued just before close still gets a
                 // writable request honoured if the client is still up; harmless if not.
                 pump_writable();
-                lws_context_destroy(context_);
-                // Intentionally do NOT null context_ here. After start() (which writes it
-                // before the service thread exists, establishing happens-before) context_
+                lws_context_destroy(m_Context);
+                // Intentionally do NOT null m_Context here. After start() (which writes it
+                // before the service thread exists, establishing happens-before) m_Context
                 // is never written again, so it is a read-only shared value: the service
                 // thread reads it in lws_service(); external close()/send() read it under
-                // the closed_ guard before join(). Writing nullptr here would race those
+                // the m_bClosed guard before join(). Writing nullptr here would race those
                 // external reads. lws_context_destroy makes the handle dangling, but no
                 // path dereferences it afterwards: close() is idempotent (CAS rejects the
-                // second caller before touching context_), and send() returns false once
-                // closed_ is set, so neither lws_cancel_service nor lws_service runs again.
+                // second caller before touching m_Context), and send() returns false once
+                // m_bClosed is set, so neither lws_cancel_service nor lws_service runs again.
             }
 
             // If there is an active connection and pending outbound frames, ask lws for
             // a writable callback. Called only from the service thread.
             void pump_writable()
             {
-                if (active_wsi_ != nullptr && (current_out_.has_value() || send_queue_.size() > 0))
+                if (m_ActiveWsi != nullptr && (m_CurrentOut.has_value() || m_SendQueue.size() > 0))
                 {
-                    lws_callback_on_writable(active_wsi_);
+                    lws_callback_on_writable(m_ActiveWsi);
                 }
             }
 
@@ -217,29 +217,29 @@ namespace norves::bridge
             // chunk; re-arms until the current frame is fully written, then moves on.
             int on_writable(struct lws* wsi)
             {
-                if (wsi != active_wsi_)
+                if (wsi != m_ActiveWsi)
                 {
                     return 0;  // stale wsi; ignore
                 }
-                if (!current_out_.has_value())
+                if (!m_CurrentOut.has_value())
                 {
-                    auto next = send_queue_.pop();
+                    auto next = m_SendQueue.pop();
                     if (!next.has_value())
                     {
                         return 0;  // nothing to send right now
                     }
-                    current_out_ = make_out_frame(*next);
+                    m_CurrentOut = MakeOutFrame(*next);
                 }
 
-                OutFrame& fr = *current_out_;
+                OutFrame& fr = *m_CurrentOut;
                 std::size_t remaining = fr.payload_len - fr.sent;
-                std::size_t attempt = remaining < kChunkCap ? remaining : kChunkCap;
+                std::size_t attempt = remaining < ChunkCap ? remaining : ChunkCap;
 
-                const bool first_chunk = (fr.sent == 0);
-                const bool last_chunk = (fr.sent + attempt) >= fr.payload_len;
+                const bool bFirstChunk = (fr.sent == 0);
+                const bool bLastChunk = (fr.sent + attempt) >= fr.payload_len;
 
-                int flags = first_chunk ? LWS_WRITE_TEXT : LWS_WRITE_CONTINUATION;
-                if (!last_chunk)
+                int flags = bFirstChunk ? LWS_WRITE_TEXT : LWS_WRITE_CONTINUATION;
+                if (!bLastChunk)
                 {
                     flags |= LWS_WRITE_NO_FIN;
                 }
@@ -259,9 +259,9 @@ namespace norves::bridge
                 fr.sent += static_cast<std::size_t>(n);
                 if (fr.sent >= fr.payload_len)
                 {
-                    current_out_.reset();  // frame done; next writable picks the next one
+                    m_CurrentOut.reset();  // frame done; next writable picks the next one
                 }
-                if (current_out_.has_value() || send_queue_.size() > 0)
+                if (m_CurrentOut.has_value() || m_SendQueue.size() > 0)
                 {
                     lws_callback_on_writable(wsi);
                 }
@@ -269,33 +269,33 @@ namespace norves::bridge
             }
 
             // LWS_CALLBACK_RECEIVE handler (service thread). Reassembles continuation
-            // fragments into one message, then pushes it onto recv_queue_.
+            // fragments into one message, then pushes it onto m_RecvQueue.
             int on_receive(struct lws* wsi, void* in, std::size_t len)
             {
-                if (wsi != active_wsi_)
+                if (wsi != m_ActiveWsi)
                 {
                     return 0;  // not the active connection; ignore
                 }
                 if (in != nullptr && len > 0)
                 {
-                    recv_acc_.append(static_cast<const char*>(in), len);
+                    m_RecvAcc.append(static_cast<const char*>(in), len);
                 }
                 if (lws_is_final_fragment(wsi) && lws_remaining_packet_payload(wsi) == 0)
                 {
-                    std::string message = std::move(recv_acc_);
-                    recv_acc_.clear();
+                    std::string message = std::move(m_RecvAcc);
+                    m_RecvAcc.clear();
                     // Receive overflow is FATAL: losing an inbound frame breaks
                     // request/response correlation. push() returns false on a full
                     // Reject queue; we then close the connection and let the upper layer
                     // (G5) reconnect.
-                    if (!recv_queue_.push(std::move(message)))
+                    if (!m_RecvQueue.push(std::move(message)))
                     {
                         warn(
                             "recv queue full; closing connection (frame loss would "
                             "break correlation)");
-                        if (log_sink_ != nullptr)
+                        if (m_LogSink != nullptr)
                         {
-                            log_sink_->log(LogSeverity::Error,
+                            m_LogSink->log(LogSeverity::Error,
                                            "ws_server_transport: recv overflow");
                         }
                         return -1;  // closes this wsi
@@ -306,25 +306,25 @@ namespace norves::bridge
 
             int on_established(struct lws* wsi)
             {
-                if (active_wsi_ != nullptr)
+                if (m_ActiveWsi != nullptr)
                 {
                     // Single-connection alpha posture: keep the existing client, reject
                     // the newcomer (return -1 closes only the new wsi).
                     warn("rejecting second connection (single editor client only)");
                     return -1;
                 }
-                active_wsi_ = wsi;
-                recv_acc_.clear();
+                m_ActiveWsi = wsi;
+                m_RecvAcc.clear();
                 return 0;
             }
 
             void on_closed(struct lws* wsi)
             {
-                if (wsi == active_wsi_)
+                if (wsi == m_ActiveWsi)
                 {
-                    active_wsi_ = nullptr;  // never touch this wsi again
-                    recv_acc_.clear();
-                    current_out_.reset();  // drop a half-sent frame to the gone client
+                    m_ActiveWsi = nullptr;  // never touch this wsi again
+                    m_RecvAcc.clear();
+                    m_CurrentOut.reset();  // drop a half-sent frame to the gone client
                 }
             }
 
@@ -357,48 +357,48 @@ namespace norves::bridge
 
             void warn(const std::string& message)
             {
-                if (log_sink_ != nullptr)
+                if (m_LogSink != nullptr)
                 {
-                    log_sink_->log(LogSeverity::Warn, "ws_server_transport: " + message);
+                    m_LogSink->log(LogSeverity::Warn, "ws_server_transport: " + message);
                 }
             }
 
             // Cap a single lws_write so large frames exercise the partial-write re-arm
             // path; also keeps per-callback work bounded.
-            static constexpr std::size_t kChunkCap = 4096;
+            static constexpr std::size_t ChunkCap = 4096;
 
-            const struct lws_protocols protocols_[2] = {
+            const struct lws_protocols m_Protocols[2] = {
                 {"norves-bridge", &WebSocketServerTransport::callback, 0, 0, 0, nullptr, 0},
                 LWS_PROTOCOL_LIST_TERM,
             };
 
-            ILogSink* log_sink_;  // non-owned, may be null
+            ILogSink* m_LogSink;  // non-owned, may be null
 
             // Queues are thread-safe; touched from external send()/consumer recv() and
             // the service thread.
-            BoundedFrameQueue send_queue_;
-            BoundedFrameQueue recv_queue_;
+            BoundedFrameQueue m_SendQueue;
+            BoundedFrameQueue m_RecvQueue;
 
-            std::atomic<bool> closed_{false};
+            std::atomic<bool> m_bClosed{false};
 
-            std::thread service_thread_;
+            std::thread m_ServiceThread;
 
             // Service-thread-only state.
-            struct lws_context* context_ = nullptr;
-            struct lws* active_wsi_ = nullptr;
-            std::string recv_acc_;                 // fragment reassembly buffer
-            std::optional<OutFrame> current_out_;  // frame in flight (partial-write)
+            struct lws_context* m_Context = nullptr;
+            struct lws* m_ActiveWsi = nullptr;
+            std::string m_RecvAcc;                 // fragment reassembly buffer
+            std::optional<OutFrame> m_CurrentOut;  // frame in flight (partial-write)
         };
 
     }  // namespace
 
     std::unique_ptr<ITransport> make_websocket_server_transport(std::uint16_t port,
-                                                                std::size_t send_capacity,
-                                                                std::size_t recv_capacity,
-                                                                ILogSink* log_sink)
+                                                                std::size_t sendCapacity,
+                                                                std::size_t recvCapacity,
+                                                                ILogSink* logSink)
     {
         auto transport =
-            std::make_unique<WebSocketServerTransport>(send_capacity, recv_capacity, log_sink);
+            std::make_unique<WebSocketServerTransport>(sendCapacity, recvCapacity, logSink);
         if (!transport->start(port))
         {
             return nullptr;  // bind / context-creation failed (already logged Warn)

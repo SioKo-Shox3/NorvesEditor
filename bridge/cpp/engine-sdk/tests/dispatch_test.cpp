@@ -39,7 +39,7 @@ namespace
 
     // Builds a JsonValue from JSON text, failing the test (and returning null) on a
     // parse error so callers can use the value inline.
-    JsonValue parse_or_fail(std::string_view text)
+    JsonValue ParseOrFail(std::string_view text)
     {
         auto parsed = JsonValue::parse(text);
         if (parsed.is_err())
@@ -66,64 +66,61 @@ namespace
                 std::string(R"({"sessionId":"sess-7f3a","protocolVersion":")") +
                 std::string(selectedProtocolVersion) +
                 R"(","server":{"name":"FakeEngine","version":"0.1.0","engine":"fake"}})";
-            return Result<JsonValue, BridgeError>::ok(parse_or_fail(result));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(result));
         }
 
         Result<JsonValue, BridgeError> getCapabilities(const JsonValue& /*params*/) override
         {
             return Result<JsonValue, BridgeError>::ok(
-                parse_or_fail(R"({"capabilities":[{"name":"runtime.control"}]})"));
+                ParseOrFail(R"({"capabilities":[{"name":"runtime.control"}]})"));
         }
 
         Result<JsonValue, BridgeError> getStatus(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_fail(R"({"engineState":"ready"})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"engineState":"ready"})"));
         }
 
         Result<JsonValue, BridgeError> launchInfo(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_fail(R"({"launched":true})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"launched":true})"));
         }
 
         Result<JsonValue, BridgeError> runtimePlay(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(
-                parse_or_fail(R"({"runtimeState":"playing"})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"runtimeState":"playing"})"));
         }
 
         Result<JsonValue, BridgeError> runtimePause(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(
-                parse_or_fail(R"({"runtimeState":"paused"})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"runtimeState":"paused"})"));
         }
 
         Result<JsonValue, BridgeError> runtimeStop(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(
-                parse_or_fail(R"({"runtimeState":"stopped"})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"runtimeState":"stopped"})"));
         }
 
         Result<JsonValue, BridgeError> runtimeFocusViewport(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_fail(R"({"focused":true})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"focused":true})"));
         }
 
         Result<JsonValue, BridgeError> logSubscribe(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_fail(R"({"subscribed":true})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"subscribed":true})"));
         }
 
         Result<JsonValue, BridgeError> logUnsubscribe(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_fail(R"({"subscribed":false})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"subscribed":false})"));
         }
         // Optional methods intentionally NOT overridden.
     };
 
     // Wire-frame builders ---------------------------------------------------------
 
-    std::string request_frame(std::string_view id, std::string_view method,
-                              std::string_view params_json)
+    std::string RequestFrame(std::string_view id, std::string_view method,
+                             std::string_view paramsJson)
     {
         std::string frame =
             R"({"bridge":"norves.editor.bridge","version":"0.1","kind":"request","id":")";
@@ -131,17 +128,17 @@ namespace
         frame += R"(","method":")";
         frame += std::string(method);
         frame += R"(")";
-        if (!params_json.empty())
+        if (!paramsJson.empty())
         {
             frame += R"(,"params":)";
-            frame += std::string(params_json);
+            frame += std::string(paramsJson);
         }
         frame += "}";
         return frame;
     }
 
     // Decodes a server response frame, failing the test on error.
-    Envelope decode_or_fail(std::string_view wire)
+    Envelope DecodeOrFail(std::string_view wire)
     {
         auto decoded = decode_envelope(wire);
         if (decoded.is_err())
@@ -155,12 +152,12 @@ namespace
 
     // Tests -----------------------------------------------------------------------
 
-    void test_hello_success_echoes_id_session_and_version()
+    void TestHelloSuccessEchoesIdSessionAndVersion()
     {
         FakeAdapter adapter;
         BridgeEngineServer server(adapter);
 
-        const std::string frame = request_frame(
+        const std::string frame = RequestFrame(
             "req-1", "bridge.hello",
             R"({"role":"editor","clientName":"NorvesEditor","protocolVersions":["0.1"]})");
         auto response = server.handleFrame(frame);
@@ -170,7 +167,7 @@ namespace
             return;
         }
 
-        const Envelope env = decode_or_fail(*response);
+        const Envelope env = DecodeOrFail(*response);
         NORVES_CHECK(env.kind == Kind::Response);
         NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-1"});
         NORVES_CHECK(env.result.has_value());
@@ -179,17 +176,17 @@ namespace
         NORVES_CHECK_EQ(env.session_id, std::optional<std::string>{"sess-7f3a"});
 
         // Result payload carries the negotiated version and server identity.
-        const JsonValue expected = parse_or_fail(
+        const JsonValue expected = ParseOrFail(
             R"({"sessionId":"sess-7f3a","protocolVersion":"0.1","server":{"name":"FakeEngine","version":"0.1.0","engine":"fake"}})");
         NORVES_CHECK(env.result.has_value() && *env.result == expected);
     }
 
-    void test_hello_version_unsupported()
+    void TestHelloVersionUnsupported()
     {
         FakeAdapter adapter;
         BridgeEngineServer server(adapter);
 
-        const std::string frame = request_frame(
+        const std::string frame = RequestFrame(
             "req-1", "bridge.hello",
             R"({"role":"editor","clientName":"NorvesEditor","protocolVersions":["2.0"]})");
         auto response = server.handleFrame(frame);
@@ -199,7 +196,7 @@ namespace
             return;
         }
 
-        const Envelope env = decode_or_fail(*response);
+        const Envelope env = DecodeOrFail(*response);
         NORVES_CHECK(env.kind == Kind::Response);
         NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-1"});
         NORVES_CHECK(env.error.has_value());
@@ -212,65 +209,65 @@ namespace
         NORVES_CHECK(!env.error->message.empty());
 
         // error.data: offered is what the client sent; supported is
-        // kSupportedProtocolVersions ("0.1" for the alpha). The canonical fixture
+        // SupportedProtocolVersions ("0.1" for the alpha). The canonical fixture
         // (response-version-unsupported.json) uses offered:["2.0"],
         // supported:["0.1","1.0"]; supported tracks the SDK's actual set, so we
         // assert structure + offered + supported contents directly.
         NORVES_CHECK(env.error->data.has_value());
         if (env.error->data.has_value())
         {
-            const JsonValue expected_data =
-                parse_or_fail(R"({"offered":["2.0"],"supported":["0.1"]})");
-            NORVES_CHECK(*env.error->data == expected_data);
+            const JsonValue expectedData =
+                ParseOrFail(R"({"offered":["2.0"],"supported":["0.1"]})");
+            NORVES_CHECK(*env.error->data == expectedData);
         }
     }
 
-    void test_known_method_passes_adapter_result()
+    void TestKnownMethodPassesAdapterResult()
     {
         FakeAdapter adapter;
         BridgeEngineServer server(adapter);
 
         {
-            const std::string frame = request_frame("s-1", "engine.getStatus", "");
+            const std::string frame = RequestFrame("s-1", "engine.getStatus", "");
             auto response = server.handleFrame(frame);
             NORVES_CHECK(response.has_value());
             if (response.has_value())
             {
-                const Envelope env = decode_or_fail(*response);
+                const Envelope env = DecodeOrFail(*response);
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"s-1"});
                 NORVES_CHECK(env.result.has_value());
-                const JsonValue expected = parse_or_fail(R"({"engineState":"ready"})");
+                const JsonValue expected = ParseOrFail(R"({"engineState":"ready"})");
                 NORVES_CHECK(env.result.has_value() && *env.result == expected);
             }
         }
 
         {
-            const std::string frame = request_frame("p-1", "runtime.play", "");
+            const std::string frame = RequestFrame("p-1", "runtime.play", "");
             auto response = server.handleFrame(frame);
             NORVES_CHECK(response.has_value());
             if (response.has_value())
             {
-                const Envelope env = decode_or_fail(*response);
+                const Envelope env = DecodeOrFail(*response);
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"p-1"});
-                const JsonValue expected = parse_or_fail(R"({"runtimeState":"playing"})");
+                const JsonValue expected = ParseOrFail(R"({"runtimeState":"playing"})");
                 NORVES_CHECK(env.result.has_value() && *env.result == expected);
             }
         }
     }
 
-    void test_unknown_method_is_method_not_supported()
+    void TestUnknownMethodIsMethodNotSupported()
     {
         FakeAdapter adapter;
         BridgeEngineServer server(adapter);
 
-        const std::string frame = request_frame("u-1", "foo.bar", "");
+        const std::string frame = RequestFrame("u-1", "foo.bar", "");
         auto response = server.handleFrame(frame);
         NORVES_CHECK(response.has_value());
         if (!response.has_value())
         {
             return;
         }
-        const Envelope env = decode_or_fail(*response);
+        const Envelope env = DecodeOrFail(*response);
         NORVES_CHECK_EQ(env.id, std::optional<std::string>{"u-1"});
         NORVES_CHECK(env.error.has_value());
         if (env.error.has_value())
@@ -279,19 +276,19 @@ namespace
         }
     }
 
-    void test_unimplemented_optional_method_is_method_not_supported()
+    void TestUnimplementedOptionalMethodIsMethodNotSupported()
     {
         FakeAdapter adapter;  // does not override scene.getTree
         BridgeEngineServer server(adapter);
 
-        const std::string frame = request_frame("o-1", "scene.getTree", "");
+        const std::string frame = RequestFrame("o-1", "scene.getTree", "");
         auto response = server.handleFrame(frame);
         NORVES_CHECK(response.has_value());
         if (!response.has_value())
         {
             return;
         }
-        const Envelope env = decode_or_fail(*response);
+        const Envelope env = DecodeOrFail(*response);
         NORVES_CHECK_EQ(env.id, std::optional<std::string>{"o-1"});
         NORVES_CHECK(env.error.has_value());
         if (env.error.has_value())
@@ -300,16 +297,16 @@ namespace
         }
     }
 
-    void test_emit_event_round_trips()
+    void TestEmitEventRoundTrips()
     {
         FakeAdapter adapter;
         BridgeEngineServer server(adapter);
 
-        const JsonValue params = parse_or_fail(R"({"level":"info","message":"hello"})");
+        const JsonValue params = ParseOrFail(R"({"level":"info","message":"hello"})");
         const std::string wire = server.emitEvent("log.message", params);
         NORVES_CHECK(!wire.empty());
 
-        const Envelope env = decode_or_fail(wire);
+        const Envelope env = DecodeOrFail(wire);
         NORVES_CHECK(env.kind == Kind::Event);
         NORVES_CHECK_EQ(env.event, std::optional<std::string>{"log.message"});
         NORVES_CHECK(env.params.has_value() && *env.params == params);
@@ -318,11 +315,11 @@ namespace
     // Sanity check on JsonValue itself: a non-trivial value survives a
     // parse -> dump -> parse round trip, value-equal to the original. This guards
     // the codec the dispatch path relies on for every result/error/event payload.
-    void test_json_value_parse_dump_round_trips()
+    void TestJsonValueParseDumpRoundTrips()
     {
-        constexpr std::string_view kSource = R"({"a":1,"b":[true,null,"x"],"c":{"d":2.5}})";
+        constexpr std::string_view Source = R"({"a":1,"b":[true,null,"x"],"c":{"d":2.5}})";
 
-        auto first = JsonValue::parse(kSource);
+        auto first = JsonValue::parse(Source);
         NORVES_CHECK(first.is_ok());
         if (first.is_err())
         {
@@ -341,19 +338,19 @@ namespace
         NORVES_CHECK(reparsed == original);
     }
 
-    void test_non_request_frame_returns_nullopt()
+    void TestNonRequestFrameReturnsNullopt()
     {
         FakeAdapter adapter;
         BridgeEngineServer server(adapter);
 
         // A valid response frame fed to the server: not ours to answer.
-        const std::string response_frame =
+        const std::string responseFrame =
             R"({"bridge":"norves.editor.bridge","version":"0.1","kind":"response","id":"req-1","result":{"ok":true}})";
-        auto out = server.handleFrame(response_frame);
+        auto out = server.handleFrame(responseFrame);
         NORVES_CHECK(!out.has_value());
     }
 
-    void test_undecodable_frame_returns_nullopt()
+    void TestUndecodableFrameReturnsNullopt()
     {
         FakeAdapter adapter;
         BridgeEngineServer server(adapter);
@@ -366,14 +363,14 @@ namespace
 
 int main()
 {
-    test_hello_success_echoes_id_session_and_version();
-    test_hello_version_unsupported();
-    test_known_method_passes_adapter_result();
-    test_unknown_method_is_method_not_supported();
-    test_unimplemented_optional_method_is_method_not_supported();
-    test_emit_event_round_trips();
-    test_json_value_parse_dump_round_trips();
-    test_non_request_frame_returns_nullopt();
-    test_undecodable_frame_returns_nullopt();
+    TestHelloSuccessEchoesIdSessionAndVersion();
+    TestHelloVersionUnsupported();
+    TestKnownMethodPassesAdapterResult();
+    TestUnknownMethodIsMethodNotSupported();
+    TestUnimplementedOptionalMethodIsMethodNotSupported();
+    TestEmitEventRoundTrips();
+    TestJsonValueParseDumpRoundTrips();
+    TestNonRequestFrameReturnsNullopt();
+    TestUndecodableFrameReturnsNullopt();
     return norves::test::summary();
 }

@@ -14,7 +14,7 @@
 // Lifecycle contract with the editor backend / launcher:
 //   * argv: --bridge-port <p> is required. A missing/invalid port is a hard
 //     error (non-zero exit) so a misconfiguration fails fast (same contract as
-//     ws_test_server::parse_port).
+//     ws_test_server::ParsePort).
 //   * On a successful bind it prints exactly "READY <port>\n" to stdout and
 //     flushes, which the launcher waits for before dialing. stdout is reserved
 //     for that single line; all diagnostics go to stderr.
@@ -80,7 +80,7 @@ namespace
 
     // Number of log.message events emitted back-to-back after a log.subscribe ack,
     // so a client can assert ordered multi-frame delivery (the G4 burst pattern).
-    constexpr int kLogBurst = 3;
+    constexpr int LogBurst = 3;
 
     // Translation-unit stop flag. Set ONLY by the signal/console handler (an atomic
     // store is async-signal-safe) and polled by the watcher thread, which performs
@@ -90,9 +90,9 @@ namespace
 #if defined(_WIN32)
     // Windows console control handler. Runs on a thread the OS injects, but we still
     // confine it to the atomic store so the stop path is identical to POSIX.
-    BOOL WINAPI console_handler(DWORD ctrl_type)
+    BOOL WINAPI ConsoleHandler(DWORD ctrlType)
     {
-        switch (ctrl_type)
+        switch (ctrlType)
         {
             case CTRL_C_EVENT:
             case CTRL_BREAK_EVENT:
@@ -105,18 +105,18 @@ namespace
         }
     }
 
-    void install_signal_handlers() { SetConsoleCtrlHandler(console_handler, TRUE); }
+    void InstallSignalHandlers() { SetConsoleCtrlHandler(ConsoleHandler, TRUE); }
 #else
-    extern "C" void posix_signal_handler(int /*signum*/)
+    extern "C" void PosixSignalHandler(int /*signum*/)
     {
         // Async-signal-safe: an atomic store is permitted from a signal handler.
         g_stop.store(true);
     }
 
-    void install_signal_handlers()
+    void InstallSignalHandlers()
     {
-        std::signal(SIGINT, posix_signal_handler);
-        std::signal(SIGTERM, posix_signal_handler);
+        std::signal(SIGINT, PosixSignalHandler);
+        std::signal(SIGTERM, PosixSignalHandler);
     }
 #endif
 
@@ -136,8 +136,8 @@ namespace
 
     // Reads --bridge-port. Returns the port on success; prints an error to stderr
     // and returns nullopt on a missing/invalid value (same contract as
-    // ws_test_server::parse_port).
-    std::optional<std::uint16_t> parse_port(int argc, char** argv)
+    // ws_test_server::ParsePort).
+    std::optional<std::uint16_t> ParsePort(int argc, char** argv)
     {
         for (int i = 1; i < argc; ++i)
         {
@@ -175,20 +175,20 @@ namespace
     // short sleeps. A kill->same-port-restart can briefly fail to bind while the OS
     // releases the previous listener; retrying absorbs that (same approach as
     // ws_test_server). Returns nullptr only if every attempt fails.
-    std::unique_ptr<ITransport> bind_with_retry(std::uint16_t port, std::size_t send_cap,
-                                                std::size_t recv_cap, ILogSink* sink)
+    std::unique_ptr<ITransport> BindWithRetry(std::uint16_t port, std::size_t sendCap,
+                                              std::size_t recvCap, ILogSink* sink)
     {
-        constexpr int kMaxAttempts = 20;
-        constexpr auto kRetryDelay = std::chrono::milliseconds(100);
-        for (int attempt = 0; attempt < kMaxAttempts; ++attempt)
+        constexpr int MaxAttempts = 20;
+        constexpr auto RetryDelay = std::chrono::milliseconds(100);
+        for (int attempt = 0; attempt < MaxAttempts; ++attempt)
         {
             std::unique_ptr<ITransport> transport =
-                make_websocket_server_transport(port, send_cap, recv_cap, sink);
+                make_websocket_server_transport(port, sendCap, recvCap, sink);
             if (transport != nullptr)
             {
                 return transport;
             }
-            std::this_thread::sleep_for(kRetryDelay);
+            std::this_thread::sleep_for(RetryDelay);
         }
         return nullptr;
     }
@@ -197,50 +197,50 @@ namespace
 
 int main(int argc, char** argv)
 {
-    const std::optional<std::uint16_t> port = parse_port(argc, argv);
+    const std::optional<std::uint16_t> port = ParsePort(argc, argv);
     if (!port.has_value())
     {
         return 2;
     }
 
-    constexpr std::size_t kSendCap = 256;
-    constexpr std::size_t kRecvCap = 256;
+    constexpr std::size_t SendCap = 256;
+    constexpr std::size_t RecvCap = 256;
 
     StderrSink sink;
-    std::unique_ptr<ITransport> transport = bind_with_retry(*port, kSendCap, kRecvCap, &sink);
+    std::unique_ptr<ITransport> transport = BindWithRetry(*port, SendCap, RecvCap, &sink);
     if (transport == nullptr)
     {
         std::cerr << "mock-engine: failed to bind WebSocket server on port " << *port << '\n';
         return 3;
     }
 
-    install_signal_handlers();
+    InstallSignalHandlers();
 
     // Watcher thread: polls g_stop and drives close() off the signal handler.
     // close() is idempotent, so a later destructor close() is harmless. Captures
     // a raw pointer to the transport, which outlives the joined watcher.
-    ITransport* transport_ptr = transport.get();
+    ITransport* transportPtr = transport.get();
     std::thread watcher(
-        [transport_ptr]()
+        [transportPtr]()
         {
-            constexpr auto kPoll = std::chrono::milliseconds(50);
+            constexpr auto Poll = std::chrono::milliseconds(50);
             while (!g_stop.load())
             {
-                std::this_thread::sleep_for(kPoll);
+                std::this_thread::sleep_for(Poll);
             }
-            transport_ptr->close();  // unblocks the residential recv() loop.
+            transportPtr->close();  // unblocks the residential recv() loop.
         });
 
     MockAdapter adapter;
     BridgeEngineServer server(adapter, &sink);
 
-    // Pre-build the log.message event frame once; emitted (kLogBurst times) after
+    // Pre-build the log.message event frame once; emitted (LogBurst times) after
     // a log.subscribe ack.
     LogMessageEvent log;
     log.level = LogLevel::Info;
     log.message = "Game started";
     log.category = "Engine";
-    const std::string log_event_frame = server.emitEvent("log.message", log.to_json());
+    const std::string logEventFrame = server.emitEvent("log.message", log.to_json());
 
     // Signal readiness AFTER a successful bind so the launcher only dials a
     // listening socket. stdout is reserved for this single line; flush so the
@@ -275,9 +275,9 @@ int main(int argc, char** argv)
 
         if (adapter.emit_log_burst.exchange(false))
         {
-            for (int i = 0; i < kLogBurst; ++i)
+            for (int i = 0; i < LogBurst; ++i)
             {
-                if (!transport->send(std::string(log_event_frame)))
+                if (!transport->send(std::string(logEventFrame)))
                 {
                     break;  // peer gone mid-flight; stop the burst, keep serving.
                 }

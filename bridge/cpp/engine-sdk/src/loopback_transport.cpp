@@ -36,7 +36,7 @@ namespace norves::bridge
             // it receives from. The peer is constructed with the two swapped.
             LoopbackTransport(std::shared_ptr<BoundedFrameQueue> outbound,
                               std::shared_ptr<BoundedFrameQueue> inbound)
-                : outbound_(std::move(outbound)), inbound_(std::move(inbound))
+                : m_Outbound(std::move(outbound)), m_Inbound(std::move(inbound))
             {
             }
 
@@ -48,7 +48,7 @@ namespace norves::bridge
                 // FULL queue also returns false without storing the frame, so a full
                 // transport surfaces back-pressure rather than silently losing data --
                 // matching the ITransport::send() contract.
-                return outbound_->push(std::move(frame));
+                return m_Outbound->push(std::move(frame));
             }
 
             std::optional<std::string> recv() override
@@ -56,7 +56,7 @@ namespace norves::bridge
                 // Blocks until a frame arrives or our inbound queue is shut down (peer
                 // closed). After shutdown it drains remaining frames, then yields
                 // nullopt -- the clean-EOF signal.
-                return inbound_->wait_and_pop();
+                return m_Inbound->wait_and_pop();
             }
 
             void close() override
@@ -65,12 +65,12 @@ namespace norves::bridge
                 // reads from (our outbound). We do NOT shut down our own inbound queue:
                 // frames the peer already sent us stay drainable, and our own recv()
                 // ending is the peer's responsibility (it closes when it is done).
-                outbound_->shutdown();
+                m_Outbound->shutdown();
             }
 
         private:
-            std::shared_ptr<BoundedFrameQueue> outbound_;
-            std::shared_ptr<BoundedFrameQueue> inbound_;
+            std::shared_ptr<BoundedFrameQueue> m_Outbound;
+            std::shared_ptr<BoundedFrameQueue> m_Inbound;
         };
 
     }  // namespace
@@ -83,13 +83,13 @@ namespace norves::bridge
         // return false instead of silently evicting the oldest frame: a full
         // transport must surface back-pressure to the caller, never lose data. This
         // matches the ITransport::send() contract (false on closed OR full).
-        auto a_to_b = std::make_shared<BoundedFrameQueue>(capacity, OverflowPolicy::Reject);
-        auto b_to_a = std::make_shared<BoundedFrameQueue>(capacity, OverflowPolicy::Reject);
+        auto aToB = std::make_shared<BoundedFrameQueue>(capacity, OverflowPolicy::Reject);
+        auto bToA = std::make_shared<BoundedFrameQueue>(capacity, OverflowPolicy::Reject);
 
-        // Endpoint A sends into a_to_b and receives from b_to_a; endpoint B is the
+        // Endpoint A sends into aToB and receives from bToA; endpoint B is the
         // mirror image. Both queues are shared by exactly the two endpoints.
-        auto a = std::make_unique<LoopbackTransport>(a_to_b, b_to_a);
-        auto b = std::make_unique<LoopbackTransport>(b_to_a, a_to_b);
+        auto a = std::make_unique<LoopbackTransport>(aToB, bToA);
+        auto b = std::make_unique<LoopbackTransport>(bToA, aToB);
         return {std::move(a), std::move(b)};
     }
 

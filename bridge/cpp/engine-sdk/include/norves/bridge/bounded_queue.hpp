@@ -112,13 +112,13 @@ namespace norves::bridge
     private:
         void warn(std::string_view message);
 
-        mutable std::mutex mutex_;
-        std::condition_variable not_empty_;
-        std::deque<OwnedFrame> frames_;
-        std::size_t capacity_;
-        OverflowPolicy policy_;
-        ILogSink* sink_;  // non-owned, may be null
-        bool closed_ = false;
+        mutable std::mutex m_Mutex;
+        std::condition_variable m_NotEmpty;
+        std::deque<OwnedFrame> m_Frames;
+        std::size_t m_Capacity;
+        OverflowPolicy m_Policy;
+        ILogSink* m_Sink;  // non-owned, may be null
+        bool m_bClosed = false;
     };
 
 }  // namespace norves::bridge

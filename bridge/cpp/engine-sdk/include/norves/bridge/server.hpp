@@ -27,13 +27,13 @@ namespace norves::bridge
     {
     public:
         // Constructs a server bound to `adapter` (held by reference) and an OPTIONAL
-        // `log_sink` (may be nullptr for a silent server).
+        // `logSink` (may be nullptr for a silent server).
         //
         // Ownership / lifetime: the server stores a reference to `adapter` and a raw
-        // pointer to `log_sink`; it owns NEITHER. The caller MUST keep both alive
+        // pointer to `logSink`; it owns NEITHER. The caller MUST keep both alive
         // for the entire lifetime of the server (adapter and sink outlive the
         // server). The server stores no other long-lived state.
-        explicit BridgeEngineServer(IBridgeEngineAdapter& adapter, ILogSink* log_sink = nullptr);
+        explicit BridgeEngineServer(IBridgeEngineAdapter& adapter, ILogSink* logSink = nullptr);
 
         ~BridgeEngineServer();
 
@@ -61,17 +61,17 @@ namespace norves::bridge
         // a wire error on failure), echoing the request's correlation id.
         [[nodiscard]] std::optional<std::string> handleFrame(std::string_view wire);
 
-        // Builds and encodes an event envelope (kind=event) carrying `event_name`
+        // Builds and encodes an event envelope (kind=event) carrying `eventName`
         // and `params`, returning the wire frame. Sending it is the embedder's job
-        // (transport is a later phase). `event_name` examples: "log.message",
+        // (transport is a later phase). `eventName` examples: "log.message",
         // "engine.statusChanged". `params` is copied into the envelope.
-        [[nodiscard]] std::string emitEvent(std::string_view event_name, const JsonValue& params);
+        [[nodiscard]] std::string emitEvent(std::string_view eventName, const JsonValue& params);
 
     private:
         // pImpl keeps the dispatch-table internals and any JSON-library usage out
         // of this public header.
         struct Impl;
-        std::unique_ptr<Impl> impl_;
+        std::unique_ptr<Impl> m_Impl;
     };
 
 }  // namespace norves::bridge

@@ -85,12 +85,12 @@ namespace
     // Number of log.message events emitted (back-to-back) after a log.subscribe ack.
     // More than one so the Rust side can assert ordered multi-frame delivery (the
     // G4 burst requirement); the SDK transport guarantees in-order delivery.
-    constexpr int kLogBurst = 3;
+    constexpr int LogBurst = 3;
 
     // Parses a JSON literal or aborts the harness: the literals below are
     // compile-time constants we control, so a parse failure is a programming error,
     // not a runtime condition worth recovering from.
-    JsonValue parse_or_die(std::string_view text)
+    JsonValue ParseOrDie(std::string_view text)
     {
         auto parsed = JsonValue::parse(text);
         if (parsed.is_err())
@@ -142,7 +142,7 @@ namespace
             // bridge.getCapabilities.result schema: capabilityDescriptor with a
             // namespaced name token and a MAJOR.MINOR version.
             return Result<JsonValue, BridgeError>::ok(
-                parse_or_die(R"({"capabilities":[{"name":"runtime.control","version":"0.1"}]})"));
+                ParseOrDie(R"({"capabilities":[{"name":"runtime.control","version":"0.1"}]})"));
         }
 
         Result<JsonValue, BridgeError> getStatus(const JsonValue& /*params*/) override
@@ -158,7 +158,7 @@ namespace
 
         Result<JsonValue, BridgeError> launchInfo(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"launched":true})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrDie(R"({"launched":true})"));
         }
 
         Result<JsonValue, BridgeError> runtimePlay(const JsonValue& /*params*/) override
@@ -171,17 +171,17 @@ namespace
 
         Result<JsonValue, BridgeError> runtimePause(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"accepted":true})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrDie(R"({"accepted":true})"));
         }
 
         Result<JsonValue, BridgeError> runtimeStop(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"accepted":true})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrDie(R"({"accepted":true})"));
         }
 
         Result<JsonValue, BridgeError> runtimeFocusViewport(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"focused":true})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrDie(R"({"focused":true})"));
         }
 
         Result<JsonValue, BridgeError> logSubscribe(const JsonValue& /*params*/) override
@@ -189,12 +189,12 @@ namespace
             // Flag the recv loop to emit the log.message burst AFTER this ack is
             // sent, keeping ack-before-event ordering deterministic.
             emit_log_burst.store(true);
-            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"subscribed":true})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrDie(R"({"subscribed":true})"));
         }
 
         Result<JsonValue, BridgeError> logUnsubscribe(const JsonValue& /*params*/) override
         {
-            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"unsubscribed":true})"));
+            return Result<JsonValue, BridgeError>::ok(ParseOrDie(R"({"unsubscribed":true})"));
         }
 
         // Set by logSubscribe(), consumed by the recv loop. Single-threaded in
@@ -205,7 +205,7 @@ namespace
 
     // Reads --bridge-port. Returns the port on success; prints an error and returns
     // nullopt on a missing/invalid value.
-    std::optional<std::uint16_t> parse_port(int argc, char** argv)
+    std::optional<std::uint16_t> ParsePort(int argc, char** argv)
     {
         for (int i = 1; i < argc; ++i)
         {
@@ -240,7 +240,7 @@ namespace
     }
 
     // True when --inject-malformed is present on the command line.
-    bool has_inject_malformed(int argc, char** argv)
+    bool HasInjectMalformed(int argc, char** argv)
     {
         for (int i = 1; i < argc; ++i)
         {
@@ -256,20 +256,20 @@ namespace
     // short sleeps. A kill->same-port-restart (the Rust reconnect test) can briefly
     // fail to bind while the OS releases the previous listener; retrying absorbs that
     // without flakiness. Returns nullptr only if every attempt fails.
-    std::unique_ptr<ITransport> bind_with_retry(std::uint16_t port, std::size_t send_cap,
-                                                std::size_t recv_cap, ILogSink* sink)
+    std::unique_ptr<ITransport> BindWithRetry(std::uint16_t port, std::size_t sendCap,
+                                              std::size_t recvCap, ILogSink* sink)
     {
-        constexpr int kMaxAttempts = 20;
-        constexpr auto kRetryDelay = std::chrono::milliseconds(100);
-        for (int attempt = 0; attempt < kMaxAttempts; ++attempt)
+        constexpr int MaxAttempts = 20;
+        constexpr auto RetryDelay = std::chrono::milliseconds(100);
+        for (int attempt = 0; attempt < MaxAttempts; ++attempt)
         {
             std::unique_ptr<ITransport> transport =
-                make_websocket_server_transport(port, send_cap, recv_cap, sink);
+                make_websocket_server_transport(port, sendCap, recvCap, sink);
             if (transport != nullptr)
             {
                 return transport;
             }
-            std::this_thread::sleep_for(kRetryDelay);
+            std::this_thread::sleep_for(RetryDelay);
         }
         return nullptr;
     }
@@ -278,19 +278,19 @@ namespace
 
 int main(int argc, char** argv)
 {
-    const std::optional<std::uint16_t> port = parse_port(argc, argv);
+    const std::optional<std::uint16_t> port = ParsePort(argc, argv);
     if (!port.has_value())
     {
         return 2;
     }
 
-    const bool inject_malformed = has_inject_malformed(argc, argv);
+    const bool bInjectMalformed = HasInjectMalformed(argc, argv);
 
-    constexpr std::size_t kSendCap = 256;
-    constexpr std::size_t kRecvCap = 256;
+    constexpr std::size_t SendCap = 256;
+    constexpr std::size_t RecvCap = 256;
 
     StderrSink sink;
-    std::unique_ptr<ITransport> transport = bind_with_retry(*port, kSendCap, kRecvCap, &sink);
+    std::unique_ptr<ITransport> transport = BindWithRetry(*port, SendCap, RecvCap, &sink);
     if (transport == nullptr)
     {
         std::cerr << "ws_test_server: failed to bind WebSocket server on port " << *port << '\n';
@@ -300,13 +300,13 @@ int main(int argc, char** argv)
     FakeAdapter adapter;
     BridgeEngineServer server(adapter, &sink);
 
-    // Pre-build the log.message event frame once; emitted (kLogBurst times) after
+    // Pre-build the log.message event frame once; emitted (LogBurst times) after
     // a log.subscribe ack.
     LogMessageEvent log;
     log.level = LogLevel::Info;
     log.message = "Game started";
     log.category = "Engine";
-    const std::string log_event_frame = server.emitEvent("log.message", log.to_json());
+    const std::string logEventFrame = server.emitEvent("log.message", log.to_json());
 
     // Signal readiness AFTER a successful bind so the Rust harness only dials a
     // listening socket. stdout is reserved for this single line; flush so the
@@ -316,7 +316,7 @@ int main(int argc, char** argv)
 
     // When --inject-malformed is set, send exactly one undecodable frame after
     // the first response so the Rust side can prove log-and-drop is non-fatal.
-    bool malformed_pending = inject_malformed;
+    bool bMalformedPending = bInjectMalformed;
 
     // Single recv loop. handleFrame and the adapter run on this thread, so the
     // emit_log_burst flag set inside logSubscribe is visible right after
@@ -342,9 +342,9 @@ int main(int argc, char** argv)
         // Inject a single malformed frame AFTER the first real response is sent,
         // so a client is definitely connected. The dispatcher must log-and-drop
         // it (non-fatal) and keep serving; normal operation continues below.
-        if (malformed_pending)
+        if (bMalformedPending)
         {
-            malformed_pending = false;
+            bMalformedPending = false;
             if (!transport->send(std::string("{not valid json")))
             {
                 break;  // peer gone mid-flight.
@@ -353,9 +353,9 @@ int main(int argc, char** argv)
 
         if (adapter.emit_log_burst.exchange(false))
         {
-            for (int i = 0; i < kLogBurst; ++i)
+            for (int i = 0; i < LogBurst; ++i)
             {
-                if (!transport->send(std::string(log_event_frame)))
+                if (!transport->send(std::string(logEventFrame)))
                 {
                     break;
                 }
