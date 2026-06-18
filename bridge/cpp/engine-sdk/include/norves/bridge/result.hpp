@@ -4,33 +4,31 @@
 #include <utility>
 #include <variant>
 
-// Self-contained Result<T, E> for the engine SDK.
-// Depends on <std> only; no third-party headers are included here.
+/// @file
+/// @brief エンジン SDK のための自己完結な Result<T, E>。
+/// @note 依存は <std> のみ。サードパーティヘッダはここに含めない。
 namespace norves::bridge
 {
 
-    // Result<T, E> is a success-or-error value type.
-    //
-    // Contract:
-    //   * Construction, copy and move are delegated to T and E. There is no path
-    //     that constructs a Result without an active alternative, so a Result is
-    //     never empty.
-    //   * Assignment is implemented as destroy-then-reconstruct of the underlying
-    //     std::variant via emplace using a *copy/move of the source's stored
-    //     value*. We deliberately avoid std::variant's converting/forwarding
-    //     assignment so that the only assignment paths route through T's / E's own
-    //     copy/move constructors. This keeps the exception behaviour entirely
-    //     defined by T and E.
-    //   * never-valueless is an invariant: by holding T and E (well-behaved value
-    //     types) and only ever emplacing already-constructed lvalues/rvalues, we do
-    //     not rely on std::variant entering the valueless_by_exception state. This
-    //     invariant holds only as long as T and E are well-behaved, nothrow-move
-    //     types; a type with a throwing move/copy can make emplace throw and, on
-    //     MSVC, leave the std::variant valueless. value()/error() therefore rely on
-    //     std::get's bad_variant_access guard against that case.
-    //   * T and E must be distinct types so the active alternative is decidable by
-    //     type. Same-type T == E is rejected at compile time; use a tag wrapper if
-    //     you genuinely need that.
+    /// @brief Result<T, E> は成功値またはエラー値を表す値型。
+    ///
+    /// 契約:
+    ///   * 構築・コピー・move は T と E に委譲される。アクティブな選択肢を持たずに Result を
+    ///     構築する経路は存在しないため、Result は決して空にならない。
+    ///   * 代入は、ソースに格納された値の *コピー/move* を用いた emplace により、基底の
+    ///     std::variant を破棄してから再構築する形で実装する。std::variant の変換/転送代入を
+    ///     意図的に避けることで、唯一の代入経路が T / E 自身のコピー/move コンストラクタを
+    ///     通るようにする。これにより例外挙動は完全に T と E によって定義される。
+    ///   * never-valueless は不変条件である。T と E（行儀の良い値型）を保持し、すでに
+    ///     構築済みの左辺値/右辺値のみを emplace することで、std::variant が
+    ///     valueless_by_exception 状態に入ることに依存しない。この不変条件は、T と E が
+    ///     行儀の良い nothrow-move 型である限りにおいてのみ成立する。throw する move/copy を
+    ///     持つ型は emplace を throw させ、MSVC では std::variant を valueless のままにし
+    ///     うる。それゆえ value()/error() はそのケースに対して std::get の
+    ///     bad_variant_access ガードに依存する。
+    ///   * T と E はアクティブな選択肢が型で判定できるよう、異なる型でなければならない。
+    ///     同一型 T == E はコンパイル時に拒否される。本当に同じ基底型が必要なら、タグ
+    ///     ラッパを使うこと。
     template <typename T, typename E>
     class Result
     {
@@ -43,7 +41,7 @@ namespace norves::bridge
         using value_type = T;
         using error_type = E;
 
-        // Factories. These are the only intended ways to build a Result.
+        /// ファクトリ。Result を構築する唯一の意図された手段である。
         static Result ok(const T& value) { return Result(std::in_place_index<0>, value); }
         static Result ok(T&& value) { return Result(std::in_place_index<0>, std::move(value)); }
         static Result err(const E& error) { return Result(std::in_place_index<1>, error); }
@@ -53,8 +51,8 @@ namespace norves::bridge
         Result(Result&&) noexcept(std::is_nothrow_move_constructible_v<T> &&
                                   std::is_nothrow_move_constructible_v<E>) = default;
 
-        // Assignment routes through the stored value's own copy/move constructor via
-        // emplace, instead of std::variant's converting assignment.
+        /// 代入は std::variant の変換代入ではなく、emplace を介して格納値自身の
+        /// コピー/move コンストラクタを通る。
         Result& operator=(const Result& other)
         {
             if (this != &other)
@@ -93,8 +91,9 @@ namespace norves::bridge
         [[nodiscard]] bool is_ok() const noexcept { return storage_.index() == 0; }
         [[nodiscard]] bool is_err() const noexcept { return storage_.index() == 1; }
 
-        // value()/error() throw std::bad_variant_access on the wrong alternative
-        // (and on a valueless variant), so callers must gate on is_ok()/is_err().
+        /// value()/error() は誤った選択肢（および valueless な variant）に対して
+        /// std::bad_variant_access を throw するため、呼び出し側は is_ok()/is_err() で
+        /// ガードしなければならない。
         [[nodiscard]] T& value() & { return std::get<0>(storage_); }
         [[nodiscard]] const T& value() const& { return std::get<0>(storage_); }
         [[nodiscard]] T&& value() && { return std::get<0>(std::move(storage_)); }

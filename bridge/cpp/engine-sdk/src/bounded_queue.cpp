@@ -8,9 +8,8 @@ namespace norves::bridge
 
     BoundedFrameQueue::BoundedFrameQueue(std::size_t capacity, OverflowPolicy policy,
                                          ILogSink* sink)
-        // A bounded buffer with capacity 0 cannot hold anything; clamp to 1 so the
-        // queue always has room for at least one frame and the overflow paths stay
-        // meaningful.
+        // 容量 0 の有界バッファは何も保持できない。キューが常に少なくとも 1 フレーム分の
+        // 余地を持ち、オーバーフロー経路が意味を持ち続けるよう、1 にクランプする。
         : m_Capacity((std::max)(capacity, static_cast<std::size_t>(1))),
           m_Policy(policy),
           m_Sink(sink)
@@ -33,8 +32,8 @@ namespace norves::bridge
             std::lock_guard<std::mutex> lock(m_Mutex);
             if (m_bClosed)
             {
-                // No diagnostics here: a push after shutdown is an expected,
-                // benign no-op on the shutdown path, not an overflow.
+                // ここでは診断しない。shutdown 後の push は、オーバーフローではなく
+                // シャットダウン経路上で想定された無害な no-op である。
                 return false;
             }
 
@@ -49,7 +48,7 @@ namespace norves::bridge
                         break;
                     case OverflowPolicy::DropNewest:
                     case OverflowPolicy::Reject:
-                        // Keep the queue unchanged; the incoming frame is dropped.
+                        // キューを変更せずに保つ。到着したフレームはドロップされる。
                         break;
                 }
             }
@@ -60,21 +59,21 @@ namespace norves::bridge
             }
         }
 
-        // Notify outside the lock: a frame was added (room was available), so wake a
-        // waiter. Matches the DropOldest path; the woken thread re-checks the
-        // predicate, so doing this after releasing the mutex is safe and avoids
-        // holding the lock across the condition-variable wakeup.
+        // ロックの外で通知する。フレームが追加された（空きがあった）ので、待機者を
+        // 起こす。DropOldest 経路と同様であり、起こされたスレッドは述語を再チェックする
+        // ため、mutex を解放した後にこれを行うのは安全であり、condition variable の
+        // ウェイクアップを跨いでロックを保持することを避けられる。
         if (bAppended)
         {
             m_NotEmpty.notify_one();
             return true;
         }
 
-        // Log outside the lock to avoid holding the mutex across a sink callback.
+        // シンクコールバックを跨いで mutex を保持しないよう、ロックの外でログする。
         if (bDroppedOldest)
         {
             warn("BoundedFrameQueue full: dropped oldest frame (DropOldest)");
-            // The new frame replaced an old one; still wake a waiter.
+            // 新しいフレームが古いものを置き換えた。やはり待機者を起こす。
             m_NotEmpty.notify_one();
             return true;
         }
@@ -107,8 +106,8 @@ namespace norves::bridge
         std::unique_lock<std::mutex> lock(m_Mutex);
         m_NotEmpty.wait(lock, [this] { return !m_Frames.empty() || m_bClosed; });
 
-        // Drain remaining frames even after shutdown; only return nullopt once the
-        // queue is both closed and empty.
+        // shutdown 後でも残りのフレームをドレインする。キューがクローズされ、かつ空に
+        // なって初めて nullopt を返す。
         if (m_Frames.empty())
         {
             return std::nullopt;

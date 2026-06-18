@@ -20,14 +20,14 @@
 
 #include "json_value_impl.hpp"
 
-// BridgeEngineServer implementation. nlohmann/json is confined to this TU; the
-// public server.hpp exposes only std + SDK value types.
+// BridgeEngineServer の実装。nlohmann/json はこの TU に閉じ込められる。公開の
+// server.hpp は std + SDK 値型のみを露出する。
 //
-// Responsibilities:
-//   * decode an inbound wire frame (via codec.hpp),
-//   * own the bridge.hello protocol-version negotiation,
-//   * dispatch other known requests into IBridgeEngineAdapter,
-//   * encode the response (result or wire error), echoing the request id.
+// 責務:
+//   * 受信ワイヤーフレームを（codec.hpp 経由で）デコードする、
+//   * bridge.hello のプロトコルバージョンネゴシエーションを所有する、
+//   * 他の既知のリクエストを IBridgeEngineAdapter へディスパッチする、
+//   * リクエスト id を反映して、レスポンス（result またはワイヤーエラー）をエンコードする。
 namespace norves::bridge
 {
 
@@ -36,23 +36,23 @@ namespace norves::bridge
 
         using nlohmann::json;
 
-        // Wraps a concrete nlohmann::json into an opaque JsonValue (same helper shape as
-        // codec.cpp; nlohmann stays inside this TU).
+        // 具体的な nlohmann::json を opaque な JsonValue へラップする（codec.cpp と同じ
+        // ヘルパ形状。nlohmann はこの TU 内に留まる）。
         JsonValue Wrap(json value)
         {
             auto impl = std::make_unique<detail::JsonValueImpl>(std::move(value));
             return make_json_value(std::move(impl));
         }
 
-        // The wire protocol version this SDK speaks on envelopes. Negotiation selects a
-        // supported version for the handshake result; the envelope version itself is the
-        // SDK's single supported version (SupportedProtocolVersions[0] for the alpha).
+        // この SDK がエンベロープ上で話すワイヤープロトコルバージョン。ネゴシエーションは
+        // ハンドシェイク result のために対応バージョンを選ぶ。エンベロープのバージョン自体は
+        // SDK の単一の対応バージョン（alpha では SupportedProtocolVersions[0]）である。
         std::string EnvelopeVersion() { return std::string(SupportedProtocolVersions.front()); }
 
-        // Builds a response Envelope carrying a successful result, echoing `id`. If the
-        // result payload is a JSON object containing a string "sessionId", that value is
-        // also echoed at the envelope level (matching response-valid.json, where the
-        // envelope sessionId mirrors result.sessionId).
+        // 成功 result を運ぶレスポンス Envelope を構築し、`id` を反映する。result ペイロードが
+        // 文字列 "sessionId" を含む JSON オブジェクトである場合、その値はエンベロープレベルでも
+        // 反映される（response-valid.json に一致する。そこではエンベロープの sessionId が
+        // result.sessionId を反映する）。
         Envelope MakeResultResponse(const std::string& id, JsonValue result)
         {
             Envelope env;
@@ -75,7 +75,7 @@ namespace norves::bridge
             return env;
         }
 
-        // Builds a response Envelope carrying a wire error, echoing `id`.
+        // ワイヤーエラーを運ぶレスポンス Envelope を構築し、`id` を反映する。
         Envelope MakeErrorResponse(const std::string& id, BridgeError error)
         {
             Envelope env;
@@ -87,9 +87,9 @@ namespace norves::bridge
             return env;
         }
 
-        // Extracts params["protocolVersions"] as a list of strings in client preference
-        // order. Non-string elements are skipped; absence / non-array yields an empty
-        // list (negotiation then necessarily fails as unsupported).
+        // params["protocolVersions"] を、クライアント選好順の文字列リストとして抽出する。
+        // 非文字列要素はスキップされる。不在 / 非配列は空リストを生じる（その場合
+        // ネゴシエーションは必然的に unsupported として失敗する）。
         std::vector<std::string> OfferedVersions(const JsonValue& params)
         {
             std::vector<std::string> offered;
@@ -113,8 +113,8 @@ namespace norves::bridge
             return offered;
         }
 
-        // Negotiation: the first offered version (client preference order) that is also
-        // in SupportedProtocolVersions. std::nullopt if the intersection is empty.
+        // ネゴシエーション: 提示されたバージョン（クライアント選好順）のうち、
+        // SupportedProtocolVersions にも含まれる最初のもの。積が空の場合は std::nullopt。
         std::optional<std::string> NegotiateVersion(const std::vector<std::string>& offered)
         {
             for (const auto& candidate : offered)
@@ -130,8 +130,8 @@ namespace norves::bridge
             return std::nullopt;
         }
 
-        // Builds the PROTOCOL_VERSION_UNSUPPORTED error.data payload:
-        //   { "offered": <client-offered array>, "supported": <SupportedProtocolVersions> }
+        // PROTOCOL_VERSION_UNSUPPORTED の error.data ペイロードを構築する:
+        //   { "offered": <クライアントが提示した配列>, "supported": <SupportedProtocolVersions> }
         JsonValue VersionUnsupportedData(const std::vector<std::string>& offered)
         {
             json data = json::object();
@@ -151,30 +151,31 @@ namespace norves::bridge
 
     struct BridgeEngineServer::Impl
     {
-        IBridgeEngineAdapter& adapter;
-        ILogSink* log_sink;
+        IBridgeEngineAdapter& m_Adapter;
+        ILogSink* m_LogSink;
 
-        Impl(IBridgeEngineAdapter& adapterRef, ILogSink* sink) : adapter(adapterRef), log_sink(sink)
+        Impl(IBridgeEngineAdapter& adapterRef, ILogSink* sink)
+            : m_Adapter(adapterRef), m_LogSink(sink)
         {
         }
 
         void log(LogSeverity level, std::string_view message) const
         {
-            if (log_sink != nullptr)
+            if (m_LogSink != nullptr)
             {
-                log_sink->log(level, message);
+                m_LogSink->log(level, message);
             }
         }
 
-        // Routes a decoded request envelope to the right handler and returns the
-        // response envelope.
+        // デコード済みのリクエストエンベロープを正しいハンドラへルーティングし、
+        // レスポンスエンベロープを返す。
         Envelope dispatch(const Envelope& request)
         {
-            const std::string id = *request.id;  // Present: validated for requests.
+            const std::string id = *request.id;  // 存在する。リクエストに対して検証済み。
             const std::string& method = *request.method;
 
-            // The adapter contract takes `const JsonValue&`; supply a JSON-null
-            // value when the request omitted params.
+            // アダプタの契約は `const JsonValue&` を取る。リクエストが params を省略した
+            // 場合は JSON null 値を供給する。
             const JsonValue emptyParams;
             const JsonValue& params = request.params.has_value() ? *request.params : emptyParams;
 
@@ -183,70 +184,70 @@ namespace norves::bridge
                 return handle_hello(id, params);
             }
 
-            // Known method -> adapter dispatch. Each branch maps Ok->result,
-            // Err->error, echoing the id.
+            // 既知のメソッド -> アダプタディスパッチ。各分岐は Ok->result、Err->error へ
+            // 対応付け、id を反映する。
             if (method == "bridge.getCapabilities")
             {
-                return finish(id, adapter.getCapabilities(params));
+                return finish(id, m_Adapter.getCapabilities(params));
             }
             if (method == "engine.getStatus")
             {
-                return finish(id, adapter.getStatus(params));
+                return finish(id, m_Adapter.getStatus(params));
             }
             if (method == "engine.launchInfo")
             {
-                return finish(id, adapter.launchInfo(params));
+                return finish(id, m_Adapter.launchInfo(params));
             }
             if (method == "runtime.play")
             {
-                return finish(id, adapter.runtimePlay(params));
+                return finish(id, m_Adapter.runtimePlay(params));
             }
             if (method == "runtime.pause")
             {
-                return finish(id, adapter.runtimePause(params));
+                return finish(id, m_Adapter.runtimePause(params));
             }
             if (method == "runtime.stop")
             {
-                return finish(id, adapter.runtimeStop(params));
+                return finish(id, m_Adapter.runtimeStop(params));
             }
             if (method == "runtime.focusViewport")
             {
-                return finish(id, adapter.runtimeFocusViewport(params));
+                return finish(id, m_Adapter.runtimeFocusViewport(params));
             }
             if (method == "log.subscribe")
             {
-                return finish(id, adapter.logSubscribe(params));
+                return finish(id, m_Adapter.logSubscribe(params));
             }
             if (method == "log.unsubscribe")
             {
-                return finish(id, adapter.logUnsubscribe(params));
+                return finish(id, m_Adapter.logUnsubscribe(params));
             }
             if (method == "scene.getTree")
             {
-                return finish(id, adapter.sceneGetTree(params));
+                return finish(id, m_Adapter.sceneGetTree(params));
             }
             if (method == "object.getSnapshot")
             {
-                return finish(id, adapter.objectGetSnapshot(params));
+                return finish(id, m_Adapter.objectGetSnapshot(params));
             }
             if (method == "object.setProperty")
             {
-                return finish(id, adapter.objectSetProperty(params));
+                return finish(id, m_Adapter.objectSetProperty(params));
             }
             if (method == "schema.getSnapshot")
             {
-                return finish(id, adapter.schemaGetSnapshot(params));
+                return finish(id, m_Adapter.schemaGetSnapshot(params));
             }
 
-            // Unknown method (not in the dispatch table) -> METHOD_NOT_SUPPORTED.
+            // 未知のメソッド（ディスパッチテーブルにない）-> METHOD_NOT_SUPPORTED。
             log(LogSeverity::Debug, std::string("unknown method: ") + method);
             return MakeErrorResponse(
                 id, BridgeError{std::string(ErrorMethodNotSupported),
                                 std::string("Unknown method: ") + method, std::nullopt});
         }
 
-        // bridge.hello: server-owned version negotiation, then delegate to the
-        // adapter for the result payload.
+        // bridge.hello: サーバが所有するバージョンネゴシエーションを行い、その後 result
+        // ペイロードについてはアダプタへ委譲する。
         Envelope handle_hello(const std::string& id, const JsonValue& params)
         {
             const std::vector<std::string> offered = OfferedVersions(params);
@@ -260,10 +261,10 @@ namespace norves::bridge
                                     "engine.",
                                     VersionUnsupportedData(offered)});
             }
-            return finish(id, adapter.hello(params, *selected));
+            return finish(id, m_Adapter.hello(params, *selected));
         }
 
-        // Maps an adapter outcome onto a response envelope, echoing the id.
+        // アダプタの結果をレスポンスエンベロープへ対応付け、id を反映する。
         Envelope finish(const std::string& id, Result<JsonValue, BridgeError> outcome)
         {
             if (outcome.is_ok())
@@ -292,8 +293,8 @@ namespace norves::bridge
         auto decoded = decode_envelope(wire);
         if (decoded.is_err())
         {
-            // No recoverable correlation id -> no valid response envelope can be
-            // built. Report and drop the frame.
+            // 回復可能な相関 id がない -> 有効なレスポンスエンベロープを構築できない。
+            // 報告してフレームをドロップする。
             m_Impl->log(LogSeverity::Warn,
                         std::string("dropping undecodable frame: ") + decoded.error().message);
             return std::nullopt;
@@ -302,8 +303,8 @@ namespace norves::bridge
         const Envelope request = std::move(decoded).value();
         if (request.kind != Kind::Request)
         {
-            // The server processes requests only; responses/events are not ours to
-            // answer.
+            // サーバはリクエストのみを処理する。レスポンス/イベントは我々が応答すべき
+            // ものではない。
             m_Impl->log(LogSeverity::Debug, "ignoring non-request frame");
             return std::nullopt;
         }
@@ -312,8 +313,8 @@ namespace norves::bridge
         auto encoded = encode_envelope(response);
         if (encoded.is_err())
         {
-            // Encoding a server-built envelope should not fail; if it does there is
-            // nothing valid to send.
+            // サーバが構築したエンベロープのエンコードは失敗しないはずである。もし失敗
+            // すれば、送出すべき有効なものは何もない。
             m_Impl->log(LogSeverity::Error,
                         std::string("failed to encode response: ") + encoded.error().message);
             return std::nullopt;

@@ -1,21 +1,21 @@
-// WebSocket server transport test (Workstream G / G3).
+// @brief WebSocket サーバートランスポートテスト（Workstream G / G3）。
 //
-// Exercises norves::bridge::make_websocket_server_transport (the public,
-// lws-free ITransport seam) by standing up an in-process libwebsockets CLIENT in
-// this TEST TU and driving a full round trip against it. The client uses lws
-// directly here; that is fine because the BOUNDARY rule only forbids lws in the
-// SDK's public include/ headers, not in tests. The SDK header used below
-// (ws_server_transport.hpp) exposes no lws type.
+// norves::bridge::make_websocket_server_transport（公開の、lws フリーの ITransport シーム）を
+// 検証するため、このテスト TU 内でインプロセスの libwebsockets クライアントを立ち上げ、
+// フルラウンドトリップを実行する。クライアントはここで lws を直接使用する。これは
+// 境界ルールが SDK の公開 include/ ヘッダに lws を含めることのみを禁止しており、
+// テストには適用されないため問題ない。以下で使用する SDK ヘッダ
+// （ws_server_transport.hpp）は lws 型を一切露出しない。
 //
-// Coverage:
-//   1. round trip: client->server recv(), server->client send()
-//   2. multiple frames sent back-to-back arrive in order (B1)
-//   3. one large frame survives partial-write re-arming (full length match)
-//   4. single-connection posture: a 2nd connection is rejected, 1st survives
-//   5. close() contract: recv() drains to nullopt, send() returns false,
-//      close() is idempotent (called twice)
-//   6. bind failure: a 2nd transport on the same port returns nullptr (Warn)
-//   7. bind is 127.0.0.1 (loopback): connecting via 127.0.0.1 works
+// カバレッジ:
+//   1. ラウンドトリップ: クライアント->サーバ recv()、サーバ->クライアント send()
+//   2. 複数フレームを連続送信した場合、順序を維持して到着すること（B1）
+//   3. 大きなフレームが部分書き込みの再アーミングを経ても完全長で一致すること
+//   4. シングル接続姿勢: 2 番目の接続が拒否され、1 番目が存続すること
+//   5. close() 契約: recv() が nullopt にドレインされる、send() が false を返す、
+//      close() が冪等（2 回呼び出し）
+//   6. バインド失敗: 同一ポートに 2 番目のトランスポートを作成すると nullptr が返る（Warn）
+//   7. バインドは 127.0.0.1（ループバック）: 127.0.0.1 経由の接続が機能すること
 
 #include "norves/bridge/ws_server_transport.hpp"
 
@@ -39,7 +39,7 @@ namespace
 
     using namespace std::chrono_literals;
 
-    // Collects log lines so tests can assert on Warn/Error diagnostics.
+    // @brief テストが Warn/Error 診断をアサートできるようにログ行を収集する。
     class CapturingSink : public norves::bridge::ILogSink
     {
     public:
@@ -66,17 +66,17 @@ namespace
         std::vector<std::pair<norves::bridge::LogSeverity, std::string>> m_Lines;
     };
 
-    // -- libwebsockets test client ----------------------------------------------
+    // -- libwebsockets テストクライアント -------------------------------------------
     //
-    // A tiny single-connection client running its own context + service thread. It
-    // reassembles continuation fragments into whole messages (mirrors the SDK
-    // server) and can send frames to the server on demand from the service thread.
+    // 独自のコンテキスト + サービススレッドで動作する小規模なシングル接続クライアント。
+    // 継続フラグメントをまとめてメッセージに再アセンブルし（SDK サーバのミラー）、
+    // サービススレッドからオンデマンドでサーバにフレームを送信できる。
 
     struct TestClient
     {
         struct PerSession
         {
-            std::string acc;  // fragment reassembly
+            std::string acc;  // フラグメント再アセンブル用バッファ
             TestClient* owner = nullptr;
         };
 
@@ -85,10 +85,10 @@ namespace
         std::atomic<bool> connection_error{false};
 
         std::mutex rx_mutex;
-        std::vector<std::string> received;  // whole messages, in order
+        std::vector<std::string> received;  // 完全なメッセージ（受信順）
 
         std::mutex tx_mutex;
-        std::vector<std::string> to_send;  // queued outbound payloads
+        std::vector<std::string> to_send;  // 送信キュー（ペイロード）
 
         struct lws_context* ctx = nullptr;
         struct lws* wsi = nullptr;
@@ -184,8 +184,8 @@ namespace
                     while (!stop.load())
                     {
                         lws_service(ctx, 50);
-                        // Honour pending send requests ON the service thread: this is
-                        // the only thread allowed to call lws_callback_on_writable.
+                        // 保留中の送信要求をサービススレッド上で処理する: lws_callback_on_writable
+                        // を呼び出せるのはこのスレッドのみ。
                         if (arm_writable.exchange(false) && wsi != nullptr)
                         {
                             bool has_data;
@@ -210,8 +210,8 @@ namespace
                 std::lock_guard<std::mutex> lk(tx_mutex);
                 to_send.push_back(payload);
             }
-            // Off-thread: only set a flag + wake the loop. The loop (service thread)
-            // turns the flag into lws_callback_on_writable.
+            // スレッド外: フラグをセットしてループを起床させるだけ。ループ（サービススレッド）が
+            // フラグを lws_callback_on_writable に変換する。
             arm_writable.store(true);
             if (ctx != nullptr)
             {
@@ -273,7 +273,7 @@ int main()
     constexpr std::size_t SendCap = 256;
     constexpr std::size_t RecvCap = 256;
 
-    // ---- setup: server transport + connected client ----------------------
+    // ---- セットアップ: サーバートランスポート + 接続済みクライアント ----------------
     CapturingSink sink;
     auto server = make_websocket_server_transport(Port, SendCap, RecvCap, &sink);
     NORVES_CHECK(server != nullptr);
@@ -288,7 +288,8 @@ int main()
     bool bConnected = WaitUntil([&] { return client.connected.load(); }, 5s);
     NORVES_CHECK(bConnected);
 
-    // Test 1 + 7: client -> server round trip (proves 127.0.0.1 listen works).
+    // テスト 1 + 7: クライアント -> サーバ ラウンドトリップ（127.0.0.1
+    // リッスンが機能することを証明）。
     client.enqueue("hello-from-client");
     auto got = server->recv();
     NORVES_CHECK(got.has_value());
@@ -297,7 +298,7 @@ int main()
         NORVES_CHECK_EQ(*got, std::string("hello-from-client"));
     }
 
-    // Test 1: server -> client
+    // テスト 1: サーバ -> クライアント
     NORVES_CHECK(server->send("hello-from-server"));
     bool bGotOne = WaitUntil([&] { return client.received_count() >= 1; }, 5s);
     NORVES_CHECK(bGotOne);
@@ -306,7 +307,7 @@ int main()
         NORVES_CHECK_EQ(client.snapshot().at(0), std::string("hello-from-server"));
     }
 
-    // Test 2: multiple frames in order (B1)
+    // テスト 2: 複数フレームが順序を維持して到着すること（B1）
     const int Burst = 8;
     for (int i = 0; i < Burst; ++i)
     {
@@ -323,7 +324,7 @@ int main()
         }
     }
 
-    // Test 3: large frame survives partial-write re-arming (full length match)
+    // テスト 3: 大きなフレームが部分書き込みの再アーミングを経ても完全長で一致すること
     const std::size_t Big = 50000;
     std::string big = "BIG:";
     big.append(Big, 'X');
@@ -339,17 +340,17 @@ int main()
         NORVES_CHECK(last == big);
     }
 
-    // Test 4: single-connection posture -- a 2nd client is rejected, 1st stays.
+    // テスト 4: シングル接続姿勢 -- 2 番目のクライアントが拒否され、1 番目が存続すること。
     {
         TestClient client2;
         client2.start(Port);
-        // The server rejects at ESTABLISHED (-1), so client2 either errors or
-        // closes without establishing a usable session. Either way the FIRST
-        // client must keep working afterwards.
+        // サーバは ESTABLISHED（-1）で拒否するため、client2 はエラーになるか
+        // 使用可能なセッションを確立せずにクローズする。いずれにせよ 1 番目の
+        // クライアントはその後も機能し続けなければならない。
         WaitUntil([&] { return client2.connection_error.load(); }, 3s);
         client2.shutdown();
     }
-    // First client still works:
+    // 1 番目のクライアントが依然として機能すること:
     NORVES_CHECK(server->send("after-reject"));
     bool bStillOk = WaitUntil([&] { return client.received_count() >= expectAfterBig + 1; }, 5s);
     NORVES_CHECK(bStillOk);
@@ -361,17 +362,18 @@ int main()
 
     client.shutdown();
 
-    // Test 5: close() contract -- recv() drains to nullopt, send() false,
-    // idempotent.
+    // テスト 5: close() 契約 -- recv() が nullopt にドレインされる、send() が false を返す、
+    // 冪等性（2 回呼び出し）。
     server->close();
     auto afterClose = server->recv();
-    NORVES_CHECK(!afterClose.has_value());           // drained to nullopt
-    NORVES_CHECK(server->send("dropped") == false);  // closed => false
-    server->close();                                 // idempotent: must not hang/crash
+    NORVES_CHECK(!afterClose.has_value());           // nullopt にドレインされた
+    NORVES_CHECK(server->send("dropped") == false);  // クローズ済み => false
+    server->close();                                 // 冪等: ハング/クラッシュしてはならない
 
-    // Test 6: bind failure -- a 2nd transport on the same port returns nullptr.
+    // テスト 6: バインド失敗 -- 同一ポートに 2 番目のトランスポートを作成すると nullptr
+    // が返ること。
     {
-        // Re-bind the same port using a fresh server, then try a duplicate.
+        // 新しいサーバで同一ポートに再バインドし、次に重複を試みる。
         CapturingSink sinkA;
         auto a = make_websocket_server_transport(Port, SendCap, RecvCap, &sinkA);
         NORVES_CHECK(a != nullptr);

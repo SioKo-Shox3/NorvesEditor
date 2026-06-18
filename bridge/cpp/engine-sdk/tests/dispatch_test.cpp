@@ -1,13 +1,12 @@
-// Dispatch / negotiation conformance test for BridgeEngineServer (F3).
+// @brief BridgeEngineServer のディスパッチ / ネゴシエーション適合テスト（F3）。
 //
-// Verifies: bridge.hello version negotiation (success + PROTOCOL_VERSION_
-// UNSUPPORTED), id / sessionId echo, adapter result pass-through, unknown method
-// and unimplemented-optional-method -> METHOD_NOT_SUPPORTED, event emission, and
-// that non-request / undecodable frames produce no response.
+// 検証項目: bridge.hello のバージョンネゴシエーション（成功 + PROTOCOL_VERSION_
+// UNSUPPORTED）; id / sessionId のエコー; アダプタ結果のパススルー; 未知のメソッドおよび
+// 未実装のオプショナルメソッド -> METHOD_NOT_SUPPORTED; イベントの発行;
+// リクエスト以外のフレームおよびデコード不能なフレームがレスポンスを生成しないこと。
 //
-// Only std + the SDK's public headers are used (plus JsonValue::parse for
-// value-equal comparison); the boundary rule (no nlohmann in include/) is
-// unaffected.
+// std とSDKの公開ヘッダのみを使用する（値等価比較のための JsonValue::parse を含む）。
+// 境界ルール（include/ に nlohmann を含めない）には影響しない。
 
 #include "norves/bridge/adapter.hpp"
 #include "norves/bridge/codec.hpp"
@@ -37,8 +36,8 @@ namespace
     using norves::bridge::Kind;
     using norves::bridge::Result;
 
-    // Builds a JsonValue from JSON text, failing the test (and returning null) on a
-    // parse error so callers can use the value inline.
+    // @brief JSON テキストから JsonValue を構築する。パースエラーが発生した場合は
+    // テストを失敗させ（null を返す）、呼び出し元がその値をインラインで使えるようにする。
     JsonValue ParseOrFail(std::string_view text)
     {
         auto parsed = JsonValue::parse(text);
@@ -50,18 +49,18 @@ namespace
         return std::move(parsed).value();
     }
 
-    // Fake adapter: returns fixed JsonValue results so the test exercises the
-    // server's dispatch / negotiation, not real engine logic. It does NOT override
-    // the optional methods, so those fall through to the default
-    // METHOD_NOT_SUPPORTED.
+    // @brief 偽アダプタ: テストがサーバのディスパッチ / ネゴシエーションを検証するために
+    // 固定の JsonValue 結果を返す。実際のエンジンロジックは検証しない。
+    // オプショナルメソッドはオーバーライドしないため、デフォルトの
+    // METHOD_NOT_SUPPORTED にフォールスルーする。
     class FakeAdapter : public IBridgeEngineAdapter
     {
     public:
         Result<JsonValue, BridgeError> hello(const JsonValue& /*params*/,
                                              std::string_view selectedProtocolVersion) override
         {
-            // The adapter is responsible for placing the negotiated version into the
-            // result's protocolVersion field.
+            // アダプタはネゴシエート済みバージョンを結果の protocolVersion フィールドに
+            // 格納する責務を持つ。
             std::string result =
                 std::string(R"({"sessionId":"sess-7f3a","protocolVersion":")") +
                 std::string(selectedProtocolVersion) +
@@ -114,10 +113,10 @@ namespace
         {
             return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"subscribed":false})"));
         }
-        // Optional methods intentionally NOT overridden.
+        // オプショナルメソッドは意図的にオーバーライドしない。
     };
 
-    // Wire-frame builders ---------------------------------------------------------
+    // ワイヤーフレームビルダー -----------------------------------------------------------
 
     std::string RequestFrame(std::string_view id, std::string_view method,
                              std::string_view paramsJson)
@@ -137,7 +136,7 @@ namespace
         return frame;
     }
 
-    // Decodes a server response frame, failing the test on error.
+    // @brief サーバのレスポンスフレームをデコードする。エラー時はテストを失敗させる。
     Envelope DecodeOrFail(std::string_view wire)
     {
         auto decoded = decode_envelope(wire);
@@ -150,7 +149,7 @@ namespace
         return std::move(decoded).value();
     }
 
-    // Tests -----------------------------------------------------------------------
+    // テスト -----------------------------------------------------------------------
 
     void TestHelloSuccessEchoesIdSessionAndVersion()
     {
@@ -172,10 +171,10 @@ namespace
         NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-1"});
         NORVES_CHECK(env.result.has_value());
         NORVES_CHECK(!env.error.has_value());
-        // Envelope sessionId is echoed from the result's sessionId.
+        // エンベロープの sessionId は結果の sessionId からエコーされる。
         NORVES_CHECK_EQ(env.session_id, std::optional<std::string>{"sess-7f3a"});
 
-        // Result payload carries the negotiated version and server identity.
+        // 結果ペイロードはネゴシエート済みバージョンとサーバ識別子を持つ。
         const JsonValue expected = ParseOrFail(
             R"({"sessionId":"sess-7f3a","protocolVersion":"0.1","server":{"name":"FakeEngine","version":"0.1.0","engine":"fake"}})");
         NORVES_CHECK(env.result.has_value() && *env.result == expected);
@@ -208,11 +207,11 @@ namespace
         NORVES_CHECK_EQ(env.error->code, std::string{"PROTOCOL_VERSION_UNSUPPORTED"});
         NORVES_CHECK(!env.error->message.empty());
 
-        // error.data: offered is what the client sent; supported is
-        // SupportedProtocolVersions ("0.1" for the alpha). The canonical fixture
-        // (response-version-unsupported.json) uses offered:["2.0"],
-        // supported:["0.1","1.0"]; supported tracks the SDK's actual set, so we
-        // assert structure + offered + supported contents directly.
+        // error.data: offered はクライアントが送信した値、supported は
+        // SupportedProtocolVersions（alpha では "0.1"）。カノニカルフィクスチャ
+        // （response-version-unsupported.json）は offered:["2.0"]、
+        // supported:["0.1","1.0"] を使用する。supported は SDK の実際のセットを追跡するため、
+        // 構造 + offered + supported の内容を直接アサートする。
         NORVES_CHECK(env.error->data.has_value());
         if (env.error->data.has_value())
         {
@@ -278,7 +277,7 @@ namespace
 
     void TestUnimplementedOptionalMethodIsMethodNotSupported()
     {
-        FakeAdapter adapter;  // does not override scene.getTree
+        FakeAdapter adapter;  // scene.getTree をオーバーライドしない
         BridgeEngineServer server(adapter);
 
         const std::string frame = RequestFrame("o-1", "scene.getTree", "");
@@ -312,9 +311,9 @@ namespace
         NORVES_CHECK(env.params.has_value() && *env.params == params);
     }
 
-    // Sanity check on JsonValue itself: a non-trivial value survives a
-    // parse -> dump -> parse round trip, value-equal to the original. This guards
-    // the codec the dispatch path relies on for every result/error/event payload.
+    // @brief JsonValue 自体のサニティチェック: 非自明な値が parse -> dump -> parse の
+    // ラウンドトリップを経て元の値と値等価であることを確認する。これはディスパッチパスが
+    // result / error / event ペイロードすべてに依存するコーデックを保護する。
     void TestJsonValueParseDumpRoundTrips()
     {
         constexpr std::string_view Source = R"({"a":1,"b":[true,null,"x"],"c":{"d":2.5}})";
@@ -343,7 +342,7 @@ namespace
         FakeAdapter adapter;
         BridgeEngineServer server(adapter);
 
-        // A valid response frame fed to the server: not ours to answer.
+        // 有効なレスポンスフレームをサーバに与える: 我々が応答すべきものではない。
         const std::string responseFrame =
             R"({"bridge":"norves.editor.bridge","version":"0.1","kind":"response","id":"req-1","result":{"ok":true}})";
         auto out = server.handleFrame(responseFrame);

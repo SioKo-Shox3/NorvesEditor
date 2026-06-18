@@ -8,19 +8,19 @@
 #include <optional>
 #include <string>
 
-// Typed event-payload DTO for the F5 round-trip: log.message. The C++ analogue
-// of the Rust editor-client's parse_log_message.
-//
-// Depends on <std> + the SDK's own value/enum types only; no third-party
-// headers are exposed here. JSON construction / validation lives in
-// src/dto_codec.cpp. The same strict contract as the method DTOs applies
-// (additionalProperties: false, required-field and enum checks).
+/// @file
+/// @brief F5 ラウンドトリップのための型付きイベントペイロード DTO: log.message。Rust
+///        editor-client の parse_log_message の C++ 対応物。
+///
+/// @note 依存は <std> と SDK 自身の値/enum 型のみ。サードパーティヘッダはここに露出しない。
+///       JSON の構築 / 検証は src/dto_codec.cpp にある。メソッド DTO と同じ厳格な契約が
+///       適用される（additionalProperties: false、必須フィールドおよび enum のチェック）。
 namespace norves::bridge::dto
 {
 
-    // events/log.message.params.schema.json. `message` is a free-form string
-    // (may be empty); `category` / `timestamp` are optional and, per the schema,
-    // non-empty when present.
+    /// @brief events/log.message.params.schema.json。`message` は自由形式の文字列
+    ///        （空でもよい）。`category` / `timestamp` はオプションであり、スキーマに従い
+    ///        存在する場合は非空。
     struct LogMessageEvent
     {
         LogLevel level = LogLevel::Info;

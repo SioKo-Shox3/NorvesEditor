@@ -3,33 +3,34 @@
 #include <string>
 #include <utility>
 
-// Local failure raised while decoding or validating a Bridge envelope.
-//
-// Depends on <std> only; no third-party headers are included here. This is the
-// C++ analogue of the Rust reference's `CodecError`
-// (`bridge/crates/norves-bridge-core/src/error.rs`): a local, never-on-the-wire
-// processing failure. It is distinct from BridgeError (the wire error object).
+/// @file
+/// @brief Bridge エンベロープのデコードまたは検証中に発生するローカル失敗。
+///
+/// @note 依存は <std> のみ。サードパーティヘッダはここに含めない。これは Rust リファレンス
+///       の `CodecError`（`bridge/crates/norves-bridge-core/src/error.rs`）の C++ 対応物で
+///       あり、ローカルかつワイヤー上には決して載らない処理失敗である。BridgeError
+///       （ワイヤーのエラーオブジェクト）とは区別される。
 namespace norves::bridge
 {
 
-    // Coarse classification of a decode/validate failure. The kinds collapse the
-    // Rust CodecError variants into the categories that matter at the envelope
-    // layer; a human-readable message carries the specifics.
+    /// @brief デコード/検証失敗の粗い分類。これらの種別は Rust CodecError のバリアントを、
+    ///        エンベロープ層で意味を持つカテゴリへ畳み込んだものである。具体的な詳細は
+    ///        人間可読の message が運ぶ。
     enum class CodecErrorKind
     {
-        // JSON parse failure (malformed input).
+        /// JSON パース失敗（不正な入力）。
         Parse,
-        // An unknown / unexpected field (additionalProperties: false violation).
+        /// 未知 / 想定外のフィールド（additionalProperties: false 違反）。
         UnknownField,
-        // A field value violated its pattern / type / presence constraint
-        // (bridge marker, version, method/event name, error code, id, seq, ...).
+        /// フィールド値がそのパターン / 型 / 存在制約に違反した
+        /// （bridge マーカー、version、method/event 名、error コード、id、seq、...）。
         InvalidField,
-        // An envelope violated a kind-dependent structural constraint
-        // (mirrors Rust CodecError::StructuralViolation).
+        /// エンベロープが kind 依存の構造制約に違反した
+        /// （Rust CodecError::StructuralViolation を反映）。
         StructuralViolation,
     };
 
-    // Local decode/validate error value.
+    /// @brief ローカルなデコード/検証エラー値。
     struct CodecError
     {
         CodecErrorKind kind = CodecErrorKind::Parse;

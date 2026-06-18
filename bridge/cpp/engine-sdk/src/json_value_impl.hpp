@@ -7,17 +7,18 @@
 
 #include <nlohmann/json.hpp>
 
-// Private (src-only) completion of the JsonValue pImpl. This header includes
-// nlohmann/json and therefore must NEVER be reachable from include/. It is
-// shared by json_value.cpp and codec.cpp so that detail::JsonValueImpl has a
-// single ODR-correct definition.
+/// @file
+/// @brief JsonValue pImpl の private（src 専用）な完全定義。このヘッダは nlohmann/json を
+///        include するため、include/ から決して（NEVER）到達できてはならない。
+///        detail::JsonValueImpl が ODR 上正しい単一の定義を持つよう、json_value.cpp と
+///        codec.cpp で共有される。
 namespace norves::bridge
 {
 
     namespace detail
     {
 
-        // Concrete pImpl: a single owned nlohmann::json value.
+        /// @brief 具体的な pImpl。所有された単一の nlohmann::json 値。
         struct JsonValueImpl
         {
             nlohmann::json json;
@@ -28,9 +29,9 @@ namespace norves::bridge
 
     }  // namespace detail
 
-    // Internal bridge helpers (declared as friends in json_value.hpp), defined in
-    // json_value.cpp. They let codec.cpp build a JsonValue from a concrete
-    // nlohmann::json and read it back without widening the public API.
+    /// @brief 内部ブリッジヘルパ（json_value.hpp で friend 宣言され、json_value.cpp で
+    ///        定義される）。codec.cpp が具体的な nlohmann::json から JsonValue を構築し、
+    ///        それを読み戻すことを、公開 API を広げずに可能にする。
     JsonValue make_json_value(std::unique_ptr<detail::JsonValueImpl> impl);
     const detail::JsonValueImpl* peek(const JsonValue& value);
 
