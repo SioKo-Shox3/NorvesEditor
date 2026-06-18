@@ -1,43 +1,44 @@
-#ifndef NORVES_BRIDGE_ERROR_HPP
-#define NORVES_BRIDGE_ERROR_HPP
+﻿#pragma once
+
+#include "norves/bridge/json_value.hpp"
 
 #include <optional>
 #include <string>
 #include <string_view>
 
-#include "norves/bridge/json_value.hpp"
+/// @file
+/// @brief ワイヤーエラーコードと SDK のエラー値型。
+/// @note 依存は <std> と SDK 自身の opaque な JsonValue のみ。サードパーティヘッダは
+///       ここに含めない。
+namespace norves::bridge
+{
 
-// Wire error codes and the SDK error value type.
-// Depends on <std> and the SDK's own opaque JsonValue only; no third-party
-// headers are included here.
-namespace norves::bridge {
+    /// @brief ワイヤーエラーコード。プロトコルはコード空間を開かれた（OPEN）レジストリと
+    ///        して扱うため、これらは閉じた enum ではなく string_view 定数である。すなわち
+    ///        SDK は定数を持たないコードを観測しうる。値は SCREAMING_SNAKE_CASE。
+    inline constexpr std::string_view ErrorProtocolVersionUnsupported =
+        "PROTOCOL_VERSION_UNSUPPORTED";
+    inline constexpr std::string_view ErrorMethodNotSupported = "METHOD_NOT_SUPPORTED";
+    inline constexpr std::string_view ErrorBridgeTransportError = "BRIDGE_TRANSPORT_ERROR";
 
-// Wire error codes. The protocol treats the code space as an OPEN registry, so
-// these are string_view constants rather than a closed enum: an SDK may observe
-// codes it does not have a constant for. Values are SCREAMING_SNAKE_CASE.
-inline constexpr std::string_view kErrorProtocolVersionUnsupported =
-    "PROTOCOL_VERSION_UNSUPPORTED";
-inline constexpr std::string_view kErrorMethodNotSupported = "METHOD_NOT_SUPPORTED";
-inline constexpr std::string_view kErrorBridgeTransportError = "BRIDGE_TRANSPORT_ERROR";
+    /// @brief 失敗パスで Result が運ぶエラー値。
+    ///
+    /// @note envelope.schema.json の `error` $def を反映する。すなわち code（通常は
+    ///       上記定数のいずれかだが、開かれたレジストリの任意の文字列が有効）、人間可読の
+    ///       message、および構造化されたエラーコード固有の詳細のためのオプションの opaque な
+    ///       `data` ペイロード。`data` は opaque な JsonValue として保持され、エンベロープ
+    ///       層では解釈されない（ペイロード層は後のフェーズ）。
+    struct BridgeError
+    {
+        std::string code;
+        std::string message;
+        std::optional<JsonValue> data;
 
-// Error value carried by a Result on the failure path.
-//
-// Mirrors the `error` $def of envelope.schema.json: a code (typically one of
-// the constants above, but any string from the open registry is valid), a
-// human-readable message, and an OPTIONAL opaque `data` payload for structured,
-// error-code-specific detail. `data` is held as an opaque JsonValue and is not
-// interpreted at the envelope layer (the payload layer is a later phase).
-struct BridgeError {
-    std::string code;
-    std::string message;
-    std::optional<JsonValue> data;
-
-    [[nodiscard]] bool operator==(const BridgeError& other) const {
-        return code == other.code && message == other.message && data == other.data;
-    }
-    [[nodiscard]] bool operator!=(const BridgeError& other) const { return !(*this == other); }
-};
+        [[nodiscard]] bool operator==(const BridgeError& other) const
+        {
+            return code == other.code && message == other.message && data == other.data;
+        }
+        [[nodiscard]] bool operator!=(const BridgeError& other) const { return !(*this == other); }
+    };
 
 }  // namespace norves::bridge
-
-#endif  // NORVES_BRIDGE_ERROR_HPP

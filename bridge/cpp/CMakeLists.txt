@@ -12,8 +12,8 @@ project(NorvesBridgeCpp LANGUAGES CXX)
 option(NORVES_BRIDGE_BUILD_EXAMPLES "Build bridge C++ examples (mock-engine)" ON)
 option(NORVES_BRIDGE_BUILD_TESTS "Build bridge C++ engine-sdk tests" ON)
 
-# C++20 across the whole tree; no compiler extensions.
-set(CMAKE_CXX_STANDARD 20)
+# C++23 across the whole tree; no compiler extensions (ADR 0008).
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 

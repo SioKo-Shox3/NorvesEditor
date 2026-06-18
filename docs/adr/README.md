@@ -14,6 +14,7 @@ Initial ADRs:
 0005-external-engine-viewport-for-alpha.md
 0006-bridge-error-model-and-versioning.md
 0007-cpp-websocket-library-libwebsockets.md
+0008-cpp23-and-norveslib-style-alignment.md
 ```
 
 Each ADR should record:
