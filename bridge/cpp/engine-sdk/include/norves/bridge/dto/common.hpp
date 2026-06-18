@@ -1,5 +1,4 @@
-#ifndef NORVES_BRIDGE_DTO_COMMON_HPP
-#define NORVES_BRIDGE_DTO_COMMON_HPP
+#pragma once
 
 #include <optional>
 #include <string_view>
@@ -16,28 +15,47 @@
 // logLevel) are modelled. viewportState / origin and the open value $defs
 // (propertyValue, sceneNode, ...) are intentionally NOT typed here; they stay
 // opaque (carried as JsonValue) until a later phase needs them.
-namespace norves::bridge::dto {
+namespace norves::bridge::dto
+{
 
-// common.schema.json#/$defs/engineState: ["initializing","ready","running","error"].
-enum class EngineState { Initializing, Ready, Running, Error };
+    // common.schema.json#/$defs/engineState: ["initializing","ready","running","error"].
+    enum class EngineState
+    {
+        Initializing,
+        Ready,
+        Running,
+        Error
+    };
 
-// common.schema.json#/$defs/runtimeState: ["edit","playing","paused","stopped","unknown"].
-enum class RuntimeState { Edit, Playing, Paused, Stopped, Unknown };
+    // common.schema.json#/$defs/runtimeState: ["edit","playing","paused","stopped","unknown"].
+    enum class RuntimeState
+    {
+        Edit,
+        Playing,
+        Paused,
+        Stopped,
+        Unknown
+    };
 
-// common.schema.json#/$defs/logLevel: ["trace","debug","info","warn","error"].
-enum class LogLevel { Trace, Debug, Info, Warn, Error };
+    // common.schema.json#/$defs/logLevel: ["trace","debug","info","warn","error"].
+    enum class LogLevel
+    {
+        Trace,
+        Debug,
+        Info,
+        Warn,
+        Error
+    };
 
-// Wire-string conversions. to_wire is total (every enumerator has a string);
-// from_wire returns nullopt for an unknown member, mirroring serde's rejection
-// of an out-of-enum value.
-[[nodiscard]] std::string_view to_wire(EngineState value);
-[[nodiscard]] std::string_view to_wire(RuntimeState value);
-[[nodiscard]] std::string_view to_wire(LogLevel value);
+    // Wire-string conversions. to_wire is total (every enumerator has a string);
+    // from_wire returns nullopt for an unknown member, mirroring serde's rejection
+    // of an out-of-enum value.
+    [[nodiscard]] std::string_view to_wire(EngineState value);
+    [[nodiscard]] std::string_view to_wire(RuntimeState value);
+    [[nodiscard]] std::string_view to_wire(LogLevel value);
 
-[[nodiscard]] std::optional<EngineState> engine_state_from_wire(std::string_view text);
-[[nodiscard]] std::optional<RuntimeState> runtime_state_from_wire(std::string_view text);
-[[nodiscard]] std::optional<LogLevel> log_level_from_wire(std::string_view text);
+    [[nodiscard]] std::optional<EngineState> engine_state_from_wire(std::string_view text);
+    [[nodiscard]] std::optional<RuntimeState> runtime_state_from_wire(std::string_view text);
+    [[nodiscard]] std::optional<LogLevel> log_level_from_wire(std::string_view text);
 
 }  // namespace norves::bridge::dto
-
-#endif  // NORVES_BRIDGE_DTO_COMMON_HPP

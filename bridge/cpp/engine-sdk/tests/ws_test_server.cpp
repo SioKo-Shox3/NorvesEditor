@@ -38,16 +38,6 @@
 // untouched: this TU includes only SDK public headers, and the only third-party
 // surface is hidden behind the ITransport pImpl.
 
-#include <atomic>
-#include <chrono>
-#include <cstdint>
-#include <cstdlib>
-#include <iostream>
-#include <optional>
-#include <string>
-#include <string_view>
-#include <thread>
-
 #include "norves/bridge/adapter.hpp"
 #include "norves/bridge/dto/common.hpp"
 #include "norves/bridge/dto/events.hpp"
@@ -60,196 +50,237 @@
 #include "norves/bridge/transport.hpp"
 #include "norves/bridge/ws_server_transport.hpp"
 
-namespace {
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <iostream>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <thread>
 
-using norves::bridge::BridgeError;
-using norves::bridge::BridgeEngineServer;
-using norves::bridge::IBridgeEngineAdapter;
-using norves::bridge::ILogSink;
-using norves::bridge::ITransport;
-using norves::bridge::JsonValue;
-using norves::bridge::LogSeverity;
-using norves::bridge::make_websocket_server_transport;
-using norves::bridge::Result;
+namespace
+{
 
-using norves::bridge::dto::EngineState;
-using norves::bridge::dto::HelloResult;
-using norves::bridge::dto::LogLevel;
-using norves::bridge::dto::LogMessageEvent;
-using norves::bridge::dto::PlayAck;
-using norves::bridge::dto::RuntimeState;
-using norves::bridge::dto::ServerInfo;
-using norves::bridge::dto::StatusSnapshot;
+    using norves::bridge::BridgeEngineServer;
+    using norves::bridge::BridgeError;
+    using norves::bridge::IBridgeEngineAdapter;
+    using norves::bridge::ILogSink;
+    using norves::bridge::ITransport;
+    using norves::bridge::JsonValue;
+    using norves::bridge::LogSeverity;
+    using norves::bridge::make_websocket_server_transport;
+    using norves::bridge::Result;
 
-// Number of log.message events emitted (back-to-back) after a log.subscribe ack.
-// More than one so the Rust side can assert ordered multi-frame delivery (the
-// G4 burst requirement); the SDK transport guarantees in-order delivery.
-constexpr int kLogBurst = 3;
+    using norves::bridge::dto::EngineState;
+    using norves::bridge::dto::HelloResult;
+    using norves::bridge::dto::LogLevel;
+    using norves::bridge::dto::LogMessageEvent;
+    using norves::bridge::dto::PlayAck;
+    using norves::bridge::dto::RuntimeState;
+    using norves::bridge::dto::ServerInfo;
+    using norves::bridge::dto::StatusSnapshot;
 
-// Parses a JSON literal or aborts the harness: the literals below are
-// compile-time constants we control, so a parse failure is a programming error,
-// not a runtime condition worth recovering from.
-JsonValue parse_or_die(std::string_view text) {
-    auto parsed = JsonValue::parse(text);
-    if (parsed.is_err()) {
-        std::cerr << "ws_test_server: internal JSON literal failed to parse\n";
-        std::exit(2);
-    }
-    return std::move(parsed).value();
-}
+    // Number of log.message events emitted (back-to-back) after a log.subscribe ack.
+    // More than one so the Rust side can assert ordered multi-frame delivery (the
+    // G4 burst requirement); the SDK transport guarantees in-order delivery.
+    constexpr int kLogBurst = 3;
 
-// A minimal stderr log sink so SDK Warn/Error diagnostics are visible in the
-// child's captured stderr when a test goes wrong. stdout is reserved for the
-// single READY line, so diagnostics go to stderr only.
-class StderrSink : public ILogSink {
-  public:
-    void log(LogSeverity level, std::string_view message) override {
-        if (level == LogSeverity::Warn || level == LogSeverity::Error) {
-            std::cerr << "ws_test_server[sink]: " << message << '\n';
+    // Parses a JSON literal or aborts the harness: the literals below are
+    // compile-time constants we control, so a parse failure is a programming error,
+    // not a runtime condition worth recovering from.
+    JsonValue parse_or_die(std::string_view text)
+    {
+        auto parsed = JsonValue::parse(text);
+        if (parsed.is_err())
+        {
+            std::cerr << "ws_test_server: internal JSON literal failed to parse\n";
+            std::exit(2);
         }
-    }
-};
-
-// Engine-side adapter mirroring loopback_roundtrip_test.cpp's FakeAdapter:
-// answers each in-scope method with a typed DTO. logSubscribe additionally sets
-// a flag the recv loop reads so it knows to emit the log.message burst after the
-// subscribe ack (the same "set flag, emit after ack" pattern as the loopback
-// test, but driven by the adapter rather than the test thread).
-class FakeAdapter : public IBridgeEngineAdapter {
-  public:
-    Result<JsonValue, BridgeError> hello(const JsonValue& /*params*/,
-                                         std::string_view selectedProtocolVersion) override {
-        HelloResult result;
-        result.sessionId = "sess-mock-1";
-        result.protocolVersion = std::string(selectedProtocolVersion);
-        result.server = ServerInfo{"MockEngine", std::optional<std::string>{"0.1.0"},
-                                   std::optional<std::string>{"mock"}};
-        return Result<JsonValue, BridgeError>::ok(result.to_json());
+        return std::move(parsed).value();
     }
 
-    Result<JsonValue, BridgeError> getCapabilities(const JsonValue& /*params*/) override {
-        // A single, deterministic capability descriptor so the Rust e2e can
-        // assert a concrete round trip (not just an empty list). Shape matches
-        // bridge.getCapabilities.result schema: capabilityDescriptor with a
-        // namespaced name token and a MAJOR.MINOR version.
-        return Result<JsonValue, BridgeError>::ok(
-            parse_or_die(R"({"capabilities":[{"name":"runtime.control","version":"0.1"}]})"));
-    }
-
-    Result<JsonValue, BridgeError> getStatus(const JsonValue& /*params*/) override {
-        StatusSnapshot snap;
-        snap.engineState = EngineState::Ready;
-        snap.runtimeState = RuntimeState::Edit;
-        snap.engineName = "MockEngine";
-        snap.engineVersion = "0.1.0";
-        snap.title = "Mock Game";
-        return Result<JsonValue, BridgeError>::ok(snap.to_json());
-    }
-
-    Result<JsonValue, BridgeError> launchInfo(const JsonValue& /*params*/) override {
-        return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"launched":true})"));
-    }
-
-    Result<JsonValue, BridgeError> runtimePlay(const JsonValue& /*params*/) override {
-        PlayAck ack;
-        ack.accepted = true;
-        ack.requestedState = RuntimeState::Playing;
-        return Result<JsonValue, BridgeError>::ok(ack.to_json());
-    }
-
-    Result<JsonValue, BridgeError> runtimePause(const JsonValue& /*params*/) override {
-        return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"accepted":true})"));
-    }
-
-    Result<JsonValue, BridgeError> runtimeStop(const JsonValue& /*params*/) override {
-        return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"accepted":true})"));
-    }
-
-    Result<JsonValue, BridgeError> runtimeFocusViewport(const JsonValue& /*params*/) override {
-        return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"focused":true})"));
-    }
-
-    Result<JsonValue, BridgeError> logSubscribe(const JsonValue& /*params*/) override {
-        // Flag the recv loop to emit the log.message burst AFTER this ack is
-        // sent, keeping ack-before-event ordering deterministic.
-        emit_log_burst.store(true);
-        return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"subscribed":true})"));
-    }
-
-    Result<JsonValue, BridgeError> logUnsubscribe(const JsonValue& /*params*/) override {
-        return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"unsubscribed":true})"));
-    }
-
-    // Set by logSubscribe(), consumed by the recv loop. Single-threaded in
-    // practice (handleFrame and the loop run on the same thread); atomic anyway
-    // for a clear cross-method handoff.
-    std::atomic<bool> emit_log_burst{false};
-};
-
-// Reads --bridge-port. Returns the port on success; prints an error and returns
-// nullopt on a missing/invalid value.
-std::optional<std::uint16_t> parse_port(int argc, char** argv) {
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg = argv[i];
-        if (arg == "--bridge-port") {
-            if (i + 1 >= argc) {
-                std::cerr << "ws_test_server: --bridge-port requires a value\n";
-                return std::nullopt;
+    // A minimal stderr log sink so SDK Warn/Error diagnostics are visible in the
+    // child's captured stderr when a test goes wrong. stdout is reserved for the
+    // single READY line, so diagnostics go to stderr only.
+    class StderrSink : public ILogSink
+    {
+    public:
+        void log(LogSeverity level, std::string_view message) override
+        {
+            if (level == LogSeverity::Warn || level == LogSeverity::Error)
+            {
+                std::cerr << "ws_test_server[sink]: " << message << '\n';
             }
-            const std::string value = argv[i + 1];
-            try {
-                const unsigned long parsed = std::stoul(value);
-                if (parsed == 0 || parsed > 65535) {
-                    std::cerr << "ws_test_server: port out of range: " << value << '\n';
+        }
+    };
+
+    // Engine-side adapter mirroring loopback_roundtrip_test.cpp's FakeAdapter:
+    // answers each in-scope method with a typed DTO. logSubscribe additionally sets
+    // a flag the recv loop reads so it knows to emit the log.message burst after the
+    // subscribe ack (the same "set flag, emit after ack" pattern as the loopback
+    // test, but driven by the adapter rather than the test thread).
+    class FakeAdapter : public IBridgeEngineAdapter
+    {
+    public:
+        Result<JsonValue, BridgeError> hello(const JsonValue& /*params*/,
+                                             std::string_view selectedProtocolVersion) override
+        {
+            HelloResult result;
+            result.sessionId = "sess-mock-1";
+            result.protocolVersion = std::string(selectedProtocolVersion);
+            result.server = ServerInfo{"MockEngine", std::optional<std::string>{"0.1.0"},
+                                       std::optional<std::string>{"mock"}};
+            return Result<JsonValue, BridgeError>::ok(result.to_json());
+        }
+
+        Result<JsonValue, BridgeError> getCapabilities(const JsonValue& /*params*/) override
+        {
+            // A single, deterministic capability descriptor so the Rust e2e can
+            // assert a concrete round trip (not just an empty list). Shape matches
+            // bridge.getCapabilities.result schema: capabilityDescriptor with a
+            // namespaced name token and a MAJOR.MINOR version.
+            return Result<JsonValue, BridgeError>::ok(
+                parse_or_die(R"({"capabilities":[{"name":"runtime.control","version":"0.1"}]})"));
+        }
+
+        Result<JsonValue, BridgeError> getStatus(const JsonValue& /*params*/) override
+        {
+            StatusSnapshot snap;
+            snap.engineState = EngineState::Ready;
+            snap.runtimeState = RuntimeState::Edit;
+            snap.engineName = "MockEngine";
+            snap.engineVersion = "0.1.0";
+            snap.title = "Mock Game";
+            return Result<JsonValue, BridgeError>::ok(snap.to_json());
+        }
+
+        Result<JsonValue, BridgeError> launchInfo(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"launched":true})"));
+        }
+
+        Result<JsonValue, BridgeError> runtimePlay(const JsonValue& /*params*/) override
+        {
+            PlayAck ack;
+            ack.accepted = true;
+            ack.requestedState = RuntimeState::Playing;
+            return Result<JsonValue, BridgeError>::ok(ack.to_json());
+        }
+
+        Result<JsonValue, BridgeError> runtimePause(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"accepted":true})"));
+        }
+
+        Result<JsonValue, BridgeError> runtimeStop(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"accepted":true})"));
+        }
+
+        Result<JsonValue, BridgeError> runtimeFocusViewport(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"focused":true})"));
+        }
+
+        Result<JsonValue, BridgeError> logSubscribe(const JsonValue& /*params*/) override
+        {
+            // Flag the recv loop to emit the log.message burst AFTER this ack is
+            // sent, keeping ack-before-event ordering deterministic.
+            emit_log_burst.store(true);
+            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"subscribed":true})"));
+        }
+
+        Result<JsonValue, BridgeError> logUnsubscribe(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(parse_or_die(R"({"unsubscribed":true})"));
+        }
+
+        // Set by logSubscribe(), consumed by the recv loop. Single-threaded in
+        // practice (handleFrame and the loop run on the same thread); atomic anyway
+        // for a clear cross-method handoff.
+        std::atomic<bool> emit_log_burst{false};
+    };
+
+    // Reads --bridge-port. Returns the port on success; prints an error and returns
+    // nullopt on a missing/invalid value.
+    std::optional<std::uint16_t> parse_port(int argc, char** argv)
+    {
+        for (int i = 1; i < argc; ++i)
+        {
+            std::string_view arg = argv[i];
+            if (arg == "--bridge-port")
+            {
+                if (i + 1 >= argc)
+                {
+                    std::cerr << "ws_test_server: --bridge-port requires a value\n";
                     return std::nullopt;
                 }
-                return static_cast<std::uint16_t>(parsed);
-            } catch (const std::exception&) {
-                std::cerr << "ws_test_server: invalid port: " << value << '\n';
-                return std::nullopt;
+                const std::string value = argv[i + 1];
+                try
+                {
+                    const unsigned long parsed = std::stoul(value);
+                    if (parsed == 0 || parsed > 65535)
+                    {
+                        std::cerr << "ws_test_server: port out of range: " << value << '\n';
+                        return std::nullopt;
+                    }
+                    return static_cast<std::uint16_t>(parsed);
+                }
+                catch (const std::exception&)
+                {
+                    std::cerr << "ws_test_server: invalid port: " << value << '\n';
+                    return std::nullopt;
+                }
             }
         }
+        std::cerr << "ws_test_server: missing required --bridge-port <port>\n";
+        return std::nullopt;
     }
-    std::cerr << "ws_test_server: missing required --bridge-port <port>\n";
-    return std::nullopt;
-}
 
-// True when --inject-malformed is present on the command line.
-bool has_inject_malformed(int argc, char** argv) {
-    for (int i = 1; i < argc; ++i) {
-        if (std::string_view(argv[i]) == "--inject-malformed") {
-            return true;
+    // True when --inject-malformed is present on the command line.
+    bool has_inject_malformed(int argc, char** argv)
+    {
+        for (int i = 1; i < argc; ++i)
+        {
+            if (std::string_view(argv[i]) == "--inject-malformed")
+            {
+                return true;
+            }
         }
+        return false;
     }
-    return false;
-}
 
-// Binds the WebSocket server, retrying a transient bind failure a few times with
-// short sleeps. A kill->same-port-restart (the Rust reconnect test) can briefly
-// fail to bind while the OS releases the previous listener; retrying absorbs that
-// without flakiness. Returns nullptr only if every attempt fails.
-std::unique_ptr<ITransport> bind_with_retry(std::uint16_t port,
-                                            std::size_t send_cap,
-                                            std::size_t recv_cap,
-                                            ILogSink* sink) {
-    constexpr int kMaxAttempts = 20;
-    constexpr auto kRetryDelay = std::chrono::milliseconds(100);
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        std::unique_ptr<ITransport> transport =
-            make_websocket_server_transport(port, send_cap, recv_cap, sink);
-        if (transport != nullptr) {
-            return transport;
+    // Binds the WebSocket server, retrying a transient bind failure a few times with
+    // short sleeps. A kill->same-port-restart (the Rust reconnect test) can briefly
+    // fail to bind while the OS releases the previous listener; retrying absorbs that
+    // without flakiness. Returns nullptr only if every attempt fails.
+    std::unique_ptr<ITransport> bind_with_retry(std::uint16_t port, std::size_t send_cap,
+                                                std::size_t recv_cap, ILogSink* sink)
+    {
+        constexpr int kMaxAttempts = 20;
+        constexpr auto kRetryDelay = std::chrono::milliseconds(100);
+        for (int attempt = 0; attempt < kMaxAttempts; ++attempt)
+        {
+            std::unique_ptr<ITransport> transport =
+                make_websocket_server_transport(port, send_cap, recv_cap, sink);
+            if (transport != nullptr)
+            {
+                return transport;
+            }
+            std::this_thread::sleep_for(kRetryDelay);
         }
-        std::this_thread::sleep_for(kRetryDelay);
+        return nullptr;
     }
-    return nullptr;
-}
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     const std::optional<std::uint16_t> port = parse_port(argc, argv);
-    if (!port.has_value()) {
+    if (!port.has_value())
+    {
         return 2;
     }
 
@@ -260,7 +291,8 @@ int main(int argc, char** argv) {
 
     StderrSink sink;
     std::unique_ptr<ITransport> transport = bind_with_retry(*port, kSendCap, kRecvCap, &sink);
-    if (transport == nullptr) {
+    if (transport == nullptr)
+    {
         std::cerr << "ws_test_server: failed to bind WebSocket server on port " << *port << '\n';
         return 3;
     }
@@ -290,15 +322,19 @@ int main(int argc, char** argv) {
     // emit_log_burst flag set inside logSubscribe is visible right after
     // handleFrame returns. We send the subscribe ack first, then the burst, so
     // the client sees ack-before-events.
-    while (true) {
+    while (true)
+    {
         std::optional<std::string> frame = transport->recv();
-        if (!frame.has_value()) {
+        if (!frame.has_value())
+        {
             break;  // client closed and the inbound queue drained: clean exit.
         }
 
         std::optional<std::string> response = server.handleFrame(*frame);
-        if (response.has_value()) {
-            if (!transport->send(std::move(*response))) {
+        if (response.has_value())
+        {
+            if (!transport->send(std::move(*response)))
+            {
                 break;  // peer gone mid-flight.
             }
         }
@@ -306,16 +342,21 @@ int main(int argc, char** argv) {
         // Inject a single malformed frame AFTER the first real response is sent,
         // so a client is definitely connected. The dispatcher must log-and-drop
         // it (non-fatal) and keep serving; normal operation continues below.
-        if (malformed_pending) {
+        if (malformed_pending)
+        {
             malformed_pending = false;
-            if (!transport->send(std::string("{not valid json"))) {
+            if (!transport->send(std::string("{not valid json")))
+            {
                 break;  // peer gone mid-flight.
             }
         }
 
-        if (adapter.emit_log_burst.exchange(false)) {
-            for (int i = 0; i < kLogBurst; ++i) {
-                if (!transport->send(std::string(log_event_frame))) {
+        if (adapter.emit_log_burst.exchange(false))
+        {
+            for (int i = 0; i < kLogBurst; ++i)
+            {
+                if (!transport->send(std::string(log_event_frame)))
+                {
                     break;
                 }
             }

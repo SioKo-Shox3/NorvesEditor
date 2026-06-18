@@ -64,125 +64,142 @@
 
 #include "mock_adapter.hpp"
 
-namespace {
+namespace
+{
 
-using norves::bridge::BridgeEngineServer;
-using norves::bridge::ILogSink;
-using norves::bridge::ITransport;
-using norves::bridge::LogSeverity;
-using norves::bridge::make_websocket_server_transport;
+    using norves::bridge::BridgeEngineServer;
+    using norves::bridge::ILogSink;
+    using norves::bridge::ITransport;
+    using norves::bridge::LogSeverity;
+    using norves::bridge::make_websocket_server_transport;
 
-using norves::bridge::dto::LogLevel;
-using norves::bridge::dto::LogMessageEvent;
+    using norves::bridge::dto::LogLevel;
+    using norves::bridge::dto::LogMessageEvent;
 
-using norves::mock::MockAdapter;
+    using norves::mock::MockAdapter;
 
-// Number of log.message events emitted back-to-back after a log.subscribe ack,
-// so a client can assert ordered multi-frame delivery (the G4 burst pattern).
-constexpr int kLogBurst = 3;
+    // Number of log.message events emitted back-to-back after a log.subscribe ack,
+    // so a client can assert ordered multi-frame delivery (the G4 burst pattern).
+    constexpr int kLogBurst = 3;
 
-// Translation-unit stop flag. Set ONLY by the signal/console handler (an atomic
-// store is async-signal-safe) and polled by the watcher thread, which performs
-// the actual close(). Never touched by close() directly inside the handler.
-std::atomic<bool> g_stop{false};
+    // Translation-unit stop flag. Set ONLY by the signal/console handler (an atomic
+    // store is async-signal-safe) and polled by the watcher thread, which performs
+    // the actual close(). Never touched by close() directly inside the handler.
+    std::atomic<bool> g_stop{false};
 
 #if defined(_WIN32)
-// Windows console control handler. Runs on a thread the OS injects, but we still
-// confine it to the atomic store so the stop path is identical to POSIX.
-BOOL WINAPI console_handler(DWORD ctrl_type) {
-    switch (ctrl_type) {
-        case CTRL_C_EVENT:
-        case CTRL_BREAK_EVENT:
-        case CTRL_CLOSE_EVENT:
-        case CTRL_SHUTDOWN_EVENT:
-            g_stop.store(true);
-            return TRUE;
-        default:
-            return FALSE;
+    // Windows console control handler. Runs on a thread the OS injects, but we still
+    // confine it to the atomic store so the stop path is identical to POSIX.
+    BOOL WINAPI console_handler(DWORD ctrl_type)
+    {
+        switch (ctrl_type)
+        {
+            case CTRL_C_EVENT:
+            case CTRL_BREAK_EVENT:
+            case CTRL_CLOSE_EVENT:
+            case CTRL_SHUTDOWN_EVENT:
+                g_stop.store(true);
+                return TRUE;
+            default:
+                return FALSE;
+        }
     }
-}
 
-void install_signal_handlers() {
-    SetConsoleCtrlHandler(console_handler, TRUE);
-}
+    void install_signal_handlers() { SetConsoleCtrlHandler(console_handler, TRUE); }
 #else
-extern "C" void posix_signal_handler(int /*signum*/) {
-    // Async-signal-safe: an atomic store is permitted from a signal handler.
-    g_stop.store(true);
-}
+    extern "C" void posix_signal_handler(int /*signum*/)
+    {
+        // Async-signal-safe: an atomic store is permitted from a signal handler.
+        g_stop.store(true);
+    }
 
-void install_signal_handlers() {
-    std::signal(SIGINT, posix_signal_handler);
-    std::signal(SIGTERM, posix_signal_handler);
-}
+    void install_signal_handlers()
+    {
+        std::signal(SIGINT, posix_signal_handler);
+        std::signal(SIGTERM, posix_signal_handler);
+    }
 #endif
 
-// Minimal stderr sink so SDK Warn/Error diagnostics are visible. stdout is
-// reserved for the single READY line, so diagnostics go to stderr only.
-class StderrSink : public ILogSink {
-  public:
-    void log(LogSeverity level, std::string_view message) override {
-        if (level == LogSeverity::Warn || level == LogSeverity::Error) {
-            std::cerr << "mock-engine[sink]: " << message << '\n';
-        }
-    }
-};
-
-// Reads --bridge-port. Returns the port on success; prints an error to stderr
-// and returns nullopt on a missing/invalid value (same contract as
-// ws_test_server::parse_port).
-std::optional<std::uint16_t> parse_port(int argc, char** argv) {
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg = argv[i];
-        if (arg == "--bridge-port") {
-            if (i + 1 >= argc) {
-                std::cerr << "mock-engine: --bridge-port requires a value\n";
-                return std::nullopt;
+    // Minimal stderr sink so SDK Warn/Error diagnostics are visible. stdout is
+    // reserved for the single READY line, so diagnostics go to stderr only.
+    class StderrSink : public ILogSink
+    {
+    public:
+        void log(LogSeverity level, std::string_view message) override
+        {
+            if (level == LogSeverity::Warn || level == LogSeverity::Error)
+            {
+                std::cerr << "mock-engine[sink]: " << message << '\n';
             }
-            const std::string value = argv[i + 1];
-            try {
-                const unsigned long parsed = std::stoul(value);
-                if (parsed == 0 || parsed > 65535) {
-                    std::cerr << "mock-engine: port out of range: " << value << '\n';
+        }
+    };
+
+    // Reads --bridge-port. Returns the port on success; prints an error to stderr
+    // and returns nullopt on a missing/invalid value (same contract as
+    // ws_test_server::parse_port).
+    std::optional<std::uint16_t> parse_port(int argc, char** argv)
+    {
+        for (int i = 1; i < argc; ++i)
+        {
+            std::string_view arg = argv[i];
+            if (arg == "--bridge-port")
+            {
+                if (i + 1 >= argc)
+                {
+                    std::cerr << "mock-engine: --bridge-port requires a value\n";
                     return std::nullopt;
                 }
-                return static_cast<std::uint16_t>(parsed);
-            } catch (const std::exception&) {
-                std::cerr << "mock-engine: invalid port: " << value << '\n';
-                return std::nullopt;
+                const std::string value = argv[i + 1];
+                try
+                {
+                    const unsigned long parsed = std::stoul(value);
+                    if (parsed == 0 || parsed > 65535)
+                    {
+                        std::cerr << "mock-engine: port out of range: " << value << '\n';
+                        return std::nullopt;
+                    }
+                    return static_cast<std::uint16_t>(parsed);
+                }
+                catch (const std::exception&)
+                {
+                    std::cerr << "mock-engine: invalid port: " << value << '\n';
+                    return std::nullopt;
+                }
             }
         }
+        std::cerr << "mock-engine: missing required --bridge-port <port>\n";
+        return std::nullopt;
     }
-    std::cerr << "mock-engine: missing required --bridge-port <port>\n";
-    return std::nullopt;
-}
 
-// Binds the WebSocket server, retrying a transient bind failure a few times with
-// short sleeps. A kill->same-port-restart can briefly fail to bind while the OS
-// releases the previous listener; retrying absorbs that (same approach as
-// ws_test_server). Returns nullptr only if every attempt fails.
-std::unique_ptr<ITransport> bind_with_retry(std::uint16_t port,
-                                            std::size_t send_cap,
-                                            std::size_t recv_cap,
-                                            ILogSink* sink) {
-    constexpr int kMaxAttempts = 20;
-    constexpr auto kRetryDelay = std::chrono::milliseconds(100);
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        std::unique_ptr<ITransport> transport =
-            make_websocket_server_transport(port, send_cap, recv_cap, sink);
-        if (transport != nullptr) {
-            return transport;
+    // Binds the WebSocket server, retrying a transient bind failure a few times with
+    // short sleeps. A kill->same-port-restart can briefly fail to bind while the OS
+    // releases the previous listener; retrying absorbs that (same approach as
+    // ws_test_server). Returns nullptr only if every attempt fails.
+    std::unique_ptr<ITransport> bind_with_retry(std::uint16_t port, std::size_t send_cap,
+                                                std::size_t recv_cap, ILogSink* sink)
+    {
+        constexpr int kMaxAttempts = 20;
+        constexpr auto kRetryDelay = std::chrono::milliseconds(100);
+        for (int attempt = 0; attempt < kMaxAttempts; ++attempt)
+        {
+            std::unique_ptr<ITransport> transport =
+                make_websocket_server_transport(port, send_cap, recv_cap, sink);
+            if (transport != nullptr)
+            {
+                return transport;
+            }
+            std::this_thread::sleep_for(kRetryDelay);
         }
-        std::this_thread::sleep_for(kRetryDelay);
+        return nullptr;
     }
-    return nullptr;
-}
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     const std::optional<std::uint16_t> port = parse_port(argc, argv);
-    if (!port.has_value()) {
+    if (!port.has_value())
+    {
         return 2;
     }
 
@@ -191,7 +208,8 @@ int main(int argc, char** argv) {
 
     StderrSink sink;
     std::unique_ptr<ITransport> transport = bind_with_retry(*port, kSendCap, kRecvCap, &sink);
-    if (transport == nullptr) {
+    if (transport == nullptr)
+    {
         std::cerr << "mock-engine: failed to bind WebSocket server on port " << *port << '\n';
         return 3;
     }
@@ -202,13 +220,16 @@ int main(int argc, char** argv) {
     // close() is idempotent, so a later destructor close() is harmless. Captures
     // a raw pointer to the transport, which outlives the joined watcher.
     ITransport* transport_ptr = transport.get();
-    std::thread watcher([transport_ptr]() {
-        constexpr auto kPoll = std::chrono::milliseconds(50);
-        while (!g_stop.load()) {
-            std::this_thread::sleep_for(kPoll);
-        }
-        transport_ptr->close();  // unblocks the residential recv() loop.
-    });
+    std::thread watcher(
+        [transport_ptr]()
+        {
+            constexpr auto kPoll = std::chrono::milliseconds(50);
+            while (!g_stop.load())
+            {
+                std::this_thread::sleep_for(kPoll);
+            }
+            transport_ptr->close();  // unblocks the residential recv() loop.
+        });
 
     MockAdapter adapter;
     BridgeEngineServer server(adapter, &sink);
@@ -232,15 +253,19 @@ int main(int argc, char** argv) {
     // and the adapter run on this thread, so the emit_log_burst flag set inside
     // logSubscribe is visible right after handleFrame returns. We send the
     // subscribe ack first, then the burst, so the client sees ack-before-events.
-    while (true) {
+    while (true)
+    {
         std::optional<std::string> frame = transport->recv();
-        if (!frame.has_value()) {
+        if (!frame.has_value())
+        {
             break;  // close() was driven (stop requested): clean exit.
         }
 
         std::optional<std::string> response = server.handleFrame(*frame);
-        if (response.has_value()) {
-            if (!transport->send(std::move(*response))) {
+        if (response.has_value())
+        {
+            if (!transport->send(std::move(*response)))
+            {
                 // Peer gone mid-flight. Do NOT exit: the engine is residential,
                 // so drop this frame and keep serving the next connection.
                 adapter.emit_log_burst.store(false);
@@ -248,9 +273,12 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (adapter.emit_log_burst.exchange(false)) {
-            for (int i = 0; i < kLogBurst; ++i) {
-                if (!transport->send(std::string(log_event_frame))) {
+        if (adapter.emit_log_burst.exchange(false))
+        {
+            for (int i = 0; i < kLogBurst; ++i)
+            {
+                if (!transport->send(std::string(log_event_frame)))
+                {
                     break;  // peer gone mid-flight; stop the burst, keep serving.
                 }
             }
@@ -261,7 +289,8 @@ int main(int argc, char** argv) {
     // destructor closes again (idempotent). Set g_stop so the watcher exits even
     // when the loop ended via a path other than a signal.
     g_stop.store(true);
-    if (watcher.joinable()) {
+    if (watcher.joinable())
+    {
         watcher.join();
     }
 
