@@ -1,0 +1,33 @@
+---
+# NorvesEditor C++ Bridge SDK formatting — aligned with NorvesLib house style.
+# Scope: bridge/cpp/** excluding third_party/ (vendored; see third_party/.clang-format).
+Language: Cpp
+BasedOnStyle: Google
+Standard: Latest
+ColumnLimit: 100
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+NamespaceIndentation: All
+BreakBeforeBraces: Allman
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+InsertBraces: true
+LineEnding: LF
+FixNamespaceComments: true
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeIsMainRegex: '(_test|_impl)?$'
+IncludeCategories:
+  - Regex: '^"norves/'
+    Priority: 2
+  - Regex: '^<(nlohmann|libwebsockets)'
+    Priority: 4
+  - Regex: '^<lws'
+    Priority: 4
+  - Regex: '^<'
+    Priority: 3
+...
