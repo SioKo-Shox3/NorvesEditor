@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "norves/bridge/codec_error.hpp"
 #include "norves/bridge/result.hpp"
