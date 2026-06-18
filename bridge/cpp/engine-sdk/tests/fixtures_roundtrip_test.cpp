@@ -15,6 +15,9 @@
 // not part of the SDK's public surface, so the boundary rule (no nlohmann in
 // include/) is unaffected.
 
+#include "norves/bridge/codec.hpp"
+#include "norves/bridge/envelope.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -25,8 +28,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include "norves/bridge/codec.hpp"
-#include "norves/bridge/envelope.hpp"
 #include "test_support.hpp"
 
 #ifndef NORVES_FIXTURES_DIR
@@ -35,58 +36,76 @@
 
 namespace fs = std::filesystem;
 
-namespace {
+namespace
+{
 
-enum class Group { Positive, EnvelopeRejectable, PayloadOnly, Ignored };
+    enum class Group
+    {
+        Positive,
+        EnvelopeRejectable,
+        PayloadOnly,
+        Ignored
+    };
 
-// Path-based classification, identical in spirit to the Rust `classify`.
-Group classify(const std::string& normalized) {
-    const bool is_positive = normalized.find("/positive/") != std::string::npos;
-    const bool is_negative = normalized.find("/negative/") != std::string::npos;
-    const bool is_envelope = normalized.find("/fixtures/envelope/") != std::string::npos;
-    const bool is_method = normalized.find("/fixtures/methods/") != std::string::npos;
-    const bool is_event = normalized.find("/fixtures/events/") != std::string::npos;
+    // Path-based classification, identical in spirit to the Rust `classify`.
+    Group classify(const std::string& normalized)
+    {
+        const bool is_positive = normalized.find("/positive/") != std::string::npos;
+        const bool is_negative = normalized.find("/negative/") != std::string::npos;
+        const bool is_envelope = normalized.find("/fixtures/envelope/") != std::string::npos;
+        const bool is_method = normalized.find("/fixtures/methods/") != std::string::npos;
+        const bool is_event = normalized.find("/fixtures/events/") != std::string::npos;
 
-    if (is_positive && (is_envelope || is_method || is_event)) {
-        return Group::Positive;
-    }
-    if (is_negative && is_envelope) {
-        return Group::EnvelopeRejectable;
-    }
-    if (is_negative && (is_method || is_event)) {
-        return Group::PayloadOnly;
-    }
-    return Group::Ignored;
-}
-
-std::string normalize(const fs::path& path) {
-    std::string s = path.generic_string();  // already uses '/'
-    return s;
-}
-
-std::string read_file(const fs::path& path) {
-    std::ifstream in(path, std::ios::binary);
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    return ss.str();
-}
-
-std::vector<fs::path> collect_json(const fs::path& root) {
-    std::vector<fs::path> out;
-    for (const auto& entry : fs::recursive_directory_iterator(root)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".json") {
-            out.push_back(entry.path());
+        if (is_positive && (is_envelope || is_method || is_event))
+        {
+            return Group::Positive;
         }
+        if (is_negative && is_envelope)
+        {
+            return Group::EnvelopeRejectable;
+        }
+        if (is_negative && (is_method || is_event))
+        {
+            return Group::PayloadOnly;
+        }
+        return Group::Ignored;
     }
-    return out;
-}
+
+    std::string normalize(const fs::path& path)
+    {
+        std::string s = path.generic_string();  // already uses '/'
+        return s;
+    }
+
+    std::string read_file(const fs::path& path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        return ss.str();
+    }
+
+    std::vector<fs::path> collect_json(const fs::path& root)
+    {
+        std::vector<fs::path> out;
+        for (const auto& entry : fs::recursive_directory_iterator(root))
+        {
+            if (entry.is_regular_file() && entry.path().extension() == ".json")
+            {
+                out.push_back(entry.path());
+            }
+        }
+        return out;
+    }
 
 }  // namespace
 
-int main() {
+int main()
+{
     const fs::path root(NORVES_FIXTURES_DIR);
     NORVES_CHECK(fs::is_directory(root));
-    if (!fs::is_directory(root)) {
+    if (!fs::is_directory(root))
+    {
         return norves::test::summary();
     }
 
@@ -97,24 +116,29 @@ int main() {
     std::size_t payload_only = 0;
     std::size_t ignored = 0;
 
-    for (const auto& path : files) {
+    for (const auto& path : files)
+    {
         const std::string normalized = normalize(path);
         const Group group = classify(normalized);
         const std::string wire = read_file(path);
 
-        switch (group) {
-            case Group::Positive: {
+        switch (group)
+        {
+            case Group::Positive:
+            {
                 ++positive;
                 auto decoded = norves::bridge::decode_envelope(wire);
                 NORVES_CHECK(decoded.is_ok());
-                if (decoded.is_err()) {
+                if (decoded.is_err())
+                {
                     std::fprintf(stderr, "  positive failed to decode: %s (%s)\n",
                                  normalized.c_str(), decoded.error().message.c_str());
                     break;
                 }
                 auto encoded = norves::bridge::encode_envelope(decoded.value());
                 NORVES_CHECK(encoded.is_ok());
-                if (encoded.is_err()) {
+                if (encoded.is_err())
+                {
                     break;
                 }
                 // value-equal round-trip: parse original and re-encoded, compare
@@ -125,29 +149,34 @@ int main() {
                 NORVES_CHECK(!again.is_discarded());
                 const bool equal = (orig == again);
                 NORVES_CHECK(equal);
-                if (!equal) {
+                if (!equal)
+                {
                     std::fprintf(stderr, "  positive did not round-trip value-equal: %s\n",
                                  normalized.c_str());
                 }
                 break;
             }
-            case Group::EnvelopeRejectable: {
+            case Group::EnvelopeRejectable:
+            {
                 ++envelope_rejectable;
                 auto decoded = norves::bridge::decode_envelope(wire);
                 NORVES_CHECK(decoded.is_err());
-                if (decoded.is_ok()) {
+                if (decoded.is_ok())
+                {
                     std::fprintf(stderr, "  envelope negative unexpectedly accepted: %s\n",
                                  normalized.c_str());
                 }
                 break;
             }
-            case Group::PayloadOnly: {
+            case Group::PayloadOnly:
+            {
                 ++payload_only;
                 // Valid envelope; only the payload is wrong, which this layer
                 // does not validate yet. Must be ACCEPTED here.
                 auto decoded = norves::bridge::decode_envelope(wire);
                 NORVES_CHECK(decoded.is_ok());
-                if (decoded.is_err()) {
+                if (decoded.is_err())
+                {
                     std::fprintf(stderr,
                                  "  payload-only negative rejected at envelope layer: %s (%s)\n",
                                  normalized.c_str(), decoded.error().message.c_str());
@@ -165,8 +194,7 @@ int main() {
     NORVES_CHECK_EQ(positive, static_cast<std::size_t>(55));
     NORVES_CHECK_EQ(envelope_rejectable, static_cast<std::size_t>(14));
     NORVES_CHECK_EQ(payload_only, static_cast<std::size_t>(45));
-    NORVES_CHECK_EQ(positive + envelope_rejectable + payload_only,
-                    static_cast<std::size_t>(114));
+    NORVES_CHECK_EQ(positive + envelope_rejectable + payload_only, static_cast<std::size_t>(114));
     NORVES_CHECK_EQ(ignored, static_cast<std::size_t>(0));
 
     std::fprintf(stderr,
