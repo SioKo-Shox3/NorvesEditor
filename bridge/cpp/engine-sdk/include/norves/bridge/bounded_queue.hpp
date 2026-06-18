@@ -1,5 +1,7 @@
-#ifndef NORVES_BRIDGE_BOUNDED_QUEUE_HPP
-#define NORVES_BRIDGE_BOUNDED_QUEUE_HPP
+﻿#pragma once
+
+#include "norves/bridge/log_sink.hpp"
+#include "norves/bridge/ownership.hpp"
 
 #include <condition_variable>
 #include <cstddef>
@@ -8,113 +10,120 @@
 #include <optional>
 #include <string>
 
-#include "norves/bridge/log_sink.hpp"
-#include "norves/bridge/ownership.hpp"
+/// @file
+/// @brief エンジン SDK のための、有界かつスレッドセーフな所有ワイヤーフレームのキュー。
+///
+/// @note 依存は <std> と SDK 自身の ILogSink / OwnedFrame のみ。サードパーティヘッダは
+///       ここに露出しない。ベンダリングされた JSON ライブラリはこのヘッダから決して到達
+///       できない。
+namespace norves::bridge
+{
 
-// Bounded, thread-safe queue of owned wire frames for the engine SDK.
-//
-// Depends on <std> + the SDK's own ILogSink / OwnedFrame only; no third-party
-// headers are exposed here. The vendored JSON library is never reachable from
-// this header.
-namespace norves::bridge {
+    /// @brief 満杯のキューに push() が到達したときにキューが行うこと。
+    ///
+    ///   DropOldest（デフォルト）: 先頭（最古）のフレームを退避させ、新しいものを末尾に
+    ///                            追加する。push() は成功（true）を報告する。Rust
+    ///                            ディスパッチャの有界ブロードキャストの
+    ///                            「lag => 最古を捨てる」姿勢を反映しており、遅いコンシューマ
+    ///                            はプロデューサを失速させるのではなく、最も古いデータを失う。
+    ///   DropNewest:             到着したフレームを破棄し、キューをそのまま保つ。
+    ///                            push() は失敗（false）を報告する。
+    ///   Reject:                 到着したフレームを破棄し、キューをそのまま保つ。
+    ///                            push() は失敗（false）を報告する。現時点では DropNewest と
+    ///                            同じ観測可能な効果を持つが、呼び出し側が意図
+    ///                            （「決して上書きしない」vs「バックプレッシャー」）を
+    ///                            表現できるよう、また将来のバリアント（例: エラー伝播）が
+    ///                            呼び出し箇所を変えずに分岐できるよう、別物として保たれている。
+    ///
+    /// @note すべてのドロップは（シンクが供給されていれば）ILogSink へ Warn で報告される。
+    enum class OverflowPolicy
+    {
+        DropOldest,
+        DropNewest,
+        Reject
+    };
 
-// What the queue does when push() arrives at a full queue.
-//
-//   DropOldest (default): evict the front (oldest) frame, append the new one.
-//                         push() reports success (true). Mirrors the Rust
-//                         dispatcher's bounded-broadcast "lag => drop oldest"
-//                         posture, where a slow consumer loses the stalest data
-//                         rather than stalling the producer.
-//   DropNewest:           discard the incoming frame, keep the queue as-is.
-//                         push() reports failure (false).
-//   Reject:               discard the incoming frame, keep the queue as-is.
-//                         push() reports failure (false). Same observable effect
-//                         as DropNewest today; kept distinct so callers can
-//                         express intent ("never overwrite" vs "back-pressure")
-//                         and so future variants (e.g. error propagation) can
-//                         diverge without changing call sites.
-//
-// Every drop is reported to the ILogSink (if one was supplied) at Warn.
-enum class OverflowPolicy { DropOldest, DropNewest, Reject };
+    /// @brief BoundedFrameQueue は OwnedFrame の単一の有界 FIFO であり、1 つ以上の
+    ///        プロデューサスレッドと 1 つ以上のコンシューマスレッドで共有される。
+    ///
+    /// @note スレッドセーフティ: あらゆる観測可能な操作は、全状態を保護する内部の
+    ///       std::mutex をロックする。wait_and_pop() は std::condition_variable で
+    ///       ブロックする。このキューはプロデューサとコンシューマが *異なる* スレッドで
+    ///       走ること（例: SDK の送信イベントプロデューサ対トランスポートライタ、または
+    ///       F5 ループバックコンシューマ）を想定して設計されている。すべての public メンバは
+    ///       並行に呼び出して安全である。
+    ///
+    /// @note 容量: 構築時に固定される。有界バッファにとって容量 0 は無意味なので 1 に
+    ///       クランプされる（キューは常に少なくとも 1 フレーム分を保持する）。適切なサイズは
+    ///       チャネルに依存するため、ここにコンパイル時のデフォルト容量はない。Rust
+    ///       リファレンスはコマンドチャネルに 64、イベントブロードキャストに 256 を使う
+    ///       （bridge/crates/.../dispatcher.rs:
+    ///       COMMAND_CHANNEL_CAPACITY / EVENT_BROADCAST_CAPACITY）。それらが対応する SDK
+    ///       チャネルにとって推奨される桁の目安である。
+    ///
+    /// @note 寿命: コピー不可かつ move 不可（mutex と condition variable を所有する）。
+    ///       それが生きる場所で構築し、参照 / ポインタで渡すこと。
+    ///
+    /// @note 所有権: ownership.hpp を参照。push() は呼び出し側のフレームを move して入れ、
+    ///       pop() / wait_and_pop() はフレームを move して出す。オーバーフロー時、
+    ///       シャットダウン時、または破棄時に、キューはまだ保持しているフレームを解放する。
+    class BoundedFrameQueue
+    {
+    public:
+        /// @brief `capacity` は最小 1 にクランプされる。`policy` は満杯時の挙動を決める。
+        ///        `sink` は所有しない（NON-OWNED）診断シンクであり、nullptr でよく
+        ///        （その場合キューは沈黙する）、非 null の場合はこのキューより長生きしなければ
+        ///        ならない。シンクは push() を呼んだスレッド上で呼び出される。
+        /// @param capacity フレーム容量の上限（最小 1 にクランプされる）。
+        /// @param policy 満杯時のオーバーフローポリシー。
+        /// @param sink 所有しない診断シンク。nullptr でよい。
+        explicit BoundedFrameQueue(std::size_t capacity,
+                                   OverflowPolicy policy = OverflowPolicy::DropOldest,
+                                   ILogSink* sink = nullptr);
 
-// BoundedFrameQueue is a single bounded FIFO of OwnedFrame, shared by one or
-// more producer threads and one or more consumer threads.
-//
-// Thread-safety: every observable operation locks an internal std::mutex that
-// guards all state; wait_and_pop() blocks on a std::condition_variable. The
-// queue is designed for the producer and consumer to run on *different* threads
-// (e.g. the SDK's outbound event producer vs. the transport writer, or the
-// F5 loopback consumer). All public members are safe to call concurrently.
-//
-// Capacity: fixed at construction. A capacity of 0 is meaningless for a bounded
-// buffer, so it is clamped up to 1 (the queue always holds at least one frame).
-// There is no compile-time default capacity here because the right size depends
-// on the channel; the Rust reference uses 64 for the command channel and 256 for
-// the event broadcast (bridge/crates/.../dispatcher.rs:
-// COMMAND_CHANNEL_CAPACITY / EVENT_BROADCAST_CAPACITY). Those are the suggested
-// orders of magnitude for the analogous SDK channels.
-//
-// Lifetime: non-copyable and non-movable (it owns a mutex and a condition
-// variable). Construct it where it lives and pass it by reference / pointer.
-//
-// Ownership: see ownership.hpp. push() moves the caller's frame in; pop() /
-// wait_and_pop() move a frame out; on overflow, shutdown, or destruction the
-// queue frees the frames it still holds.
-class BoundedFrameQueue {
-  public:
-    // `capacity` is clamped to a minimum of 1. `policy` decides full-queue
-    // behaviour. `sink` is a NON-OWNED diagnostic sink; it may be nullptr (then
-    // the queue is silent) and, if non-null, must outlive this queue. The sink
-    // is invoked from whatever thread calls push().
-    explicit BoundedFrameQueue(std::size_t capacity,
-                               OverflowPolicy policy = OverflowPolicy::DropOldest,
-                               ILogSink* sink = nullptr);
+        ~BoundedFrameQueue() = default;
 
-    ~BoundedFrameQueue() = default;
+        BoundedFrameQueue(const BoundedFrameQueue&) = delete;
+        BoundedFrameQueue& operator=(const BoundedFrameQueue&) = delete;
+        BoundedFrameQueue(BoundedFrameQueue&&) = delete;
+        BoundedFrameQueue& operator=(BoundedFrameQueue&&) = delete;
 
-    BoundedFrameQueue(const BoundedFrameQueue&) = delete;
-    BoundedFrameQueue& operator=(const BoundedFrameQueue&) = delete;
-    BoundedFrameQueue(BoundedFrameQueue&&) = delete;
-    BoundedFrameQueue& operator=(BoundedFrameQueue&&) = delete;
+        /// @brief `frame` をエンキューし、所有権を move して入れる。フレームが現在キューに
+        ///        入っているかを返す。すなわち格納された場合（空きを作るために古いフレームを
+        ///        退避させた DropOldest のケースを含む）は true、フレームがドロップされた
+        ///        場合（満杯キューでの DropNewest / Reject）またはキューがシャットダウン済み
+        ///        の場合は false。shutdown() 後は false を返す no-op である。
+        bool push(OwnedFrame frame);
 
-    // Enqueues `frame`, moving ownership in. Returns whether the frame is now
-    // queued: true when stored (including the DropOldest case where an older
-    // frame was evicted to make room), false when the frame was dropped
-    // (DropNewest / Reject on a full queue) or the queue is shut down. After a
-    // shutdown() this is a no-op returning false.
-    bool push(OwnedFrame frame);
+        /// @brief 先頭フレームを取り除いて返す。キューが空なら nullopt。決してブロック
+        ///        しない。shutdown() 後も呼び出して安全（残りのフレームをドレインする）。
+        std::optional<OwnedFrame> pop();
 
-    // Removes and returns the front frame, or nullopt if the queue is empty.
-    // Never blocks. Safe to call after shutdown() (drains remaining frames).
-    std::optional<OwnedFrame> pop();
+        /// @brief 先頭フレームを取り除いて返す。1 つ利用可能になるかキューが
+        ///        シャットダウンされるまでブロックする。キューがシャットダウン済みかつ空の
+        ///        場合に限り nullopt を返す。shutdown() 後はまず残りのフレームをドレインし、
+        ///        その後 nullopt を返す。スプリアスウェイクアップは待機述語で処理される。
+        std::optional<OwnedFrame> wait_and_pop();
 
-    // Removes and returns the front frame, blocking until one is available or
-    // the queue is shut down. Returns nullopt only when the queue is shut down
-    // AND empty. After shutdown() it first drains remaining frames, then returns
-    // nullopt. Spurious wakeups are handled by the wait predicate.
-    std::optional<OwnedFrame> wait_and_pop();
+        /// @brief キューをクローズする。wait_and_pop() でブロックしているすべてのスレッドを
+        ///        起こし、残りのフレームをドレインしたのち nullopt を観測できるようにする。
+        ///        以後のすべての push() を false を返す no-op にする。冪等。
+        void shutdown();
 
-    // Closes the queue: wakes every thread blocked in wait_and_pop() so they can
-    // drain remaining frames and then observe nullopt; makes every subsequent
-    // push() a no-op returning false. Idempotent.
-    void shutdown();
+        [[nodiscard]] std::size_t size() const;
+        [[nodiscard]] std::size_t capacity() const;
+        [[nodiscard]] bool closed() const;
 
-    [[nodiscard]] std::size_t size() const;
-    [[nodiscard]] std::size_t capacity() const;
-    [[nodiscard]] bool closed() const;
+    private:
+        void warn(std::string_view message);
 
-  private:
-    void warn(std::string_view message);
-
-    mutable std::mutex mutex_;
-    std::condition_variable not_empty_;
-    std::deque<OwnedFrame> frames_;
-    std::size_t capacity_;
-    OverflowPolicy policy_;
-    ILogSink* sink_;  // non-owned, may be null
-    bool closed_ = false;
-};
+        mutable std::mutex m_Mutex;
+        std::condition_variable m_NotEmpty;
+        std::deque<OwnedFrame> m_Frames;
+        std::size_t m_Capacity;
+        OverflowPolicy m_Policy;
+        ILogSink* m_Sink;  // 所有しない。null でよい
+        bool m_bClosed = false;
+    };
 
 }  // namespace norves::bridge
-
-#endif  // NORVES_BRIDGE_BOUNDED_QUEUE_HPP

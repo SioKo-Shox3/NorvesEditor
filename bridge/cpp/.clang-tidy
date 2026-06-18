@@ -1,0 +1,26 @@
+---
+# NorvesEditor C++ Bridge SDK — naming rules aligned with NorvesLib house style.
+# IMPORTANT: The SDK public API is intentionally FROZEN (see docs/adr/0008-*). This config
+# enforces ONLY internal identifiers, so `clang-tidy --fix` never renames the cross-repo
+# public API (virtual adapter methods, public free functions, public member functions,
+# DTO struct members, public constants). Bool `m_b` prefix and `I`/`T` class prefixes are
+# not expressible here and are enforced by review per docs/agent-guide/cpp.md.
+Checks: >
+  -*,
+  readability-identifier-naming
+CheckOptions:
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.EnumConstantCase: CamelCase
+  readability-identifier-naming.ScopedEnumConstantCase: CamelCase
+  readability-identifier-naming.TypeAliasCase: CamelCase
+  readability-identifier-naming.TypedefCase: CamelCase
+  readability-identifier-naming.PrivateMemberCase: CamelCase
+  readability-identifier-naming.PrivateMemberPrefix: 'm_'
+  readability-identifier-naming.ProtectedMemberCase: CamelCase
+  readability-identifier-naming.ProtectedMemberPrefix: 'm_'
+  readability-identifier-naming.ParameterCase: camelBack
+  readability-identifier-naming.LocalVariableCase: camelBack
+  readability-identifier-naming.LocalConstantCase: camelBack
+  readability-identifier-naming.NamespaceCase: lower_case

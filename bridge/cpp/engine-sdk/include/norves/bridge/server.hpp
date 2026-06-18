@@ -1,78 +1,80 @@
-#ifndef NORVES_BRIDGE_SERVER_HPP
-#define NORVES_BRIDGE_SERVER_HPP
+﻿#pragma once
+
+#include "norves/bridge/json_value.hpp"
 
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 
-#include "norves/bridge/json_value.hpp"
+/// @file
+/// @brief Bridge のエンジン側リクエストディスパッチャ。
+///
+/// @note 依存は <std> と SDK 自身の値型のみ。サードパーティヘッダはここに含めない。
+///       基底の JSON ライブラリは server.cpp に閉じ込められている。
+///
+/// @note BridgeEngineServer は受信ワイヤーフレームをデコードし、bridge.hello の
+///       バージョンネゴシエーションを所有し、既知のリクエストを IBridgeEngineAdapter へ
+///       ディスパッチし、レスポンスフレームをエンコードする。トランスポート
+///       （ソケットの読み書き）は後のフェーズであり、この型の一部ではない。組み込み側が
+///       ワイヤーフレームを供給し、返されたワイヤーフレームを送出する。
+namespace norves::bridge
+{
 
-// Bridge engine-side request dispatcher.
-//
-// Depends on <std> and the SDK's own value types only; no third-party headers
-// are included here. The underlying JSON library is confined to server.cpp.
-//
-// BridgeEngineServer decodes an incoming wire frame, owns the bridge.hello
-// version negotiation, dispatches known requests into the IBridgeEngineAdapter,
-// and encodes the response frame. Transport (reading/writing the socket) is a
-// later phase and is NOT part of this type: the embedder feeds wire frames in
-// and sends the returned wire frames out.
-namespace norves::bridge {
+    class IBridgeEngineAdapter;
+    class ILogSink;
 
-class IBridgeEngineAdapter;
-class ILogSink;
+    class BridgeEngineServer
+    {
+    public:
+        /// @brief `adapter`（参照で保持）とオプションの `logSink`（沈黙サーバのためには
+        ///        nullptr でよい）に束縛されたサーバを構築する。
+        ///
+        /// @note 所有権 / 寿命: サーバは `adapter` への参照と `logSink` への raw ポインタを
+        ///       格納するが、どちらも所有しない（NEITHER）。呼び出し側はサーバの全寿命の間、
+        ///       両者を生存させ続けなければならない（MUST。adapter と sink はサーバより
+        ///       長生きする）。サーバはこれ以外の長寿命状態を格納しない。
+        /// @param adapter リクエストのディスパッチ先となるエンジンアダプタ（参照で保持）。
+        /// @param logSink オプションのログシンク。沈黙サーバのためには nullptr でよい。
+        explicit BridgeEngineServer(IBridgeEngineAdapter& adapter, ILogSink* logSink = nullptr);
 
-class BridgeEngineServer {
-  public:
-    // Constructs a server bound to `adapter` (held by reference) and an OPTIONAL
-    // `log_sink` (may be nullptr for a silent server).
-    //
-    // Ownership / lifetime: the server stores a reference to `adapter` and a raw
-    // pointer to `log_sink`; it owns NEITHER. The caller MUST keep both alive
-    // for the entire lifetime of the server (adapter and sink outlive the
-    // server). The server stores no other long-lived state.
-    explicit BridgeEngineServer(IBridgeEngineAdapter& adapter, ILogSink* log_sink = nullptr);
+        ~BridgeEngineServer();
 
-    ~BridgeEngineServer();
+        BridgeEngineServer(const BridgeEngineServer&) = delete;
+        BridgeEngineServer& operator=(const BridgeEngineServer&) = delete;
+        BridgeEngineServer(BridgeEngineServer&&) noexcept;
+        BridgeEngineServer& operator=(BridgeEngineServer&&) noexcept;
 
-    BridgeEngineServer(const BridgeEngineServer&) = delete;
-    BridgeEngineServer& operator=(const BridgeEngineServer&) = delete;
-    BridgeEngineServer(BridgeEngineServer&&) noexcept;
-    BridgeEngineServer& operator=(BridgeEngineServer&&) noexcept;
+        /// @brief 受信ワイヤーフレームを 1 つ処理し、送出すべきレスポンスワイヤーフレームが
+        ///        あればそれを返す。
+        ///
+        /// @note `wire` の寿命: この呼び出しの間のみ借用される。サーバはそれをデコードし
+        ///       （opaque なペイロードを含め、必要なものをすべてコピーアウトする）、返る前に
+        ///       同期的にアダプタを呼び出す。サーバは `wire` へのビューを一切保持しない。
+        ///       `wire` はこの呼び出しが返るまで有効であればよい。返される std::string
+        ///       （存在する場合）は呼び出し側が所有する。
+        ///
+        /// @return 次の場合に std::nullopt（送出すべきレスポンスなし）を返す:
+        ///   * フレームのデコードに失敗した場合（不正なフレームは回復可能な相関 id を
+        ///     持たないため、有効なレスポンスエンベロープを構築できない。失敗は Warn で
+        ///     ログシンクへ報告される）、
+        ///   * フレームがリクエストではなくレスポンスまたはイベントである場合（サーバは
+        ///     リクエストのみを処理する。Debug でログされる）。
+        /// それ以外の場合は、エンコード済みのレスポンスエンベロープ（成功時は result、
+        /// 失敗時はワイヤーエラー）を、リクエストの相関 id を反映して返す。
+        [[nodiscard]] std::optional<std::string> handleFrame(std::string_view wire);
 
-    // Handles one inbound wire frame and returns the response wire frame to
-    // send, if any.
-    //
-    // Lifetime of `wire`: borrowed for the duration of this call only. The
-    // server decodes it (copying out everything it needs, including opaque
-    // payloads) and synchronously invokes the adapter before returning; it
-    // retains no view into `wire`. `wire` need only stay valid until this call
-    // returns. The returned std::string (when present) is owned by the caller.
-    //
-    // Returns std::nullopt (no response to send) when:
-    //   * the frame fails to decode (a malformed frame has no recoverable
-    //     correlation id, so no valid response envelope can be built; the
-    //     failure is reported to the log sink at Warn),
-    //   * the frame is a response or event rather than a request (the server
-    //     processes requests only; logged at Debug).
-    // Otherwise it returns the encoded response envelope (a result on success,
-    // a wire error on failure), echoing the request's correlation id.
-    [[nodiscard]] std::optional<std::string> handleFrame(std::string_view wire);
+        /// @brief `eventName` と `params` を運ぶイベントエンベロープ（kind=event）を構築・
+        ///        エンコードし、ワイヤーフレームを返す。それを送出するのは組み込み側の仕事で
+        ///        ある（トランスポートは後のフェーズ）。`eventName` の例: "log.message",
+        ///        "engine.statusChanged"。`params` はエンベロープへコピーされる。
+        [[nodiscard]] std::string emitEvent(std::string_view eventName, const JsonValue& params);
 
-    // Builds and encodes an event envelope (kind=event) carrying `event_name`
-    // and `params`, returning the wire frame. Sending it is the embedder's job
-    // (transport is a later phase). `event_name` examples: "log.message",
-    // "engine.statusChanged". `params` is copied into the envelope.
-    [[nodiscard]] std::string emitEvent(std::string_view event_name, const JsonValue& params);
-
-  private:
-    // pImpl keeps the dispatch-table internals and any JSON-library usage out
-    // of this public header.
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-};
+    private:
+        /// pImpl はディスパッチテーブルの内部と JSON ライブラリの利用を、この公開ヘッダの
+        /// 外に保つ。
+        struct Impl;
+        std::unique_ptr<Impl> m_Impl;
+    };
 
 }  // namespace norves::bridge
-
-#endif  // NORVES_BRIDGE_SERVER_HPP

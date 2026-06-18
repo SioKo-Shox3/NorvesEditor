@@ -1,27 +1,26 @@
-#ifndef NORVES_BRIDGE_VERSION_HPP
-#define NORVES_BRIDGE_VERSION_HPP
+﻿#pragma once
 
 #include <array>
 #include <string_view>
 
-// Standalone C++ engine SDK version metadata.
-// Depends on <std> only; no third-party headers are included here.
-namespace norves::bridge {
+/// @file
+/// @brief スタンドアロン C++ エンジン SDK のバージョンメタデータ。
+/// @note 依存は <std> のみ。サードパーティヘッダはここに含めない。
+namespace norves::bridge
+{
 
-// Version of this SDK build (independent from the wire protocol version).
-inline constexpr std::string_view kSdkVersion = "0.1.0";
+    /// @brief この SDK ビルドのバージョン（ワイヤープロトコルバージョンとは独立）。
+    inline constexpr std::string_view SdkVersion = "0.1.0";
 
-// Wire protocol versions this SDK supports, as MAJOR.MINOR strings.
-//
-// Matching rule: an exact MAJOR.MINOR string equality against an element of
-// this set. There is NO semver range / compatibility-window logic here: a
-// peer's protocol version is accepted only if it is byte-for-byte one of these
-// strings. The F3 version-negotiation logic must consult this constant rather
-// than embedding literals, so the supported set lives in exactly one place.
-inline constexpr std::array<std::string_view, 1> kSupportedProtocolVersions = {
-    std::string_view{"0.1"},
-};
+    /// @brief この SDK が対応するワイヤープロトコルバージョン（MAJOR.MINOR 文字列）。
+    ///
+    /// @note 突き合わせ規則: この集合の要素との厳密な MAJOR.MINOR 文字列一致による。
+    ///       semver 範囲 / 互換ウィンドウのロジックは一切ない。ピアのプロトコル
+    ///       バージョンは、これらの文字列のいずれかとバイト単位で一致する場合に限り
+    ///       受理される。F3 のバージョンネゴシエーションロジックはリテラルを埋め込まず
+    ///       この定数を参照しなければならず、対応集合がただ一箇所に存在するようにする。
+    inline constexpr std::array<std::string_view, 1> SupportedProtocolVersions = {
+        std::string_view{"0.1"},
+    };
 
 }  // namespace norves::bridge
-
-#endif  // NORVES_BRIDGE_VERSION_HPP

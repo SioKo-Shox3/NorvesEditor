@@ -1,0 +1,5 @@
+---
+# Vendored third-party code (nlohmann/json). Never reformat.
+DisableFormat: true
+SortIncludes: Never
+...

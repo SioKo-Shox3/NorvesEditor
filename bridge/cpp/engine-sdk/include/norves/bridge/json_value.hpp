@@ -1,92 +1,95 @@
-#ifndef NORVES_BRIDGE_JSON_VALUE_HPP
-#define NORVES_BRIDGE_JSON_VALUE_HPP
+﻿#pragma once
+
+#include "norves/bridge/codec_error.hpp"
+#include "norves/bridge/result.hpp"
 
 #include <memory>
 #include <string>
 #include <string_view>
 
-#include "norves/bridge/codec_error.hpp"
-#include "norves/bridge/result.hpp"
+/// @file
+/// @brief エンジン SDK のための opaque な JSON 値ラッパ。
+///
+/// @note 依存は <std> のみ。サードパーティヘッダはここに含めない。この型の唯一の目的は、
+///       任意の JSON 値（`params` オブジェクト、レスポンスの `result`、または `error.data`
+///       ペイロード）を、解釈せず、かつ基底の JSON ライブラリをいかなる公開ヘッダにも
+///       露出せずに、SDK を通して運ぶことである。.cpp 実装が、ベンダリングされた JSON
+///       ライブラリを include してよい唯一の翻訳単位である。
+namespace norves::bridge
+{
 
-// Opaque JSON value wrapper for the engine SDK.
-//
-// Depends on <std> only; no third-party headers are included here. The whole
-// point of this type is to carry an arbitrary JSON value (a `params` object, a
-// response `result`, or an `error.data` payload) THROUGH the SDK without
-// interpreting it and WITHOUT exposing the underlying JSON library in any
-// public header. The .cpp implementation is the only translation unit that may
-// include the vendored JSON library.
-namespace norves::bridge {
+    namespace detail
+    {
+        /// @brief .cpp 実装でのみ定義される。基底の JSON ライブラリが pImpl の背後に
+        ///        隠れたままになるよう、公開ヘッダでは決して完全型にしない。
+        struct JsonValueImpl;
+    }  // namespace detail
 
-namespace detail {
-// Defined only in the .cpp implementation; never completed in a public header
-// so that the underlying JSON library stays hidden behind the pImpl.
-struct JsonValueImpl;
-}  // namespace detail
+    /// @brief 値所有の opaque な JSON 値。
+    ///
+    /// @note 構築すると JSON `null` を生じる。コピー/move は基底値の所有を複製/移譲する。
+    ///       等価性は意味的（値が等しいかどうか）であり、フィールド順序や無意味な空白は
+    ///       比較に影響しない。これは Rust リファレンス実装の `serde_json::Value` の
+    ///       等価性に一致する。
+    ///
+    /// @note 不変条件: live（move されていない）JsonValue は常に有効な値を保持する。
+    ///       move はソースを moved-from のままにする。moved-from のソースをコピーすると
+    ///       JSON `null` を生じ（コピーは null なソースを決して逆参照しない）、
+    ///       is_null/operator== は moved-from の値を `null` として扱う。
+    ///
+    /// @note いかなるアクセサも基底の表現を露出しない。内容の解釈はペイロード層
+    ///       （後のフェーズ）が所有する。
+    class JsonValue
+    {
+    public:
+        /// @brief JSON `null` 値を構築する。
+        JsonValue();
+        ~JsonValue();
 
-// A value-owning, opaque JSON value.
-//
-// Construction yields JSON `null`. Copy/move duplicate/transfer ownership of
-// the underlying value. Equality is semantic (value-equal): field order and
-// insignificant whitespace do not affect comparison, matching the Rust
-// reference implementation's `serde_json::Value` equality.
-//
-// Invariant: a live (non-moved-from) JsonValue always holds a valid value.
-// A move leaves the source moved-from; copying a moved-from source yields a
-// JSON `null` (copy never dereferences a null source), and is_null/operator==
-// treat a moved-from value as `null`.
-//
-// No accessor exposes the underlying representation; the payload layer (a later
-// phase) owns interpretation of the contents.
-class JsonValue {
-  public:
-    // Constructs a JSON `null` value.
-    JsonValue();
-    ~JsonValue();
+        JsonValue(const JsonValue& other);
+        JsonValue(JsonValue&& other) noexcept;
+        JsonValue& operator=(const JsonValue& other);
+        JsonValue& operator=(JsonValue&& other) noexcept;
 
-    JsonValue(const JsonValue& other);
-    JsonValue(JsonValue&& other) noexcept;
-    JsonValue& operator=(const JsonValue& other);
-    JsonValue& operator=(JsonValue&& other) noexcept;
+        /// @brief 意味的（値が等しいか）な比較。実装 TU 内で基底の JSON 等価性に委譲する。
+        [[nodiscard]] bool operator==(const JsonValue& other) const;
+        [[nodiscard]] bool operator!=(const JsonValue& other) const { return !(*this == other); }
 
-    // Semantic (value-equal) comparison; delegates to the underlying JSON
-    // equality inside the implementation TU.
-    [[nodiscard]] bool operator==(const JsonValue& other) const;
-    [[nodiscard]] bool operator!=(const JsonValue& other) const { return !(*this == other); }
+        /// @brief この値が JSON `null` のときに限り true。
+        [[nodiscard]] bool is_null() const;
 
-    // True iff this value is JSON `null`.
-    [[nodiscard]] bool is_null() const;
+        /// @brief JSON テキストを opaque な JsonValue へパースする。
+        /// @note ベンダリングされた JSON ライブラリは .cpp 実装内でのみ使われるため、
+        ///       これは SDK 自身の値型以外を一切露出しない。不正な入力に対しては
+        ///       CodecError（kind Parse）を返す。任意の有効な JSON 値（オブジェクト、
+        ///       配列、スカラー、null）を受理する。
+        /// @param text パース対象の JSON テキスト。
+        /// @return 成功時は JsonValue、失敗時は CodecError。
+        [[nodiscard]] static Result<JsonValue, CodecError> parse(std::string_view text);
 
-    // Parses JSON text into an opaque JsonValue. The vendored JSON library is
-    // used only inside the .cpp implementation, so this exposes nothing but the
-    // SDK's own value types. Returns a CodecError (kind Parse) on malformed
-    // input. Any valid JSON value (object, array, scalar, null) is accepted.
-    [[nodiscard]] static Result<JsonValue, CodecError> parse(std::string_view text);
+        /// @brief この値をコンパクトな JSON テキスト（整形なし）へシリアライズする。
+        /// @note live な値は常にシリアライズされる。moved-from の値は JSON `null` として
+        ///       シリアライズされる。
+        [[nodiscard]] std::string dump() const;
 
-    // Serializes this value to compact JSON text (no pretty-printing). A live
-    // value always serializes; a moved-from value serializes as JSON `null`.
-    [[nodiscard]] std::string dump() const;
+    private:
+        /// codec / json_value の .cpp TU は detail ブリッジを介して具体的な基底値から
+        /// JsonValue を構築する。それらがこの構築を見られる唯一の TU である。
+        friend struct detail::JsonValueImpl;
+        explicit JsonValue(std::unique_ptr<detail::JsonValueImpl> impl);
 
-  private:
-    // The codec / json_value .cpp TUs construct JsonValue from a concrete
-    // underlying value via the detail bridge; they are the only TUs that see it.
-    friend struct detail::JsonValueImpl;
-    explicit JsonValue(std::unique_ptr<detail::JsonValueImpl> impl);
+        std::unique_ptr<detail::JsonValueImpl> m_Impl;
 
-    std::unique_ptr<detail::JsonValueImpl> impl_;
+        /// 実装 TU（codec.cpp, json_value.cpp）でのみ使われる内部アクセサ。opaque な
+        /// impl ポインタを返す。それらの TU の外の呼び出し側は
+        /// `detail::JsonValueImpl` を完全型にできないため、これは何も漏らさない。
+        [[nodiscard]] const detail::JsonValueImpl* impl() const { return m_Impl.get(); }
+        [[nodiscard]] detail::JsonValueImpl* impl() { return m_Impl.get(); }
 
-    // Internal accessors used only by implementation TUs (codec.cpp,
-    // json_value.cpp). They return the opaque impl pointer; callers outside
-    // those TUs cannot complete `detail::JsonValueImpl`, so this leaks nothing.
-    [[nodiscard]] const detail::JsonValueImpl* impl() const { return impl_.get(); }
-    [[nodiscard]] detail::JsonValueImpl* impl() { return impl_.get(); }
-
-    // Implementation-side free helpers (defined in the .cpp TUs) reach the
-    // private members through these.
-    friend JsonValue make_json_value(std::unique_ptr<detail::JsonValueImpl> impl);
-    friend const detail::JsonValueImpl* peek(const JsonValue& value);
-};
+        /// 実装側の自由ヘルパ（.cpp TU で定義）は、これらを通して private メンバへ
+        /// アクセスする。
+        friend JsonValue make_json_value(std::unique_ptr<detail::JsonValueImpl> impl);
+        friend const detail::JsonValueImpl* peek(const JsonValue& value);
+    };
 
 }  // namespace norves::bridge
-
-#endif  // NORVES_BRIDGE_JSON_VALUE_HPP

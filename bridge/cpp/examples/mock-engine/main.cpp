@@ -1,41 +1,41 @@
-// Workstream H-A: residential WebSocket mock engine.
+// @brief Workstream H-A: 常駐型 WebSocket モックエンジン。
 //
-// A standalone, long-running engine process the editor backend can launch,
-// connect to, drive (hello / status / runtime control / log streaming), and
-// stop. It is the production-shaped counterpart of the G4 ws_test_server (which
-// stays a Rust-only test harness): unlike that harness, this process is
-// RESIDENTIAL -- a client disconnect does NOT end it; it keeps listening for the
-// next connection until it is explicitly stopped (signal -> close()).
+// エディタバックエンドが起動、接続、駆動（hello / status / runtime control /
+// ログストリーミング）、停止できるスタンドアロンの長時間動作エンジンプロセス。
+// G4 ws_test_server（Rust 専用テストハーネスとして残る）の本番形態の対応物:
+// そのハーネスとは異なり、このプロセスは「常駐型（RESIDENTIAL）」であり、
+// クライアント切断ではプロセスが終了しない。明示的な停止（シグナル -> close()）まで
+// 次の接続を待ち続ける。
 //
-// Boundary: this TU includes only SDK public headers. The WebSocket library is
-// hidden behind the ITransport pImpl, so libwebsockets / nlohmann never appear
-// here and /W4 stays clean.
+// 境界: この TU は SDK 公開ヘッダのみをインクルードする。WebSocket ライブラリは
+// ITransport pImpl の背後に隠蔽されているため、libwebsockets / nlohmann はここには
+// 現れず、/W4 も維持される。
 //
-// Lifecycle contract with the editor backend / launcher:
-//   * argv: --bridge-port <p> is required. A missing/invalid port is a hard
-//     error (non-zero exit) so a misconfiguration fails fast (same contract as
-//     ws_test_server::parse_port).
-//   * On a successful bind it prints exactly "READY <port>\n" to stdout and
-//     flushes, which the launcher waits for before dialing. stdout is reserved
-//     for that single line; all diagnostics go to stderr.
-//   * It then runs ONE residential recv loop: every inbound wire frame is fed to
-//     BridgeEngineServer::handleFrame, any response is sent back, and after a
-//     log.subscribe ack it emits SEVERAL log.message events back-to-back.
+// エディタバックエンド / ランチャーとのライフサイクル契約:
+//   * argv: --bridge-port <p> は必須。不正・欠落ポートはハードエラー（非ゼロ終了）となり、
+//     設定ミスは即座に失敗する（ws_test_server::ParsePort と同一契約）。
+//   * バインド成功後は "READY <port>\n" を stdout に出力してフラッシュする。
+//     ランチャーはダイヤル前にこれを待機する。stdout はこの 1 行専用とし、
+//     診断はすべて stderr に出力する。
+//   * その後、1 つの常駐 recv ループを実行する: 受信した各ワイヤーフレームを
+//     BridgeEngineServer::handleFrame に渡し、レスポンスがあれば返送し、
+//     log.subscribe の ack 後は SEVERAL 個の log.message イベントを連続発行する。
 //
-// Stop / signal safety (REQUIRED reading):
-//   * recv() returns nullopt ONLY after close() (a client disconnect does not
-//     unblock it; the transport waits for the next connection). So a clean stop
-//     means: drive transport->close(), which makes the blocked recv() return
-//     nullopt and ends the loop.
-//   * A signal/console handler must be async-signal-safe. transport->close()
-//     takes a mutex, signals a condvar and joins the service thread -- none of
-//     that is legal from a POSIX signal handler. So the handler does the ONLY
-//     async-signal-safe thing: g_stop.store(true) on an atomic flag.
-//   * A dedicated watcher thread, started in main(), polls g_stop and calls
-//     transport->close() once it is set. That unblocks the recv() loop. This is
-//     identical on POSIX and Windows (the handler only ever touches the atomic),
-//     so there is no OS-specific teardown path -- only the handler REGISTRATION
-//     differs (signal() vs SetConsoleCtrlHandler), guarded by #if defined(_WIN32).
+// 停止 / シグナル安全性（必読）:
+//   * recv() は close() の後にのみ nullopt を返す（クライアント切断ではブロックを
+//     解除しない。トランスポートは次の接続を待機する）。よってクリーンな停止は、
+//     transport->close() を駆動することを意味し、これによりブロック中の recv() が
+//     nullopt を返してループが終了する。
+//   * シグナル / コンソールハンドラは async-signal-safe でなければならない。
+//     transport->close() はミューテックスを取得し、condvar にシグナルを送り、
+//     サービススレッドを join する — これらはどれも POSIX シグナルハンドラ内では
+//     合法ではない。そのため、ハンドラは async-signal-safe な唯一の操作のみを行う:
+//     atomic フラグへの g_stop.store(true)。
+//   * main() で起動する専用のウォッチャースレッドが g_stop をポーリングし、
+//     セットされたら transport->close() を呼び出す。それにより recv() ループの
+//     ブロックが解除される。これは POSIX と Windows で同一である（ハンドラは
+//     常に atomic のみを扱う）ため、OS 固有の終了パスはない — ハンドラの
+//     「登録」のみが異なり、#if defined(_WIN32) で分岐する。
 
 #include <atomic>
 #include <chrono>
@@ -64,204 +64,234 @@
 
 #include "mock_adapter.hpp"
 
-namespace {
+namespace
+{
 
-using norves::bridge::BridgeEngineServer;
-using norves::bridge::ILogSink;
-using norves::bridge::ITransport;
-using norves::bridge::LogSeverity;
-using norves::bridge::make_websocket_server_transport;
+    using norves::bridge::BridgeEngineServer;
+    using norves::bridge::ILogSink;
+    using norves::bridge::ITransport;
+    using norves::bridge::LogSeverity;
+    using norves::bridge::make_websocket_server_transport;
 
-using norves::bridge::dto::LogLevel;
-using norves::bridge::dto::LogMessageEvent;
+    using norves::bridge::dto::LogLevel;
+    using norves::bridge::dto::LogMessageEvent;
 
-using norves::mock::MockAdapter;
+    using norves::mock::MockAdapter;
 
-// Number of log.message events emitted back-to-back after a log.subscribe ack,
-// so a client can assert ordered multi-frame delivery (the G4 burst pattern).
-constexpr int kLogBurst = 3;
+    // @brief log.subscribe の ack 後に連続発行する log.message イベントの数。
+    // @note クライアントが順序付き複数フレーム配送（G4
+    // バーストパターン）をアサートできるようにする。
+    constexpr int LogBurst = 3;
 
-// Translation-unit stop flag. Set ONLY by the signal/console handler (an atomic
-// store is async-signal-safe) and polled by the watcher thread, which performs
-// the actual close(). Never touched by close() directly inside the handler.
-std::atomic<bool> g_stop{false};
+    // @brief 翻訳単位の停止フラグ。シグナル / コンソールハンドラのみがセットする
+    // （atomic store は async-signal-safe）。ウォッチャースレッドがポーリングし、
+    // 実際の close() を実行する。ハンドラ内から close() を直接呼び出さない。
+    std::atomic<bool> g_stop{false};
 
 #if defined(_WIN32)
-// Windows console control handler. Runs on a thread the OS injects, but we still
-// confine it to the atomic store so the stop path is identical to POSIX.
-BOOL WINAPI console_handler(DWORD ctrl_type) {
-    switch (ctrl_type) {
-        case CTRL_C_EVENT:
-        case CTRL_BREAK_EVENT:
-        case CTRL_CLOSE_EVENT:
-        case CTRL_SHUTDOWN_EVENT:
-            g_stop.store(true);
-            return TRUE;
-        default:
-            return FALSE;
+    // @brief Windows コンソール制御ハンドラ。OS が注入したスレッドで実行されるが、
+    // 停止パスを POSIX と同一にするため atomic store のみに限定する。
+    BOOL WINAPI ConsoleHandler(DWORD ctrlType)
+    {
+        switch (ctrlType)
+        {
+            case CTRL_C_EVENT:
+            case CTRL_BREAK_EVENT:
+            case CTRL_CLOSE_EVENT:
+            case CTRL_SHUTDOWN_EVENT:
+                g_stop.store(true);
+                return TRUE;
+            default:
+                return FALSE;
+        }
     }
-}
 
-void install_signal_handlers() {
-    SetConsoleCtrlHandler(console_handler, TRUE);
-}
+    void InstallSignalHandlers() { SetConsoleCtrlHandler(ConsoleHandler, TRUE); }
 #else
-extern "C" void posix_signal_handler(int /*signum*/) {
-    // Async-signal-safe: an atomic store is permitted from a signal handler.
-    g_stop.store(true);
-}
+    extern "C" void PosixSignalHandler(int /*signum*/)
+    {
+        // Async-signal-safe: atomic store はシグナルハンドラ内で許可されている。
+        g_stop.store(true);
+    }
 
-void install_signal_handlers() {
-    std::signal(SIGINT, posix_signal_handler);
-    std::signal(SIGTERM, posix_signal_handler);
-}
+    void InstallSignalHandlers()
+    {
+        std::signal(SIGINT, PosixSignalHandler);
+        std::signal(SIGTERM, PosixSignalHandler);
+    }
 #endif
 
-// Minimal stderr sink so SDK Warn/Error diagnostics are visible. stdout is
-// reserved for the single READY line, so diagnostics go to stderr only.
-class StderrSink : public ILogSink {
-  public:
-    void log(LogSeverity level, std::string_view message) override {
-        if (level == LogSeverity::Warn || level == LogSeverity::Error) {
-            std::cerr << "mock-engine[sink]: " << message << '\n';
-        }
-    }
-};
-
-// Reads --bridge-port. Returns the port on success; prints an error to stderr
-// and returns nullopt on a missing/invalid value (same contract as
-// ws_test_server::parse_port).
-std::optional<std::uint16_t> parse_port(int argc, char** argv) {
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg = argv[i];
-        if (arg == "--bridge-port") {
-            if (i + 1 >= argc) {
-                std::cerr << "mock-engine: --bridge-port requires a value\n";
-                return std::nullopt;
+    // @brief 最小限の stderr シンク。SDK の Warn/Error 診断を可視化する。
+    // @note stdout は単一の READY 行に予約されているため、診断は stderr のみに出力する。
+    class StderrSink : public ILogSink
+    {
+    public:
+        void log(LogSeverity level, std::string_view message) override
+        {
+            if (level == LogSeverity::Warn || level == LogSeverity::Error)
+            {
+                std::cerr << "mock-engine[sink]: " << message << '\n';
             }
-            const std::string value = argv[i + 1];
-            try {
-                const unsigned long parsed = std::stoul(value);
-                if (parsed == 0 || parsed > 65535) {
-                    std::cerr << "mock-engine: port out of range: " << value << '\n';
+        }
+    };
+
+    // @brief --bridge-port を読み取る。成功時はポートを返す。不正・欠落時は
+    // stderr にエラーを出力して nullopt を返す（ws_test_server::ParsePort と同一契約）。
+    std::optional<std::uint16_t> ParsePort(int argc, char** argv)
+    {
+        for (int i = 1; i < argc; ++i)
+        {
+            std::string_view arg = argv[i];
+            if (arg == "--bridge-port")
+            {
+                if (i + 1 >= argc)
+                {
+                    std::cerr << "mock-engine: --bridge-port requires a value\n";
                     return std::nullopt;
                 }
-                return static_cast<std::uint16_t>(parsed);
-            } catch (const std::exception&) {
-                std::cerr << "mock-engine: invalid port: " << value << '\n';
-                return std::nullopt;
+                const std::string value = argv[i + 1];
+                try
+                {
+                    const unsigned long parsed = std::stoul(value);
+                    if (parsed == 0 || parsed > 65535)
+                    {
+                        std::cerr << "mock-engine: port out of range: " << value << '\n';
+                        return std::nullopt;
+                    }
+                    return static_cast<std::uint16_t>(parsed);
+                }
+                catch (const std::exception&)
+                {
+                    std::cerr << "mock-engine: invalid port: " << value << '\n';
+                    return std::nullopt;
+                }
             }
         }
+        std::cerr << "mock-engine: missing required --bridge-port <port>\n";
+        return std::nullopt;
     }
-    std::cerr << "mock-engine: missing required --bridge-port <port>\n";
-    return std::nullopt;
-}
 
-// Binds the WebSocket server, retrying a transient bind failure a few times with
-// short sleeps. A kill->same-port-restart can briefly fail to bind while the OS
-// releases the previous listener; retrying absorbs that (same approach as
-// ws_test_server). Returns nullptr only if every attempt fails.
-std::unique_ptr<ITransport> bind_with_retry(std::uint16_t port,
-                                            std::size_t send_cap,
-                                            std::size_t recv_cap,
-                                            ILogSink* sink) {
-    constexpr int kMaxAttempts = 20;
-    constexpr auto kRetryDelay = std::chrono::milliseconds(100);
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        std::unique_ptr<ITransport> transport =
-            make_websocket_server_transport(port, send_cap, recv_cap, sink);
-        if (transport != nullptr) {
-            return transport;
+    // @brief WebSocket サーバーをバインドする。一時的なバインド失敗時は短い sleep を
+    // 挟みながらリトライする。kill->同一ポート再起動では OS が前のリスナーを解放するまで
+    // 一時的に失敗することがある。リトライによって吸収する（ws_test_server と同一アプローチ）。
+    // すべての試行が失敗した場合のみ nullptr を返す。
+    std::unique_ptr<ITransport> BindWithRetry(std::uint16_t port, std::size_t sendCap,
+                                              std::size_t recvCap, ILogSink* sink)
+    {
+        constexpr int MaxAttempts = 20;
+        constexpr auto RetryDelay = std::chrono::milliseconds(100);
+        for (int attempt = 0; attempt < MaxAttempts; ++attempt)
+        {
+            std::unique_ptr<ITransport> transport =
+                make_websocket_server_transport(port, sendCap, recvCap, sink);
+            if (transport != nullptr)
+            {
+                return transport;
+            }
+            std::this_thread::sleep_for(RetryDelay);
         }
-        std::this_thread::sleep_for(kRetryDelay);
+        return nullptr;
     }
-    return nullptr;
-}
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const std::optional<std::uint16_t> port = parse_port(argc, argv);
-    if (!port.has_value()) {
+int main(int argc, char** argv)
+{
+    const std::optional<std::uint16_t> port = ParsePort(argc, argv);
+    if (!port.has_value())
+    {
         return 2;
     }
 
-    constexpr std::size_t kSendCap = 256;
-    constexpr std::size_t kRecvCap = 256;
+    constexpr std::size_t SendCap = 256;
+    constexpr std::size_t RecvCap = 256;
 
     StderrSink sink;
-    std::unique_ptr<ITransport> transport = bind_with_retry(*port, kSendCap, kRecvCap, &sink);
-    if (transport == nullptr) {
+    std::unique_ptr<ITransport> transport = BindWithRetry(*port, SendCap, RecvCap, &sink);
+    if (transport == nullptr)
+    {
         std::cerr << "mock-engine: failed to bind WebSocket server on port " << *port << '\n';
         return 3;
     }
 
-    install_signal_handlers();
+    InstallSignalHandlers();
 
-    // Watcher thread: polls g_stop and drives close() off the signal handler.
-    // close() is idempotent, so a later destructor close() is harmless. Captures
-    // a raw pointer to the transport, which outlives the joined watcher.
-    ITransport* transport_ptr = transport.get();
-    std::thread watcher([transport_ptr]() {
-        constexpr auto kPoll = std::chrono::milliseconds(50);
-        while (!g_stop.load()) {
-            std::this_thread::sleep_for(kPoll);
-        }
-        transport_ptr->close();  // unblocks the residential recv() loop.
-    });
+    // ウォッチャースレッド: g_stop をポーリングし、シグナルハンドラから close() を駆動する。
+    // close() は冪等なため、後続のデストラクタによる close() は無害。
+    // transport の生ポインタをキャプチャする（join 済みのウォッチャーより長く生存する）。
+    ITransport* transportPtr = transport.get();
+    std::thread watcher(
+        [transportPtr]()
+        {
+            constexpr auto Poll = std::chrono::milliseconds(50);
+            while (!g_stop.load())
+            {
+                std::this_thread::sleep_for(Poll);
+            }
+            transportPtr->close();  // 常駐 recv() ループのブロックを解除する。
+        });
 
     MockAdapter adapter;
     BridgeEngineServer server(adapter, &sink);
 
-    // Pre-build the log.message event frame once; emitted (kLogBurst times) after
-    // a log.subscribe ack.
+    // log.message イベントフレームを事前に 1 回ビルドする。log.subscribe の ack 後に
+    // （LogBurst 回）発行される。
     LogMessageEvent log;
     log.level = LogLevel::Info;
     log.message = "Game started";
     log.category = "Engine";
-    const std::string log_event_frame = server.emitEvent("log.message", log.to_json());
+    const std::string logEventFrame = server.emitEvent("log.message", log.to_json());
 
-    // Signal readiness AFTER a successful bind so the launcher only dials a
-    // listening socket. stdout is reserved for this single line; flush so the
-    // parent observes it promptly.
+    // バインド成功後に準備完了を通知する。これにより ランチャーはリッスン済みの
+    // ソケットにのみダイヤルする。stdout はこの 1 行専用とし、
+    // 親プロセスが即座に受け取れるようフラッシュする。
     std::cout << "READY " << *port << '\n';
     std::cout.flush();
 
-    // Residential recv loop. recv() returns nullopt only after close() (driven by
-    // the watcher on stop); a client disconnect does NOT end the loop. handleFrame
-    // and the adapter run on this thread, so the emit_log_burst flag set inside
-    // logSubscribe is visible right after handleFrame returns. We send the
-    // subscribe ack first, then the burst, so the client sees ack-before-events.
-    while (true) {
+    // 常駐 recv ループ。recv() は close() の後にのみ nullopt を返す（ウォッチャーが
+    // 停止時に駆動する）。クライアント切断ではループが終了しない。handleFrame と
+    // アダプタはこのスレッドで実行されるため、logSubscribe 内でセットされた
+    // emit_log_burst フラグは handleFrame が返った直後に参照できる。subscribe の
+    // ack を先に送信し、その後バーストを送るため、クライアントは ack-before-events の
+    // 順序で受信する。
+    while (true)
+    {
         std::optional<std::string> frame = transport->recv();
-        if (!frame.has_value()) {
-            break;  // close() was driven (stop requested): clean exit.
+        if (!frame.has_value())
+        {
+            break;  // close() が駆動された（停止要求）: クリーン終了。
         }
 
         std::optional<std::string> response = server.handleFrame(*frame);
-        if (response.has_value()) {
-            if (!transport->send(std::move(*response))) {
-                // Peer gone mid-flight. Do NOT exit: the engine is residential,
-                // so drop this frame and keep serving the next connection.
+        if (response.has_value())
+        {
+            if (!transport->send(std::move(*response)))
+            {
+                // フライト中にピアがいなくなった。終了しない: このエンジンは常駐型のため、
+                // このフレームを破棄し次の接続の提供を継続する。
                 adapter.emit_log_burst.store(false);
                 continue;
             }
         }
 
-        if (adapter.emit_log_burst.exchange(false)) {
-            for (int i = 0; i < kLogBurst; ++i) {
-                if (!transport->send(std::string(log_event_frame))) {
-                    break;  // peer gone mid-flight; stop the burst, keep serving.
+        if (adapter.emit_log_burst.exchange(false))
+        {
+            for (int i = 0; i < LogBurst; ++i)
+            {
+                if (!transport->send(std::string(logEventFrame)))
+                {
+                    break;  // フライト中にピアがいなくなった。バーストを中断し提供を継続する。
                 }
             }
         }
     }
 
-    // Orderly teardown: stop and join the watcher, then the transport unique_ptr
-    // destructor closes again (idempotent). Set g_stop so the watcher exits even
-    // when the loop ended via a path other than a signal.
+    // 順序ある終了: ウォッチャーを停止して join し、その後 transport unique_ptr の
+    // デストラクタが再度 close() を呼び出す（冪等）。シグナル以外のパスでループが
+    // 終了した場合もウォッチャーが終了するよう g_stop をセットする。
     g_stop.store(true);
-    if (watcher.joinable()) {
+    if (watcher.joinable())
+    {
         watcher.join();
     }
 

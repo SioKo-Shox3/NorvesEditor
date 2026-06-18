@@ -17,7 +17,7 @@ target_include_directories(norves_bridge_engine_sdk
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
-target_compile_features(norves_bridge_engine_sdk PUBLIC cxx_std_20)
+target_compile_features(norves_bridge_engine_sdk PUBLIC cxx_std_23)
 
 # nlohmann/json is an implementation detail of the codec / json_value TUs only.
 # Linking it PRIVATE keeps the type out of every public header: include/ depends
