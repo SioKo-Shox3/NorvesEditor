@@ -7,31 +7,32 @@
 #include <string>
 #include <string_view>
 
-// JSON codec entry points for the Bridge wire Envelope.
-//
-// Depends on <std> and the SDK's own value types only; no third-party headers
-// are included here. The vendored JSON library is used solely inside the .cpp
-// implementation. Mirrors the
-// Rust reference (`bridge/crates/norves-bridge-core/src/codec.rs`): only the
-// ENVELOPE layer is validated; per-method / per-event payload schemas are a
-// later phase, so params / result / error.data are carried opaque.
+/// @file
+/// @brief Bridge ワイヤー Envelope のための JSON コーデックのエントリポイント。
+///
+/// @note 依存は <std> と SDK 自身の値型のみ。サードパーティヘッダはここに含めない。
+///       ベンダリングされた JSON ライブラリは .cpp 実装内でのみ使われる。Rust リファレンス
+///       （`bridge/crates/norves-bridge-core/src/codec.rs`）を反映する。すなわち
+///       ENVELOPE 層のみが検証される。メソッドごと / イベントごとのペイロードスキーマは
+///       後のフェーズであり、params / result / error.data は opaque なまま運ばれる。
 namespace norves::bridge
 {
 
-    // Decodes a JSON string into an Envelope, applying the envelope-layer rules:
-    //   * valid JSON object,
-    //   * additionalProperties: false at the envelope and at the error object,
-    //   * field patterns (bridge marker, version, method/event names, error.code,
-    //     non-empty id, seq >= 0),
-    //   * kind-dependent structural rules via Envelope::validate.
-    // params / result / error.data are preserved as opaque JsonValue and not
-    // inspected further.
-    //
-    // Returns CodecError on any violation.
+    /// @brief JSON 文字列を Envelope へデコードし、エンベロープ層の規則を適用する:
+    ///   * 有効な JSON オブジェクトであること、
+    ///   * エンベロープおよび error オブジェクトでの additionalProperties: false、
+    ///   * フィールドパターン（bridge マーカー、version、method/event 名、error.code、
+    ///     非空の id、seq >= 0）、
+    ///   * Envelope::validate を介した kind 依存の構造規則。
+    /// params / result / error.data は opaque な JsonValue として保存され、それ以上
+    /// 検査されない。
+    /// @param wire デコード対象のワイヤー JSON テキスト。
+    /// @return 成功時は Envelope。いずれかの違反時は CodecError を返す。
     [[nodiscard]] Result<Envelope, CodecError> decode_envelope(std::string_view wire);
 
-    // Encodes an Envelope back to a compact JSON string. Returns CodecError if the
-    // envelope cannot be serialized.
+    /// @brief Envelope をコンパクトな JSON 文字列へエンコードして戻す。
+    /// @param envelope エンコード対象のエンベロープ。
+    /// @return 成功時は JSON 文字列。エンベロープをシリアライズできない場合は CodecError。
     [[nodiscard]] Result<std::string, CodecError> encode_envelope(const Envelope& envelope);
 
 }  // namespace norves::bridge

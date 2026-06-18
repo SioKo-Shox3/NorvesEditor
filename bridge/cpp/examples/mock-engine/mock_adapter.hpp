@@ -1,17 +1,16 @@
 #pragma once
 
-// Workstream H-A: engine-side adapter for the residential mock engine.
+// @brief Workstream H-A: 常駐型モックエンジン用エンジン側アダプタ。
 //
-// This MockAdapter intentionally duplicates the FakeAdapter in
-// engine-sdk/tests/ws_test_server.cpp. ws_test_server is a G4 test asset and is
-// left untouched to avoid breaking its e2e. If the two drift, the H-D
-// conformance runner detects it.
+// この MockAdapter は意図的に engine-sdk/tests/ws_test_server.cpp の FakeAdapter を
+// 複製している。ws_test_server は G4 テストアセットであり、e2e テストを壊さないよう
+// 手を加えない。二者が乖離した場合は H-D 適合ランナーが検出する。
 //
-// An adapter is an engine-implementation responsibility, not SDK surface, so it
-// lives under examples/ (not engine-sdk/src). It depends on <std> and the SDK's
-// public headers only: every payload is built from the typed DTOs' to_json() or
-// from JsonValue::parse, never from a third-party JSON type directly. That keeps
-// this directory free of any libwebsockets / nlohmann include.
+// アダプタはエンジン実装の責務であり SDK サーフェスではないため、examples/ に配置する
+// （engine-sdk/src ではない）。std と SDK の公開ヘッダのみに依存する: すべての
+// ペイロードは型付き DTO の to_json() または JsonValue::parse から構築し、
+// サードパーティ JSON 型を直接扱わない。これにより、このディレクトリから
+// libwebsockets / nlohmann のインクルードを排除する。
 
 #include "norves/bridge/adapter.hpp"
 #include "norves/bridge/dto/common.hpp"
@@ -28,9 +27,9 @@
 namespace norves::mock
 {
 
-    // Parses a JSON literal or aborts: the literals below are compile-time constants
-    // we control, so a parse failure is a programming error, not a runtime
-    // condition. The mock engine has no recoverable path for a broken literal.
+    // @brief JSON リテラルをパースするか中断する。以下のリテラルはコンパイル時定数であり、
+    // パース失敗はランタイム条件ではなくプログラミングエラーを意味する。
+    // モックエンジンには壊れたリテラルに対する回復可能なパスはない。
     inline norves::bridge::JsonValue parse_or_die(std::string_view text)
     {
         auto parsed = norves::bridge::JsonValue::parse(text);
@@ -41,9 +40,9 @@ namespace norves::mock
         return std::move(parsed).value();
     }
 
-    // Mock engine adapter. Response values match the G4 FakeAdapter one-for-one so
-    // the editor backend observes the same wire shapes whether it drives the mock
-    // engine over WebSocket (main.cpp) or the loopback smoke.
+    // @brief モックエンジンアダプタ。レスポンス値は G4 FakeAdapter と 1 対 1 で一致するため、
+    // エディタバックエンドは WebSocket 経由（main.cpp）でモックエンジンを駆動した場合でも
+    // ループバックスモークの場合でも同一のワイヤー形状を観察する。
     class MockAdapter : public norves::bridge::IBridgeEngineAdapter
     {
     public:
@@ -64,10 +63,10 @@ namespace norves::mock
         norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
         getCapabilities(const norves::bridge::JsonValue& /*params*/) override
         {
-            // Value-equal to the spec positive fixture
-            // (methods/bridge.getCapabilities/positive/response-valid.json)
-            // result.capabilities so the H-D conformance runner can strict-compare
-            // the whole result and detect any drift on this method.
+            // スペックポジティブフィクスチャ
+            // （methods/bridge.getCapabilities/positive/response-valid.json）の
+            // result.capabilities と値等価にする。H-D 適合ランナーが結果全体を
+            // 厳密比較してこのメソッドの乖離を検出できるようにする。
             return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
                 ok(parse_or_die(
                     R"({"capabilities":[)"
@@ -92,8 +91,8 @@ namespace norves::mock
         norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> launchInfo(
             const norves::bridge::JsonValue& /*params*/) override
         {
-            // engine.launchInfo is a required (pure-virtual) method, so a minimal
-            // success result is returned rather than METHOD_NOT_SUPPORTED.
+            // engine.launchInfo は必須（純粋仮想）メソッドのため、
+            // METHOD_NOT_SUPPORTED ではなく最小限の成功結果を返す。
             return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
                 ok(parse_or_die(R"({"launched":true})"));
         }
@@ -132,9 +131,9 @@ namespace norves::mock
         norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> logSubscribe(
             const norves::bridge::JsonValue& /*params*/) override
         {
-            // Flag the recv loop to emit the log.message burst AFTER this ack is
-            // sent, keeping ack-before-event ordering deterministic (same "set flag,
-            // emit after ack" pattern as ws_test_server's FakeAdapter).
+            // この ack が送信された後に log.message バーストを発行するよう recv ループに
+            // フラグを立てる。ack-before-event の順序を決定論的に維持する
+            // （ws_test_server の FakeAdapter と同じ「フラグセット、ack 後に発行」パターン）。
             emit_log_burst.store(true);
             return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
                 ok(parse_or_die(R"({"subscribed":true})"));
@@ -147,9 +146,9 @@ namespace norves::mock
                 ok(parse_or_die(R"({"unsubscribed":true})"));
         }
 
-        // Set by logSubscribe(), consumed by the recv loop. handleFrame and the loop
-        // run on the same thread, so this is a single-threaded handoff; atomic anyway
-        // for a clear cross-method contract.
+        // @brief logSubscribe() によってセットされ、recv ループが消費する。
+        // @note handleFrame とループは同一スレッドで実行されるため、シングルスレッドのハンドオフ。
+        // クロスメソッドの契約を明示するため atomic にする。
         std::atomic<bool> emit_log_burst{false};
     };
 

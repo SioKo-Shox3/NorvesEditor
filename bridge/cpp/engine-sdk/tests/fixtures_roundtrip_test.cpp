@@ -1,19 +1,17 @@
-// Fixture-driven conformance test for the C++ engine SDK codec (envelope layer).
+// @brief C++ エンジン SDK コーデック（エンベロープ層）のフィクスチャ駆動適合テスト。
 //
-// Mirrors the Rust reference test
-// (bridge/crates/norves-bridge-core/tests/fixtures_roundtrip.rs): it walks
-// bridge/spec/fixtures and classifies every *.json purely by path, then:
+// Rust リファレンステスト（bridge/crates/norves-bridge-core/tests/fixtures_roundtrip.rs）を
+// ミラーする: bridge/spec/fixtures 配下のすべての *.json をパスのみで分類し、以下を実行する:
 //
-//   * positive (envelope/positive, methods/.../positive, events/.../positive)
-//       -> decode_envelope must succeed (decode already applies validate()) and
-//          re-encode must round-trip value-equal.
-//   * envelope/negative -> decode_envelope must be rejected (Err).
-//   * methods|events/negative (payload-only) -> ACCEPTED at the envelope layer
-//          (payload schemas are a later phase), matching the Rust boundary.
+//   * positive（envelope/positive、methods/.../positive、events/.../positive）
+//       -> decode_envelope が成功すること（decode は validate() を内部で適用する）、
+//          および再エンコードが値等価でラウンドトリップすること。
+//   * envelope/negative -> decode_envelope が拒否されること（Err）。
+//   * methods|events/negative（ペイロード専用）-> エンベロープ層では ACCEPTED となる
+//          （ペイロードスキーマは後続フェーズで検証する）。Rust の境界と一致する。
 //
-// nlohmann/json is used here for value-equal comparison only; this is a test TU,
-// not part of the SDK's public surface, so the boundary rule (no nlohmann in
-// include/) is unaffected.
+// nlohmann/json は値等価比較のみに使用する。これはテスト TU であり SDK の公開面ではないため、
+// 境界ルール（include/ に nlohmann を含めない）には影響しない。
 
 #include "norves/bridge/codec.hpp"
 #include "norves/bridge/envelope.hpp"
@@ -47,7 +45,7 @@ namespace
         Ignored
     };
 
-    // Path-based classification, identical in spirit to the Rust `classify`.
+    // @brief パスによる分類。Rust の `classify` と精神的に同一。
     Group Classify(const std::string& normalized)
     {
         const bool bIsPositive = normalized.find("/positive/") != std::string::npos;
@@ -73,7 +71,7 @@ namespace
 
     std::string Normalize(const fs::path& path)
     {
-        std::string s = path.generic_string();  // already uses '/'
+        std::string s = path.generic_string();  // すでに '/' を使用している
         return s;
     }
 
@@ -141,8 +139,8 @@ int main()
                 {
                     break;
                 }
-                // value-equal round-trip: parse original and re-encoded, compare
-                // as nlohmann::json (field order / whitespace independent).
+                // 値等価ラウンドトリップ: 元データと再エンコード済みデータをそれぞれ
+                // nlohmann::json としてパースし比較する（フィールド順・空白に依存しない）。
                 const auto orig = nlohmann::json::parse(wire, nullptr, false);
                 const auto again = nlohmann::json::parse(encoded.value(), nullptr, false);
                 NORVES_CHECK(!orig.is_discarded());
@@ -171,8 +169,8 @@ int main()
             case Group::PayloadOnly:
             {
                 ++payloadOnly;
-                // Valid envelope; only the payload is wrong, which this layer
-                // does not validate yet. Must be ACCEPTED here.
+                // エンベロープとしては有効。ペイロードのみが不正だが、
+                // この層ではまだ検証しない。ACCEPTED でなければならない。
                 auto decoded = norves::bridge::decode_envelope(wire);
                 NORVES_CHECK(decoded.is_ok());
                 if (decoded.is_err())
@@ -189,8 +187,8 @@ int main()
         }
     }
 
-    // Exhaustive counts: identical to the Rust reference (D2 totals). A drift in
-    // the fixture corpus breaks here first and points at the discrepancy.
+    // 網羅的カウント: Rust リファレンス（D2 合計）と同一。フィクスチャコーパスに
+    // 乖離があれば最初にここで検出され、差分を指摘する。
     NORVES_CHECK_EQ(positive, static_cast<std::size_t>(55));
     NORVES_CHECK_EQ(envelopeRejectable, static_cast<std::size_t>(14));
     NORVES_CHECK_EQ(payloadOnly, static_cast<std::size_t>(45));

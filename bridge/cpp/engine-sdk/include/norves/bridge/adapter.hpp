@@ -8,108 +8,112 @@
 #include <string>
 #include <string_view>
 
-// Engine adapter interface: the seam an engine integration implements so that
-// BridgeEngineServer can dispatch decoded Bridge requests into engine logic.
-//
-// Depends on <std> and the SDK's own value types only; no third-party headers
-// are included here. Every payload (request params, success result,
-// error.data) is carried as the opaque JsonValue: this layer does NOT interpret
-// payload contents. Typed per-method DTOs are a later phase; an adapter that
-// wants typed access parses the JsonValue itself.
-//
-// Thread affinity (REQUIRED reading):
-//   * The SDK invokes each adapter method synchronously, on the SAME thread
-//     that called BridgeEngineServer::handleFrame. The SDK never spawns a
-//     thread to call the adapter and never calls it concurrently with itself.
-//   * If an adapter implementation holds state that may only be touched on the
-//     engine main thread, the EMBEDDER is responsible for driving
-//     handleFrame on that engine main thread. The SDK provides no marshaling.
-//   * An adapter MUST NOT return engine live memory through a JsonValue. It
-//     converts engine state into a snapshot/DTO value first
-//     (docs/memory-buffer-policy.md). The returned JsonValue is owned by the
-//     caller after the call.
-//   * `params` is borrowed for the duration of the call only; an adapter must
-//     not retain the reference past return.
+/// @file
+/// @brief エンジンアダプタインターフェース。デコード済みの Bridge リクエストを
+///        BridgeEngineServer がエンジンロジックへディスパッチできるよう、エンジン統合が
+///        実装する接続点（seam）。
+///
+/// @note 依存は <std> と SDK 自身の値型のみ。サードパーティヘッダはここに含めない。
+///       すべてのペイロード（リクエストの params、成功時の result、error.data）は opaque な
+///       JsonValue として運ばれ、この層はペイロード内容を解釈しない。メソッドごとの型付き
+///       DTO は後のフェーズである。型付きアクセスを望むアダプタは JsonValue を自身で
+///       パースする。
+///
+/// @note スレッドアフィニティ（必読 / REQUIRED）:
+///   * SDK は各アダプタメソッドを、BridgeEngineServer::handleFrame を呼んだのと同じ
+///     スレッド上で同期的に呼び出す。SDK はアダプタを呼ぶためにスレッドを生成することは
+///     決してなく、自身と並行してアダプタを呼ぶことも決してない。
+///   * アダプタ実装がエンジンメインスレッド上でのみ触れてよい状態を保持する場合、その
+///     エンジンメインスレッド上で handleFrame を駆動する責任は組み込み側（EMBEDDER）に
+///     ある。SDK はマーシャリングを提供しない。
+///   * アダプタはエンジンのライブメモリを JsonValue を通して返してはならない（MUST NOT）。
+///     まずエンジン状態をスナップショット/DTO 値へ変換する
+///     （docs/memory-buffer-policy.md）。返された JsonValue は呼び出し後、呼び出し側が
+///     所有する。
+///   * `params` は呼び出しの間のみ借用される。アダプタはその参照を呼び出し終了後に
+///     保持してはならない。
 namespace norves::bridge
 {
 
-    // Pure-virtual engine adapter. In-scope methods are pure virtual (the engine
-    // MUST implement them). The optional scene/object/schema methods are NON-pure
-    // with a default that reports METHOD_NOT_SUPPORTED, reflecting the protocol's
-    // open method registry: an engine overrides only what it supports.
+    /// @brief 純粋仮想のエンジンアダプタ。対象範囲内のメソッドは純粋仮想である（エンジンは
+    ///        それらを実装しなければならない / MUST）。オプションの scene/object/schema
+    ///        メソッドは非純粋であり、METHOD_NOT_SUPPORTED を報告するデフォルトを持つ。
+    ///        これはプロトコルの開かれたメソッドレジストリを反映している。すなわちエンジンは
+    ///        対応するものだけをオーバーライドする。
     class IBridgeEngineAdapter
     {
     public:
         virtual ~IBridgeEngineAdapter() = default;
 
-        // --- Handshake -----------------------------------------------------------
+        // --- ハンドシェイク ------------------------------------------------------
 
-        // bridge.hello. `selectedProtocolVersion` is the version the server already
-        // chose by intersecting the client's offered protocolVersions (in client
-        // preference order) with this SDK's SupportedProtocolVersions. The adapter
-        // builds the result payload (sessionId / protocolVersion / server /
-        // optional capabilities) as a JsonValue and is responsible for placing
-        // `selectedProtocolVersion` into the result's protocolVersion field.
+        /// @brief bridge.hello。`selectedProtocolVersion` は、クライアントが提示した
+        ///        protocolVersions（クライアントの選好順）と、この SDK の
+        ///        SupportedProtocolVersions との積を取ってサーバが既に選んだバージョンである。
+        ///        アダプタは result ペイロード（sessionId / protocolVersion / server /
+        ///        オプションの capabilities）を JsonValue として構築し、
+        ///        `selectedProtocolVersion` を result の protocolVersion フィールドに
+        ///        収める責任を負う。
         virtual Result<JsonValue, BridgeError> hello(const JsonValue& params,
                                                      std::string_view selectedProtocolVersion) = 0;
 
-        // bridge.getCapabilities.
+        /// @brief bridge.getCapabilities。
         virtual Result<JsonValue, BridgeError> getCapabilities(const JsonValue& params) = 0;
 
-        // --- Engine status / launch ----------------------------------------------
+        // --- エンジン状態 / ローンチ ---------------------------------------------
 
-        // engine.getStatus.
+        /// @brief engine.getStatus。
         virtual Result<JsonValue, BridgeError> getStatus(const JsonValue& params) = 0;
 
-        // engine.launchInfo.
+        /// @brief engine.launchInfo。
         virtual Result<JsonValue, BridgeError> launchInfo(const JsonValue& params) = 0;
 
-        // --- Runtime control -----------------------------------------------------
+        // --- ランタイム制御 ------------------------------------------------------
 
-        // runtime.play.
+        /// @brief runtime.play。
         virtual Result<JsonValue, BridgeError> runtimePlay(const JsonValue& params) = 0;
 
-        // runtime.pause.
+        /// @brief runtime.pause。
         virtual Result<JsonValue, BridgeError> runtimePause(const JsonValue& params) = 0;
 
-        // runtime.stop.
+        /// @brief runtime.stop。
         virtual Result<JsonValue, BridgeError> runtimeStop(const JsonValue& params) = 0;
 
-        // runtime.focusViewport.
+        /// @brief runtime.focusViewport。
         virtual Result<JsonValue, BridgeError> runtimeFocusViewport(const JsonValue& params) = 0;
 
-        // --- Log streaming -------------------------------------------------------
+        // --- ログストリーミング --------------------------------------------------
 
-        // log.subscribe.
+        /// @brief log.subscribe。
         virtual Result<JsonValue, BridgeError> logSubscribe(const JsonValue& params) = 0;
 
-        // log.unsubscribe.
+        /// @brief log.unsubscribe。
         virtual Result<JsonValue, BridgeError> logUnsubscribe(const JsonValue& params) = 0;
 
-        // --- Optional (open registry) --------------------------------------------
+        // --- オプション（開かれたレジストリ） ------------------------------------
         //
-        // These have a default implementation that reports METHOD_NOT_SUPPORTED.
-        // An engine that supports them overrides the relevant method.
+        // これらは METHOD_NOT_SUPPORTED を報告するデフォルト実装を持つ。
+        // それらに対応するエンジンは該当メソッドをオーバーライドする。
 
-        // scene.getTree.
+        /// @brief scene.getTree。
         virtual Result<JsonValue, BridgeError> sceneGetTree(const JsonValue& params)
         {
             return not_supported(params);
         }
 
-        // object.getSnapshot.
+        /// @brief object.getSnapshot。
         virtual Result<JsonValue, BridgeError> objectGetSnapshot(const JsonValue& params)
         {
             return not_supported(params);
         }
 
-        // object.setProperty.
+        /// @brief object.setProperty。
         virtual Result<JsonValue, BridgeError> objectSetProperty(const JsonValue& params)
         {
             return not_supported(params);
         }
 
-        // schema.getSnapshot.
+        /// @brief schema.getSnapshot。
         virtual Result<JsonValue, BridgeError> schemaGetSnapshot(const JsonValue& params)
         {
             return not_supported(params);
@@ -122,8 +126,8 @@ namespace norves::bridge
         IBridgeEngineAdapter& operator=(const IBridgeEngineAdapter&) = default;
         IBridgeEngineAdapter& operator=(IBridgeEngineAdapter&&) = default;
 
-        // Shared default-implementation body for the optional methods: an
-        // unimplemented optional method reports METHOD_NOT_SUPPORTED.
+        /// オプションメソッドの共有デフォルト実装本体。未実装のオプションメソッドは
+        /// METHOD_NOT_SUPPORTED を報告する。
         static Result<JsonValue, BridgeError> not_supported(const JsonValue& /*params*/)
         {
             return Result<JsonValue, BridgeError>::err(

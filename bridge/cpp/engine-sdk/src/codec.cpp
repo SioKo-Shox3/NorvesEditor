@@ -17,17 +17,17 @@
 
 #include "json_value_impl.hpp"
 
-// JSON codec implementation. nlohmann/json is confined to this TU; the public
-// codec.hpp exposes only std + SDK value types.
+// JSON コーデックの実装。nlohmann/json はこの TU に閉じ込められる。公開の codec.hpp は
+// std + SDK 値型のみを露出する。
 //
-// The decode path mirrors the Rust reference's serde behaviour
-// (bridge/crates/norves-bridge-core/src/{envelope,codec}.rs):
-//   * deny_unknown_fields at the envelope object and at the error object,
-//   * the bridge marker constant,
-//   * validated newtype patterns (version, method/event names, error code,
-//     non-empty id, seq >= 0),
-//   * Envelope::validate for the kind-dependent cross-field rules.
-// params / result / error.data are carried opaque (JsonValue), not inspected.
+// デコード経路は Rust リファレンスの serde の挙動
+// （bridge/crates/norves-bridge-core/src/{envelope,codec}.rs）を反映する:
+//   * エンベロープオブジェクトおよび error オブジェクトでの deny_unknown_fields、
+//   * bridge マーカー定数、
+//   * 検証付きの newtype パターン（version、method/event 名、error コード、
+//     非空の id、seq >= 0）、
+//   * kind 依存のクロスフィールド規則のための Envelope::validate。
+// params / result / error.data は opaque（JsonValue）として運ばれ、検査されない。
 namespace norves::bridge
 {
 
@@ -42,9 +42,9 @@ namespace norves::bridge
             return Result<T, CodecError>::err(std::move(error));
         }
 
-        // --- Pattern helpers (1:1 with common.rs / error.rs) -------------------------
+        // --- パターンヘルパ（common.rs / error.rs と 1:1） --------------------------
 
-        // ^[a-z][a-zA-Z0-9]*\.[a-zA-Z0-9]+$  (method / event names)
+        // ^[a-z][a-zA-Z0-9]*\.[a-zA-Z0-9]+$  （method / event 名）
         bool IsNamespacedToken(std::string_view value)
         {
             const auto dot = value.find('.');
@@ -93,7 +93,7 @@ namespace norves::bridge
             return true;
         }
 
-        // ^[0-9]+\.[0-9]+$  (version string)
+        // ^[0-9]+\.[0-9]+$  （version 文字列）
         bool IsVersionString(std::string_view value)
         {
             const auto dot = value.find('.');
@@ -128,7 +128,7 @@ namespace norves::bridge
             return true;
         }
 
-        // ^[A-Z][A-Z0-9_]*$  (error code)
+        // ^[A-Z][A-Z0-9_]*$  （error コード）
         bool IsErrorCode(std::string_view value)
         {
             if (value.empty())
@@ -152,7 +152,7 @@ namespace norves::bridge
             return true;
         }
 
-        // --- Field extraction --------------------------------------------------------
+        // --- フィールド抽出 ----------------------------------------------------------
 
         JsonValue Wrap(const json& value)
         {
@@ -161,8 +161,8 @@ namespace norves::bridge
             return make_json_value(std::move(impl));
         }
 
-        // Extracts an optional string field. Returns false (via *bad) if present but not
-        // a string. Absent -> leaves out empty, returns true.
+        // オプションの文字列フィールドを抽出する。存在するが文字列でない場合は（*bad を
+        // 介して）false を返す。不在の場合は out を空のままにして true を返す。
         bool TakeString(const json& obj, const char* key, std::optional<std::string>& out,
                         std::string& bad)
         {
@@ -180,15 +180,15 @@ namespace norves::bridge
             return true;
         }
 
-        // Decodes the error object (with its own additionalProperties: false and field
-        // patterns). Mirrors envelope.schema.json#/$defs/error.
+        // error オブジェクトを（それ自身の additionalProperties: false とフィールド
+        // パターンとともに）デコードする。envelope.schema.json#/$defs/error を反映する。
         Result<BridgeError, CodecError> DecodeError(const json& obj)
         {
             if (!obj.is_object())
             {
                 return Err<BridgeError>(CodecError::invalid_field("`error` must be an object"));
             }
-            // additionalProperties: false at the error object.
+            // error オブジェクトでの additionalProperties: false。
             for (const auto& [key, _] : obj.items())
             {
                 if (key != "code" && key != "message" && key != "data")
@@ -223,10 +223,10 @@ namespace norves::bridge
                     CodecError::invalid_field("`error.message` must be a string"));
             }
             const auto message = msgIt->get<std::string>();
-            // The JSON Schema (envelope.schema.json $defs/error.message minLength: 1) is
-            // the canonical wire contract, so we reject an empty message. The Rust core
-            // models this field as a plain String and does not enforce non-emptiness at
-            // the type level; wire validation follows the schema, not the Rust type.
+            // JSON スキーマ（envelope.schema.json $defs/error.message minLength: 1）が正規の
+            // ワイヤー契約なので、空のメッセージを拒否する。Rust コアはこのフィールドを
+            // 素の String としてモデル化し、型レベルでは非空を強制しない。ワイヤー検証は
+            // Rust の型ではなくスキーマに従う。
             if (message.empty())
             {
                 return Err<BridgeError>(
@@ -237,7 +237,7 @@ namespace norves::bridge
             const auto dataIt = obj.find("data");
             if (dataIt != obj.end())
             {
-                // data is opaque; preserved without interpretation.
+                // data は opaque であり、解釈せずに保存される。
                 out.data = Wrap(*dataIt);
             }
             return Result<BridgeError, CodecError>::ok(std::move(out));
@@ -257,7 +257,7 @@ namespace norves::bridge
             return Err<Envelope>(CodecError::parse("envelope must be a JSON object"));
         }
 
-        // additionalProperties: false at the envelope object.
+        // エンベロープオブジェクトでの additionalProperties: false。
         static constexpr std::string_view Known[] = {"bridge", "version",   "kind",   "id",
                                                      "method", "event",     "params", "result",
                                                      "error",  "sessionId", "seq"};
@@ -281,7 +281,7 @@ namespace norves::bridge
 
         Envelope env;
 
-        // bridge marker (constant).
+        // bridge マーカー（定数）。
         {
             const auto it = root.find("bridge");
             if (it == root.end())
@@ -301,7 +301,7 @@ namespace norves::bridge
             env.bridge = marker;
         }
 
-        // version (MAJOR.MINOR).
+        // version（MAJOR.MINOR）。
         {
             const auto it = root.find("version");
             if (it == root.end())
@@ -321,7 +321,7 @@ namespace norves::bridge
             env.version = version;
         }
 
-        // kind (enum).
+        // kind（enum）。
         {
             const auto it = root.find("kind");
             if (it == root.end())
@@ -354,7 +354,7 @@ namespace norves::bridge
 
         std::string bad;
 
-        // id (non-empty string).
+        // id（非空の文字列）。
         if (!TakeString(root, "id", env.id, bad))
         {
             return Err<Envelope>(CodecError::invalid_field(bad));
@@ -364,7 +364,7 @@ namespace norves::bridge
             return Err<Envelope>(CodecError::invalid_field("`id` must be non-empty"));
         }
 
-        // method (namespaced token).
+        // method（名前空間付きトークン）。
         if (!TakeString(root, "method", env.method, bad))
         {
             return Err<Envelope>(CodecError::invalid_field(bad));
@@ -375,7 +375,7 @@ namespace norves::bridge
                 CodecError::invalid_field(std::string("invalid method name: ") + *env.method));
         }
 
-        // event (namespaced token).
+        // event（名前空間付きトークン）。
         if (!TakeString(root, "event", env.event, bad))
         {
             return Err<Envelope>(CodecError::invalid_field(bad));
@@ -386,7 +386,7 @@ namespace norves::bridge
                 CodecError::invalid_field(std::string("invalid event name: ") + *env.event));
         }
 
-        // sessionId (non-empty string).
+        // sessionId（非空の文字列）。
         if (!TakeString(root, "sessionId", env.session_id, bad))
         {
             return Err<Envelope>(CodecError::invalid_field(bad));
@@ -396,7 +396,7 @@ namespace norves::bridge
             return Err<Envelope>(CodecError::invalid_field("`sessionId` must be non-empty"));
         }
 
-        // params (opaque object).
+        // params（opaque なオブジェクト）。
         {
             const auto it = root.find("params");
             if (it != root.end())
@@ -409,7 +409,7 @@ namespace norves::bridge
             }
         }
 
-        // result (opaque, any JSON value).
+        // result（opaque、任意の JSON 値）。
         {
             const auto it = root.find("result");
             if (it != root.end())
@@ -418,7 +418,7 @@ namespace norves::bridge
             }
         }
 
-        // error (structured object, opaque data).
+        // error（構造化オブジェクト、opaque な data）。
         {
             const auto it = root.find("error");
             if (it != root.end())
@@ -432,10 +432,10 @@ namespace norves::bridge
             }
         }
 
-        // seq (integer >= 0). Mirrors the Rust reference's u64 and the schema's
-        // integer minimum: 0. We decide signedness from nlohmann's number category
-        // BEFORE calling get<std::uint64_t>(), because reading a negative number as
-        // an unsigned integer would wrap around instead of being rejected.
+        // seq（integer >= 0）。Rust リファレンスの u64 およびスキーマの integer minimum: 0 を
+        // 反映する。負の数を符号なし整数として読むと拒否されずにラップアラウンドして
+        // しまうため、get<std::uint64_t>() を呼ぶ前（BEFORE）に nlohmann の数値カテゴリから
+        // 符号性を判定する。
         {
             const auto it = root.find("seq");
             if (it != root.end())
@@ -446,8 +446,8 @@ namespace norves::bridge
                 }
                 else if (it->is_number_integer())
                 {
-                    // A signed integer here is necessarily negative (a non-negative
-                    // value would have been categorized as number_unsigned).
+                    // ここで符号付き整数は必然的に負である（非負値は number_unsigned に
+                    // 分類されていたはずである）。
                     return Err<Envelope>(CodecError::invalid_field("`seq` must be >= 0"));
                 }
                 else
@@ -457,7 +457,7 @@ namespace norves::bridge
             }
         }
 
-        // Kind-dependent structural rules.
+        // kind 依存の構造規則。
         auto validated = env.validate();
         if (validated.is_err())
         {

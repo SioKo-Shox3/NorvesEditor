@@ -5,10 +5,10 @@
 
 #include <variant>
 
-// validate() is a 1:1 port of Envelope::validate in the Rust reference
-// (bridge/crates/norves-bridge-core/src/envelope.rs, fn validate). The order of
-// the checks and the violation messages are kept identical so the two
-// implementations report the same first violation.
+// validate() は Rust リファレンスの Envelope::validate
+// （bridge/crates/norves-bridge-core/src/envelope.rs, fn validate）の 1:1 移植である。
+// 2 つの実装が同じ最初の違反を報告するよう、チェックの順序と違反メッセージは同一に
+// 保たれている。
 namespace norves::bridge
 {
 

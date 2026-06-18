@@ -11,20 +11,21 @@
 #include <string_view>
 #include <variant>
 
-// The canonical Bridge wire envelope, mirrored from the Rust reference
-// implementation (`bridge/crates/norves-bridge-core/src/envelope.rs`) and
-// `envelope.schema.json`.
-//
-// Depends on <std> and the SDK's own value types only; no third-party headers
-// are included here. `params`, `result`, and `error.data` are carried as opaque
-// JsonValue and are NOT interpreted at this layer.
+/// @file
+/// @brief 正規の Bridge ワイヤーエンベロープ。Rust リファレンス実装
+///        （`bridge/crates/norves-bridge-core/src/envelope.rs`）および
+///        `envelope.schema.json` を反映する。
+///
+/// @note 依存は <std> と SDK 自身の値型のみ。サードパーティヘッダはここに含めない。
+///       `params`、`result`、`error.data` は opaque な JsonValue として運ばれ、この層では
+///       解釈されない。
 namespace norves::bridge
 {
 
-    // Protocol marker constant for the NorvesEditor Bridge.
+    /// @brief NorvesEditor Bridge のプロトコルマーカー定数。
     inline constexpr std::string_view BridgeMarker = "norves.editor.bridge";
 
-    // Envelope discriminator. Schema: enum ["request", "response", "event"].
+    /// @brief エンベロープの判別子。スキーマ: enum ["request", "response", "event"]。
     enum class Kind
     {
         Request,
@@ -32,35 +33,35 @@ namespace norves::bridge
         Event
     };
 
-    // The flat wire envelope. Per-kind field-presence rules are NOT enforced by
-    // construction; call validate() to apply the cross-field structural rules that
-    // mirror Envelope::validate in the Rust reference.
+    /// @brief フラットなワイヤーエンベロープ。kind ごとのフィールド存在規則は構築では
+    ///        強制されない。Rust リファレンスの Envelope::validate を反映するクロス
+    ///        フィールド構造規則を適用するには validate() を呼ぶこと。
     struct Envelope
     {
-        // Protocol marker. Always the constant BridgeMarker on the wire; carried as
-        // a string so the value round-trips verbatim.
+        /// プロトコルマーカー。ワイヤー上では常に定数 BridgeMarker。値がそのまま
+        /// ラウンドトリップするよう文字列として運ぶ。
         std::string bridge;
-        // Protocol version string, MAJOR.MINOR.
+        /// プロトコルバージョン文字列、MAJOR.MINOR。
         std::string version;
-        // Envelope discriminator.
+        /// エンベロープの判別子。
         Kind kind = Kind::Request;
-        // Request/response correlation id.
+        /// リクエスト/レスポンスの相関 id。
         std::optional<std::string> id;
-        // Method name on a request.
+        /// リクエスト上のメソッド名。
         std::optional<std::string> method;
-        // Event name on an event envelope.
+        /// イベントエンベロープ上のイベント名。
         std::optional<std::string> event;
-        // Method or event payload (opaque object).
+        /// メソッドまたはイベントのペイロード（opaque なオブジェクト）。
         std::optional<JsonValue> params;
-        // Success payload on a response (opaque). Mutually exclusive with error.
+        /// レスポンス上の成功ペイロード（opaque）。error と相互排他。
         std::optional<JsonValue> result;
-        // Error payload on a response. Mutually exclusive with result.
+        /// レスポンス上のエラーペイロード。result と相互排他。
         std::optional<BridgeError> error;
-        // Optional session id assigned during the handshake.
+        /// ハンドシェイク中に割り当てられるオプションのセッション id。
         std::optional<std::string> session_id;
-        // Optional monotonically increasing per-connection sequence number.
-        // Unsigned to mirror the Rust reference (u64) and the schema's
-        // integer minimum: 0; a negative value on the wire is rejected at decode.
+        /// オプションの、接続ごとに単調増加するシーケンス番号。
+        /// Rust リファレンス（u64）およびスキーマの integer minimum: 0 を反映して
+        /// 符号なし。ワイヤー上の負値はデコード時に拒否される。
         std::optional<std::uint64_t> seq;
 
         [[nodiscard]] bool operator==(const Envelope& other) const
@@ -72,13 +73,13 @@ namespace norves::bridge
         }
         [[nodiscard]] bool operator!=(const Envelope& other) const { return !(*this == other); }
 
-        // Enforces the kind-dependent structural constraints of
-        // envelope.schema.json's allOf. Mirrors Rust Envelope::validate 1:1:
-        //   * request  - id and method required; result, error, event forbidden.
-        //   * response - id required; exactly one of result / error;
-        //                method, event, params forbidden.
-        //   * event    - event required; id, method, result, error forbidden.
-        // Returns CodecError::StructuralViolation describing the first violation.
+        /// @brief envelope.schema.json の allOf による kind 依存の構造制約を強制する。
+        ///        Rust の Envelope::validate を 1:1 で反映する:
+        ///   * request  - id と method が必須。result, error, event は禁止。
+        ///   * response - id が必須。result / error のうち厳密に 1 つ。
+        ///                method, event, params は禁止。
+        ///   * event    - event が必須。id, method, result, error は禁止。
+        /// @return 最初の違反を記述する CodecError::StructuralViolation。
         [[nodiscard]] Result<std::monostate, CodecError> validate() const;
     };
 

@@ -16,14 +16,14 @@
 
 #include "json_value_impl.hpp"
 
-// Typed-DTO codec for the F5 round-trip. nlohmann/json is confined to this TU;
-// the public dto/*.hpp headers expose only std + SDK value/enum types.
+// F5 ラウンドトリップのための型付き DTO コーデック。nlohmann/json はこの TU に
+// 閉じ込められる。公開の dto/*.hpp ヘッダは std + SDK 値/enum 型のみを露出する。
 //
-// Validation matches the F2 envelope codec's strictness and the per-payload
-// schemas: additionalProperties:false is enforced recursively at every object
-// layer, required fields and JSON types are checked, and enum strings outside
-// the schema's set are rejected (mirrors serde's deny_unknown_fields plus the
-// enum membership check in the Rust reference).
+// 検証は F2 エンベロープコーデックの厳格さと、ペイロードごとのスキーマに一致する。
+// すなわち additionalProperties:false がすべてのオブジェクト層で再帰的に強制され、
+// 必須フィールドと JSON 型がチェックされ、スキーマの集合の外にある enum 文字列は拒否
+// される（serde の deny_unknown_fields と、Rust リファレンスでの enum メンバシップ
+// チェックを反映する）。
 namespace norves::bridge::dto
 {
 
@@ -38,8 +38,8 @@ namespace norves::bridge::dto
             return Result<T, CodecError>::err(std::move(error));
         }
 
-        // Wraps a concrete nlohmann::json into an opaque JsonValue via the src-only
-        // bridge helper (same pattern as codec.cpp).
+        // src 専用のブリッジヘルパを介して、具体的な nlohmann::json を opaque な JsonValue へ
+        // ラップする（codec.cpp と同じパターン）。
         JsonValue Wrap(json value)
         {
             auto impl = std::make_unique<detail::JsonValueImpl>();
@@ -47,9 +47,9 @@ namespace norves::bridge::dto
             return make_json_value(std::move(impl));
         }
 
-        // Rejects any key not in `known`. Returns an unknown-field CodecError on the
-        // first offending key (additionalProperties:false). `context` names the object
-        // layer for the message (e.g. "bridge.hello.result" or its "server").
+        // `known` にないキーをすべて拒否する。最初に違反したキーで unknown-field の
+        // CodecError を返す（additionalProperties:false）。`context` はメッセージのために
+        // オブジェクト層を名付ける（例: "bridge.hello.result" やその "server"）。
         std::optional<CodecError> RejectUnknownKeys(const json& obj, const char* context,
                                                     std::initializer_list<std::string_view> known)
         {
@@ -73,8 +73,8 @@ namespace norves::bridge::dto
             return std::nullopt;
         }
 
-        // Reads a REQUIRED string field. Sets `out`; returns a CodecError on absence or
-        // wrong type.
+        // 必須（REQUIRED）の文字列フィールドを読む。`out` を設定する。不在または誤った型の
+        // 場合は CodecError を返す。
         std::optional<CodecError> RequiredString(const json& obj, const char* context,
                                                  const char* key, std::string& out)
         {
@@ -93,8 +93,8 @@ namespace norves::bridge::dto
             return std::nullopt;
         }
 
-        // Reads an OPTIONAL string field. Leaves `out` unset when absent; returns a
-        // CodecError when present with a non-string type.
+        // オプション（OPTIONAL）の文字列フィールドを読む。不在のときは `out` を未設定の
+        // ままにする。非文字列の型で存在するときは CodecError を返す。
         std::optional<CodecError> OptionalString(const json& obj, const char* context,
                                                  const char* key, std::optional<std::string>& out)
         {
@@ -114,7 +114,7 @@ namespace norves::bridge::dto
 
     }  // namespace
 
-    // --- Enum wire conversions ---------------------------------------------------
+    // --- enum のワイヤー変換 -----------------------------------------------------
 
     std::string_view to_wire(EngineState value)
     {
@@ -129,7 +129,7 @@ namespace norves::bridge::dto
             case EngineState::Error:
                 return "error";
         }
-        return "initializing";  // unreachable; keeps the function total for MSVC.
+        return "initializing";  // 到達不能。MSVC のために関数を全域的に保つ。
     }
 
     std::string_view to_wire(RuntimeState value)
@@ -147,7 +147,7 @@ namespace norves::bridge::dto
             case RuntimeState::Unknown:
                 return "unknown";
         }
-        return "unknown";  // unreachable.
+        return "unknown";  // 到達不能。
     }
 
     std::string_view to_wire(LogLevel value)
@@ -165,7 +165,7 @@ namespace norves::bridge::dto
             case LogLevel::Error:
                 return "error";
         }
-        return "info";  // unreachable.
+        return "info";  // 到達不能。
     }
 
     std::optional<EngineState> engine_state_from_wire(std::string_view text)

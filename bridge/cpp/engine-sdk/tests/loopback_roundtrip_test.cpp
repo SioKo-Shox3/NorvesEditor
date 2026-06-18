@@ -1,20 +1,21 @@
-// F5 end-to-end loopback round-trip test for the C++ engine SDK.
+// @brief C++ エンジン SDK の F5 エンドツーエンド ループバックラウンドトリップテスト。
 //
-// The C++ analogue of the Rust editor-client's loopback_roundtrip.rs. It wires a
-// client transport to an engine transport via make_loopback_pair (in-process,
-// WebSocket-free, F4 BoundedFrameQueue underneath), runs a BridgeEngineServer on
-// the engine side in its own thread, and drives four wire paths end to end:
-//   1. bridge.hello       (typed HelloParams -> HelloResult)
-//   2. engine.getStatus   (-> StatusSnapshot)
-//   3. runtime.play       (empty params -> PlayAck)
-//   4. log.message event  (engine emitEvent -> client decode_envelope + DTO)
+// Rust エディタクライアントの loopback_roundtrip.rs の C++ 類似物。
+// クライアントトランスポートとエンジントランスポートを make_loopback_pair
+// （インプロセス、WebSocket 不使用、F4 BoundedFrameQueue ベース）で接続し、
+// エンジン側の BridgeEngineServer を専用スレッドで動作させ、
+// 4 つのワイヤーパスをエンドツーエンドで検証する:
+//   1. bridge.hello       （型付き HelloParams -> HelloResult）
+//   2. engine.getStatus   （-> StatusSnapshot）
+//   3. runtime.play       （空 params -> PlayAck）
+//   4. log.message イベント  （エンジン emitEvent -> クライアント decode_envelope + DTO）
 //
-// It also checks the typed-DTO contract directly: from_json(to_json(x)) == x for
-// each DTO, and that an unknown key is rejected recursively (including the nested
-// `server` object of bridge.hello.result).
+// また、型付き DTO 契約も直接検証する: from_json(to_json(x)) == x（各 DTO）、
+// および未知キーが再帰的に拒否されること（bridge.hello.result の入れ子 `server`
+// オブジェクトを含む）。
 //
-// Only std + the SDK's public headers are used; the boundary rule (no nlohmann
-// in include/) is unaffected. ctest pass/fail is the process exit code.
+// std とSDKの公開ヘッダのみを使用する。境界ルール（include/ に nlohmann を
+// 含めない）には影響しない。ctest の合否はプロセス終了コードで決まる。
 
 #include "norves/bridge/adapter.hpp"
 #include "norves/bridge/codec.hpp"
@@ -72,9 +73,9 @@ namespace
         return std::move(parsed).value();
     }
 
-    // Engine-side adapter: answers the three round-trip methods by returning typed
-    // DTOs serialized via to_json(). Other methods fall through to the default
-    // METHOD_NOT_SUPPORTED (this test never calls them).
+    // @brief エンジン側アダプタ: ラウンドトリップ対象の 3 メソッドに対し、
+    // to_json() でシリアライズした型付き DTO を返す。それ以外のメソッドは
+    // デフォルトの METHOD_NOT_SUPPORTED にフォールスルーする（このテストでは呼び出さない）。
     class FakeAdapter : public IBridgeEngineAdapter
     {
     public:
@@ -145,7 +146,7 @@ namespace
         }
     };
 
-    // Wire request builder (same shape as dispatch_test's helper).
+    // @brief ワイヤーリクエストフレームビルダー（dispatch_test のヘルパーと同形状）。
     std::string RequestFrame(std::string_view id, std::string_view method,
                              std::string_view paramsJson)
     {
@@ -175,9 +176,9 @@ namespace
         return std::move(decoded).value();
     }
 
-    // The engine read loop: pull a frame, dispatch through the server, send any
-    // response back. Returns when recv() reports clean EOF (client closed), so the
-    // spawning test can join it deterministically.
+    // @brief エンジン読み出しループ: フレームを取得し、サーバを通じてディスパッチし、
+    // レスポンスがあれば返送する。recv() がクリーン EOF（クライアントがクローズ）を
+    // 報告したら終了するため、呼び出し元のテストがデターミニスティックに join できる。
     void RunEngine(ITransport& engine, BridgeEngineServer& server, const std::string& logEventFrame,
                    std::atomic<bool>& emitLog)
     {
@@ -186,22 +187,22 @@ namespace
             std::optional<std::string> frame = engine.recv();
             if (!frame.has_value())
             {
-                return;  // peer closed and the inbound queue is drained.
+                return;  // ピアがクローズし、インバウンドキューがドレインされた。
             }
             std::optional<std::string> response = server.handleFrame(*frame);
             if (response.has_value())
             {
                 if (!engine.send(std::move(*response)))
                 {
-                    return;  // peer gone mid-flight.
+                    return;  // フライト中にピアがいなくなった。
                 }
             }
-            // The client sets emitLog just before sending log.subscribe, so the
-            // iteration that handles the subscribe frame sees the flag. On that
-            // iteration we emit exactly one log.message event AFTER sending the
-            // subscribe response above. Emitting strictly after the response keeps
-            // delivery deterministic: the ack reaches the client's inbound queue
-            // before the event, so the client recv()s them in that fixed order.
+            // クライアントは log.subscribe を送信する直前に emitLog をセットするため、
+            // subscribe フレームを処理するイテレーションでこのフラグを検出する。
+            // そのイテレーションでは、上記の subscribe レスポンスを送信した AFTER に
+            // ちょうど 1 つの log.message イベントを発行する。レスポンスの後に発行することで、
+            // 配送が決定論的になる: ack がクライアントのインバウンドキューにイベントより先に
+            // 到達するため、クライアントはその固定順序で recv() する。
             if (emitLog.exchange(false))
             {
                 if (!engine.send(std::string(logEventFrame)))
@@ -212,7 +213,7 @@ namespace
         }
     }
 
-    // --- End-to-end round trip ---------------------------------------------------
+    // --- エンドツーエンド ラウンドトリップ -------------------------------------------
 
     void TestLoopbackRoundTrip()
     {
@@ -221,7 +222,7 @@ namespace
         FakeAdapter adapter;
         BridgeEngineServer server(adapter);
 
-        // The log.message event the engine emits after the subscribe ack.
+        // subscribe ack の後にエンジンが発行する log.message イベント。
         LogMessageEvent log;
         log.level = LogLevel::Info;
         log.message = "Game started";
@@ -290,7 +291,7 @@ namespace
             }
         }
 
-        // 3. runtime.play (empty params) ----------------------------------------
+        // 3. runtime.play（空 params）-------------------------------------------
         client->send(RequestFrame("req-play", "runtime.play", "{}"));
         {
             std::optional<std::string> resp = client->recv();
@@ -315,14 +316,14 @@ namespace
             }
         }
 
-        // 4. log.message event --------------------------------------------------
-        // Subscribe, then the engine emits one event after acking. The ack and the
-        // event both arrive on the client's inbound queue, in that order.
+        // 4. log.message イベント -----------------------------------------------
+        // subscribe 後、エンジンが ack の後に 1 イベントを発行する。ack とイベントはどちらも
+        // クライアントのインバウンドキューにその順番で到着する。
         emitLog.store(true);
         client->send(RequestFrame("req-logsub", "log.subscribe", ""));
         {
             std::optional<std::string> ack = client->recv();
-            NORVES_CHECK(ack.has_value());  // the log.subscribe response.
+            NORVES_CHECK(ack.has_value());  // log.subscribe レスポンス。
             if (ack.has_value())
             {
                 const Envelope env = DecodeOrFail(*ack);
@@ -331,7 +332,7 @@ namespace
             }
 
             std::optional<std::string> event = client->recv();
-            NORVES_CHECK(event.has_value());  // the log.message event.
+            NORVES_CHECK(event.has_value());  // log.message イベント。
             if (event.has_value())
             {
                 const Envelope env = DecodeOrFail(*event);
@@ -352,13 +353,13 @@ namespace
             }
         }
 
-        // Orderly teardown: close the client's outbound direction so the engine's
-        // recv() drains and returns nullopt, ending its loop; then join.
+        // 順序ある終了: クライアントのアウトバウンド方向をクローズし、
+        // エンジンの recv() がドレインされて nullopt を返し、ループを終了させた後 join する。
         client->close();
         engineThread.join();
     }
 
-    // --- DTO round-trip + unknown-key rejection ----------------------------------
+    // --- DTO ラウンドトリップ + 未知キー拒否 ----------------------------------------
 
     void TestDtoRoundTrips()
     {
@@ -393,7 +394,7 @@ namespace
             x.engineState = EngineState::Running;
             x.runtimeState = RuntimeState::Paused;
             x.engineName = "E";
-            // engineVersion / title left unset to exercise omit-on-absent.
+            // engineVersion / title を未設定にして「省略-未設定時」を検証する。
             auto back = StatusSnapshot::from_json(x.to_json());
             NORVES_CHECK(back.is_ok());
             NORVES_CHECK(back.is_ok() && back.value() == x);
@@ -407,7 +408,7 @@ namespace
             NORVES_CHECK(back.is_ok() && back.value() == x);
         }
         {
-            PlayAck x;  // requestedState unset.
+            PlayAck x;  // requestedState 未設定。
             x.accepted = false;
             auto back = PlayAck::from_json(x.to_json());
             NORVES_CHECK(back.is_ok());
@@ -427,42 +428,42 @@ namespace
 
     void TestUnknownKeyRejected()
     {
-        // Top-level unknown key.
+        // トップレベルの未知キー。
         {
             auto bad = HelloResult::from_json(ParseOrFail(
                 R"({"sessionId":"s","protocolVersion":"0.1","server":{"name":"E"},"extra":1})"));
             NORVES_CHECK(bad.is_err());
         }
-        // Unknown key in the nested `server` object (recursive additionalProperties).
+        // 入れ子の `server` オブジェクト内の未知キー（再帰的 additionalProperties）。
         {
             auto bad = HelloResult::from_json(ParseOrFail(
                 R"({"sessionId":"s","protocolVersion":"0.1","server":{"name":"E","rogue":true}})"));
             NORVES_CHECK(bad.is_err());
         }
-        // Unknown key in params.
+        // params 内の未知キー。
         {
             auto bad = HelloParams::from_json(ParseOrFail(
                 R"({"role":"editor","clientName":"N","protocolVersions":["0.1"],"caps":[]})"));
             NORVES_CHECK(bad.is_err());
         }
-        // Unknown key in status snapshot.
+        // ステータススナップショット内の未知キー。
         {
             auto bad = StatusSnapshot::from_json(
                 ParseOrFail(R"({"engineState":"ready","runtimeState":"edit","weird":0})"));
             NORVES_CHECK(bad.is_err());
         }
-        // Unknown key in log event.
+        // ログイベント内の未知キー。
         {
             auto bad = LogMessageEvent::from_json(
                 ParseOrFail(R"({"level":"info","message":"m","mystery":1})"));
             NORVES_CHECK(bad.is_err());
         }
-        // Required-field omission is also rejected.
+        // 必須フィールドの欠落も拒否される。
         {
             auto bad = StatusSnapshot::from_json(ParseOrFail(R"({"engineState":"ready"})"));
             NORVES_CHECK(bad.is_err());
         }
-        // Out-of-enum value is rejected.
+        // 列挙型の範囲外の値は拒否される。
         {
             auto bad = StatusSnapshot::from_json(
                 ParseOrFail(R"({"engineState":"booting","runtimeState":"edit"})"));

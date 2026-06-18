@@ -1,12 +1,13 @@
-// BoundedFrameQueue unit test (F4).
+// @brief BoundedFrameQueue ユニットテスト（F4）。
 //
-// Verifies: FIFO push/pop and size/capacity; the three OverflowPolicy variants
-// (DropOldest / DropNewest / Reject) at capacity; blocking wait_and_pop across
-// threads; shutdown waking a blocked waiter; post-shutdown push no-op and
-// drain-then-nullopt semantics; and Warn diagnostics on drop via a fake sink.
+// 検証項目: FIFO の push/pop と size/capacity; 容量上限時の 3 種 OverflowPolicy
+// （DropOldest / DropNewest / Reject）; スレッド間の wait_and_pop ブロッキング;
+// shutdown によるブロック解除; シャットダウン後の push が no-op であること、
+// およびドレイン後に nullopt を返すセマンティクス; drop 発生時に
+// Warn 診断が偽シンクへ届くこと。
 //
-// Only std + the SDK's public headers are used; the boundary rule (no nlohmann
-// in include/) is unaffected.
+// std とSDKの公開ヘッダのみを使用する。境界ルール（include/ に nlohmann を
+// 含めない）には影響しない。
 
 #include "norves/bridge/bounded_queue.hpp"
 
@@ -30,7 +31,7 @@ namespace
     using norves::bridge::LogSeverity;
     using norves::bridge::OverflowPolicy;
 
-    // Records Warn-level messages so a test can assert drop diagnostics fire.
+    // @brief Warn レベルのメッセージを記録し、テストが drop 診断の発火を検証できるようにする。
     class RecordingSink final : public ILogSink
     {
     public:
@@ -94,7 +95,7 @@ namespace
         NORVES_CHECK(q.push("1"));
         NORVES_CHECK(q.push("2"));
         NORVES_CHECK(q.push("3"));
-        // Overflow: oldest ("1") evicted, "4" appended; push reports success.
+        // オーバーフロー: 最古の要素（"1"）が退出され "4" が末尾に追加される。push は成功を返す。
         NORVES_CHECK(q.push("4"));
         NORVES_CHECK_EQ(q.size(), static_cast<std::size_t>(3));
 
@@ -113,7 +114,7 @@ namespace
         BoundedFrameQueue q(2, OverflowPolicy::DropNewest, &sink);
         NORVES_CHECK(q.push("1"));
         NORVES_CHECK(q.push("2"));
-        // Overflow: incoming dropped, push reports failure, contents unchanged.
+        // オーバーフロー: 新着要素が破棄され push は失敗を返す。既存の内容は変化しない。
         NORVES_CHECK(!q.push("3"));
         NORVES_CHECK_EQ(q.size(), static_cast<std::size_t>(2));
 
@@ -150,7 +151,7 @@ namespace
                 q.push("hello");
             });
 
-        // Blocks until the producer pushes.
+        // プロデューサーが push するまでブロックする。
         auto frame = q.wait_and_pop();
         producer.join();
         NORVES_CHECK(frame.has_value() && *frame == "hello");
@@ -189,11 +190,11 @@ namespace
         NORVES_CHECK(q.push("y"));
         q.shutdown();
 
-        // Push after shutdown is a no-op returning false.
+        // シャットダウン後の push は no-op で false を返す。
         NORVES_CHECK(!q.push("z"));
         NORVES_CHECK_EQ(q.size(), static_cast<std::size_t>(2));
 
-        // wait_and_pop drains the remaining frames first, then returns nullopt.
+        // wait_and_pop は残存フレームを先にドレインし、その後 nullopt を返す。
         auto a = q.wait_and_pop();
         auto b = q.wait_and_pop();
         NORVES_CHECK(a.has_value() && *a == "x");

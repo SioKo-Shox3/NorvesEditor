@@ -12,16 +12,16 @@
 
 #include "json_value_impl.hpp"
 
-// nlohmann/json is confined to this translation unit (and codec.cpp), reached
-// only via the src-private json_value_impl.hpp. The public header exposes only
-// an opaque pImpl, so the type never leaks.
+// nlohmann/json はこの翻訳単位（および codec.cpp）に閉じ込められ、src-private な
+// json_value_impl.hpp を介してのみ到達される。公開ヘッダは opaque な pImpl のみを
+// 露出するため、この型は決して漏れない。
 namespace norves::bridge
 {
 
-    // --- Internal bridge helpers (declared as friends in json_value.hpp) ---------
+    // --- 内部ブリッジヘルパ（json_value.hpp で friend 宣言される） ---------------
     //
-    // These let codec.cpp build a JsonValue from a concrete nlohmann::json and read
-    // the underlying value back, without widening the public API.
+    // これらは codec.cpp が具体的な nlohmann::json から JsonValue を構築し、基底値を
+    // 読み戻すことを、公開 API を広げずに可能にする。
 
     JsonValue make_json_value(std::unique_ptr<detail::JsonValueImpl> impl)
     {
@@ -30,7 +30,7 @@ namespace norves::bridge
 
     const detail::JsonValueImpl* peek(const JsonValue& value) { return value.impl(); }
 
-    // --- JsonValue special members ----------------------------------------------
+    // --- JsonValue の特殊メンバ --------------------------------------------------
 
     JsonValue::JsonValue() : m_Impl(std::make_unique<detail::JsonValueImpl>()) {}
 
@@ -38,8 +38,8 @@ namespace norves::bridge
 
     JsonValue::JsonValue(std::unique_ptr<detail::JsonValueImpl> impl) : m_Impl(std::move(impl))
     {
-        // Construction from a moved-out source elsewhere may pass null; normalize to
-        // a JSON null so the invariant "m_Impl is never null" holds.
+        // どこか別の場所で move-out されたソースからの構築は null を渡しうる。不変条件
+        // 「m_Impl は決して null にならない」を保つため、JSON null に正規化する。
         if (m_Impl == nullptr)
         {
             m_Impl = std::make_unique<detail::JsonValueImpl>();
@@ -47,9 +47,9 @@ namespace norves::bridge
     }
 
     JsonValue::JsonValue(const JsonValue& other)
-        // A moved-from source has a null m_Impl; fall back to the default null-JSON
-        // state so the invariant "m_Impl is never null" holds on the copy path too,
-        // matching the null guards in operator== and is_null.
+        // moved-from のソースは null な m_Impl を持つ。コピー経路でも不変条件
+        // 「m_Impl は決して null にならない」が保たれるよう、デフォルトの null-JSON 状態へ
+        // フォールバックする。これは operator== と is_null の null ガードに一致する。
         : m_Impl(other.m_Impl == nullptr
                      ? std::make_unique<detail::JsonValueImpl>()
                      : std::make_unique<detail::JsonValueImpl>(other.m_Impl->json))
@@ -62,7 +62,8 @@ namespace norves::bridge
     {
         if (this != &other)
         {
-            // Same null guard as the copy ctor: never deref a moved-from source.
+            // コピーコンストラクタと同じ null ガード。moved-from のソースを決して逆参照
+            // しない。
             m_Impl = other.m_Impl == nullptr
                          ? std::make_unique<detail::JsonValueImpl>()
                          : std::make_unique<detail::JsonValueImpl>(other.m_Impl->json);
@@ -74,9 +75,9 @@ namespace norves::bridge
 
     bool JsonValue::operator==(const JsonValue& other) const
     {
-        // A moved-from JsonValue has a null m_Impl; treat it as not-equal to any
-        // live value except another moved-from one. Live values delegate to
-        // nlohmann's semantic equality.
+        // moved-from の JsonValue は null な m_Impl を持つ。それを、別の moved-from な
+        // ものを除くいかなる live な値とも非等価として扱う。live な値は nlohmann の
+        // 意味的等価性に委譲する。
         if (m_Impl == nullptr || other.m_Impl == nullptr)
         {
             return m_Impl == nullptr && other.m_Impl == nullptr;
@@ -86,7 +87,7 @@ namespace norves::bridge
 
     bool JsonValue::is_null() const { return m_Impl == nullptr || m_Impl->json.is_null(); }
 
-    // --- Text parse / dump (nlohmann confined to this TU) ------------------------
+    // --- テキストのパース / dump（nlohmann はこの TU に閉じ込められる） ----------
 
     Result<JsonValue, CodecError> JsonValue::parse(std::string_view text)
     {
@@ -102,8 +103,8 @@ namespace norves::bridge
 
     std::string JsonValue::dump() const
     {
-        // A moved-from value has a null m_Impl; serialize it as JSON null, matching
-        // the is_null / operator== treatment of a moved-from value.
+        // moved-from の値は null な m_Impl を持つ。moved-from な値に対する is_null /
+        // operator== の扱いに一致するよう、それを JSON null としてシリアライズする。
         if (m_Impl == nullptr)
         {
             return "null";

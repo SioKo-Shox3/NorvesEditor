@@ -9,32 +9,32 @@
 #include <string>
 #include <vector>
 
-// Typed method-payload DTOs for the F5 round-trip (four wire paths only):
-// bridge.hello (params + result), engine.getStatus (result), runtime.play
-// (result). These are the C++ analogue of the Rust editor-client's typed
-// parse helpers (parse_hello_result / parse_status_result, HelloParams).
-//
-// Depends on <std> + the SDK's own value/enum types only; no third-party
-// headers are exposed here. Each DTO is a plain struct; the JSON construction /
-// validation lives in src/dto_codec.cpp, which is the only TU that touches the
-// vendored JSON library.
-//
-// Validation contract (matches the F2 envelope codec's strictness and the
-// schema's `additionalProperties: false`):
-//   * from_json rejects any unknown key, recursively at every object layer
-//     (including the nested `server` object of HelloResult),
-//   * from_json rejects a missing required field, a wrong JSON type, and an
-//     out-of-enum string,
-//   * to_json omits absent optional fields (it never writes JSON `null` for an
-//     unset std::optional), so from_json(to_json(x)) == x for any well-formed x.
-//
-// Scope: these four payloads only. capabilities (hello) and the open value
-// $defs are deliberately not modelled here and stay opaque.
+/// @file
+/// @brief F5 ラウンドトリップのための型付きメソッドペイロード DTO（4 つのワイヤー経路の
+///        み）: bridge.hello（params + result）、engine.getStatus（result）、runtime.play
+///        （result）。これらは Rust editor-client の型付きパースヘルパ
+///        （parse_hello_result / parse_status_result, HelloParams）の C++ 対応物。
+///
+/// @note 依存は <std> と SDK 自身の値/enum 型のみ。サードパーティヘッダはここに露出しない。
+///       各 DTO は素の struct である。JSON の構築 / 検証は src/dto_codec.cpp にあり、それが
+///       ベンダリングされた JSON ライブラリに触れる唯一の TU である。
+///
+/// @note 検証契約（F2 エンベロープコーデックの厳格さとスキーマの
+///       `additionalProperties: false` に一致する）:
+///   * from_json は未知のキーを、すべてのオブジェクト層で再帰的に拒否する
+///     （HelloResult のネストした `server` オブジェクトを含む）、
+///   * from_json は必須フィールドの欠落、誤った JSON 型、列挙範囲外の文字列を拒否する、
+///   * to_json は存在しないオプションフィールドを省略する（未設定の std::optional に対して
+///     JSON `null` を決して書かない）ため、任意の整形式 x について
+///     from_json(to_json(x)) == x が成り立つ。
+///
+/// @note スコープ: これら 4 つのペイロードのみ。capabilities（hello）および開かれた値 $def
+///       はここでは意図的にモデル化されず、opaque のままである。
 namespace norves::bridge::dto
 {
 
-    // bridge.hello request params. The `capabilities` field of the schema is not
-    // used by the round trip and is therefore omitted from this DTO.
+    /// @brief bridge.hello のリクエスト params。スキーマの `capabilities` フィールドは
+    ///        ラウンドトリップで使われないため、この DTO からは省略される。
     struct HelloParams
     {
         std::string role;
@@ -54,9 +54,9 @@ namespace norves::bridge::dto
         [[nodiscard]] static Result<HelloParams, CodecError> from_json(const JsonValue& value);
     };
 
-    // Engine identity nested inside HelloResult (bridge.hello.result#/server). The
-    // schema's `engine` field is a free-form generic label, not an engine-specific
-    // type name.
+    /// @brief HelloResult 内にネストされたエンジン識別情報
+    ///        （bridge.hello.result#/server）。スキーマの `engine` フィールドは自由形式の
+    ///        汎用ラベルであり、エンジン固有の型名ではない。
     struct ServerInfo
     {
         std::string name;
@@ -73,8 +73,8 @@ namespace norves::bridge::dto
         [[nodiscard]] static Result<ServerInfo, CodecError> from_json(const JsonValue& value);
     };
 
-    // bridge.hello response result. The schema's `capabilities` array is not used by
-    // the round trip and is omitted.
+    /// @brief bridge.hello のレスポンス result。スキーマの `capabilities` 配列は
+    ///        ラウンドトリップで使われないため省略される。
     struct HelloResult
     {
         std::string sessionId;
@@ -92,7 +92,7 @@ namespace norves::bridge::dto
         [[nodiscard]] static Result<HelloResult, CodecError> from_json(const JsonValue& value);
     };
 
-    // engine.getStatus response result.
+    /// @brief engine.getStatus のレスポンス result。
     struct StatusSnapshot
     {
         EngineState engineState = EngineState::Initializing;
@@ -116,8 +116,9 @@ namespace norves::bridge::dto
         [[nodiscard]] static Result<StatusSnapshot, CodecError> from_json(const JsonValue& value);
     };
 
-    // runtime.play response result. The request params are an empty object, so only
-    // the result is modelled. `requestedState` is the optional target runtime state.
+    /// @brief runtime.play のレスポンス result。リクエスト params は空オブジェクトなので、
+    ///        result のみがモデル化される。`requestedState` はオプションの目標ランタイム
+    ///        状態。
     struct PlayAck
     {
         bool accepted = false;

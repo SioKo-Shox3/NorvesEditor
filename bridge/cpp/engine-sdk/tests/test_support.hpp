@@ -3,13 +3,13 @@
 #include <cstdio>
 #include <string_view>
 
-// Tiny single-file assertion harness for SDK unit tests.
+// @brief SDK ユニットテスト用の最小アサーションハーネス（単一ヘッダ）。
 //
-// Contract (ctest pass/fail is decided purely by the process exit code):
-//   * Each failing check is reported to stderr and increments a counter.
-//   * A test's main() must `return norves::test::summary();` so the process
-//     exits non-zero iff any check failed, and zero on full success.
-//   * No third-party dependency; std only.
+// 規約（ctest の合否はプロセス終了コードのみで決まる）:
+//   * 失敗した検査はそれぞれ stderr に報告され、カウンタをインクリメントする。
+//   * テストの main() は `return norves::test::summary();` で終わること。
+//     これにより、1 件以上の検査が失敗した場合は非ゼロ、全検査合格の場合はゼロで終了する。
+//   * サードパーティへの依存はなく、std のみを使用する。
 namespace norves::test
 {
 
@@ -26,7 +26,7 @@ namespace norves::test
         ++failure_count();
     }
 
-    // Returns the process exit code: 0 when every check passed, 1 otherwise.
+    // @brief プロセス終了コードを返す。全検査合格なら 0、1 件以上失敗なら 1。
     inline int summary()
     {
         if (failure_count() == 0)
