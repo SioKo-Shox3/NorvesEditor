@@ -15,13 +15,13 @@ namespace norves::bridge
     namespace
     {
 
-        Result<std::monostate, CodecError> violation(const char* message)
+        Result<std::monostate, CodecError> Violation(const char* message)
         {
             return Result<std::monostate, CodecError>::err(
                 CodecError::structural_violation(message));
         }
 
-        Result<std::monostate, CodecError> ok()
+        Result<std::monostate, CodecError> Ok()
         {
             return Result<std::monostate, CodecError>::ok(std::monostate{});
         }
@@ -35,80 +35,80 @@ namespace norves::bridge
             case Kind::Request:
                 if (!id.has_value())
                 {
-                    return violation("request envelope requires `id`");
+                    return Violation("request envelope requires `id`");
                 }
                 if (!method.has_value())
                 {
-                    return violation("request envelope requires `method`");
+                    return Violation("request envelope requires `method`");
                 }
                 if (result.has_value())
                 {
-                    return violation("request envelope must not carry `result`");
+                    return Violation("request envelope must not carry `result`");
                 }
                 if (error.has_value())
                 {
-                    return violation("request envelope must not carry `error`");
+                    return Violation("request envelope must not carry `error`");
                 }
                 if (event.has_value())
                 {
-                    return violation("request envelope must not carry `event`");
+                    return Violation("request envelope must not carry `event`");
                 }
                 break;
             case Kind::Response:
             {
                 if (!id.has_value())
                 {
-                    return violation("response envelope requires `id`");
+                    return Violation("response envelope requires `id`");
                 }
-                const bool has_result = result.has_value();
-                const bool has_error = error.has_value();
-                if (has_result && has_error)
+                const bool bHasResult = result.has_value();
+                const bool bHasError = error.has_value();
+                if (bHasResult && bHasError)
                 {
-                    return violation("response envelope must not carry both `result` and `error`");
+                    return Violation("response envelope must not carry both `result` and `error`");
                 }
-                if (!has_result && !has_error)
+                if (!bHasResult && !bHasError)
                 {
-                    return violation(
+                    return Violation(
                         "response envelope requires exactly one of `result` or `error`");
                 }
                 if (method.has_value())
                 {
-                    return violation("response envelope must not carry `method`");
+                    return Violation("response envelope must not carry `method`");
                 }
                 if (event.has_value())
                 {
-                    return violation("response envelope must not carry `event`");
+                    return Violation("response envelope must not carry `event`");
                 }
                 if (params.has_value())
                 {
-                    return violation("response envelope must not carry `params`");
+                    return Violation("response envelope must not carry `params`");
                 }
                 break;
             }
             case Kind::Event:
                 if (!event.has_value())
                 {
-                    return violation("event envelope requires `event`");
+                    return Violation("event envelope requires `event`");
                 }
                 if (id.has_value())
                 {
-                    return violation("event envelope must not carry `id`");
+                    return Violation("event envelope must not carry `id`");
                 }
                 if (method.has_value())
                 {
-                    return violation("event envelope must not carry `method`");
+                    return Violation("event envelope must not carry `method`");
                 }
                 if (result.has_value())
                 {
-                    return violation("event envelope must not carry `result`");
+                    return Violation("event envelope must not carry `result`");
                 }
                 if (error.has_value())
                 {
-                    return violation("event envelope must not carry `error`");
+                    return Violation("event envelope must not carry `error`");
                 }
                 break;
         }
-        return ok();
+        return Ok();
     }
 
 }  // namespace norves::bridge

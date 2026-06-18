@@ -15,10 +15,10 @@ namespace norves::bridge
     // Wire error codes. The protocol treats the code space as an OPEN registry, so
     // these are string_view constants rather than a closed enum: an SDK may observe
     // codes it does not have a constant for. Values are SCREAMING_SNAKE_CASE.
-    inline constexpr std::string_view kErrorProtocolVersionUnsupported =
+    inline constexpr std::string_view ErrorProtocolVersionUnsupported =
         "PROTOCOL_VERSION_UNSUPPORTED";
-    inline constexpr std::string_view kErrorMethodNotSupported = "METHOD_NOT_SUPPORTED";
-    inline constexpr std::string_view kErrorBridgeTransportError = "BRIDGE_TRANSPORT_ERROR";
+    inline constexpr std::string_view ErrorMethodNotSupported = "METHOD_NOT_SUPPORTED";
+    inline constexpr std::string_view ErrorBridgeTransportError = "BRIDGE_TRANSPORT_ERROR";
 
     // Error value carried by a Result on the failure path.
     //

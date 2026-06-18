@@ -36,27 +36,27 @@ namespace
     public:
         void log(LogSeverity level, std::string_view message) override
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<std::mutex> lock(m_Mutex);
             if (level == LogSeverity::Warn)
             {
-                ++warn_count_;
-                last_warn_ = std::string(message);
+                ++m_WarnCount;
+                m_LastWarn = std::string(message);
             }
         }
 
         int warn_count() const
         {
-            std::lock_guard<std::mutex> lock(mutex_);
-            return warn_count_;
+            std::lock_guard<std::mutex> lock(m_Mutex);
+            return m_WarnCount;
         }
 
     private:
-        mutable std::mutex mutex_;
-        int warn_count_ = 0;
-        std::string last_warn_;
+        mutable std::mutex m_Mutex;
+        int m_WarnCount = 0;
+        std::string m_LastWarn;
     };
 
-    void test_basic_fifo()
+    void TestBasicFifo()
     {
         BoundedFrameQueue q(4);
         NORVES_CHECK_EQ(q.capacity(), static_cast<std::size_t>(4));
@@ -79,7 +79,7 @@ namespace
         NORVES_CHECK_EQ(q.size(), static_cast<std::size_t>(0));
     }
 
-    void test_capacity_clamped_to_one()
+    void TestCapacityClampedToOne()
     {
         BoundedFrameQueue q(0);
         NORVES_CHECK_EQ(q.capacity(), static_cast<std::size_t>(1));
@@ -87,7 +87,7 @@ namespace
         NORVES_CHECK_EQ(q.size(), static_cast<std::size_t>(1));
     }
 
-    void test_drop_oldest()
+    void TestDropOldest()
     {
         RecordingSink sink;
         BoundedFrameQueue q(3, OverflowPolicy::DropOldest, &sink);
@@ -107,7 +107,7 @@ namespace
         NORVES_CHECK_EQ(sink.warn_count(), 1);
     }
 
-    void test_drop_newest()
+    void TestDropNewest()
     {
         RecordingSink sink;
         BoundedFrameQueue q(2, OverflowPolicy::DropNewest, &sink);
@@ -124,7 +124,7 @@ namespace
         NORVES_CHECK_EQ(sink.warn_count(), 1);
     }
 
-    void test_reject()
+    void TestReject()
     {
         RecordingSink sink;
         BoundedFrameQueue q(2, OverflowPolicy::Reject, &sink);
@@ -140,7 +140,7 @@ namespace
         NORVES_CHECK_EQ(sink.warn_count(), 1);
     }
 
-    void test_wait_and_pop_across_threads()
+    void TestWaitAndPopAcrossThreads()
     {
         BoundedFrameQueue q(8);
         std::thread producer(
@@ -156,33 +156,33 @@ namespace
         NORVES_CHECK(frame.has_value() && *frame == "hello");
     }
 
-    void test_shutdown_wakes_waiter()
+    void TestShutdownWakesWaiter()
     {
         BoundedFrameQueue q(4);
         std::optional<std::string> result;
-        bool result_set = false;
-        std::mutex result_mutex;
+        bool bResultSet = false;
+        std::mutex resultMutex;
 
         std::thread consumer(
             [&]
             {
                 auto r = q.wait_and_pop();
-                std::lock_guard<std::mutex> lock(result_mutex);
+                std::lock_guard<std::mutex> lock(resultMutex);
                 result = r;
-                result_set = true;
+                bResultSet = true;
             });
 
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         q.shutdown();
         consumer.join();
 
-        std::lock_guard<std::mutex> lock(result_mutex);
-        NORVES_CHECK(result_set);
+        std::lock_guard<std::mutex> lock(resultMutex);
+        NORVES_CHECK(bResultSet);
         NORVES_CHECK(!result.has_value());
         NORVES_CHECK(q.closed());
     }
 
-    void test_post_shutdown_drain_then_nullopt()
+    void TestPostShutdownDrainThenNullopt()
     {
         BoundedFrameQueue q(4);
         NORVES_CHECK(q.push("x"));
@@ -206,13 +206,13 @@ namespace
 
 int main()
 {
-    test_basic_fifo();
-    test_capacity_clamped_to_one();
-    test_drop_oldest();
-    test_drop_newest();
-    test_reject();
-    test_wait_and_pop_across_threads();
-    test_shutdown_wakes_waiter();
-    test_post_shutdown_drain_then_nullopt();
+    TestBasicFifo();
+    TestCapacityClampedToOne();
+    TestDropOldest();
+    TestDropNewest();
+    TestReject();
+    TestWaitAndPopAcrossThreads();
+    TestShutdownWakesWaiter();
+    TestPostShutdownDrainThenNullopt();
     return norves::test::summary();
 }

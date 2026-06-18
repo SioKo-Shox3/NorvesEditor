@@ -32,26 +32,27 @@ namespace norves::bridge
 
     // --- JsonValue special members ----------------------------------------------
 
-    JsonValue::JsonValue() : impl_(std::make_unique<detail::JsonValueImpl>()) {}
+    JsonValue::JsonValue() : m_Impl(std::make_unique<detail::JsonValueImpl>()) {}
 
     JsonValue::~JsonValue() = default;
 
-    JsonValue::JsonValue(std::unique_ptr<detail::JsonValueImpl> impl) : impl_(std::move(impl))
+    JsonValue::JsonValue(std::unique_ptr<detail::JsonValueImpl> impl) : m_Impl(std::move(impl))
     {
         // Construction from a moved-out source elsewhere may pass null; normalize to
-        // a JSON null so the invariant "impl_ is never null" holds.
-        if (impl_ == nullptr)
+        // a JSON null so the invariant "m_Impl is never null" holds.
+        if (m_Impl == nullptr)
         {
-            impl_ = std::make_unique<detail::JsonValueImpl>();
+            m_Impl = std::make_unique<detail::JsonValueImpl>();
         }
     }
 
     JsonValue::JsonValue(const JsonValue& other)
-        // A moved-from source has a null impl_; fall back to the default null-JSON
-        // state so the invariant "impl_ is never null" holds on the copy path too,
+        // A moved-from source has a null m_Impl; fall back to the default null-JSON
+        // state so the invariant "m_Impl is never null" holds on the copy path too,
         // matching the null guards in operator== and is_null.
-        : impl_(other.impl_ == nullptr ? std::make_unique<detail::JsonValueImpl>()
-                                       : std::make_unique<detail::JsonValueImpl>(other.impl_->json))
+        : m_Impl(other.m_Impl == nullptr
+                     ? std::make_unique<detail::JsonValueImpl>()
+                     : std::make_unique<detail::JsonValueImpl>(other.m_Impl->json))
     {
     }
 
@@ -62,9 +63,9 @@ namespace norves::bridge
         if (this != &other)
         {
             // Same null guard as the copy ctor: never deref a moved-from source.
-            impl_ = other.impl_ == nullptr
-                        ? std::make_unique<detail::JsonValueImpl>()
-                        : std::make_unique<detail::JsonValueImpl>(other.impl_->json);
+            m_Impl = other.m_Impl == nullptr
+                         ? std::make_unique<detail::JsonValueImpl>()
+                         : std::make_unique<detail::JsonValueImpl>(other.m_Impl->json);
         }
         return *this;
     }
@@ -73,17 +74,17 @@ namespace norves::bridge
 
     bool JsonValue::operator==(const JsonValue& other) const
     {
-        // A moved-from JsonValue has a null impl_; treat it as not-equal to any
+        // A moved-from JsonValue has a null m_Impl; treat it as not-equal to any
         // live value except another moved-from one. Live values delegate to
         // nlohmann's semantic equality.
-        if (impl_ == nullptr || other.impl_ == nullptr)
+        if (m_Impl == nullptr || other.m_Impl == nullptr)
         {
-            return impl_ == nullptr && other.impl_ == nullptr;
+            return m_Impl == nullptr && other.m_Impl == nullptr;
         }
-        return impl_->json == other.impl_->json;
+        return m_Impl->json == other.m_Impl->json;
     }
 
-    bool JsonValue::is_null() const { return impl_ == nullptr || impl_->json.is_null(); }
+    bool JsonValue::is_null() const { return m_Impl == nullptr || m_Impl->json.is_null(); }
 
     // --- Text parse / dump (nlohmann confined to this TU) ------------------------
 
@@ -101,13 +102,13 @@ namespace norves::bridge
 
     std::string JsonValue::dump() const
     {
-        // A moved-from value has a null impl_; serialize it as JSON null, matching
+        // A moved-from value has a null m_Impl; serialize it as JSON null, matching
         // the is_null / operator== treatment of a moved-from value.
-        if (impl_ == nullptr)
+        if (m_Impl == nullptr)
         {
             return "null";
         }
-        return impl_->json.dump();
+        return m_Impl->json.dump();
     }
 
 }  // namespace norves::bridge

@@ -48,36 +48,36 @@ namespace
     };
 
     // Path-based classification, identical in spirit to the Rust `classify`.
-    Group classify(const std::string& normalized)
+    Group Classify(const std::string& normalized)
     {
-        const bool is_positive = normalized.find("/positive/") != std::string::npos;
-        const bool is_negative = normalized.find("/negative/") != std::string::npos;
-        const bool is_envelope = normalized.find("/fixtures/envelope/") != std::string::npos;
-        const bool is_method = normalized.find("/fixtures/methods/") != std::string::npos;
-        const bool is_event = normalized.find("/fixtures/events/") != std::string::npos;
+        const bool bIsPositive = normalized.find("/positive/") != std::string::npos;
+        const bool bIsNegative = normalized.find("/negative/") != std::string::npos;
+        const bool bIsEnvelope = normalized.find("/fixtures/envelope/") != std::string::npos;
+        const bool bIsMethod = normalized.find("/fixtures/methods/") != std::string::npos;
+        const bool bIsEvent = normalized.find("/fixtures/events/") != std::string::npos;
 
-        if (is_positive && (is_envelope || is_method || is_event))
+        if (bIsPositive && (bIsEnvelope || bIsMethod || bIsEvent))
         {
             return Group::Positive;
         }
-        if (is_negative && is_envelope)
+        if (bIsNegative && bIsEnvelope)
         {
             return Group::EnvelopeRejectable;
         }
-        if (is_negative && (is_method || is_event))
+        if (bIsNegative && (bIsMethod || bIsEvent))
         {
             return Group::PayloadOnly;
         }
         return Group::Ignored;
     }
 
-    std::string normalize(const fs::path& path)
+    std::string Normalize(const fs::path& path)
     {
         std::string s = path.generic_string();  // already uses '/'
         return s;
     }
 
-    std::string read_file(const fs::path& path)
+    std::string ReadFile(const fs::path& path)
     {
         std::ifstream in(path, std::ios::binary);
         std::ostringstream ss;
@@ -85,7 +85,7 @@ namespace
         return ss.str();
     }
 
-    std::vector<fs::path> collect_json(const fs::path& root)
+    std::vector<fs::path> CollectJson(const fs::path& root)
     {
         std::vector<fs::path> out;
         for (const auto& entry : fs::recursive_directory_iterator(root))
@@ -109,18 +109,18 @@ int main()
         return norves::test::summary();
     }
 
-    const auto files = collect_json(root);
+    const auto files = CollectJson(root);
 
     std::size_t positive = 0;
-    std::size_t envelope_rejectable = 0;
-    std::size_t payload_only = 0;
+    std::size_t envelopeRejectable = 0;
+    std::size_t payloadOnly = 0;
     std::size_t ignored = 0;
 
     for (const auto& path : files)
     {
-        const std::string normalized = normalize(path);
-        const Group group = classify(normalized);
-        const std::string wire = read_file(path);
+        const std::string normalized = Normalize(path);
+        const Group group = Classify(normalized);
+        const std::string wire = ReadFile(path);
 
         switch (group)
         {
@@ -147,9 +147,9 @@ int main()
                 const auto again = nlohmann::json::parse(encoded.value(), nullptr, false);
                 NORVES_CHECK(!orig.is_discarded());
                 NORVES_CHECK(!again.is_discarded());
-                const bool equal = (orig == again);
-                NORVES_CHECK(equal);
-                if (!equal)
+                const bool bEqual = (orig == again);
+                NORVES_CHECK(bEqual);
+                if (!bEqual)
                 {
                     std::fprintf(stderr, "  positive did not round-trip value-equal: %s\n",
                                  normalized.c_str());
@@ -158,7 +158,7 @@ int main()
             }
             case Group::EnvelopeRejectable:
             {
-                ++envelope_rejectable;
+                ++envelopeRejectable;
                 auto decoded = norves::bridge::decode_envelope(wire);
                 NORVES_CHECK(decoded.is_err());
                 if (decoded.is_ok())
@@ -170,7 +170,7 @@ int main()
             }
             case Group::PayloadOnly:
             {
-                ++payload_only;
+                ++payloadOnly;
                 // Valid envelope; only the payload is wrong, which this layer
                 // does not validate yet. Must be ACCEPTED here.
                 auto decoded = norves::bridge::decode_envelope(wire);
@@ -192,14 +192,14 @@ int main()
     // Exhaustive counts: identical to the Rust reference (D2 totals). A drift in
     // the fixture corpus breaks here first and points at the discrepancy.
     NORVES_CHECK_EQ(positive, static_cast<std::size_t>(55));
-    NORVES_CHECK_EQ(envelope_rejectable, static_cast<std::size_t>(14));
-    NORVES_CHECK_EQ(payload_only, static_cast<std::size_t>(45));
-    NORVES_CHECK_EQ(positive + envelope_rejectable + payload_only, static_cast<std::size_t>(114));
+    NORVES_CHECK_EQ(envelopeRejectable, static_cast<std::size_t>(14));
+    NORVES_CHECK_EQ(payloadOnly, static_cast<std::size_t>(45));
+    NORVES_CHECK_EQ(positive + envelopeRejectable + payloadOnly, static_cast<std::size_t>(114));
     NORVES_CHECK_EQ(ignored, static_cast<std::size_t>(0));
 
     std::fprintf(stderr,
                  "counts: positive=%zu envelope_negative=%zu payload_only=%zu ignored=%zu\n",
-                 positive, envelope_rejectable, payload_only, ignored);
+                 positive, envelopeRejectable, payloadOnly, ignored);
 
     return norves::test::summary();
 }

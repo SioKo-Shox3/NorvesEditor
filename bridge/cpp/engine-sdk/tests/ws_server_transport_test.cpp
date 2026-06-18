@@ -45,13 +45,13 @@ namespace
     public:
         void log(norves::bridge::LogSeverity level, std::string_view message) override
         {
-            std::lock_guard<std::mutex> lk(mutex_);
-            lines_.emplace_back(level, std::string(message));
+            std::lock_guard<std::mutex> lk(m_Mutex);
+            m_Lines.emplace_back(level, std::string(message));
         }
         bool saw(norves::bridge::LogSeverity level)
         {
-            std::lock_guard<std::mutex> lk(mutex_);
-            for (const auto& [lvl, msg] : lines_)
+            std::lock_guard<std::mutex> lk(m_Mutex);
+            for (const auto& [lvl, msg] : m_Lines)
             {
                 if (lvl == level)
                 {
@@ -62,8 +62,8 @@ namespace
         }
 
     private:
-        std::mutex mutex_;
-        std::vector<std::pair<norves::bridge::LogSeverity, std::string>> lines_;
+        std::mutex m_Mutex;
+        std::vector<std::pair<norves::bridge::LogSeverity, std::string>> m_Lines;
     };
 
     // -- libwebsockets test client ----------------------------------------------
@@ -248,7 +248,7 @@ namespace
     };
 
     template <typename Pred>
-    bool wait_until(Pred pred, std::chrono::milliseconds timeout)
+    bool WaitUntil(Pred pred, std::chrono::milliseconds timeout)
     {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline)
@@ -269,13 +269,13 @@ int main()
     using norves::bridge::LogSeverity;
     using norves::bridge::make_websocket_server_transport;
 
-    const std::uint16_t kPort = 39071;
-    constexpr std::size_t kSendCap = 256;
-    constexpr std::size_t kRecvCap = 256;
+    const std::uint16_t Port = 39071;
+    constexpr std::size_t SendCap = 256;
+    constexpr std::size_t RecvCap = 256;
 
     // ---- setup: server transport + connected client ----------------------
     CapturingSink sink;
-    auto server = make_websocket_server_transport(kPort, kSendCap, kRecvCap, &sink);
+    auto server = make_websocket_server_transport(Port, SendCap, RecvCap, &sink);
     NORVES_CHECK(server != nullptr);
     if (server == nullptr)
     {
@@ -283,10 +283,10 @@ int main()
     }
 
     TestClient client;
-    client.start(kPort);
+    client.start(Port);
 
-    bool connected = wait_until([&] { return client.connected.load(); }, 5s);
-    NORVES_CHECK(connected);
+    bool bConnected = WaitUntil([&] { return client.connected.load(); }, 5s);
+    NORVES_CHECK(bConnected);
 
     // Test 1 + 7: client -> server round trip (proves 127.0.0.1 listen works).
     client.enqueue("hello-from-client");
@@ -299,42 +299,42 @@ int main()
 
     // Test 1: server -> client
     NORVES_CHECK(server->send("hello-from-server"));
-    bool got_one = wait_until([&] { return client.received_count() >= 1; }, 5s);
-    NORVES_CHECK(got_one);
-    if (got_one)
+    bool bGotOne = WaitUntil([&] { return client.received_count() >= 1; }, 5s);
+    NORVES_CHECK(bGotOne);
+    if (bGotOne)
     {
         NORVES_CHECK_EQ(client.snapshot().at(0), std::string("hello-from-server"));
     }
 
     // Test 2: multiple frames in order (B1)
-    const int kBurst = 8;
-    for (int i = 0; i < kBurst; ++i)
+    const int Burst = 8;
+    for (int i = 0; i < Burst; ++i)
     {
         NORVES_CHECK(server->send("burst-" + std::to_string(i)));
     }
-    bool got_burst = wait_until([&] { return client.received_count() >= 1 + kBurst; }, 5s);
-    NORVES_CHECK(got_burst);
-    if (got_burst)
+    bool bGotBurst = WaitUntil([&] { return client.received_count() >= 1 + Burst; }, 5s);
+    NORVES_CHECK(bGotBurst);
+    if (bGotBurst)
     {
         auto frames = client.snapshot();
-        for (int i = 0; i < kBurst; ++i)
+        for (int i = 0; i < Burst; ++i)
         {
             NORVES_CHECK_EQ(frames.at(1 + i), "burst-" + std::to_string(i));
         }
     }
 
     // Test 3: large frame survives partial-write re-arming (full length match)
-    const std::size_t kBig = 50000;
+    const std::size_t Big = 50000;
     std::string big = "BIG:";
-    big.append(kBig, 'X');
+    big.append(Big, 'X');
     NORVES_CHECK(server->send(big));
-    const size_t expect_after_big = 1 + kBurst + 1;
-    bool got_big = wait_until([&] { return client.received_count() >= expect_after_big; }, 10s);
-    NORVES_CHECK(got_big);
-    if (got_big)
+    const size_t expectAfterBig = 1 + Burst + 1;
+    bool bGotBig = WaitUntil([&] { return client.received_count() >= expectAfterBig; }, 10s);
+    NORVES_CHECK(bGotBig);
+    if (bGotBig)
     {
         auto frames = client.snapshot();
-        const std::string& last = frames.at(expect_after_big - 1);
+        const std::string& last = frames.at(expectAfterBig - 1);
         NORVES_CHECK_EQ(last.size(), big.size());
         NORVES_CHECK(last == big);
     }
@@ -342,18 +342,18 @@ int main()
     // Test 4: single-connection posture -- a 2nd client is rejected, 1st stays.
     {
         TestClient client2;
-        client2.start(kPort);
+        client2.start(Port);
         // The server rejects at ESTABLISHED (-1), so client2 either errors or
         // closes without establishing a usable session. Either way the FIRST
         // client must keep working afterwards.
-        wait_until([&] { return client2.connection_error.load(); }, 3s);
+        WaitUntil([&] { return client2.connection_error.load(); }, 3s);
         client2.shutdown();
     }
     // First client still works:
     NORVES_CHECK(server->send("after-reject"));
-    bool still_ok = wait_until([&] { return client.received_count() >= expect_after_big + 1; }, 5s);
-    NORVES_CHECK(still_ok);
-    if (still_ok)
+    bool bStillOk = WaitUntil([&] { return client.received_count() >= expectAfterBig + 1; }, 5s);
+    NORVES_CHECK(bStillOk);
+    if (bStillOk)
     {
         auto frames = client.snapshot();
         NORVES_CHECK_EQ(frames.back(), std::string("after-reject"));
@@ -364,22 +364,22 @@ int main()
     // Test 5: close() contract -- recv() drains to nullopt, send() false,
     // idempotent.
     server->close();
-    auto after_close = server->recv();
-    NORVES_CHECK(!after_close.has_value());          // drained to nullopt
+    auto afterClose = server->recv();
+    NORVES_CHECK(!afterClose.has_value());           // drained to nullopt
     NORVES_CHECK(server->send("dropped") == false);  // closed => false
     server->close();                                 // idempotent: must not hang/crash
 
     // Test 6: bind failure -- a 2nd transport on the same port returns nullptr.
     {
         // Re-bind the same port using a fresh server, then try a duplicate.
-        CapturingSink sink_a;
-        auto a = make_websocket_server_transport(kPort, kSendCap, kRecvCap, &sink_a);
+        CapturingSink sinkA;
+        auto a = make_websocket_server_transport(Port, SendCap, RecvCap, &sinkA);
         NORVES_CHECK(a != nullptr);
 
-        CapturingSink sink_dup;
-        auto dup = make_websocket_server_transport(kPort, kSendCap, kRecvCap, &sink_dup);
+        CapturingSink sinkDup;
+        auto dup = make_websocket_server_transport(Port, SendCap, RecvCap, &sinkDup);
         NORVES_CHECK(dup == nullptr);
-        NORVES_CHECK(sink_dup.saw(LogSeverity::Warn));
+        NORVES_CHECK(sinkDup.saw(LogSeverity::Warn));
 
         if (a != nullptr)
         {

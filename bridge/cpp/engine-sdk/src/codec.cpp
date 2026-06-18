@@ -37,7 +37,7 @@ namespace norves::bridge
         using nlohmann::json;
 
         template <typename T>
-        Result<T, CodecError> err(CodecError error)
+        Result<T, CodecError> Err(CodecError error)
         {
             return Result<T, CodecError>::err(std::move(error));
         }
@@ -45,7 +45,7 @@ namespace norves::bridge
         // --- Pattern helpers (1:1 with common.rs / error.rs) -------------------------
 
         // ^[a-z][a-zA-Z0-9]*\.[a-zA-Z0-9]+$  (method / event names)
-        bool is_namespaced_token(std::string_view value)
+        bool IsNamespacedToken(std::string_view value)
         {
             const auto dot = value.find('.');
             if (dot == std::string_view::npos)
@@ -70,9 +70,9 @@ namespace norves::bridge
             for (std::size_t i = 1; i < head.size(); ++i)
             {
                 const char c = head[i];
-                const bool alnum =
+                const bool bAlnum =
                     (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
-                if (!alnum)
+                if (!bAlnum)
                 {
                     return false;
                 }
@@ -83,9 +83,9 @@ namespace norves::bridge
             }
             for (const char c : tail)
             {
-                const bool alnum =
+                const bool bAlnum =
                     (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
-                if (!alnum)
+                if (!bAlnum)
                 {
                     return false;
                 }
@@ -94,7 +94,7 @@ namespace norves::bridge
         }
 
         // ^[0-9]+\.[0-9]+$  (version string)
-        bool is_version_string(std::string_view value)
+        bool IsVersionString(std::string_view value)
         {
             const auto dot = value.find('.');
             if (dot == std::string_view::npos)
@@ -129,7 +129,7 @@ namespace norves::bridge
         }
 
         // ^[A-Z][A-Z0-9_]*$  (error code)
-        bool is_error_code(std::string_view value)
+        bool IsErrorCode(std::string_view value)
         {
             if (value.empty())
             {
@@ -143,8 +143,8 @@ namespace norves::bridge
             for (std::size_t i = 1; i < value.size(); ++i)
             {
                 const char c = value[i];
-                const bool ok = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
-                if (!ok)
+                const bool bOk = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+                if (!bOk)
                 {
                     return false;
                 }
@@ -154,7 +154,7 @@ namespace norves::bridge
 
         // --- Field extraction --------------------------------------------------------
 
-        JsonValue wrap(const json& value)
+        JsonValue Wrap(const json& value)
         {
             auto impl = std::make_unique<detail::JsonValueImpl>();
             impl->json = value;
@@ -163,8 +163,8 @@ namespace norves::bridge
 
         // Extracts an optional string field. Returns false (via *bad) if present but not
         // a string. Absent -> leaves out empty, returns true.
-        bool take_string(const json& obj, const char* key, std::optional<std::string>& out,
-                         std::string& bad)
+        bool TakeString(const json& obj, const char* key, std::optional<std::string>& out,
+                        std::string& bad)
         {
             const auto it = obj.find(key);
             if (it == obj.end())
@@ -182,63 +182,63 @@ namespace norves::bridge
 
         // Decodes the error object (with its own additionalProperties: false and field
         // patterns). Mirrors envelope.schema.json#/$defs/error.
-        Result<BridgeError, CodecError> decode_error(const json& obj)
+        Result<BridgeError, CodecError> DecodeError(const json& obj)
         {
             if (!obj.is_object())
             {
-                return err<BridgeError>(CodecError::invalid_field("`error` must be an object"));
+                return Err<BridgeError>(CodecError::invalid_field("`error` must be an object"));
             }
             // additionalProperties: false at the error object.
             for (const auto& [key, _] : obj.items())
             {
                 if (key != "code" && key != "message" && key != "data")
                 {
-                    return err<BridgeError>(
+                    return Err<BridgeError>(
                         CodecError::unknown_field(std::string("unknown field in `error`: ") + key));
                 }
             }
-            const auto code_it = obj.find("code");
-            if (code_it == obj.end())
+            const auto codeIt = obj.find("code");
+            if (codeIt == obj.end())
             {
-                return err<BridgeError>(CodecError::invalid_field("`error` requires `code`"));
+                return Err<BridgeError>(CodecError::invalid_field("`error` requires `code`"));
             }
-            if (!code_it->is_string())
+            if (!codeIt->is_string())
             {
-                return err<BridgeError>(CodecError::invalid_field("`error.code` must be a string"));
+                return Err<BridgeError>(CodecError::invalid_field("`error.code` must be a string"));
             }
-            const auto code = code_it->get<std::string>();
-            if (!is_error_code(code))
+            const auto code = codeIt->get<std::string>();
+            if (!IsErrorCode(code))
             {
-                return err<BridgeError>(
+                return Err<BridgeError>(
                     CodecError::invalid_field(std::string("invalid error code: ") + code));
             }
-            const auto msg_it = obj.find("message");
-            if (msg_it == obj.end())
+            const auto msgIt = obj.find("message");
+            if (msgIt == obj.end())
             {
-                return err<BridgeError>(CodecError::invalid_field("`error` requires `message`"));
+                return Err<BridgeError>(CodecError::invalid_field("`error` requires `message`"));
             }
-            if (!msg_it->is_string())
+            if (!msgIt->is_string())
             {
-                return err<BridgeError>(
+                return Err<BridgeError>(
                     CodecError::invalid_field("`error.message` must be a string"));
             }
-            const auto message = msg_it->get<std::string>();
+            const auto message = msgIt->get<std::string>();
             // The JSON Schema (envelope.schema.json $defs/error.message minLength: 1) is
             // the canonical wire contract, so we reject an empty message. The Rust core
             // models this field as a plain String and does not enforce non-emptiness at
             // the type level; wire validation follows the schema, not the Rust type.
             if (message.empty())
             {
-                return err<BridgeError>(
+                return Err<BridgeError>(
                     CodecError::invalid_field("`error.message` must be non-empty"));
             }
 
             BridgeError out{code, message, std::nullopt};
-            const auto data_it = obj.find("data");
-            if (data_it != obj.end())
+            const auto dataIt = obj.find("data");
+            if (dataIt != obj.end())
             {
                 // data is opaque; preserved without interpretation.
-                out.data = wrap(*data_it);
+                out.data = Wrap(*dataIt);
             }
             return Result<BridgeError, CodecError>::ok(std::move(out));
         }
@@ -250,31 +250,31 @@ namespace norves::bridge
         json root = json::parse(wire, /*cb=*/nullptr, /*allow_exceptions=*/false);
         if (root.is_discarded())
         {
-            return err<Envelope>(CodecError::parse("malformed JSON"));
+            return Err<Envelope>(CodecError::parse("malformed JSON"));
         }
         if (!root.is_object())
         {
-            return err<Envelope>(CodecError::parse("envelope must be a JSON object"));
+            return Err<Envelope>(CodecError::parse("envelope must be a JSON object"));
         }
 
         // additionalProperties: false at the envelope object.
-        static constexpr std::string_view kKnown[] = {"bridge", "version",   "kind",   "id",
-                                                      "method", "event",     "params", "result",
-                                                      "error",  "sessionId", "seq"};
+        static constexpr std::string_view Known[] = {"bridge", "version",   "kind",   "id",
+                                                     "method", "event",     "params", "result",
+                                                     "error",  "sessionId", "seq"};
         for (const auto& [key, _] : root.items())
         {
-            bool known = false;
-            for (const auto& k : kKnown)
+            bool bKnown = false;
+            for (const auto& k : Known)
             {
                 if (key == k)
                 {
-                    known = true;
+                    bKnown = true;
                     break;
                 }
             }
-            if (!known)
+            if (!bKnown)
             {
-                return err<Envelope>(
+                return Err<Envelope>(
                     CodecError::unknown_field(std::string("unknown envelope field: ") + key));
             }
         }
@@ -286,16 +286,16 @@ namespace norves::bridge
             const auto it = root.find("bridge");
             if (it == root.end())
             {
-                return err<Envelope>(CodecError::invalid_field("envelope requires `bridge`"));
+                return Err<Envelope>(CodecError::invalid_field("envelope requires `bridge`"));
             }
             if (!it->is_string())
             {
-                return err<Envelope>(CodecError::invalid_field("`bridge` must be a string"));
+                return Err<Envelope>(CodecError::invalid_field("`bridge` must be a string"));
             }
             const auto marker = it->get<std::string>();
-            if (marker != kBridgeMarker)
+            if (marker != BridgeMarker)
             {
-                return err<Envelope>(
+                return Err<Envelope>(
                     CodecError::invalid_field(std::string("invalid bridge marker: ") + marker));
             }
             env.bridge = marker;
@@ -306,16 +306,16 @@ namespace norves::bridge
             const auto it = root.find("version");
             if (it == root.end())
             {
-                return err<Envelope>(CodecError::invalid_field("envelope requires `version`"));
+                return Err<Envelope>(CodecError::invalid_field("envelope requires `version`"));
             }
             if (!it->is_string())
             {
-                return err<Envelope>(CodecError::invalid_field("`version` must be a string"));
+                return Err<Envelope>(CodecError::invalid_field("`version` must be a string"));
             }
             const auto version = it->get<std::string>();
-            if (!is_version_string(version))
+            if (!IsVersionString(version))
             {
-                return err<Envelope>(
+                return Err<Envelope>(
                     CodecError::invalid_field(std::string("invalid version string: ") + version));
             }
             env.version = version;
@@ -326,11 +326,11 @@ namespace norves::bridge
             const auto it = root.find("kind");
             if (it == root.end())
             {
-                return err<Envelope>(CodecError::invalid_field("envelope requires `kind`"));
+                return Err<Envelope>(CodecError::invalid_field("envelope requires `kind`"));
             }
             if (!it->is_string())
             {
-                return err<Envelope>(CodecError::invalid_field("`kind` must be a string"));
+                return Err<Envelope>(CodecError::invalid_field("`kind` must be a string"));
             }
             const auto kind = it->get<std::string>();
             if (kind == "request")
@@ -347,7 +347,7 @@ namespace norves::bridge
             }
             else
             {
-                return err<Envelope>(
+                return Err<Envelope>(
                     CodecError::invalid_field(std::string("invalid kind: ") + kind));
             }
         }
@@ -355,45 +355,45 @@ namespace norves::bridge
         std::string bad;
 
         // id (non-empty string).
-        if (!take_string(root, "id", env.id, bad))
+        if (!TakeString(root, "id", env.id, bad))
         {
-            return err<Envelope>(CodecError::invalid_field(bad));
+            return Err<Envelope>(CodecError::invalid_field(bad));
         }
         if (env.id.has_value() && env.id->empty())
         {
-            return err<Envelope>(CodecError::invalid_field("`id` must be non-empty"));
+            return Err<Envelope>(CodecError::invalid_field("`id` must be non-empty"));
         }
 
         // method (namespaced token).
-        if (!take_string(root, "method", env.method, bad))
+        if (!TakeString(root, "method", env.method, bad))
         {
-            return err<Envelope>(CodecError::invalid_field(bad));
+            return Err<Envelope>(CodecError::invalid_field(bad));
         }
-        if (env.method.has_value() && !is_namespaced_token(*env.method))
+        if (env.method.has_value() && !IsNamespacedToken(*env.method))
         {
-            return err<Envelope>(
+            return Err<Envelope>(
                 CodecError::invalid_field(std::string("invalid method name: ") + *env.method));
         }
 
         // event (namespaced token).
-        if (!take_string(root, "event", env.event, bad))
+        if (!TakeString(root, "event", env.event, bad))
         {
-            return err<Envelope>(CodecError::invalid_field(bad));
+            return Err<Envelope>(CodecError::invalid_field(bad));
         }
-        if (env.event.has_value() && !is_namespaced_token(*env.event))
+        if (env.event.has_value() && !IsNamespacedToken(*env.event))
         {
-            return err<Envelope>(
+            return Err<Envelope>(
                 CodecError::invalid_field(std::string("invalid event name: ") + *env.event));
         }
 
         // sessionId (non-empty string).
-        if (!take_string(root, "sessionId", env.session_id, bad))
+        if (!TakeString(root, "sessionId", env.session_id, bad))
         {
-            return err<Envelope>(CodecError::invalid_field(bad));
+            return Err<Envelope>(CodecError::invalid_field(bad));
         }
         if (env.session_id.has_value() && env.session_id->empty())
         {
-            return err<Envelope>(CodecError::invalid_field("`sessionId` must be non-empty"));
+            return Err<Envelope>(CodecError::invalid_field("`sessionId` must be non-empty"));
         }
 
         // params (opaque object).
@@ -403,9 +403,9 @@ namespace norves::bridge
             {
                 if (!it->is_object())
                 {
-                    return err<Envelope>(CodecError::invalid_field("`params` must be an object"));
+                    return Err<Envelope>(CodecError::invalid_field("`params` must be an object"));
                 }
-                env.params = wrap(*it);
+                env.params = Wrap(*it);
             }
         }
 
@@ -414,7 +414,7 @@ namespace norves::bridge
             const auto it = root.find("result");
             if (it != root.end())
             {
-                env.result = wrap(*it);
+                env.result = Wrap(*it);
             }
         }
 
@@ -423,10 +423,10 @@ namespace norves::bridge
             const auto it = root.find("error");
             if (it != root.end())
             {
-                auto decoded = decode_error(*it);
+                auto decoded = DecodeError(*it);
                 if (decoded.is_err())
                 {
-                    return err<Envelope>(std::move(decoded).error());
+                    return Err<Envelope>(std::move(decoded).error());
                 }
                 env.error = std::move(decoded).value();
             }
@@ -448,11 +448,11 @@ namespace norves::bridge
                 {
                     // A signed integer here is necessarily negative (a non-negative
                     // value would have been categorized as number_unsigned).
-                    return err<Envelope>(CodecError::invalid_field("`seq` must be >= 0"));
+                    return Err<Envelope>(CodecError::invalid_field("`seq` must be >= 0"));
                 }
                 else
                 {
-                    return err<Envelope>(CodecError::invalid_field("`seq` must be an integer"));
+                    return Err<Envelope>(CodecError::invalid_field("`seq` must be an integer"));
                 }
             }
         }
@@ -461,7 +461,7 @@ namespace norves::bridge
         auto validated = env.validate();
         if (validated.is_err())
         {
-            return err<Envelope>(std::move(validated).error());
+            return Err<Envelope>(std::move(validated).error());
         }
 
         return Result<Envelope, CodecError>::ok(std::move(env));
@@ -470,7 +470,7 @@ namespace norves::bridge
     Result<std::string, CodecError> encode_envelope(const Envelope& envelope)
     {
         json root = json::object();
-        root["bridge"] = envelope.bridge.empty() ? std::string(kBridgeMarker) : envelope.bridge;
+        root["bridge"] = envelope.bridge.empty() ? std::string(BridgeMarker) : envelope.bridge;
         root["version"] = envelope.version;
         switch (envelope.kind)
         {
@@ -506,14 +506,14 @@ namespace norves::bridge
         }
         if (envelope.error.has_value())
         {
-            json error_obj = json::object();
-            error_obj["code"] = envelope.error->code;
-            error_obj["message"] = envelope.error->message;
+            json errorObj = json::object();
+            errorObj["code"] = envelope.error->code;
+            errorObj["message"] = envelope.error->message;
             if (envelope.error->data.has_value())
             {
-                error_obj["data"] = peek(*envelope.error->data)->json;
+                errorObj["data"] = peek(*envelope.error->data)->json;
             }
-            root["error"] = std::move(error_obj);
+            root["error"] = std::move(errorObj);
         }
         if (envelope.session_id.has_value())
         {

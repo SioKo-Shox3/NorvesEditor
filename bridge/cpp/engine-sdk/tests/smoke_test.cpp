@@ -13,7 +13,7 @@ namespace
     using norves::bridge::BridgeError;
     using norves::bridge::Result;
 
-    void test_result_ok()
+    void TestResultOk()
     {
         auto r = Result<int, std::string>::ok(42);
         NORVES_CHECK(r.is_ok());
@@ -21,7 +21,7 @@ namespace
         NORVES_CHECK_EQ(r.value(), 42);
     }
 
-    void test_result_err()
+    void TestResultErr()
     {
         auto r = Result<int, std::string>::err(std::string{"boom"});
         NORVES_CHECK(r.is_err());
@@ -29,7 +29,7 @@ namespace
         NORVES_CHECK_EQ(r.error(), std::string{"boom"});
     }
 
-    void test_result_assignment()
+    void TestResultAssignment()
     {
         auto a = Result<int, std::string>::ok(1);
         auto b = Result<int, std::string>::err(std::string{"e"});
@@ -43,36 +43,36 @@ namespace
         NORVES_CHECK_EQ(a.value(), 7);
     }
 
-    void test_error_constants()
+    void TestErrorConstants()
     {
-        NORVES_CHECK_EQ(norves::bridge::kErrorProtocolVersionUnsupported,
+        NORVES_CHECK_EQ(norves::bridge::ErrorProtocolVersionUnsupported,
                         std::string_view{"PROTOCOL_VERSION_UNSUPPORTED"});
-        NORVES_CHECK_EQ(norves::bridge::kErrorMethodNotSupported,
+        NORVES_CHECK_EQ(norves::bridge::ErrorMethodNotSupported,
                         std::string_view{"METHOD_NOT_SUPPORTED"});
-        NORVES_CHECK_EQ(norves::bridge::kErrorBridgeTransportError,
+        NORVES_CHECK_EQ(norves::bridge::ErrorBridgeTransportError,
                         std::string_view{"BRIDGE_TRANSPORT_ERROR"});
 
-        BridgeError err{std::string{norves::bridge::kErrorMethodNotSupported}, "no such method"};
+        BridgeError err{std::string{norves::bridge::ErrorMethodNotSupported}, "no such method"};
         NORVES_CHECK_EQ(err.code, std::string{"METHOD_NOT_SUPPORTED"});
         NORVES_CHECK_EQ(err.message, std::string{"no such method"});
     }
 
-    void test_supported_protocol_versions()
+    void TestSupportedProtocolVersions()
     {
-        NORVES_CHECK_EQ(norves::bridge::kSupportedProtocolVersions.size(),
+        NORVES_CHECK_EQ(norves::bridge::SupportedProtocolVersions.size(),
                         static_cast<std::size_t>(1));
-        NORVES_CHECK_EQ(norves::bridge::kSupportedProtocolVersions[0], std::string_view{"0.1"});
-        NORVES_CHECK(!norves::bridge::kSdkVersion.empty());
+        NORVES_CHECK_EQ(norves::bridge::SupportedProtocolVersions[0], std::string_view{"0.1"});
+        NORVES_CHECK(!norves::bridge::SdkVersion.empty());
     }
 
 }  // namespace
 
 int main()
 {
-    test_result_ok();
-    test_result_err();
-    test_result_assignment();
-    test_error_constants();
-    test_supported_protocol_versions();
+    TestResultOk();
+    TestResultErr();
+    TestResultAssignment();
+    TestErrorConstants();
+    TestSupportedProtocolVersions();
     return norves::test::summary();
 }

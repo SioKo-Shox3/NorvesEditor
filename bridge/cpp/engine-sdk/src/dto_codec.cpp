@@ -33,14 +33,14 @@ namespace norves::bridge::dto
         using nlohmann::json;
 
         template <typename T>
-        Result<T, CodecError> fail(CodecError error)
+        Result<T, CodecError> Fail(CodecError error)
         {
             return Result<T, CodecError>::err(std::move(error));
         }
 
         // Wraps a concrete nlohmann::json into an opaque JsonValue via the src-only
         // bridge helper (same pattern as codec.cpp).
-        JsonValue wrap(json value)
+        JsonValue Wrap(json value)
         {
             auto impl = std::make_unique<detail::JsonValueImpl>();
             impl->json = std::move(value);
@@ -50,21 +50,21 @@ namespace norves::bridge::dto
         // Rejects any key not in `known`. Returns an unknown-field CodecError on the
         // first offending key (additionalProperties:false). `context` names the object
         // layer for the message (e.g. "bridge.hello.result" or its "server").
-        std::optional<CodecError> reject_unknown_keys(const json& obj, const char* context,
-                                                      std::initializer_list<std::string_view> known)
+        std::optional<CodecError> RejectUnknownKeys(const json& obj, const char* context,
+                                                    std::initializer_list<std::string_view> known)
         {
             for (const auto& [key, _] : obj.items())
             {
-                bool found = false;
+                bool bFound = false;
                 for (const auto& k : known)
                 {
                     if (key == k)
                     {
-                        found = true;
+                        bFound = true;
                         break;
                     }
                 }
-                if (!found)
+                if (!bFound)
                 {
                     return CodecError::unknown_field(std::string("unknown field in `") + context +
                                                      "`: " + key);
@@ -75,8 +75,8 @@ namespace norves::bridge::dto
 
         // Reads a REQUIRED string field. Sets `out`; returns a CodecError on absence or
         // wrong type.
-        std::optional<CodecError> required_string(const json& obj, const char* context,
-                                                  const char* key, std::string& out)
+        std::optional<CodecError> RequiredString(const json& obj, const char* context,
+                                                 const char* key, std::string& out)
         {
             const auto it = obj.find(key);
             if (it == obj.end())
@@ -95,8 +95,8 @@ namespace norves::bridge::dto
 
         // Reads an OPTIONAL string field. Leaves `out` unset when absent; returns a
         // CodecError when present with a non-string type.
-        std::optional<CodecError> optional_string(const json& obj, const char* context,
-                                                  const char* key, std::optional<std::string>& out)
+        std::optional<CodecError> OptionalString(const json& obj, const char* context,
+                                                 const char* key, std::optional<std::string>& out)
         {
             const auto it = obj.find(key);
             if (it == obj.end())
@@ -251,7 +251,7 @@ namespace norves::bridge::dto
             obj["clientVersion"] = *clientVersion;
         }
         obj["protocolVersions"] = protocolVersions;
-        return wrap(std::move(obj));
+        return Wrap(std::move(obj));
     }
 
     Result<HelloParams, CodecError> HelloParams::from_json(const JsonValue& value)
@@ -259,47 +259,45 @@ namespace norves::bridge::dto
         const json& obj = peek(value)->json;
         if (!obj.is_object())
         {
-            return fail<HelloParams>(
+            return Fail<HelloParams>(
                 CodecError::invalid_field("bridge.hello.params must be an object"));
         }
-        if (auto e =
-                reject_unknown_keys(obj, "bridge.hello.params",
-                                    {"role", "clientName", "clientVersion", "protocolVersions"}))
+        if (auto e = RejectUnknownKeys(obj, "bridge.hello.params",
+                                       {"role", "clientName", "clientVersion", "protocolVersions"}))
         {
-            return fail<HelloParams>(std::move(*e));
+            return Fail<HelloParams>(std::move(*e));
         }
 
         HelloParams out;
-        if (auto e = required_string(obj, "bridge.hello.params", "role", out.role))
+        if (auto e = RequiredString(obj, "bridge.hello.params", "role", out.role))
         {
-            return fail<HelloParams>(std::move(*e));
+            return Fail<HelloParams>(std::move(*e));
         }
-        if (auto e = required_string(obj, "bridge.hello.params", "clientName", out.clientName))
+        if (auto e = RequiredString(obj, "bridge.hello.params", "clientName", out.clientName))
         {
-            return fail<HelloParams>(std::move(*e));
+            return Fail<HelloParams>(std::move(*e));
         }
-        if (auto e =
-                optional_string(obj, "bridge.hello.params", "clientVersion", out.clientVersion))
+        if (auto e = OptionalString(obj, "bridge.hello.params", "clientVersion", out.clientVersion))
         {
-            return fail<HelloParams>(std::move(*e));
+            return Fail<HelloParams>(std::move(*e));
         }
 
         const auto pv = obj.find("protocolVersions");
         if (pv == obj.end())
         {
-            return fail<HelloParams>(
+            return Fail<HelloParams>(
                 CodecError::invalid_field("`bridge.hello.params` requires `protocolVersions`"));
         }
         if (!pv->is_array())
         {
-            return fail<HelloParams>(CodecError::invalid_field(
+            return Fail<HelloParams>(CodecError::invalid_field(
                 "`bridge.hello.params.protocolVersions` must be an array"));
         }
         for (const auto& item : *pv)
         {
             if (!item.is_string())
             {
-                return fail<HelloParams>(CodecError::invalid_field(
+                return Fail<HelloParams>(CodecError::invalid_field(
                     "`bridge.hello.params.protocolVersions` items must be strings"));
             }
             out.protocolVersions.push_back(item.get<std::string>());
@@ -321,7 +319,7 @@ namespace norves::bridge::dto
         {
             obj["engine"] = *engine;
         }
-        return wrap(std::move(obj));
+        return Wrap(std::move(obj));
     }
 
     Result<ServerInfo, CodecError> ServerInfo::from_json(const JsonValue& value)
@@ -329,27 +327,27 @@ namespace norves::bridge::dto
         const json& obj = peek(value)->json;
         if (!obj.is_object())
         {
-            return fail<ServerInfo>(
+            return Fail<ServerInfo>(
                 CodecError::invalid_field("bridge.hello.result.server must be an object"));
         }
-        if (auto e = reject_unknown_keys(obj, "bridge.hello.result.server",
-                                         {"name", "version", "engine"}))
+        if (auto e =
+                RejectUnknownKeys(obj, "bridge.hello.result.server", {"name", "version", "engine"}))
         {
-            return fail<ServerInfo>(std::move(*e));
+            return Fail<ServerInfo>(std::move(*e));
         }
 
         ServerInfo out;
-        if (auto e = required_string(obj, "bridge.hello.result.server", "name", out.name))
+        if (auto e = RequiredString(obj, "bridge.hello.result.server", "name", out.name))
         {
-            return fail<ServerInfo>(std::move(*e));
+            return Fail<ServerInfo>(std::move(*e));
         }
-        if (auto e = optional_string(obj, "bridge.hello.result.server", "version", out.version))
+        if (auto e = OptionalString(obj, "bridge.hello.result.server", "version", out.version))
         {
-            return fail<ServerInfo>(std::move(*e));
+            return Fail<ServerInfo>(std::move(*e));
         }
-        if (auto e = optional_string(obj, "bridge.hello.result.server", "engine", out.engine))
+        if (auto e = OptionalString(obj, "bridge.hello.result.server", "engine", out.engine))
         {
-            return fail<ServerInfo>(std::move(*e));
+            return Fail<ServerInfo>(std::move(*e));
         }
         return Result<ServerInfo, CodecError>::ok(std::move(out));
     }
@@ -362,7 +360,7 @@ namespace norves::bridge::dto
         obj["sessionId"] = sessionId;
         obj["protocolVersion"] = protocolVersion;
         obj["server"] = peek(server.to_json())->json;
-        return wrap(std::move(obj));
+        return Wrap(std::move(obj));
     }
 
     Result<HelloResult, CodecError> HelloResult::from_json(const JsonValue& value)
@@ -370,36 +368,36 @@ namespace norves::bridge::dto
         const json& obj = peek(value)->json;
         if (!obj.is_object())
         {
-            return fail<HelloResult>(
+            return Fail<HelloResult>(
                 CodecError::invalid_field("bridge.hello.result must be an object"));
         }
-        if (auto e = reject_unknown_keys(obj, "bridge.hello.result",
-                                         {"sessionId", "protocolVersion", "server"}))
+        if (auto e = RejectUnknownKeys(obj, "bridge.hello.result",
+                                       {"sessionId", "protocolVersion", "server"}))
         {
-            return fail<HelloResult>(std::move(*e));
+            return Fail<HelloResult>(std::move(*e));
         }
 
         HelloResult out;
-        if (auto e = required_string(obj, "bridge.hello.result", "sessionId", out.sessionId))
+        if (auto e = RequiredString(obj, "bridge.hello.result", "sessionId", out.sessionId))
         {
-            return fail<HelloResult>(std::move(*e));
+            return Fail<HelloResult>(std::move(*e));
         }
         if (auto e =
-                required_string(obj, "bridge.hello.result", "protocolVersion", out.protocolVersion))
+                RequiredString(obj, "bridge.hello.result", "protocolVersion", out.protocolVersion))
         {
-            return fail<HelloResult>(std::move(*e));
+            return Fail<HelloResult>(std::move(*e));
         }
 
-        const auto server_it = obj.find("server");
-        if (server_it == obj.end())
+        const auto serverIt = obj.find("server");
+        if (serverIt == obj.end())
         {
-            return fail<HelloResult>(
+            return Fail<HelloResult>(
                 CodecError::invalid_field("`bridge.hello.result` requires `server`"));
         }
-        auto server = ServerInfo::from_json(wrap(*server_it));
+        auto server = ServerInfo::from_json(Wrap(*serverIt));
         if (server.is_err())
         {
-            return fail<HelloResult>(std::move(server).error());
+            return Fail<HelloResult>(std::move(server).error());
         }
         out.server = std::move(server).value();
         return Result<HelloResult, CodecError>::ok(std::move(out));
@@ -424,7 +422,7 @@ namespace norves::bridge::dto
         {
             obj["title"] = *title;
         }
-        return wrap(std::move(obj));
+        return Wrap(std::move(obj));
     }
 
     Result<StatusSnapshot, CodecError> StatusSnapshot::from_json(const JsonValue& value)
@@ -432,56 +430,56 @@ namespace norves::bridge::dto
         const json& obj = peek(value)->json;
         if (!obj.is_object())
         {
-            return fail<StatusSnapshot>(
+            return Fail<StatusSnapshot>(
                 CodecError::invalid_field("engine.getStatus.result must be an object"));
         }
-        if (auto e = reject_unknown_keys(
+        if (auto e = RejectUnknownKeys(
                 obj, "engine.getStatus.result",
                 {"engineState", "runtimeState", "engineName", "engineVersion", "title"}))
         {
-            return fail<StatusSnapshot>(std::move(*e));
+            return Fail<StatusSnapshot>(std::move(*e));
         }
 
         StatusSnapshot out;
 
-        std::string engine_state;
-        if (auto e = required_string(obj, "engine.getStatus.result", "engineState", engine_state))
+        std::string engineState;
+        if (auto e = RequiredString(obj, "engine.getStatus.result", "engineState", engineState))
         {
-            return fail<StatusSnapshot>(std::move(*e));
+            return Fail<StatusSnapshot>(std::move(*e));
         }
-        const auto es = engine_state_from_wire(engine_state);
+        const auto es = engine_state_from_wire(engineState);
         if (!es.has_value())
         {
-            return fail<StatusSnapshot>(
-                CodecError::invalid_field(std::string("invalid engineState: ") + engine_state));
+            return Fail<StatusSnapshot>(
+                CodecError::invalid_field(std::string("invalid engineState: ") + engineState));
         }
         out.engineState = *es;
 
-        std::string runtime_state;
-        if (auto e = required_string(obj, "engine.getStatus.result", "runtimeState", runtime_state))
+        std::string runtimeState;
+        if (auto e = RequiredString(obj, "engine.getStatus.result", "runtimeState", runtimeState))
         {
-            return fail<StatusSnapshot>(std::move(*e));
+            return Fail<StatusSnapshot>(std::move(*e));
         }
-        const auto rs = runtime_state_from_wire(runtime_state);
+        const auto rs = runtime_state_from_wire(runtimeState);
         if (!rs.has_value())
         {
-            return fail<StatusSnapshot>(
-                CodecError::invalid_field(std::string("invalid runtimeState: ") + runtime_state));
+            return Fail<StatusSnapshot>(
+                CodecError::invalid_field(std::string("invalid runtimeState: ") + runtimeState));
         }
         out.runtimeState = *rs;
 
-        if (auto e = optional_string(obj, "engine.getStatus.result", "engineName", out.engineName))
+        if (auto e = OptionalString(obj, "engine.getStatus.result", "engineName", out.engineName))
         {
-            return fail<StatusSnapshot>(std::move(*e));
+            return Fail<StatusSnapshot>(std::move(*e));
         }
         if (auto e =
-                optional_string(obj, "engine.getStatus.result", "engineVersion", out.engineVersion))
+                OptionalString(obj, "engine.getStatus.result", "engineVersion", out.engineVersion))
         {
-            return fail<StatusSnapshot>(std::move(*e));
+            return Fail<StatusSnapshot>(std::move(*e));
         }
-        if (auto e = optional_string(obj, "engine.getStatus.result", "title", out.title))
+        if (auto e = OptionalString(obj, "engine.getStatus.result", "title", out.title))
         {
-            return fail<StatusSnapshot>(std::move(*e));
+            return Fail<StatusSnapshot>(std::move(*e));
         }
         return Result<StatusSnapshot, CodecError>::ok(std::move(out));
     }
@@ -496,7 +494,7 @@ namespace norves::bridge::dto
         {
             obj["requestedState"] = std::string(to_wire(*requestedState));
         }
-        return wrap(std::move(obj));
+        return Wrap(std::move(obj));
     }
 
     Result<PlayAck, CodecError> PlayAck::from_json(const JsonValue& value)
@@ -504,42 +502,41 @@ namespace norves::bridge::dto
         const json& obj = peek(value)->json;
         if (!obj.is_object())
         {
-            return fail<PlayAck>(
+            return Fail<PlayAck>(
                 CodecError::invalid_field("runtime.play.result must be an object"));
         }
-        if (auto e =
-                reject_unknown_keys(obj, "runtime.play.result", {"accepted", "requestedState"}))
+        if (auto e = RejectUnknownKeys(obj, "runtime.play.result", {"accepted", "requestedState"}))
         {
-            return fail<PlayAck>(std::move(*e));
+            return Fail<PlayAck>(std::move(*e));
         }
 
         PlayAck out;
-        const auto accepted_it = obj.find("accepted");
-        if (accepted_it == obj.end())
+        const auto acceptedIt = obj.find("accepted");
+        if (acceptedIt == obj.end())
         {
-            return fail<PlayAck>(
+            return Fail<PlayAck>(
                 CodecError::invalid_field("`runtime.play.result` requires `accepted`"));
         }
-        if (!accepted_it->is_boolean())
+        if (!acceptedIt->is_boolean())
         {
-            return fail<PlayAck>(
+            return Fail<PlayAck>(
                 CodecError::invalid_field("`runtime.play.result.accepted` must be a boolean"));
         }
-        out.accepted = accepted_it->get<bool>();
+        out.accepted = acceptedIt->get<bool>();
 
-        const auto state_it = obj.find("requestedState");
-        if (state_it != obj.end())
+        const auto stateIt = obj.find("requestedState");
+        if (stateIt != obj.end())
         {
-            if (!state_it->is_string())
+            if (!stateIt->is_string())
             {
-                return fail<PlayAck>(CodecError::invalid_field(
+                return Fail<PlayAck>(CodecError::invalid_field(
                     "`runtime.play.result.requestedState` must be a string"));
             }
-            const auto rs = runtime_state_from_wire(state_it->get<std::string>());
+            const auto rs = runtime_state_from_wire(stateIt->get<std::string>());
             if (!rs.has_value())
             {
-                return fail<PlayAck>(CodecError::invalid_field(
-                    std::string("invalid requestedState: ") + state_it->get<std::string>()));
+                return Fail<PlayAck>(CodecError::invalid_field(
+                    std::string("invalid requestedState: ") + stateIt->get<std::string>()));
             }
             out.requestedState = *rs;
         }
@@ -561,7 +558,7 @@ namespace norves::bridge::dto
         {
             obj["timestamp"] = *timestamp;
         }
-        return wrap(std::move(obj));
+        return Wrap(std::move(obj));
     }
 
     Result<LogMessageEvent, CodecError> LogMessageEvent::from_json(const JsonValue& value)
@@ -569,41 +566,41 @@ namespace norves::bridge::dto
         const json& obj = peek(value)->json;
         if (!obj.is_object())
         {
-            return fail<LogMessageEvent>(
+            return Fail<LogMessageEvent>(
                 CodecError::invalid_field("log.message.params must be an object"));
         }
-        if (auto e = reject_unknown_keys(obj, "log.message.params",
-                                         {"level", "message", "category", "timestamp"}))
+        if (auto e = RejectUnknownKeys(obj, "log.message.params",
+                                       {"level", "message", "category", "timestamp"}))
         {
-            return fail<LogMessageEvent>(std::move(*e));
+            return Fail<LogMessageEvent>(std::move(*e));
         }
 
         LogMessageEvent out;
 
         std::string level;
-        if (auto e = required_string(obj, "log.message.params", "level", level))
+        if (auto e = RequiredString(obj, "log.message.params", "level", level))
         {
-            return fail<LogMessageEvent>(std::move(*e));
+            return Fail<LogMessageEvent>(std::move(*e));
         }
         const auto lvl = log_level_from_wire(level);
         if (!lvl.has_value())
         {
-            return fail<LogMessageEvent>(
+            return Fail<LogMessageEvent>(
                 CodecError::invalid_field(std::string("invalid log level: ") + level));
         }
         out.level = *lvl;
 
-        if (auto e = required_string(obj, "log.message.params", "message", out.message))
+        if (auto e = RequiredString(obj, "log.message.params", "message", out.message))
         {
-            return fail<LogMessageEvent>(std::move(*e));
+            return Fail<LogMessageEvent>(std::move(*e));
         }
-        if (auto e = optional_string(obj, "log.message.params", "category", out.category))
+        if (auto e = OptionalString(obj, "log.message.params", "category", out.category))
         {
-            return fail<LogMessageEvent>(std::move(*e));
+            return Fail<LogMessageEvent>(std::move(*e));
         }
-        if (auto e = optional_string(obj, "log.message.params", "timestamp", out.timestamp))
+        if (auto e = OptionalString(obj, "log.message.params", "timestamp", out.timestamp))
         {
-            return fail<LogMessageEvent>(std::move(*e));
+            return Fail<LogMessageEvent>(std::move(*e));
         }
         return Result<LogMessageEvent, CodecError>::ok(std::move(out));
     }
