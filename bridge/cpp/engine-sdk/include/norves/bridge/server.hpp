@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "norves/bridge/json_value.hpp"
 

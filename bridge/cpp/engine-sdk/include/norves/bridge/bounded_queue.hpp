@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "norves/bridge/log_sink.hpp"
 #include "norves/bridge/ownership.hpp"

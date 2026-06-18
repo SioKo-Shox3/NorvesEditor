@@ -61,9 +61,21 @@ before moving past C++20.
      forbidden), and each `to_json`.
    - enum type and enumerator names, the `BridgeError` type, and public type
      aliases.
-4. **Hold namespace, line endings, and DTO members fixed.** Keep the
-   `norves::bridge` (lower-case) namespace, keep SDK sources LF / UTF-8 (no BOM;
-   see `docs/agent-guide/coding-style.md`), and leave DTO member names and order
+4. **Hold namespace, line endings, encoding, and DTO members fixed.** Keep the
+   `norves::bridge` (lower-case) namespace. SDK sources are UTF-8 / LF, but
+   encoding differs by translation-unit visibility:
+   - **Public headers (`bridge/cpp/engine-sdk/include/**`) carry a UTF-8 BOM.**
+     They are compiled by separate repositories (NorvesLib's `Game` target)
+     whose build does **not** pass `/utf-8`; without the BOM MSVC mis-detects the
+     BOM-less UTF-8 as CP932, emitting C4819 and then mis-decoding the Japanese
+     Doxygen comment bytes into C2447 / chained errors. The BOM lets MSVC's
+     encoding auto-detection work, exactly as NorvesLib itself relies on
+     UTF-8+BOM. Line endings stay LF.
+   - **Internal TUs (`src`/`tests`/`examples` `.cpp`, internal headers) carry no
+     BOM.** They are compiled only by the SDK's own build, which already passes
+     `/utf-8` (`bridge/cpp/CMakeLists.txt` `if(MSVC)`), so a BOM is unnecessary.
+
+   See `docs/agent-guide/coding-style.md`. Leave DTO member names and order
    unchanged per item 3.
 
 Public constants (`kSdkVersion` etc.) may drop the `k` prefix **only** after
@@ -75,7 +87,11 @@ Public constants (`kSdkVersion` etc.) may drop the `k` prefix **only** after
   NorvesLib-style `PascalCase`. New public API added later keeps the existing
   naming convention for compatibility rather than the new internal style.
 - **NorvesLib needs no changes.** Its adapter / host build against the same
-  symbols as before.
+  symbols as before, **provided the public headers carry the UTF-8 BOM** (item
+  4): NorvesLib's `Game` target compiles them without `/utf-8`, so a BOM-less
+  header would break that build with C4819/C2447 even though the symbols are
+  unchanged. The fix is encoding-only and stays inside this repository — no
+  NorvesLib source edit (Option A).
 - The **wire protocol is unchanged**: DTO members, their order, and the `to_json`
   output are untouched, so existing fixtures still hold.
 - Internal code (private members, locals, parameters, file-local helpers, enums)
@@ -96,7 +112,10 @@ Public constants (`kSdkVersion` etc.) may drop the `k` prefix **only** after
   source rename).
 - `python scripts/validate-bridge-fixtures.py` passes — the wire protocol is
   unchanged.
-- NorvesLib builds without modification against the frozen public API.
+- NorvesLib builds without modification against the frozen public API, with the
+  public headers BOM-prefixed so its non-`/utf-8` `Game` target no longer hits
+  C4819/C2447 (verified by building `Game` unmodified; the only residual
+  failures are NorvesLib-internal RenderGraph symbols unrelated to the SDK).
 - The naming convention itself (Allman braces, `m_b` bool prefix, `I`/`T` class
   prefixes) is partly beyond what `.clang-tidy` can express and is enforced by
   review per `docs/agent-guide/cpp.md`.
