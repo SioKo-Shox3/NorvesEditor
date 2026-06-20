@@ -246,6 +246,26 @@ mod tests {
         }
     }"#;
 
+    /// A 0.2-generation engine reply: both the envelope `version` and the
+    /// negotiated `result.protocolVersion` are `0.2`. Mirrors
+    /// `fixtures/methods/bridge.hello/positive/response-valid-v02.json`.
+    const RESPONSE_VALID_V02: &str = r#"{
+        "bridge": "norves.editor.bridge",
+        "version": "0.2",
+        "kind": "response",
+        "id": "req-1",
+        "sessionId": "sess-7f3a",
+        "result": {
+            "sessionId": "sess-7f3a",
+            "protocolVersion": "0.2",
+            "server": { "name": "MockEngine", "version": "0.1.0", "engine": "mock" },
+            "capabilities": [
+                { "name": "runtime.control", "version": "0.1" },
+                { "name": "log.stream", "description": "Streams engine log lines." }
+            ]
+        }
+    }"#;
+
     const RESPONSE_VERSION_UNSUPPORTED: &str = r#"{
         "bridge": "norves.editor.bridge",
         "version": "0.1",
@@ -362,9 +382,23 @@ mod tests {
 
     #[test]
     fn parse_hello_result_extracts_fields() {
+        // Legacy 0.1-only engine reply: negotiated protocolVersion is "0.1".
         let outcome = parse_hello_result(&result_value(RESPONSE_VALID)).expect("parses");
         assert_eq!(outcome.session_id, "sess-7f3a");
         assert_eq!(outcome.protocol_version.as_str(), "0.1");
+        assert_eq!(outcome.server_name, "MockEngine");
+        assert_eq!(outcome.server_version.as_deref(), Some("0.1.0"));
+        assert_eq!(outcome.server_engine.as_deref(), Some("mock"));
+    }
+
+    #[test]
+    fn parse_hello_result_extracts_v02_protocol_version() {
+        // 0.2-generation engine reply: the editor offers ["0.2", "0.1"], the
+        // engine selects 0.2 and echoes it in result.protocolVersion. Proves the
+        // parser keeps the negotiated version verbatim across the version bump.
+        let outcome = parse_hello_result(&result_value(RESPONSE_VALID_V02)).expect("parses");
+        assert_eq!(outcome.session_id, "sess-7f3a");
+        assert_eq!(outcome.protocol_version.as_str(), "0.2");
         assert_eq!(outcome.server_name, "MockEngine");
         assert_eq!(outcome.server_version.as_deref(), Some("0.1.0"));
         assert_eq!(outcome.server_engine.as_deref(), Some("mock"));

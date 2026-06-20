@@ -2,6 +2,11 @@
 
 Status: alpha, phases C1–C4 (envelope + handshake/capabilities/status/log payloads + runtime control + scene/object/schema)
 
+Protocol version: **0.2** (MINOR bump from 0.1; backward-compatible). The editor
+offers `["0.2", "0.1"]` in `bridge.hello` so it negotiates 0.2 with a 0.2-capable
+engine and falls back to 0.1 with a legacy 0.1-only engine. See
+[`error-model.md`](./error-model.md#hello-version-negotiation).
+
 This document gives a high-level overview of the NorvesEditor Bridge protocol.
 The exact envelope structure is specified in
 [`message-envelope.md`](./message-envelope.md) and enforced by

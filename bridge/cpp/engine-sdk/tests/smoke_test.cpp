@@ -60,8 +60,8 @@ namespace
     void TestSupportedProtocolVersions()
     {
         NORVES_CHECK_EQ(norves::bridge::SupportedProtocolVersions.size(),
-                        static_cast<std::size_t>(1));
-        NORVES_CHECK_EQ(norves::bridge::SupportedProtocolVersions[0], std::string_view{"0.1"});
+                        static_cast<std::size_t>(2));
+        NORVES_CHECK_EQ(norves::bridge::SupportedProtocolVersions[0], std::string_view{"0.2"});
         NORVES_CHECK(!norves::bridge::SdkVersion.empty());
     }
 

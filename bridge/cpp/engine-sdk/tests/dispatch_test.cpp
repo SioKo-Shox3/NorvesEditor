@@ -208,15 +208,15 @@ namespace
         NORVES_CHECK(!env.error->message.empty());
 
         // error.data: offered はクライアントが送信した値、supported は
-        // SupportedProtocolVersions（alpha では "0.1"）。カノニカルフィクスチャ
+        // SupportedProtocolVersions（0.2 へ bump 後は "0.2","0.1"）。カノニカルフィクスチャ
         // （response-version-unsupported.json）は offered:["2.0"]、
-        // supported:["0.1","1.0"] を使用する。supported は SDK の実際のセットを追跡するため、
+        // supported:["0.2","0.1"] を使用する。supported は SDK の実際のセットを追跡するため、
         // 構造 + offered + supported の内容を直接アサートする。
         NORVES_CHECK(env.error->data.has_value());
         if (env.error->data.has_value())
         {
             const JsonValue expectedData =
-                ParseOrFail(R"({"offered":["2.0"],"supported":["0.1"]})");
+                ParseOrFail(R"({"offered":["2.0"],"supported":["0.2","0.1"]})");
             NORVES_CHECK(*env.error->data == expectedData);
         }
     }

@@ -54,8 +54,22 @@ use crate::error::BackendError;
 use crate::events_map::ui_channel_for_event;
 use crate::protocol_names::events;
 
-/// Wire protocol version this editor offers/uses.
-const PROTOCOL_VERSION: &str = "0.1";
+/// Wire protocol version this editor stamps on every envelope it sends.
+///
+/// This is the envelope `version` field, fixed to the current protocol
+/// generation. It does NOT follow the negotiated value: the editor always
+/// stamps `PROTOCOL_VERSION`, and engines accept it because the wire decoder
+/// does not validate the envelope version against a peer-supported set. Keep
+/// `build_request` stamping this constant verbatim — do not make it track the
+/// negotiated `HelloOutcome::protocol_version`.
+const PROTOCOL_VERSION: &str = "0.2";
+/// Protocol versions offered in `bridge.hello`, in preference order.
+///
+/// `["0.2", "0.1"]` negotiates 0.2 with a 0.2-capable engine and falls back to
+/// 0.1 with a legacy 0.1-only engine. The negotiated result lives in
+/// `HelloOutcome::protocol_version`; the envelope `version` stays
+/// `PROTOCOL_VERSION` regardless (see above).
+const OFFERED_PROTOCOL_VERSIONS: [&str; 2] = ["0.2", "0.1"];
 /// Product name sent in `bridge.hello`.
 const CLIENT_NAME: &str = "NorvesEditor";
 /// Default per-request timeout for engine method calls.
@@ -289,16 +303,15 @@ async fn run_connect_flow(
     let relay = spawn_relay(app, generation, events);
 
     // 4. Hello handshake.
-    let hello_params = HelloParams::new(
-        CLIENT_NAME,
-        vec![
-            VersionString::try_from(PROTOCOL_VERSION.to_owned()).map_err(|_| {
-                BackendError::Handshake {
-                    message: "internal: invalid protocol version constant".to_owned(),
-                }
-            })?,
-        ],
-    );
+    let mut protocol_versions = Vec::with_capacity(OFFERED_PROTOCOL_VERSIONS.len());
+    for offered in OFFERED_PROTOCOL_VERSIONS {
+        protocol_versions.push(VersionString::try_from(offered.to_owned()).map_err(|_| {
+            BackendError::Handshake {
+                message: "internal: invalid protocol version constant".to_owned(),
+            }
+        })?);
+    }
+    let hello_params = HelloParams::new(CLIENT_NAME, protocol_versions);
     let params = hello_params.to_params()?;
     let request = build_request(state.alloc_request_id(), "bridge.hello", Some(params))?;
 
