@@ -10,7 +10,8 @@
       { "name": "log.stream" },
       { "name": "viewport.focus" },
       { "name": "scene.query" },
-      { "name": "object.query" }
+      { "name": "object.query" },
+      { "name": "object.edit" }
     ]
   }
 }

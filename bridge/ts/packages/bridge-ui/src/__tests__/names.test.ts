@@ -21,6 +21,15 @@ describe('BRIDGE_COMMANDS literal values', () => {
   it('sceneGetTree = scene_get_tree', () => {
     expect(BRIDGE_COMMANDS.sceneGetTree).toBe('scene_get_tree');
   });
+  it('objectGetSnapshot = object_get_snapshot', () => {
+    expect(BRIDGE_COMMANDS.objectGetSnapshot).toBe('object_get_snapshot');
+  });
+  it('objectSetProperty = object_set_property', () => {
+    expect(BRIDGE_COMMANDS.objectSetProperty).toBe('object_set_property');
+  });
+  it('schemaGetSnapshot = schema_get_snapshot', () => {
+    expect(BRIDGE_COMMANDS.schemaGetSnapshot).toBe('schema_get_snapshot');
+  });
   it('runtimePlay = runtime_play', () => {
     expect(BRIDGE_COMMANDS.runtimePlay).toBe('runtime_play');
   });

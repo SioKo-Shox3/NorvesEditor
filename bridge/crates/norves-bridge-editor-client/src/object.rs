@@ -50,6 +50,22 @@ pub struct PropertyEntry {
     pub value_type: Option<String>,
 }
 
+/// Acknowledgement extracted from an `object.setProperty` result.
+///
+/// `accepted` reports whether the engine applied the change. `applied_value`,
+/// when present, is a snapshot copy of the value the engine actually stored
+/// (which may be normalized from the requested value) — never a live engine
+/// pointer. Wire shape follows `object.setProperty.result.schema.json`
+/// (`{ accepted, appliedValue? }`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetPropertyAck {
+    /// Whether the engine accepted and applied the property change.
+    pub accepted: bool,
+    /// Optional snapshot copy of the value actually applied; `None` when the
+    /// engine omitted `appliedValue`.
+    pub applied_value: Option<Value>,
+}
+
 /// A serialized type-schema snapshot extracted from a `schema.getSnapshot`
 /// result.
 ///
@@ -118,6 +134,34 @@ pub fn parse_object_snapshot_result(result: &Value) -> Result<ObjectSnapshot, Ob
         name,
         kind,
         properties,
+    })
+}
+
+/// Extracts a [`SetPropertyAck`] from an `object.setProperty` `result` value.
+///
+/// Required: `accepted` (a boolean). Optional: `appliedValue` (any JSON type,
+/// kept as a raw snapshot copy). A malformed ack is rejected at the boundary so
+/// the write path surfaces a clean backend error rather than forwarding a
+/// non-conforming result.
+pub fn parse_set_property_result(result: &Value) -> Result<SetPropertyAck, ObjectError> {
+    let obj = result.as_object().ok_or_else(|| {
+        ObjectError::UnexpectedShape("setProperty result is not an object".to_owned())
+    })?;
+
+    let accepted = match obj.get("accepted") {
+        None => return Err(ObjectError::MissingField("result.accepted".to_owned())),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| ObjectError::InvalidField("result.accepted".to_owned()))?,
+    };
+
+    // `appliedValue` is optional and may be ANY JSON type (including null). It
+    // is kept as a raw snapshot copy; only absence means "no applied value".
+    let applied_value = obj.get("appliedValue").cloned();
+
+    Ok(SetPropertyAck {
+        accepted,
+        applied_value,
     })
 }
 
@@ -384,6 +428,72 @@ mod tests {
         let value = serde_json::json!([]);
         assert!(matches!(
             parse_object_snapshot_result(&value),
+            Err(ObjectError::UnexpectedShape(_))
+        ));
+    }
+
+    #[test]
+    fn parse_set_property_result_extracts_accepted_and_applied_value() {
+        // Mirrors fixtures/methods/object.setProperty/positive/response-valid.json result.
+        let value = serde_json::json!({ "accepted": true, "appliedValue": 75 });
+        let ack = parse_set_property_result(&value).expect("parses");
+        assert!(ack.accepted);
+        assert_eq!(ack.applied_value, Some(Value::from(75)));
+    }
+
+    #[test]
+    fn parse_set_property_result_minimal_without_applied_value_ok() {
+        // Mirrors fixtures/methods/object.setProperty/positive/response-minimal.json result.
+        let value = serde_json::json!({ "accepted": true });
+        let ack = parse_set_property_result(&value).expect("parses");
+        assert!(ack.accepted);
+        assert_eq!(ack.applied_value, None);
+    }
+
+    #[test]
+    fn parse_set_property_result_accepted_false_ok() {
+        let value = serde_json::json!({ "accepted": false, "appliedValue": null });
+        let ack = parse_set_property_result(&value).expect("parses");
+        assert!(!ack.accepted);
+        // An explicit null appliedValue is retained (present, distinct from absent).
+        assert_eq!(ack.applied_value, Some(Value::Null));
+    }
+
+    #[test]
+    fn parse_set_property_result_applied_value_any_json_kind() {
+        // appliedValue may be array / object / string / boolean — kept as a raw copy.
+        let value = serde_json::json!({ "accepted": true, "appliedValue": [1, 2, 3] });
+        let ack = parse_set_property_result(&value).expect("parses");
+        assert!(ack.applied_value.as_ref().is_some_and(Value::is_array));
+
+        let value = serde_json::json!({ "accepted": true, "appliedValue": { "x": 1 } });
+        let ack = parse_set_property_result(&value).expect("parses");
+        assert!(ack.applied_value.as_ref().is_some_and(Value::is_object));
+    }
+
+    #[test]
+    fn parse_set_property_result_missing_accepted_errors() {
+        let value = serde_json::json!({ "appliedValue": 75 });
+        assert!(matches!(
+            parse_set_property_result(&value),
+            Err(ObjectError::MissingField(f)) if f == "result.accepted"
+        ));
+    }
+
+    #[test]
+    fn parse_set_property_result_non_bool_accepted_errors() {
+        let value = serde_json::json!({ "accepted": "yes" });
+        assert!(matches!(
+            parse_set_property_result(&value),
+            Err(ObjectError::InvalidField(f)) if f == "result.accepted"
+        ));
+    }
+
+    #[test]
+    fn parse_set_property_result_non_object_result_errors() {
+        let value = serde_json::json!([]);
+        assert!(matches!(
+            parse_set_property_result(&value),
             Err(ObjectError::UnexpectedShape(_))
         ));
     }

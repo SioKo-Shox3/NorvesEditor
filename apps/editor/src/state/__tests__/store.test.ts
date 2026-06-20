@@ -431,6 +431,67 @@ describe('objectSnapshotUnsupported', () => {
   });
 });
 
+describe('objectPropertyApplied', () => {
+  const seeded: BridgeState = {
+    ...INITIAL_STATE,
+    objectSnapshot: {
+      objectId: 'n-1',
+      name: 'NodeA',
+      properties: [
+        { name: 'fieldOfView', value: 60, valueType: 'number' },
+        { name: 'position', value: [0, 0, 0], valueType: 'vector3' },
+      ],
+    },
+  };
+
+  it('replaces the named property value with the applied value', () => {
+    const next = applyAction(
+      { type: 'objectPropertyApplied', objectId: 'n-1', property: 'fieldOfView', appliedValue: 75 },
+      seeded,
+    );
+    expect(next.objectSnapshot?.properties[0]?.value).toBe(75);
+    // Other properties are untouched.
+    expect(next.objectSnapshot?.properties[1]?.value).toEqual([0, 0, 0]);
+  });
+
+  it('applies a structured (array) value', () => {
+    const next = applyAction(
+      {
+        type: 'objectPropertyApplied',
+        objectId: 'n-1',
+        property: 'position',
+        appliedValue: [9, 8, 7],
+      },
+      seeded,
+    );
+    expect(next.objectSnapshot?.properties[1]?.value).toEqual([9, 8, 7]);
+  });
+
+  it('is a no-op when the snapshot objectId differs (late ack guard)', () => {
+    const next = applyAction(
+      { type: 'objectPropertyApplied', objectId: 'n-2', property: 'fieldOfView', appliedValue: 75 },
+      seeded,
+    );
+    expect(next).toBe(seeded);
+  });
+
+  it('is a no-op when there is no snapshot', () => {
+    const next = applyAction(
+      { type: 'objectPropertyApplied', objectId: 'n-1', property: 'fieldOfView', appliedValue: 75 },
+      INITIAL_STATE,
+    );
+    expect(next).toBe(INITIAL_STATE);
+  });
+
+  it('is a no-op when the property is absent', () => {
+    const next = applyAction(
+      { type: 'objectPropertyApplied', objectId: 'n-1', property: 'missing', appliedValue: 1 },
+      seeded,
+    );
+    expect(next).toBe(seeded);
+  });
+});
+
 describe('objectSelected clears the prior object snapshot', () => {
   it('drops objectSnapshot when the selection changes to a different id', () => {
     const state: BridgeState = {
