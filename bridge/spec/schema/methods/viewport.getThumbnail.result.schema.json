@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/viewport.getThumbnail.result.schema.json",
+  "title": "viewport.getThumbnail response result",
+  "description": "A still thumbnail of the engine's external viewport. The image is a base64-encoded snapshot copy of the framebuffer, never a reference into engine live memory.",
+  "type": "object",
+  "required": ["imageBase64", "mimeType"],
+  "additionalProperties": false,
+  "properties": {
+    "imageBase64": {
+      "description": "Base64-encoded image bytes. Per docs/memory-buffer-policy.md the raw image is hard-capped at 256 KiB (~342 KiB base64); an engine that cannot meet this downscales further or returns an error rather than emit an oversized frame.",
+      "type": "string",
+      "minLength": 1
+    },
+    "mimeType": {
+      "description": "MIME type of the encoded image, e.g. \"image/png\". Allows a future JPEG switch without a protocol change.",
+      "type": "string",
+      "minLength": 1
+    },
+    "width": {
+      "description": "Optional decoded width in pixels (alpha hard cap 640).",
+      "type": "integer",
+      "minimum": 1
+    },
+    "height": {
+      "description": "Optional decoded height in pixels (alpha hard cap 360).",
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

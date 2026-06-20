@@ -38,6 +38,9 @@ object.query        read an object's properties / the type schema via
 object.edit         write an object's property via object.setProperty (Phase 5 surface)
 scene.liveUpdate    push scene.treeChanged / object.changed events without
                     polling (Phase 6 surface, protocol 0.2)
+viewport.thumbnail  return a low-frequency still thumbnail of the external
+                    viewport via viewport.getThumbnail (Phase 7b surface,
+                    protocol 0.2)
 ```
 
 The `scene.query` token advertises that an engine can answer `scene.getTree`
@@ -72,6 +75,17 @@ its connect-time and selection-time fetches (live updates are best-effort, not
 the primary guarantee). The token is independent of protocol version negotiation
 and also serves as the degradation signal for a 0.1-only engine that cannot send
 these 0.2 events.
+
+The `viewport.thumbnail` token advertises that an engine can answer
+`viewport.getThumbnail` (a low-frequency still image of the external viewport,
+returned inline as a base64 string). It is an optional, engine-agnostic
+advertisement introduced in protocol version 0.2: an engine that does not provide
+thumbnails omits the token and answers `viewport.getThumbnail` with
+`METHOD_NOT_SUPPORTED`, which the editor degrades on gracefully (it falls back to
+the external-window notice). The token is independent of protocol version
+negotiation. The thumbnail path's large-payload limits (PNG, max 640x360,
+256 KiB hard cap, pull-style, <= 1 fps) are specified in
+`docs/memory-buffer-policy.md`.
 
 Tokens are the unit of negotiation. A `capabilityDescriptor` wraps a token with
 optional metadata:

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/viewport.getThumbnail.params.schema.json",
+  "title": "viewport.getThumbnail request params",
+  "description": "Request a low-frequency still thumbnail of the engine's external viewport. Optional maxWidth/maxHeight cap the returned image size; both may be omitted to let the engine pick. The image is a snapshot copy, never a reference into engine live memory.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "maxWidth": {
+      "description": "Optional maximum width in pixels. The engine downscales to fit; alpha hard cap is 640.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxHeight": {
+      "description": "Optional maximum height in pixels. The engine downscales to fit; alpha hard cap is 360.",
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

@@ -565,6 +565,86 @@ describe('inspector data is cleared on disconnect / process exit', () => {
 });
 
 // -------------------------------------------------------------------------
+// viewportThumbnailLoaded / viewportThumbnailUnsupported (Phase 7b)
+// -------------------------------------------------------------------------
+
+describe('viewportThumbnailLoaded', () => {
+  it('stores the thumbnail and clears any unsupported marker', () => {
+    const state: BridgeState = { ...INITIAL_STATE, viewportThumbnailUnsupported: true };
+    const next = applyAction(
+      {
+        type: 'viewportThumbnailLoaded',
+        thumbnail: { imageBase64: 'AAAA', mimeType: 'image/png', width: 640, height: 360 },
+      },
+      state,
+    );
+    expect(next.viewportThumbnail?.imageBase64).toBe('AAAA');
+    expect(next.viewportThumbnail?.mimeType).toBe('image/png');
+    expect(next.viewportThumbnailUnsupported).toBe(false);
+  });
+
+  it('replaces a previous thumbnail wholesale', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      viewportThumbnail: { imageBase64: 'OLD', mimeType: 'image/png' },
+    };
+    const next = applyAction(
+      { type: 'viewportThumbnailLoaded', thumbnail: { imageBase64: 'NEW', mimeType: 'image/png' } },
+      state,
+    );
+    expect(next.viewportThumbnail?.imageBase64).toBe('NEW');
+  });
+});
+
+describe('viewportThumbnailUnsupported', () => {
+  it('sets the unsupported marker and drops any stale thumbnail', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      viewportThumbnail: { imageBase64: 'AAAA', mimeType: 'image/png' },
+    };
+    const next = applyAction({ type: 'viewportThumbnailUnsupported' }, state);
+    expect(next.viewportThumbnailUnsupported).toBe(true);
+    expect(next.viewportThumbnail).toBeUndefined();
+  });
+});
+
+describe('viewport thumbnail is cleared on disconnect / process exit', () => {
+  it('connectionStateChanged(connected:false) drops the thumbnail', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      viewportThumbnail: { imageBase64: 'AAAA', mimeType: 'image/png' },
+    };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: false, reason: 'closed' } },
+      state,
+    );
+    expect(next.viewportThumbnail).toBeUndefined();
+  });
+
+  it('connectionStateChanged(connected:true) clears a stale unsupported marker', () => {
+    const state: BridgeState = { ...INITIAL_STATE, viewportThumbnailUnsupported: true };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: true, sessionId: 's' } },
+      state,
+    );
+    expect(next.viewportThumbnailUnsupported).toBe(false);
+  });
+
+  it('engineProcessExited drops the thumbnail and verdict', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      viewportThumbnail: { imageBase64: 'AAAA', mimeType: 'image/png' },
+      viewportThumbnailUnsupported: false,
+    };
+    const next = applyAction({ type: 'engineProcessExited', payload: { exitCode: 0 } }, state);
+    expect(next.viewportThumbnail).toBeUndefined();
+    expect(next.viewportThumbnailUnsupported).toBeUndefined();
+  });
+});
+
+// -------------------------------------------------------------------------
 // viewportStateChanged
 // -------------------------------------------------------------------------
 
