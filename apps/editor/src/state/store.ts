@@ -20,6 +20,8 @@ import type {
   ErrorReportedEvent,
   EngineProcessExitedEvent,
   ViewportStateChangedEvent,
+  SceneTreeChangedEvent,
+  ObjectChangedEvent,
   GetStatusResult,
   SceneNode,
   ObjectSnapshot,
@@ -99,6 +101,17 @@ export interface BridgeState {
    */
   sceneUnsupported?: boolean;
   /**
+   * Set by a scene.treeChanged live event carrying fullRefreshRequired:true:
+   * the incremental changedNodes are insufficient and the Outliner should
+   * re-fetch the whole tree via scene.getTree. The Outliner has a consume effect
+   * that, while connected, issues getSceneTree() exactly once per set flag; the
+   * subsequent sceneTreeLoaded/sceneTreeUnsupported reducer clears it back to
+   * false (so the flag is consumed and never re-triggers a loop). Live updates
+   * are best-effort; the connect-time + selection-time fetches remain the primary
+   * guarantee. Engine-agnostic.
+   */
+  sceneRefreshRequired?: boolean;
+  /**
    * Snapshot of the currently selected object's properties (object.getSnapshot),
    * or undefined when nothing is selected / no snapshot has arrived yet. Cleared
    * on deselect, disconnect, and process exit so a stale object never lingers.
@@ -147,6 +160,19 @@ export type BridgeAction =
   | { type: 'errorReported'; payload: ErrorReportedEvent }
   | { type: 'engineProcessExited'; payload: EngineProcessExitedEvent }
   | { type: 'viewportStateChanged'; payload: ViewportStateChangedEvent }
+  /**
+   * A scene.treeChanged live event arrived (protocol 0.2, engine-emitted).
+   * Best-effort: when fullRefreshRequired is set the store records a refetch
+   * flag for the Outliner; otherwise changedNodes are merged into the existing
+   * tree by id. Engine-agnostic — no mock-specific assumptions.
+   */
+  | { type: 'sceneTreeChangedLive'; payload: SceneTreeChangedEvent }
+  /**
+   * An object.changed live event arrived (protocol 0.2, engine-emitted). When
+   * the changed object is the currently selected one, its in-store snapshot is
+   * refreshed with the event's properties/name/kind. Engine-agnostic.
+   */
+  | { type: 'objectChangedLive'; payload: ObjectChangedEvent }
   | { type: 'dismissError' }
   /**
    * Select a scene object by id. Pass undefined to deselect.
@@ -193,6 +219,42 @@ export type BridgeAction =
     };
 
 // -------------------------------------------------------------------------
+// Scene-tree merge helper (for scene.treeChanged live events)
+// -------------------------------------------------------------------------
+
+/**
+ * Returns a new tree where any node whose id appears in `changes` is replaced by
+ * the changed node (a full snapshot DTO). Recurses into children. Pure: returns
+ * the same reference when nothing matched, so an unrelated live event cannot
+ * force a re-render. Engine-agnostic — operates purely on generic id/children.
+ */
+function mergeChangedNodes(
+  node: SceneNode,
+  changes: Map<string, SceneNode>,
+): SceneNode {
+  const replacement = changes.get(node.id);
+  if (replacement !== undefined) {
+    // A changed node is a full subtree snapshot; replace wholesale.
+    return replacement;
+  }
+  if (node.children === undefined || node.children.length === 0) {
+    return node;
+  }
+  let childChanged = false;
+  const children = node.children.map((child) => {
+    const next = mergeChangedNodes(child, changes);
+    if (next !== child) {
+      childChanged = true;
+    }
+    return next;
+  });
+  if (!childChanged) {
+    return node;
+  }
+  return { ...node, children };
+}
+
+// -------------------------------------------------------------------------
 // Pure reducer
 // -------------------------------------------------------------------------
 
@@ -237,6 +299,8 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         sceneTree: p.connected ? state.sceneTree : undefined,
         selectedObjectId: p.connected ? state.selectedObjectId : undefined,
         sceneUnsupported: p.connected ? false : state.sceneUnsupported,
+        // A pending live-refresh request is meaningless across a (dis)connect.
+        sceneRefreshRequired: p.connected ? state.sceneRefreshRequired : undefined,
         // Inspector data is per-object / per-engine: a fresh connection re-probes
         // both, and a disconnect drops the stale snapshot + schema + verdict.
         objectSnapshot: p.connected ? state.objectSnapshot : undefined,
@@ -305,6 +369,7 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         sceneTree: undefined,
         selectedObjectId: undefined,
         sceneUnsupported: undefined,
+        sceneRefreshRequired: undefined,
         // The Inspector data is likewise invalid once the engine dies.
         objectSnapshot: undefined,
         schemaTypes: undefined,
@@ -314,6 +379,55 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
 
     case 'viewportStateChanged': {
       return { ...state, viewportState: action.payload.state };
+    }
+
+    case 'sceneTreeChangedLive': {
+      // Best-effort live tree update (protocol 0.2). fullRefreshRequired asks the
+      // Outliner to re-fetch the whole tree; record the flag and leave the stale
+      // tree in place until the refetch lands.
+      const p = action.payload;
+      if (p.fullRefreshRequired === true) {
+        return { ...state, sceneRefreshRequired: true };
+      }
+      // Without a tree in store yet (e.g. event before the first fetch), there is
+      // nothing to merge into; the connect-time fetch is the primary guarantee.
+      if (state.sceneTree === undefined) {
+        return state;
+      }
+      const changedNodes = p.changedNodes;
+      if (changedNodes === undefined || changedNodes.length === 0) {
+        return state;
+      }
+      const changes = new Map<string, SceneNode>();
+      for (const n of changedNodes) {
+        changes.set(n.id, n);
+      }
+      const nextTree = mergeChangedNodes(state.sceneTree, changes);
+      if (nextTree === state.sceneTree) {
+        return state;
+      }
+      return { ...state, sceneTree: nextTree };
+    }
+
+    case 'objectChangedLive': {
+      // Best-effort live object update (protocol 0.2). Only refresh the snapshot
+      // when the changed object is the one currently shown in the Inspector; a
+      // change to any other object is ignored (the connect/selection fetch is the
+      // primary guarantee).
+      const p = action.payload;
+      const snapshot = state.objectSnapshot;
+      if (snapshot === undefined || snapshot.objectId !== p.objectId) {
+        return state;
+      }
+      return {
+        ...state,
+        objectSnapshot: {
+          objectId: p.objectId,
+          name: p.name ?? snapshot.name,
+          kind: p.kind ?? snapshot.kind,
+          properties: p.properties,
+        },
+      };
     }
 
     case 'dismissError': {
@@ -333,13 +447,26 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     }
 
     case 'sceneTreeLoaded': {
-      // A successful tree clears any prior "unsupported" marker.
-      return { ...state, sceneTree: action.root, sceneUnsupported: false };
+      // A successful tree clears any prior "unsupported" marker and consumes any
+      // pending live-refresh request (sceneRefreshRequired -> false), which is
+      // what stops the Outliner's consume effect from re-firing.
+      return {
+        ...state,
+        sceneTree: action.root,
+        sceneUnsupported: false,
+        sceneRefreshRequired: false,
+      };
     }
 
     case 'sceneTreeUnsupported': {
-      // No tree to show; record the engine's degradation for the Outliner.
-      return { ...state, sceneTree: undefined, sceneUnsupported: true };
+      // No tree to show; record the engine's degradation for the Outliner. Also
+      // consumes any pending live-refresh request so the consume effect settles.
+      return {
+        ...state,
+        sceneTree: undefined,
+        sceneUnsupported: true,
+        sceneRefreshRequired: false,
+      };
     }
 
     case 'objectSnapshotLoaded': {

@@ -77,7 +77,8 @@ namespace norves::mock
                     R"({"name":"viewport.focus"},)"
                     R"({"name":"scene.query"},)"
                     R"({"name":"object.query"},)"
-                    R"({"name":"object.edit"}]})"));
+                    R"({"name":"object.edit"},)"
+                    R"({"name":"scene.liveUpdate"}]})"));
         }
 
         norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> getStatus(
@@ -259,11 +260,51 @@ namespace norves::mock
                 object_field_of_view[objectId.value()] = valueText.value();
             }
 
+            // Phase 6: 受理した setProperty の後にライブ更新イベントを発行するよう recv ループに
+            // フラグを立てる（logSubscribe と同じ「フラグセット、ack 後に発行」パターン）。
+            // 変更対象 id を記録し、object.changed の params を更新済みマップから同スレッドで
+            // 組み立てられるようにする。emit は ack の後に行われるため、レスポンスを id で相関し
+            // イベントを別扱いする conformance ランナーの exact-match を壊さない。
+            if (objectId.has_value())
+            {
+                last_changed_object_id = objectId.value();
+            }
+            emit_object_changed.store(true);
+            emit_scene_tree_changed.store(true);
+
             std::string ack = R"({"accepted":true,"appliedValue":)";
             ack += valueText.has_value() ? valueText.value() : std::string("null");
             ack += "}";
             return norves::bridge::Result<norves::bridge::JsonValue,
                                           norves::bridge::BridgeError>::ok(parse_or_die(ack));
+        }
+
+        // @brief Phase 6: object.changed イベントの params を構築する。更新済みのインメモリ
+        // マップから objectGetSnapshot を同スレッドで読み、{objectId, name, kind, properties} の
+        // スナップショットをそのまま params とする（events/object.changed.params.schema.json と
+        // 整合）。値コピーのみで JsonValue を構築し、エンジン内部ポインタや span を渡さない
+        // （memory-buffer-policy）。シングルスレッド recv ループ前提（objectSetProperty の @note）。
+        norves::bridge::JsonValue object_changed_params()
+        {
+            std::string params = R"({"objectId":")";
+            params += last_changed_object_id.empty() ? std::string("n-1") : last_changed_object_id;
+            params += R"("})";
+            auto snapshot = objectGetSnapshot(parse_or_die(params));
+            if (snapshot.is_err())
+            {
+                std::exit(2);
+            }
+            return std::move(snapshot).value();
+        }
+
+        // @brief Phase 6: scene.treeChanged イベントの params を構築する。変更されたノードの
+        // スナップショット DTO（changedNodes）を 1 件返す（events/scene.treeChanged.params.schema.json
+        // と整合）。最小トリガとして、setProperty 後に変更ノード 1 件を通知するのみ。値コピーのみ。
+        static norves::bridge::JsonValue scene_tree_changed_params()
+        {
+            return parse_or_die(
+                R"({"changedNodes":[{"id":"n-1","name":"NodeA","kind":"object"}],)"
+                R"("fullRefreshRequired":false})");
         }
 
         // @brief schema.getSnapshot。型記述子（typeName + properties[{name,valueType}]）を返す。
@@ -284,12 +325,22 @@ namespace norves::mock
         // クロスメソッドの契約を明示するため atomic にする。
         std::atomic<bool> emit_log_burst{false};
 
+        // @brief Phase 6: objectSetProperty() によってセットされ、recv ループが消費する。
+        // setProperty の ack 後に object.changed / scene.treeChanged を 1 回ずつ発行する。
+        // @note emit_log_burst と同じシングルスレッドのハンドオフ契約。
+        std::atomic<bool> emit_object_changed{false};
+        std::atomic<bool> emit_scene_tree_changed{false};
+
     private:
         // @brief objectId -> fieldOfView の現在値（JSON 数値テキスト）。objectSetProperty が
         // 更新し objectGetSnapshot が読む。
         // @note mock のシングルスレッド recv ループ前提でのみ安全（上記 objectSetProperty の
         // @note 参照）。マルチスレッド化しないこと。
         std::map<std::string, std::string> object_field_of_view;
+
+        // @brief Phase 6: 直近の objectSetProperty が対象とした objectId。object.changed の
+        // params 構築時に同スレッドで読む。シングルスレッド recv ループ前提。
+        std::string last_changed_object_id;
 
         // @brief n-1 以外の既知ノード（scene.getTree のツリーと整合）に対する小さなデモ
         // スナップショット JSON を返す。conformance には現れない additive 経路であり、n-1 の

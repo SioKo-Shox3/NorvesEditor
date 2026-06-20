@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/events/scene.treeChanged.params.schema.json",
+  "title": "scene.treeChanged event params",
+  "description": "Sent by the engine over the wire when the scene tree changes. Introduced in protocol version 0.2. Carries a snapshot copy of the affected nodes (DTO, never a live engine pointer); fullRefreshRequired signals that the editor should re-fetch the whole tree via scene.getTree instead of applying changedNodes incrementally.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "changedNodes": {
+      "description": "Optional snapshot copies of the nodes that changed. Each is a full scene node DTO. Absent when only fullRefreshRequired is meaningful.",
+      "type": "array",
+      "items": {
+        "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/sceneNode"
+      }
+    },
+    "fullRefreshRequired": {
+      "description": "When true, the editor should re-fetch the entire scene tree rather than apply changedNodes incrementally.",
+      "type": "boolean"
+    }
+  }
+}

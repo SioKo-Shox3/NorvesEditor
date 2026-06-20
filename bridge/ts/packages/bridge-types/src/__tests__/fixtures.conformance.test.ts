@@ -215,6 +215,44 @@ describe('events/viewport.stateChanged positive fixtures', () => {
 });
 
 // -------------------------------------------------------------------------
+// events/scene.treeChanged -- SceneTreeChangedEvent (protocol 0.2)
+// -------------------------------------------------------------------------
+
+describe('events/scene.treeChanged positive fixtures', () => {
+  it('event-engine-valid: changedNodes carry ids and fullRefreshRequired is boolean', () => {
+    const f = loadFixture('events/scene.treeChanged/positive/event-engine-valid.json');
+    const params = paramsOf(f);
+    const changedNodes = params['changedNodes'] as unknown[];
+    expect(Array.isArray(changedNodes)).toBe(true);
+    for (const node of changedNodes) {
+      expect(typeof (node as Record<string, unknown>)['id']).toBe('string');
+    }
+    if (params['fullRefreshRequired'] !== undefined) {
+      expect(typeof params['fullRefreshRequired']).toBe('boolean');
+    }
+  });
+});
+
+// -------------------------------------------------------------------------
+// events/object.changed -- ObjectChangedEvent (protocol 0.2)
+// -------------------------------------------------------------------------
+
+describe('events/object.changed positive fixtures', () => {
+  it('event-engine-valid: objectId is a string and properties is a property bag', () => {
+    const f = loadFixture('events/object.changed/positive/event-engine-valid.json');
+    const params = paramsOf(f);
+    expect(typeof params['objectId']).toBe('string');
+    const properties = params['properties'] as unknown[];
+    expect(Array.isArray(properties)).toBe(true);
+    for (const entry of properties) {
+      const e = entry as Record<string, unknown>;
+      expect(typeof e['name']).toBe('string');
+      expect('value' in e).toBe(true);
+    }
+  });
+});
+
+// -------------------------------------------------------------------------
 // methods/engine.getStatus -- GetStatusResult (response params)
 // -------------------------------------------------------------------------
 
