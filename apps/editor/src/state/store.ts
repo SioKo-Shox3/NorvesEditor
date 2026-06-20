@@ -22,6 +22,8 @@ import type {
   ViewportStateChangedEvent,
   GetStatusResult,
   SceneNode,
+  ObjectSnapshot,
+  TypeDescriptor,
 } from '@norves/bridge-ui';
 import type { ConnectionStatePayload } from '@norves/bridge-ui';
 
@@ -95,6 +97,26 @@ export interface BridgeState {
    * "unsupported" notice instead of an empty scene. Reset on (re)connect.
    */
   sceneUnsupported?: boolean;
+  /**
+   * Snapshot of the currently selected object's properties (object.getSnapshot),
+   * or undefined when nothing is selected / no snapshot has arrived yet. Cleared
+   * on deselect, disconnect, and process exit so a stale object never lingers.
+   * Generic — carries no engine-specific assumptions.
+   */
+  objectSnapshot?: ObjectSnapshot;
+  /**
+   * Generic type descriptors from schema.getSnapshot, fetched once per
+   * connection. Used as an auxiliary hint when rendering property valueTypes.
+   * Undefined before any schema has been fetched (or after disconnect).
+   */
+  schemaTypes?: TypeDescriptor[];
+  /**
+   * True when the connected engine answered object.getSnapshot (or
+   * schema.getSnapshot) with METHOD_NOT_SUPPORTED — i.e. it does not implement
+   * object/schema query. Engine-agnostic degradation signal the Inspector reads
+   * to show an "unsupported" notice. Reset on (re)connect.
+   */
+  objectUnsupported?: boolean;
 }
 
 export const INITIAL_STATE: BridgeState = {
@@ -139,7 +161,22 @@ export type BridgeAction =
    * Mark scene query as unsupported by the connected engine (scene.getTree
    * answered METHOD_NOT_SUPPORTED). Engine-agnostic degradation signal.
    */
-  | { type: 'sceneTreeUnsupported' };
+  | { type: 'sceneTreeUnsupported' }
+  /**
+   * Store a freshly fetched object.getSnapshot for the selected object.
+   * Engine-agnostic: a generic property bag, not mock-specific.
+   */
+  | { type: 'objectSnapshotLoaded'; snapshot: ObjectSnapshot }
+  /**
+   * Store the type descriptors from a schema.getSnapshot fetch.
+   */
+  | { type: 'schemaSnapshotLoaded'; types: TypeDescriptor[] }
+  /**
+   * Mark object/schema query as unsupported by the connected engine
+   * (object.getSnapshot or schema.getSnapshot answered METHOD_NOT_SUPPORTED).
+   * Engine-agnostic degradation signal.
+   */
+  | { type: 'objectSnapshotUnsupported' };
 
 // -------------------------------------------------------------------------
 // Pure reducer
@@ -186,6 +223,11 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         sceneTree: p.connected ? state.sceneTree : undefined,
         selectedObjectId: p.connected ? state.selectedObjectId : undefined,
         sceneUnsupported: p.connected ? false : state.sceneUnsupported,
+        // Inspector data is per-object / per-engine: a fresh connection re-probes
+        // both, and a disconnect drops the stale snapshot + schema + verdict.
+        objectSnapshot: p.connected ? state.objectSnapshot : undefined,
+        schemaTypes: p.connected ? state.schemaTypes : undefined,
+        objectUnsupported: p.connected ? false : state.objectUnsupported,
       };
     }
 
@@ -249,6 +291,10 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         sceneTree: undefined,
         selectedObjectId: undefined,
         sceneUnsupported: undefined,
+        // The Inspector data is likewise invalid once the engine dies.
+        objectSnapshot: undefined,
+        schemaTypes: undefined,
+        objectUnsupported: undefined,
       };
     }
 
@@ -261,7 +307,15 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     }
 
     case 'objectSelected': {
-      return { ...state, selectedObjectId: action.id };
+      // Changing (or clearing) the selection invalidates the previously fetched
+      // object snapshot. The schema (engine-wide) is left intact. The fetch
+      // effect in the Inspector loads the new selection's snapshot; until it
+      // arrives the panel shows a loading state rather than the old object.
+      if (action.id === state.selectedObjectId) {
+        // Re-selecting the same id is a no-op for the snapshot.
+        return { ...state, selectedObjectId: action.id };
+      }
+      return { ...state, selectedObjectId: action.id, objectSnapshot: undefined };
     }
 
     case 'sceneTreeLoaded': {
@@ -272,6 +326,20 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     case 'sceneTreeUnsupported': {
       // No tree to show; record the engine's degradation for the Outliner.
       return { ...state, sceneTree: undefined, sceneUnsupported: true };
+    }
+
+    case 'objectSnapshotLoaded': {
+      // A successful snapshot clears any prior "unsupported" marker.
+      return { ...state, objectSnapshot: action.snapshot, objectUnsupported: false };
+    }
+
+    case 'schemaSnapshotLoaded': {
+      return { ...state, schemaTypes: action.types };
+    }
+
+    case 'objectSnapshotUnsupported': {
+      // No snapshot to show; record the engine's degradation for the Inspector.
+      return { ...state, objectSnapshot: undefined, objectUnsupported: true };
     }
 
     default: {

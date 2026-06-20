@@ -294,3 +294,126 @@ describe('useBridgeActions — stopProcess', () => {
     });
   });
 });
+
+// -------------------------------------------------------------------------
+// (f) getObjectSnapshot / getSchemaSnapshot — invoke + dispatch + degradation
+// -------------------------------------------------------------------------
+
+describe('useBridgeActions — getObjectSnapshot', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('invokes object_get_snapshot with { objectId } and stores the snapshot', async () => {
+    const snapshot = {
+      objectId: 'n-1',
+      name: 'NodeA',
+      kind: 'object',
+      properties: [{ name: 'label', value: 'x', valueType: 'string' }],
+    };
+    (tauriCore.invoke as Mock).mockResolvedValue(snapshot);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.actions.getObjectSnapshot('n-1')).resolves.toBeUndefined();
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('object_get_snapshot', { objectId: 'n-1' });
+    expect(result.current.state.objectSnapshot?.objectId).toBe('n-1');
+  });
+
+  it('maps METHOD_NOT_SUPPORTED to objectUnsupported (not a user error)', async () => {
+    const engineErr = { kind: 'engine', code: 'METHOD_NOT_SUPPORTED', message: 'no object query' };
+    (tauriCore.invoke as Mock).mockRejectedValue(engineErr);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.actions.getObjectSnapshot('n-1')).resolves.toBeUndefined();
+    });
+
+    expect(result.current.state.objectUnsupported).toBe(true);
+    // Not surfaced as a connection error.
+    expect(result.current.state.connection.status).not.toBe('error');
+  });
+
+  it('maps a non-engine error to lastError without throwing', async () => {
+    const err = { kind: 'request', message: 'timeout' };
+    (tauriCore.invoke as Mock).mockRejectedValue(err);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.actions.getObjectSnapshot('n-1')).resolves.toBeUndefined();
+    });
+
+    expect(result.current.state.lastError).toMatchObject({ kind: 'request', message: 'timeout' });
+  });
+});
+
+describe('useBridgeActions — getSchemaSnapshot', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('invokes schema_get_snapshot and stores the type descriptors', async () => {
+    const schema = { types: [{ typeName: 'TypeA', properties: [{ name: 'x', valueType: 'number' }] }] };
+    (tauriCore.invoke as Mock).mockResolvedValue(schema);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.actions.getSchemaSnapshot()).resolves.toBeUndefined();
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('schema_get_snapshot', undefined);
+    expect(result.current.state.schemaTypes?.[0]?.typeName).toBe('TypeA');
+  });
+
+  it('maps METHOD_NOT_SUPPORTED to objectUnsupported', async () => {
+    const engineErr = { kind: 'engine', code: 'METHOD_NOT_SUPPORTED', message: 'no schema query' };
+    (tauriCore.invoke as Mock).mockRejectedValue(engineErr);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.actions.getSchemaSnapshot()).resolves.toBeUndefined();
+    });
+
+    expect(result.current.state.objectUnsupported).toBe(true);
+  });
+});

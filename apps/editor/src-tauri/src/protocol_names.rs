@@ -22,6 +22,8 @@ pub mod commands {
     pub const RECONNECT: &str = "bridge_reconnect";
     pub const GET_STATUS: &str = "get_status";
     pub const SCENE_GET_TREE: &str = "scene_get_tree";
+    pub const OBJECT_GET_SNAPSHOT: &str = "object_get_snapshot";
+    pub const SCHEMA_GET_SNAPSHOT: &str = "schema_get_snapshot";
     pub const RUNTIME_PLAY: &str = "runtime_play";
     pub const RUNTIME_PAUSE: &str = "runtime_pause";
     pub const RUNTIME_STOP: &str = "runtime_stop";
@@ -77,6 +79,16 @@ mod tests {
     #[test]
     fn command_scene_get_tree() {
         assert_eq!(commands::SCENE_GET_TREE, "scene_get_tree");
+    }
+
+    #[test]
+    fn command_object_get_snapshot() {
+        assert_eq!(commands::OBJECT_GET_SNAPSHOT, "object_get_snapshot");
+    }
+
+    #[test]
+    fn command_schema_get_snapshot() {
+        assert_eq!(commands::SCHEMA_GET_SNAPSHOT, "schema_get_snapshot");
     }
 
     #[test]
@@ -179,6 +191,8 @@ mod tests {
             commands::RECONNECT,
             commands::GET_STATUS,
             commands::SCENE_GET_TREE,
+            commands::OBJECT_GET_SNAPSHOT,
+            commands::SCHEMA_GET_SNAPSHOT,
             commands::RUNTIME_PLAY,
             commands::RUNTIME_PAUSE,
             commands::RUNTIME_STOP,

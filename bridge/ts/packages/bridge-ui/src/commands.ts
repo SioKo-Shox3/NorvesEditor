@@ -18,6 +18,8 @@ export const BRIDGE_COMMANDS = {
   reconnect: 'bridge_reconnect',
   getStatus: 'get_status',
   sceneGetTree: 'scene_get_tree',
+  objectGetSnapshot: 'object_get_snapshot',
+  schemaGetSnapshot: 'schema_get_snapshot',
   runtimePlay: 'runtime_play',
   runtimePause: 'runtime_pause',
   runtimeStop: 'runtime_stop',
