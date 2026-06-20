@@ -19,7 +19,8 @@ namespace norves::bridge
     ///       バージョンは、これらの文字列のいずれかとバイト単位で一致する場合に限り
     ///       受理される。F3 のバージョンネゴシエーションロジックはリテラルを埋め込まず
     ///       この定数を参照しなければならず、対応集合がただ一箇所に存在するようにする。
-    inline constexpr std::array<std::string_view, 1> SupportedProtocolVersions = {
+    inline constexpr std::array<std::string_view, 2> SupportedProtocolVersions = {
+        std::string_view{"0.2"},
         std::string_view{"0.1"},
     };
 

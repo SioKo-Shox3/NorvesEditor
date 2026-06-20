@@ -161,7 +161,7 @@ fn spawn_engine_on_free_port(exe: &str) -> (ChildGuard, u16) {
 /// Builds a `bridge.hello` request envelope suitable for sending over a
 /// live dispatcher.
 fn hello_envelope() -> ValidatedEnvelope {
-    let version = VersionString::try_from("0.1".to_owned()).expect("0.1 is a valid version");
+    let version = VersionString::try_from("0.2".to_owned()).expect("0.2 is a valid version");
     let params = HelloParams::new("norves-process-e2e", vec![version.clone()])
         .to_params()
         .expect("hello params serialize to object");
@@ -216,7 +216,7 @@ fn request_envelope(
     method: &str,
     params: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> ValidatedEnvelope {
-    let version = VersionString::try_from("0.1".to_owned()).expect("0.1 is a valid version");
+    let version = VersionString::try_from("0.2".to_owned()).expect("0.2 is a valid version");
     ValidatedEnvelope::Request {
         version,
         id: CorrelationId::try_from(id.to_owned()).expect("non-empty id"),
