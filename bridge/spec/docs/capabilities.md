@@ -35,6 +35,7 @@ log.stream          push log.message events without polling
 scene.query         read the engine's scene tree via scene.getTree (Phase 3 surface)
 object.query        read an object's properties / the type schema via
                     object.getSnapshot and schema.getSnapshot (Phase 4 surface)
+object.edit         write an object's property via object.setProperty (Phase 5 surface)
 ```
 
 The `scene.query` token advertises that an engine can answer `scene.getTree`
@@ -51,6 +52,14 @@ engine-agnostic advertisement in the same vein: an engine that does not implemen
 object/schema query omits the token and answers those methods with
 `METHOD_NOT_SUPPORTED`, which the editor degrades on gracefully (no Inspector
 content). The token is independent of protocol version negotiation.
+
+The `object.edit` token advertises that an engine can answer
+`object.setProperty` (write a single property value on an object). It is the
+write counterpart to `object.query`, and likewise optional and engine-agnostic:
+an engine that does not implement object editing omits the token and answers
+`object.setProperty` with `METHOD_NOT_SUPPORTED`, which the editor degrades on
+gracefully (a read-only Inspector). The token is independent of protocol version
+negotiation.
 
 Tokens are the unit of negotiation. A `capabilityDescriptor` wraps a token with
 optional metadata:

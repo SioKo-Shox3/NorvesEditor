@@ -639,6 +639,49 @@ pub async fn object_get_snapshot(
     Ok(value)
 }
 
+/// `object_set_property`: `object.setProperty` for `object_id` / `property` /
+/// `value`. Returns the raw wire-shaped `result` Value (UI types it as
+/// `SetObjectPropertyResult`).
+///
+/// Sends `params = { objectId, property, value }` (all required by the schema;
+/// `value` is forwarded verbatim as arbitrary JSON — string/number/boolean/null/
+/// array/object — so a structured edit reaches the engine unchanged). Validated
+/// with `parse_set_property_result` so a malformed ack surfaces as a clean
+/// backend error rather than being forwarded; the ORIGINAL wire Value (carrying
+/// the engine's `appliedValue`) is still returned (same validate-then-forward
+/// pattern as the read commands). An engine that does not implement object edit
+/// answers with a protocol error, which `send_method` maps to
+/// [`BackendError::Engine`] (e.g. `METHOD_NOT_SUPPORTED`) for the UI to degrade
+/// on.
+///
+/// This is the only WRITE path among the commands; it carries no extra state
+/// (no lock held across the request `.await` — `send_method` clones the handle
+/// out of state and drops the guard before awaiting, see module docs).
+#[tauri::command]
+pub async fn object_set_property(
+    state: State<'_, BridgeState>,
+    object_id: String,
+    property: String,
+    value: Value,
+) -> Result<Value, BackendError> {
+    let mut params = serde_json::Map::new();
+    params.insert("objectId".to_owned(), Value::String(object_id));
+    params.insert("property".to_owned(), Value::String(property));
+    // `value` is forwarded verbatim: a snapshot copy of the edited value, never a
+    // live engine pointer. The engine echoes (or normalizes) it back as
+    // `appliedValue`.
+    params.insert("value".to_owned(), value);
+    let result = send_method(state.inner(), "object.setProperty", Some(params)).await?;
+    // Validate shape (drift guard) but forward the original wire Value so the UI
+    // sees the engine's actual appliedValue.
+    norves_bridge_editor_client::parse_set_property_result(&result).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed object.setProperty result: {err}"),
+        }
+    })?;
+    Ok(result)
+}
+
 /// `schema_get_snapshot`: `schema.getSnapshot` with an empty params object.
 /// Returns the raw wire-shaped `result` Value (UI types it as `SchemaSnapshot`).
 ///
@@ -799,6 +842,57 @@ mod tests {
         let schema_result =
             send_method(&state, "schema.getSnapshot", Some(serde_json::Map::new())).await;
         assert!(matches!(schema_result, Err(BackendError::NotConnected)));
+    }
+
+    /// The write command (`object.setProperty`, via `send_method`) must also fail
+    /// with `NotConnected` when no live connection exists, never panicking or
+    /// hanging. This is the disconnected-path drift guard for the new write
+    /// command; the connected round-trip (including the in-memory mock mutation)
+    /// is covered by the conformance / process e2e suites against the real mock
+    /// engine.
+    #[tokio::test]
+    async fn object_set_property_when_disconnected_is_not_connected() {
+        let state = BridgeState::default();
+
+        let mut params = serde_json::Map::new();
+        params.insert("objectId".to_owned(), Value::String("n-1".to_owned()));
+        params.insert(
+            "property".to_owned(),
+            Value::String("fieldOfView".to_owned()),
+        );
+        params.insert("value".to_owned(), Value::from(75));
+        let result = send_method(&state, "object.setProperty", Some(params)).await;
+        assert!(matches!(result, Err(BackendError::NotConnected)));
+    }
+
+    /// The write command forwards an arbitrary JSON `value` verbatim into the
+    /// request params (string/number/boolean/null/array/object). This is a pure
+    /// shaping check on `build_request` so a structured (array/object) edit is not
+    /// silently dropped or coerced; the round-trip is covered by e2e.
+    #[test]
+    fn object_set_property_forwards_structured_value_verbatim() {
+        let mut params = serde_json::Map::new();
+        params.insert("objectId".to_owned(), Value::String("n-1".to_owned()));
+        params.insert("property".to_owned(), Value::String("position".to_owned()));
+        // A nested array value, the kind the JSON editor produces.
+        params.insert("value".to_owned(), serde_json::json!([0, 1.5, -10]));
+        let env = build_request(
+            CorrelationId::try_from("req-1".to_owned()).expect("valid id"),
+            "object.setProperty",
+            Some(params),
+        )
+        .expect("builds");
+        match env {
+            ValidatedEnvelope::Request {
+                method,
+                params: Some(map),
+                ..
+            } => {
+                assert_eq!(method.as_str(), "object.setProperty");
+                assert_eq!(map.get("value"), Some(&serde_json::json!([0, 1.5, -10])));
+            }
+            _ => panic!("expected a request envelope with params"),
+        }
     }
 
     /// Core of Fix 1: a relay whose generation no longer matches the current

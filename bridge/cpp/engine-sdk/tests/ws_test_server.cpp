@@ -301,41 +301,64 @@ namespace
                 R"({"id":"n-3","name":"NodeB"}]}]}})"));
         }
 
-        Result<JsonValue, BridgeError> objectGetSnapshot(const JsonValue& /*params*/) override
+        // @note MockAdapter::objectGetSnapshot と 1 対 1 で一致する per-node 実装。n-1 経路は
+        // 正典フィクスチャと値等価（適合 exact-match を温存）。他の既知ノード（n-0/n-2/n-3）は
+        // additive な小さなデモ集合、未知 id は空 propertyBag。
+        Result<JsonValue, BridgeError> objectGetSnapshot(const JsonValue& params) override
         {
-            std::string fieldOfView = "60";
-            const auto it = m_ObjectFieldOfView.find("n-1");
-            if (it != m_ObjectFieldOfView.end())
+            const std::string paramsText = params.dump();
+            const std::optional<std::string> objectId = ExtractStringField(paramsText, "objectId");
+            const std::string id = objectId.value_or("n-1");
+
+            if (id == "n-1")
             {
-                fieldOfView = it->second;
+                std::string fieldOfView = "60";
+                const auto it = m_ObjectFieldOfView.find("n-1");
+                if (it != m_ObjectFieldOfView.end())
+                {
+                    fieldOfView = it->second;
+                }
+                std::string snapshot =
+                    R"({"objectId":"n-1","name":"NodeA","kind":"object","properties":[)"
+                    R"({"name":"label","value":"Example Name","valueType":"string"},)"
+                    R"({"name":"fieldOfView","value":)";
+                snapshot += fieldOfView;
+                snapshot +=
+                    R"(,"valueType":"number"},)"
+                    R"({"name":"enabled","value":true,"valueType":"boolean"},)"
+                    R"({"name":"parent","value":null},)"
+                    R"({"name":"position","value":[0,1.5,-10],"valueType":"vector3"},)"
+                    R"({"name":"metadata","value":{"locked":false,"tag":"primary"}}]})";
+                return Result<JsonValue, BridgeError>::ok(ParseOrDie(snapshot));
             }
-            std::string snapshot =
-                R"({"objectId":"n-1","name":"NodeA","kind":"object","properties":[)"
-                R"({"name":"label","value":"Example Name","valueType":"string"},)"
-                R"({"name":"fieldOfView","value":)";
-            snapshot += fieldOfView;
-            snapshot +=
-                R"(,"valueType":"number"},)"
-                R"({"name":"enabled","value":true,"valueType":"boolean"},)"
-                R"({"name":"parent","value":null},)"
-                R"({"name":"position","value":[0,1.5,-10],"valueType":"vector3"},)"
-                R"({"name":"metadata","value":{"locked":false,"tag":"primary"}}]})";
-            return Result<JsonValue, BridgeError>::ok(ParseOrDie(snapshot));
+
+            const std::optional<std::string> demo = DemoSnapshotFor(id);
+            if (demo.has_value())
+            {
+                return Result<JsonValue, BridgeError>::ok(ParseOrDie(demo.value()));
+            }
+
+            std::string empty = R"({"objectId":")";
+            empty += id;
+            empty += R"(","properties":[]})";
+            return Result<JsonValue, BridgeError>::ok(ParseOrDie(empty));
         }
 
         // @note 状態更新（m_ObjectFieldOfView への書き込み）は mock のシングルスレッド recv
         // ループ前提でのみ安全である。handleFrame はアダプタを同期・同スレッドで呼ぶため、
-        // この可変状態にロックは要らない。将来もマルチスレッド化しないこと。
+        // この可変状態にロックは要らない。将来もマルチスレッド化しないこと。MockAdapter と同値で、
+        // objectId をキーに fieldOfView を更新する。
         Result<JsonValue, BridgeError> objectSetProperty(const JsonValue& params) override
         {
             const std::string paramsText = params.dump();
+            const std::optional<std::string> objectId = ExtractStringField(paramsText, "objectId");
             const std::optional<std::string> propertyName = ExtractStringField(paramsText, "property");
             const std::optional<std::string> valueText = ExtractJsonField(paramsText, "value");
 
-            if (propertyName.has_value() && propertyName.value() == "fieldOfView" &&
-                valueText.has_value())
+            if (objectId.has_value() && propertyName.has_value() &&
+                propertyName.value() == "fieldOfView" && valueText.has_value())
             {
-                m_ObjectFieldOfView["n-1"] = valueText.value();
+                m_ObjectFieldOfView[objectId.value()] = valueText.value();
             }
 
             std::string ack = R"({"accepted":true,"appliedValue":)";
@@ -365,6 +388,32 @@ namespace
         // 更新し objectGetSnapshot が読む。MockAdapter::object_field_of_view と同役割。
         // @note mock のシングルスレッド recv ループ前提でのみ安全。マルチスレッド化しないこと。
         std::map<std::string, std::string> m_ObjectFieldOfView;
+
+        // @brief n-1 以外の既知ノードに対する小さなデモスナップショット JSON。
+        // MockAdapter::demo_snapshot_for と同値（二重管理）。未知 id では nullopt。
+        static std::optional<std::string> DemoSnapshotFor(const std::string& id)
+        {
+            if (id == "n-0")
+            {
+                return std::string(
+                    R"({"objectId":"n-0","name":"Root","kind":"object","properties":[)"
+                    R"({"name":"visible","value":true,"valueType":"boolean"}]})");
+            }
+            if (id == "n-2")
+            {
+                return std::string(
+                    R"({"objectId":"n-2","name":"GroupNode","kind":"object","properties":[)"
+                    R"({"name":"label","value":"Group","valueType":"string"},)"
+                    R"({"name":"childCount","value":1,"valueType":"number"}]})");
+            }
+            if (id == "n-3")
+            {
+                return std::string(
+                    R"({"objectId":"n-3","name":"NodeB","kind":"object","properties":[)"
+                    R"({"name":"enabled","value":false,"valueType":"boolean"}]})");
+            }
+            return std::nullopt;
+        }
     };
 
     // @brief --bridge-port を読み取る。成功時はポートを返す。不正・欠落時は

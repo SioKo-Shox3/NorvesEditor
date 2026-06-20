@@ -76,7 +76,8 @@ namespace norves::mock
                     R"({"name":"log.stream"},)"
                     R"({"name":"viewport.focus"},)"
                     R"({"name":"scene.query"},)"
-                    R"({"name":"object.query"}]})"));
+                    R"({"name":"object.query"},)"
+                    R"({"name":"object.edit"}]})"));
         }
 
         norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> getStatus(
@@ -171,34 +172,64 @@ namespace norves::mock
                     R"({"id":"n-3","name":"NodeB"}]}]}})"));
         }
 
-        // @brief object.getSnapshot。objectId に対応するプロパティバッグを返す。可変プロパティ
-        // （fieldOfView）の現在値はインメモリ静的マップ object_field_of_view から引き、デモ
-        // スナップショットのテンプレートに差し込む。これにより objectSetProperty による更新が
-        // 後続の getSnapshot に反映される。
-        // @note objectId はクエリ params から取らず、デモは単一オブジェクト n-1 を返す（mock の
-        // デモ範囲）。実エンジンは params.objectId を解釈する。
+        // @brief object.getSnapshot。params.objectId に対応するプロパティバッグを返す。
+        //
+        // n-1 経路（適合テスト対象）は従来どおり: 可変プロパティ（fieldOfView）の現在値を
+        // インメモリ静的マップ object_field_of_view から引き、デモテンプレートに差し込む。
+        // これにより objectSetProperty による更新が後続の getSnapshot に反映される。n-1 の
+        // 返値は正典フィクスチャ（object.getSnapshot/positive/response-valid.json）と値等価で
+        // あり、H-D 適合の exact-match を一切壊さない。
+        //
+        // 他の既知ノード（n-0 Root / n-2 GroupNode / n-3 NodeB。scene.getTree のツリーと整合）
+        // には小さなデモプロパティ集合を返す。これにより Outliner で任意ノードを選ぶと Inspector
+        // が表示される（per-node 化）。未知 id は空の propertyBag を返す。すべて値コピーのみで
+        // JsonValue を構築し、エンジン内部ポインタや span を渡さない（memory-buffer-policy）。
         norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
-        objectGetSnapshot(const norves::bridge::JsonValue& /*params*/) override
+        objectGetSnapshot(const norves::bridge::JsonValue& params) override
         {
-            std::string fieldOfView = "60";
-            const auto it = object_field_of_view.find("n-1");
-            if (it != object_field_of_view.end())
+            const std::string paramsText = params.dump();
+            const std::optional<std::string> objectId = extract_string_field(paramsText, "objectId");
+            const std::string id = objectId.value_or("n-1");
+
+            // n-1: 適合フィクスチャと値等価の経路（温存）。fieldOfView は可変。
+            if (id == "n-1")
             {
-                fieldOfView = it->second;
+                std::string fieldOfView = "60";
+                const auto it = object_field_of_view.find("n-1");
+                if (it != object_field_of_view.end())
+                {
+                    fieldOfView = it->second;
+                }
+                std::string snapshot =
+                    R"({"objectId":"n-1","name":"NodeA","kind":"object","properties":[)"
+                    R"({"name":"label","value":"Example Name","valueType":"string"},)"
+                    R"({"name":"fieldOfView","value":)";
+                snapshot += fieldOfView;
+                snapshot +=
+                    R"(,"valueType":"number"},)"
+                    R"({"name":"enabled","value":true,"valueType":"boolean"},)"
+                    R"({"name":"parent","value":null},)"
+                    R"({"name":"position","value":[0,1.5,-10],"valueType":"vector3"},)"
+                    R"({"name":"metadata","value":{"locked":false,"tag":"primary"}}]})";
+                return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+                    ok(parse_or_die(snapshot));
             }
-            std::string snapshot =
-                R"({"objectId":"n-1","name":"NodeA","kind":"object","properties":[)"
-                R"({"name":"label","value":"Example Name","valueType":"string"},)"
-                R"({"name":"fieldOfView","value":)";
-            snapshot += fieldOfView;
-            snapshot +=
-                R"(,"valueType":"number"},)"
-                R"({"name":"enabled","value":true,"valueType":"boolean"},)"
-                R"({"name":"parent","value":null},)"
-                R"({"name":"position","value":[0,1.5,-10],"valueType":"vector3"},)"
-                R"({"name":"metadata","value":{"locked":false,"tag":"primary"}}]})";
+
+            // 他の既知ノード: scene.getTree のツリー（Root/GroupNode/NodeB）と整合する小さな
+            // デモプロパティ集合。conformance には現れない additive な経路。
+            const std::optional<std::string> demo = demo_snapshot_for(id);
+            if (demo.has_value())
+            {
+                return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+                    ok(parse_or_die(demo.value()));
+            }
+
+            // 未知 id: 空の propertyBag（必須フィールドのみ）。
+            std::string empty = R"({"objectId":")";
+            empty += id;
+            empty += R"(","properties":[]})";
             return norves::bridge::Result<norves::bridge::JsonValue,
-                                          norves::bridge::BridgeError>::ok(parse_or_die(snapshot));
+                                          norves::bridge::BridgeError>::ok(parse_or_die(empty));
         }
 
         // @brief object.setProperty。{accepted:true, appliedValue:<echo>} を返し、インメモリ
@@ -211,19 +242,21 @@ namespace norves::mock
         norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
         objectSetProperty(const norves::bridge::JsonValue& params) override
         {
-            // params から property 名と value（JSON テキスト）を取り出し、可変プロパティなら
-            // 値コピーで内部マップを更新する。JsonValue は opaque なため params 全体を dump し、
-            // fieldOfView 宛ての setProperty の場合のみ value を抜き出してマップへ写す。
-            // フィクスチャ（object.setProperty/positive）は {property:"fieldOfView", value:75}
-            // で {accepted:true, appliedValue:75} を期待する。
+            // params から objectId / property 名 / value（JSON テキスト）を取り出し、可変プロパティ
+            // なら値コピーで内部マップを更新する。JsonValue は opaque なため params 全体を dump し、
+            // fieldOfView 宛ての setProperty の場合のみ value を抜き出して objectId をキーにマップへ
+            // 写す。フィクスチャ（object.setProperty/positive）は objectId:"n-1",
+            // property:"fieldOfView", value:75 で {accepted:true, appliedValue:75} を期待し、
+            // n-1/fieldOfView の更新が後続 getSnapshot に 75 として反映される（適合の前提）。
             const std::string paramsText = params.dump();
+            const std::optional<std::string> objectId = extract_string_field(paramsText, "objectId");
             const std::optional<std::string> propertyName = extract_string_field(paramsText, "property");
             const std::optional<std::string> valueText = extract_json_field(paramsText, "value");
 
-            if (propertyName.has_value() && propertyName.value() == "fieldOfView" &&
-                valueText.has_value())
+            if (objectId.has_value() && propertyName.has_value() &&
+                propertyName.value() == "fieldOfView" && valueText.has_value())
             {
-                object_field_of_view["n-1"] = valueText.value();
+                object_field_of_view[objectId.value()] = valueText.value();
             }
 
             std::string ack = R"({"accepted":true,"appliedValue":)";
@@ -257,6 +290,33 @@ namespace norves::mock
         // @note mock のシングルスレッド recv ループ前提でのみ安全（上記 objectSetProperty の
         // @note 参照）。マルチスレッド化しないこと。
         std::map<std::string, std::string> object_field_of_view;
+
+        // @brief n-1 以外の既知ノード（scene.getTree のツリーと整合）に対する小さなデモ
+        // スナップショット JSON を返す。conformance には現れない additive 経路であり、n-1 の
+        // exact-match を一切壊さない。未知 id では nullopt。
+        static std::optional<std::string> demo_snapshot_for(const std::string& id)
+        {
+            if (id == "n-0")
+            {
+                return std::string(
+                    R"({"objectId":"n-0","name":"Root","kind":"object","properties":[)"
+                    R"({"name":"visible","value":true,"valueType":"boolean"}]})");
+            }
+            if (id == "n-2")
+            {
+                return std::string(
+                    R"({"objectId":"n-2","name":"GroupNode","kind":"object","properties":[)"
+                    R"({"name":"label","value":"Group","valueType":"string"},)"
+                    R"({"name":"childCount","value":1,"valueType":"number"}]})");
+            }
+            if (id == "n-3")
+            {
+                return std::string(
+                    R"({"objectId":"n-3","name":"NodeB","kind":"object","properties":[)"
+                    R"({"name":"enabled","value":false,"valueType":"boolean"}]})");
+            }
+            return std::nullopt;
+        }
 
         // @brief コンパクトな JSON オブジェクトテキストから、トップレベルの文字列フィールドの値
         // （引用符なし）を取り出す。フィクスチャ駆動の決定論的入力に対する最小限のスキャナで

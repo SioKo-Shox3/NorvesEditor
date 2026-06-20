@@ -494,3 +494,81 @@ html, body, #root {
   max-height: 240px;
   overflow: auto;
 }
+
+/* ---- property editor (Phase 5: object.setProperty write path) ---- */
+.prop-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.prop-editor__input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 2px 6px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.prop-editor__input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.prop-editor__input:disabled {
+  opacity: 0.6;
+}
+
+.prop-editor__checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.prop-editor__json {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.prop-editor__textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  white-space: pre;
+}
+
+.prop-editor__apply {
+  align-self: flex-start;
+  padding: 2px 10px;
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.prop-editor__apply:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.prop-editor__hint {
+  font-size: 10px;
+}
+
+.prop-editor__hint--pending {
+  color: var(--color-text-muted);
+}
+
+.prop-editor__hint--error {
+  color: #fca5a5;
+}

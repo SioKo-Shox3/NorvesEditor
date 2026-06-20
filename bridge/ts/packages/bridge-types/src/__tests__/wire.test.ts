@@ -7,6 +7,7 @@ import {
   ORIGINS,
   KINDS,
 } from '../index.js';
+import type { SetObjectPropertyResult } from '../index.js';
 
 describe('LOG_LEVELS wire strings', () => {
   it('contains all five lowercase levels', () => {
@@ -99,5 +100,24 @@ describe('KINDS wire strings', () => {
 
   it('does not contain error as a kind (error is a response payload, not a kind)', () => {
     expect(KINDS).not.toContain('error');
+  });
+});
+
+describe('SetObjectPropertyResult shape', () => {
+  it('accepts a minimal ack (accepted only)', () => {
+    const ack: SetObjectPropertyResult = { accepted: true };
+    expect(ack.accepted).toBe(true);
+    expect(ack.appliedValue).toBeUndefined();
+  });
+
+  it('carries an optional appliedValue of any PropertyValue kind', () => {
+    const num: SetObjectPropertyResult = { accepted: true, appliedValue: 75 };
+    const arr: SetObjectPropertyResult = { accepted: true, appliedValue: [0, 1.5, -10] };
+    const obj: SetObjectPropertyResult = { accepted: true, appliedValue: { locked: false } };
+    const nul: SetObjectPropertyResult = { accepted: false, appliedValue: null };
+    expect(num.appliedValue).toBe(75);
+    expect(Array.isArray(arr.appliedValue)).toBe(true);
+    expect(typeof obj.appliedValue).toBe('object');
+    expect(nul.appliedValue).toBeNull();
   });
 });

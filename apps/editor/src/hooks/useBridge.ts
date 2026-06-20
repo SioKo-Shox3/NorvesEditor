@@ -38,6 +38,7 @@ import type {
   SceneGetTreeResult,
   ObjectSnapshot,
   SchemaSnapshot,
+  SetObjectPropertyResult,
 } from '@norves/bridge-ui';
 import { useBridgeDispatch } from '../state/BridgeContext.js';
 
@@ -257,6 +258,20 @@ export interface BridgeActions {
    * them. METHOD_NOT_SUPPORTED degrades the same way as getObjectSnapshot.
    */
   getSchemaSnapshot: () => Promise<void>;
+  /**
+   * Write a single property value on an object (object.setProperty). On an
+   * accepted ack the store snapshot is updated with the engine's appliedValue
+   * (falling back to the requested value when the engine omits it). Rejects (and
+   * reports through the store) on a backend/engine error; resolves with the ack
+   * so the caller can surface accepted:false inline. `value` is an arbitrary JSON
+   * value (string/number/boolean/null/array/object) — a snapshot copy, never a
+   * live engine pointer.
+   */
+  setObjectProperty: (
+    objectId: string,
+    property: string,
+    value: unknown,
+  ) => Promise<SetObjectPropertyResult>;
   play: () => Promise<void>;
   pause: () => Promise<void>;
   stop: () => Promise<void>;
@@ -422,6 +437,48 @@ export function useBridgeActions(): BridgeActions {
     }
   }, [dispatch]);
 
+  const setObjectProperty = useCallback(
+    async (
+      objectId: string,
+      property: string,
+      value: unknown,
+    ): Promise<SetObjectPropertyResult> => {
+      try {
+        const result = await invokeCommand<SetObjectPropertyResult>(
+          BRIDGE_COMMANDS.objectSetProperty,
+          { objectId, property, value },
+        );
+        if (result.accepted) {
+          // Reflect what the engine actually stored. When the engine omits
+          // appliedValue, fall back to the value we requested so the snapshot
+          // still updates. The cast is safe: the requested value was a valid
+          // PropertyValue (the editor only sends JSON-parseable values).
+          const applied =
+            result.appliedValue !== undefined
+              ? result.appliedValue
+              : (value as SetObjectPropertyResult['appliedValue']);
+          dispatch({
+            type: 'objectPropertyApplied',
+            objectId,
+            property,
+            appliedValue: applied ?? null,
+          });
+        }
+        return result;
+      } catch (err: unknown) {
+        const { kind, message } = extractBackendError(err);
+        dispatch({
+          type: 'errorReported',
+          payload: {
+            error: { code: kind ?? 'OBJECT_SET_PROPERTY_FAILED', message },
+          },
+        });
+        throw err;
+      }
+    },
+    [dispatch],
+  );
+
   const play = useCallback(async (): Promise<void> => {
     try {
       await invokeCommand(BRIDGE_COMMANDS.runtimePlay);
@@ -520,5 +577,5 @@ export function useBridgeActions(): BridgeActions {
     dispatch({ type: 'objectSelected', id });
   }, [dispatch]);
 
-  return { connect, disconnect, reconnect, getStatus, getSceneTree, getObjectSnapshot, getSchemaSnapshot, play, pause, stop, focusViewport, launch, stopProcess, dismissError, selectObject };
+  return { connect, disconnect, reconnect, getStatus, getSceneTree, getObjectSnapshot, getSchemaSnapshot, setObjectProperty, play, pause, stop, focusViewport, launch, stopProcess, dismissError, selectObject };
 }
