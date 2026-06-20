@@ -277,11 +277,31 @@ html, body, #root {
   color: var(--color-text);
 }
 
-/* ---- shell primitives (P1: TitleBar / Toolbar) ---- */
+/* ---- app shell (P2: custom title bar over dockview layout) ---- */
 /*
- * These classes back the presentational shell components introduced in P1.
- * They reference only design tokens from :root — no raw hex values.
- * data-tauri-drag-region and window API bindings are added at P2.
+ * The OS title bar is disabled (decorations:false). .app-shell stacks the
+ * custom TitleBar above the dockview layout in a flex column; the body flexes
+ * to fill the remaining height.
+ */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+}
+
+.app-shell__body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* ---- shell primitives (P1 layout, P2 window controls) ---- */
+/*
+ * These classes back the shell components. They reference only design tokens
+ * from :root — no raw hex values. The bar carries data-tauri-drag-region; the
+ * `app-region: drag` declarations make the bar draggable on Windows touch and
+ * keep the control buttons clickable (R8).
  */
 
 .titlebar {
@@ -290,9 +310,11 @@ html, body, #root {
   height: var(--header-h);
   background: var(--color-surface-alt);
   border-bottom: 1px solid var(--color-border);
-  padding: 0 10px;
+  padding: 0 0 0 10px;
   user-select: none;
   flex-shrink: 0;
+  -webkit-app-region: drag;
+  app-region: drag;
 }
 
 .titlebar__title {
@@ -311,6 +333,53 @@ html, body, #root {
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.titlebar__controls {
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+  height: 100%;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.titlebar__control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.titlebar__control:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.titlebar__control:active {
+  background: var(--color-surface-active);
+}
+
+.titlebar__control:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.titlebar__control--close:hover {
+  background: var(--color-danger-bg-hover);
+  color: #fff;
 }
 
 .toolbar {
