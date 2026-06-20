@@ -1,8 +1,8 @@
 // Method param/result interfaces for the alpha control-plane methods.
 // Shapes mirror the positive fixtures under bridge/spec/fixtures/methods/.
 //
-// Omitted (out of alpha-I scope): object.getSnapshot, object.setProperty,
-// scene.getTree, schema.getSnapshot.
+// scene.getTree lives in ./scene.ts (Phase 3). Still omitted here:
+// object.getSnapshot, object.setProperty, schema.getSnapshot.
 
 import type {
   CapabilityDescriptor,

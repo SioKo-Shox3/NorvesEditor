@@ -8,7 +8,8 @@
     "capabilities": [
       { "name": "runtime.control", "version": "0.1", "description": "Play/pause/stop control." },
       { "name": "log.stream" },
-      { "name": "viewport.focus" }
+      { "name": "viewport.focus" },
+      { "name": "scene.query" }
     ]
   }
 }

@@ -57,6 +57,7 @@ const mockActions = {
   disconnect:     vi.fn<BridgeActions['disconnect']>().mockResolvedValue(undefined),
   reconnect:      vi.fn<BridgeActions['reconnect']>().mockResolvedValue(undefined),
   getStatus:      vi.fn<BridgeActions['getStatus']>().mockResolvedValue(undefined),
+  getSceneTree:   vi.fn<BridgeActions['getSceneTree']>().mockResolvedValue(undefined),
   play:           vi.fn<BridgeActions['play']>().mockResolvedValue(undefined),
   pause:          vi.fn<BridgeActions['pause']>().mockResolvedValue(undefined),
   stop:           vi.fn<BridgeActions['stop']>().mockResolvedValue(undefined),

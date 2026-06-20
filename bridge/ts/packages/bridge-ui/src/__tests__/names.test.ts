@@ -18,6 +18,9 @@ describe('BRIDGE_COMMANDS literal values', () => {
   it('getStatus = get_status', () => {
     expect(BRIDGE_COMMANDS.getStatus).toBe('get_status');
   });
+  it('sceneGetTree = scene_get_tree', () => {
+    expect(BRIDGE_COMMANDS.sceneGetTree).toBe('scene_get_tree');
+  });
   it('runtimePlay = runtime_play', () => {
     expect(BRIDGE_COMMANDS.runtimePlay).toBe('runtime_play');
   });
