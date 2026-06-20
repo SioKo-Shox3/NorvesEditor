@@ -1,0 +1,24 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "event",
+  "event": "scene.treeChanged",
+  "sessionId": "sess-7f3a",
+  "seq": 41,
+  "params": {
+    "changedNodes": [
+      {
+        "id": "n-1",
+        "name": "NodeA",
+        "kind": "object",
+        "children": [
+          {
+            "id": "n-3",
+            "name": "NodeB"
+          }
+        ]
+      }
+    ],
+    "fullRefreshRequired": false
+  }
+}
