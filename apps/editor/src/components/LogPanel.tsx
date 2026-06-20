@@ -1,17 +1,15 @@
 /**
  * LogPanel — scrollable log output area.
  *
- * P6: renders live log entries from the bridge state store.
- * LogEntry type comes from the state store (which uses LogLevel from @norves/bridge-types).
+ * Phase 1 refactor: props drilling removed. Log entries are now
+ * obtained directly via useBridgeState().
+ * Rendering logic is unchanged from the original implementation.
  */
 
 import type React from 'react';
+import type { IDockviewPanelProps } from 'dockview-react';
+import { useBridgeState } from '../state/BridgeContext.js';
 import type { LogEntry } from '../state/store.js';
-
-export interface LogPanelProps {
-  /** Live log entries from bridge state store. */
-  entries?: readonly LogEntry[];
-}
 
 function formatTime(iso: string): string {
   // "2026-06-14T12:34:56.789Z" -> "12:34:56"
@@ -19,7 +17,12 @@ function formatTime(iso: string): string {
   return t !== undefined ? t.slice(0, 8) : iso;
 }
 
-export function LogPanel({ entries = [] }: LogPanelProps): React.JSX.Element {
+// IDockviewPanelProps is accepted but not currently used for data.
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export function LogPanel(_props: IDockviewPanelProps): React.JSX.Element {
+  const state = useBridgeState();
+  const entries: readonly LogEntry[] = state.logs;
+
   return (
     <div className="panel">
       <div className="panel__header">

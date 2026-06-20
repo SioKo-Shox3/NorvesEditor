@@ -1,95 +1,209 @@
 /**
- * AppLayout — 4-panel layout for NorvesEditor.
+ * AppLayout — dockview-based layout container for NorvesEditor.
  *
- * P6: reads live state from BridgeContext and wires useBridge actions
- * to each panel. The store Provider and useBridge mount are in App.tsx.
+ * Phase 1: Replaced the static CSS grid with DockviewReact.
+ * Panels: GameView (center), Connection (right), Settings (right),
+ *         Log (bottom), SceneOutliner (left), PropertyInspector (right).
  *
- * Layout (CSS grid):
+ * Layout persistence:
+ *   - Saved to localStorage under LAYOUT_KEY on every layout change.
+ *   - Restored from localStorage on startup (fromJSON).
+ *   - If fromJSON throws (corrupt JSON), the key is purged and the
+ *     default layout is rebuilt (prevents perpetual catch-on-reload).
  *
- *   +---------------------------+------------------+
- *   |                           |                  |
- *   |        Game View          |   Connection     |
- *   |    (primary control)      |                  |
- *   |                           +------------------+
- *   |                           |                  |
- *   +---------------------------+   Settings       |
- *   |                           |                  |
- *   |           Log             |                  |
- *   |      (full width)         |                  |
- *   +---------------------------+------------------+
+ * Layout reset:
+ *   - SettingsPanel exposes a "レイアウトをリセット" button that removes
+ *     the localStorage key and reloads the page.
+ *
+ * Floating groups are disabled (disableFloatingGroups) for alpha.
  */
 
+import { useCallback, useRef } from 'react';
 import type React from 'react';
-import { GameViewPanel }    from './GameViewPanel.js';
-import { LogPanel }         from './LogPanel.js';
-import { ConnectionPanel }  from './ConnectionPanel.js';
-import { SettingsPanel }    from './SettingsPanel.js';
-import { useBridgeState }   from '../state/BridgeContext.js';
-import { useBridge }        from '../hooks/useBridge.js';
+import { DockviewReact } from 'dockview-react';
+import type { DockviewApi, DockviewReadyEvent, IDockviewPanelProps } from 'dockview-react';
+import { GameViewPanel }          from './GameViewPanel.js';
+import { ConnectionPanel }        from './ConnectionPanel.js';
+import { SettingsPanel }          from './SettingsPanel.js';
+import { LogPanel }               from './LogPanel.js';
+import { SceneOutlinerPanel }     from './SceneOutlinerPanel.js';
+import { PropertyInspectorPanel } from './PropertyInspectorPanel.js';
 
-const layoutStyle: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: '1fr 280px',
-  gridTemplateRows:    '1fr 220px',
-  gap:    '4px',
-  padding: '4px',
-  height: '100%',
-  width:  '100%',
-  overflow: 'hidden',
+// -------------------------------------------------------------------------
+// Constants
+// -------------------------------------------------------------------------
+
+/** localStorage key for persisting the dockview layout JSON. */
+const LAYOUT_KEY = 'norveseditor-layout-v1';
+
+// -------------------------------------------------------------------------
+// Panel component map
+// -------------------------------------------------------------------------
+
+const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
+  gameView:           GameViewPanel,
+  connection:         ConnectionPanel,
+  settings:           SettingsPanel,
+  log:                LogPanel,
+  sceneOutliner:      SceneOutlinerPanel,
+  propertyInspector:  PropertyInspectorPanel,
 };
 
-const rightColumnStyle: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateRows: '1fr 1fr',
-  gap: '4px',
-  minHeight: 0,
-};
+// -------------------------------------------------------------------------
+// Default layout builder
+// -------------------------------------------------------------------------
+
+/**
+ * Build the default 6-panel layout using addPanel().
+ * Visual arrangement:
+ *
+ *   +------------------+--------------------+------------------+
+ *   |                  |                    |                  |
+ *   | Scene Outliner   |    Game View       | Connection       |
+ *   |                  |    (center/main)   +------------------+
+ *   |                  |                    | Property         |
+ *   |                  +--------------------+ Inspector        |
+ *   |                  |    Log             |                  |
+ *   +------------------+--------------------+------------------+
+ *                                           | Settings         |
+ *                                           +------------------+
+ */
+function buildDefaultLayout(api: DockviewApi): void {
+  // 1. Center: Game View (first panel — becomes the root)
+  api.addPanel({
+    id: 'gameView',
+    component: 'gameView',
+    title: 'Game View',
+  });
+
+  // 2. Right column: Connection (placed to the right of gameView)
+  api.addPanel({
+    id: 'connection',
+    component: 'connection',
+    title: 'Connection',
+    position: {
+      direction: 'right',
+      referencePanel: 'gameView',
+    },
+  });
+
+  // 3. Right column: Settings (below Connection, same group)
+  api.addPanel({
+    id: 'settings',
+    component: 'settings',
+    title: 'Settings',
+    position: {
+      direction: 'below',
+      referencePanel: 'connection',
+    },
+  });
+
+  // 4. Right column: Property Inspector (below Settings)
+  api.addPanel({
+    id: 'propertyInspector',
+    component: 'propertyInspector',
+    title: 'Property Inspector',
+    position: {
+      direction: 'below',
+      referencePanel: 'settings',
+    },
+  });
+
+  // 5. Bottom: Log (below gameView)
+  api.addPanel({
+    id: 'log',
+    component: 'log',
+    title: 'Log',
+    position: {
+      direction: 'below',
+      referencePanel: 'gameView',
+    },
+  });
+
+  // 6. Left: Scene Outliner (to the left of gameView)
+  api.addPanel({
+    id: 'sceneOutliner',
+    component: 'sceneOutliner',
+    title: 'Scene Outliner',
+    position: {
+      direction: 'left',
+      referencePanel: 'gameView',
+    },
+  });
+}
+
+// -------------------------------------------------------------------------
+// Persistence helpers
+// -------------------------------------------------------------------------
+
+function saveLayout(api: DockviewApi): void {
+  try {
+    const json = JSON.stringify(api.toJSON());
+    localStorage.setItem(LAYOUT_KEY, json);
+  } catch {
+    // Serialization or storage failure — ignore silently.
+  }
+}
+
+/**
+ * Try to restore a saved layout.
+ * Returns true on success, false if there was no saved layout or it was corrupt.
+ * On corruption the storage key is purged so the next load rebuilds the default.
+ */
+function tryRestoreLayout(api: DockviewApi): boolean {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(LAYOUT_KEY);
+  } catch {
+    return false;
+  }
+  if (raw === null) return false;
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    api.fromJSON(JSON.parse(raw));
+    return true;
+  } catch {
+    // Corrupt JSON — purge the key to prevent repeated failures on reload.
+    try {
+      localStorage.removeItem(LAYOUT_KEY);
+    } catch {
+      // Ignore storage errors.
+    }
+    return false;
+  }
+}
+
+// -------------------------------------------------------------------------
+// AppLayout component
+// -------------------------------------------------------------------------
 
 export function AppLayout(): React.JSX.Element {
-  const state   = useBridgeState();
-  const actions = useBridge();
+  // Keep a ref to the DockviewApi so the onDidLayoutChange handler can access it.
+  const apiRef = useRef<DockviewApi | null>(null);
 
-  const connected = state.connection.status === 'connected';
+  const handleReady = useCallback((event: DockviewReadyEvent): void => {
+    const api = event.api;
+    apiRef.current = api;
+
+    // Register layout persistence listener.
+    api.onDidLayoutChange(() => {
+      saveLayout(api);
+    });
+
+    // Attempt to restore persisted layout; fall back to default.
+    const restored = tryRestoreLayout(api);
+    if (!restored) {
+      buildDefaultLayout(api);
+    }
+  }, []);
 
   return (
-    <div style={layoutStyle}>
-      {/* Top-left: Game View */}
-      <div style={{ gridColumn: '1', gridRow: '1', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <GameViewPanel
-          engineState={state.engineState}
-          runtimeState={state.runtimeState}
-          connected={connected}
-          connectionStatus={state.connection.status}
-          viewportState={state.viewportState}
-          lastError={state.lastError}
-          onDismissError={actions.dismissError}
-          onReconnect={() => { void actions.reconnect(); }}
-          onPlay={() => { void actions.play(); }}
-          onPause={() => { void actions.pause(); }}
-          onStopRuntime={() => { void actions.stop(); }}
-          onFocusViewport={() => { void actions.focusViewport(); }}
-          onLaunch={() => { void actions.launch(); }}
-          onStopProcess={() => { void actions.stopProcess(); }}
-        />
-      </div>
-
-      {/* Right sidebar: Connection + Settings stacked */}
-      <div style={{ gridColumn: '2', gridRow: '1 / span 2', minHeight: 0, ...rightColumnStyle }}>
-        <ConnectionPanel
-          status={state.connection.status}
-          serverName={state.connection.serverName}
-          sessionId={state.connection.sessionId}
-          onConnect={(port) => { void actions.connect(port); }}
-          onDisconnect={() => { void actions.disconnect(); }}
-          onReconnect={() => { void actions.reconnect(); }}
-        />
-        <SettingsPanel />
-      </div>
-
-      {/* Bottom: Log */}
-      <div style={{ gridColumn: '1', gridRow: '2', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <LogPanel entries={state.logs} />
-      </div>
-    </div>
+    <DockviewReact
+      components={PANEL_COMPONENTS}
+      onReady={handleReady}
+      className="dockview-theme-dark"
+      disableFloatingGroups={true}
+    />
   );
 }

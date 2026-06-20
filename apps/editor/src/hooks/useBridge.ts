@@ -1,11 +1,15 @@
 /**
- * useBridge — subscribes to all Tauri bridge events and exposes action
- * callbacks that invoke Tauri commands through @norves/bridge-ui wrappers.
+ * Bridge hooks — split into subscriptions and actions.
  *
- * Mount this hook ONCE at the application root (inside <BridgeProvider>).
- * It registers event subscriptions on mount and cleans them up on unmount.
- * Safe under React StrictMode double-invoke: each effect run returns its own
- * cleanup that calls the UnlistenFns from that exact subscription set.
+ * `useBridgeSubscriptions()` registers all Tauri bridge event subscriptions.
+ * Mount it ONCE at the application root (inside <BridgeProvider>). It registers
+ * subscriptions on mount and cleans them up on unmount. Safe under React
+ * StrictMode double-invoke: each effect run returns its own cleanup that calls
+ * the UnlistenFns from that exact subscription set.
+ *
+ * `useBridgeActions()` returns the action callbacks that invoke Tauri commands
+ * through @norves/bridge-ui wrappers. It performs NO event subscription, so it
+ * is safe to call from any number of panels without duplicating subscriptions.
  *
  * NOTE: These actions are the substitute for a real GUI round-trip test.
  * Full end-to-end acceptance requires a running Tauri process + engine
@@ -46,6 +50,9 @@ function nextLogId(): number {
 
 // -------------------------------------------------------------------------
 // BackendError shape (Tauri returns a serde-tagged Err value on failure)
+//
+// This is the SINGLE source of truth for backend-error extraction. Panels
+// must NOT re-implement it; they obtain actions via useBridgeActions().
 // -------------------------------------------------------------------------
 
 interface BackendErrorPayload {
@@ -66,32 +73,16 @@ function extractBackendError(err: unknown): { kind?: string; message: string } {
 }
 
 // -------------------------------------------------------------------------
-// Hook
+// Event subscriptions hook (mount ONCE at the app root)
 // -------------------------------------------------------------------------
 
-export interface BridgeActions {
-  connect: (port: number) => Promise<void>;
-  disconnect: () => Promise<void>;
-  reconnect: () => Promise<void>;
-  getStatus: () => Promise<void>;
-  play: () => Promise<void>;
-  pause: () => Promise<void>;
-  stop: () => Promise<void>;
-  focusViewport: () => Promise<void>;
-  /** Spawn a new engine process and connect to it (Workstream J). */
-  launch: () => Promise<void>;
-  /** Terminate the running engine process (Workstream J). */
-  stopProcess: () => Promise<void>;
-  /** Dismiss (clear) the current lastError from the store. */
-  dismissError: () => void;
-}
-
-export function useBridge(): BridgeActions {
+/**
+ * Registers all Tauri bridge event subscriptions and tears them down on
+ * unmount. Returns nothing. Mount this exactly once at the application root;
+ * panels must NOT call this hook (that would duplicate subscriptions).
+ */
+export function useBridgeSubscriptions(): void {
   const dispatch = useBridgeDispatch();
-
-  // -----------------------------------------------------------------------
-  // Event subscriptions (mount / unmount)
-  // -----------------------------------------------------------------------
 
   // Keep a ref so the cleanup closure always sees the current unlisten list
   // even if the component re-renders between subscribe completion and cleanup.
@@ -209,7 +200,7 @@ export function useBridge(): BridgeActions {
 
     setup().catch((err: unknown) => {
       // Non-fatal: log to console but do NOT throw into React tree.
-      console.error('[useBridge] Failed to subscribe to events:', err);
+      console.error('[useBridgeSubscriptions] Failed to subscribe to events:', err);
     });
 
     return () => {
@@ -219,10 +210,42 @@ export function useBridge(): BridgeActions {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+}
 
-  // -----------------------------------------------------------------------
-  // Action callbacks
-  // -----------------------------------------------------------------------
+// -------------------------------------------------------------------------
+// Action callbacks hook (safe to call from any panel — no subscriptions)
+// -------------------------------------------------------------------------
+
+export interface BridgeActions {
+  connect: (port: number) => Promise<void>;
+  disconnect: () => Promise<void>;
+  reconnect: () => Promise<void>;
+  getStatus: () => Promise<void>;
+  play: () => Promise<void>;
+  pause: () => Promise<void>;
+  stop: () => Promise<void>;
+  focusViewport: () => Promise<void>;
+  /** Spawn a new engine process and connect to it (Workstream J). */
+  launch: () => Promise<void>;
+  /** Terminate the running engine process (Workstream J). */
+  stopProcess: () => Promise<void>;
+  /** Dismiss (clear) the current lastError from the store. */
+  dismissError: () => void;
+  /**
+   * Select a scene object by id. Pass undefined to deselect.
+   * Engine-agnostic: id is a plain string token, not mock-specific.
+   */
+  selectObject: (id: string | undefined) => void;
+}
+
+/**
+ * Returns the bridge action callbacks. This hook performs NO event
+ * subscription, so any number of panels may call it without duplicating
+ * subscriptions. Event subscriptions are owned by useBridgeSubscriptions(),
+ * mounted once at the application root.
+ */
+export function useBridgeActions(): BridgeActions {
+  const dispatch = useBridgeDispatch();
 
   const connect = useCallback(async (port: number): Promise<void> => {
     dispatch({ type: 'commandPending' });
@@ -389,5 +412,9 @@ export function useBridge(): BridgeActions {
     dispatch({ type: 'dismissError' });
   }, [dispatch]);
 
-  return { connect, disconnect, reconnect, getStatus, play, pause, stop, focusViewport, launch, stopProcess, dismissError };
+  const selectObject = useCallback((id: string | undefined): void => {
+    dispatch({ type: 'objectSelected', id });
+  }, [dispatch]);
+
+  return { connect, disconnect, reconnect, getStatus, play, pause, stop, focusViewport, launch, stopProcess, dismissError, selectObject };
 }
