@@ -51,9 +51,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -98,6 +100,92 @@ namespace
             std::exit(2);
         }
         return std::move(parsed).value();
+    }
+
+    // @brief コンパクトな JSON オブジェクトテキストから、トップレベルのフィールド値を生の
+    // JSON テキスト（文字列なら引用符込み、数値/真偽値/null/配列/オブジェクトはそのまま）で
+    // 取り出す。dump() の出力はネストでも有効な JSON なので、対応する括弧/引用のバランスを
+    // 取りながら値トークンの終端を求める。見つからなければ nullopt。
+    // @note FakeAdapter は mock_adapter.hpp の MockAdapter を意図的に複製しており、この
+    // ヘルパも同値の振る舞いを持つ。
+    std::optional<std::string> ExtractJsonField(const std::string& objectText, std::string_view key)
+    {
+        std::string needle = "\"";
+        needle += key;
+        needle += "\":";
+        const std::size_t keyPos = objectText.find(needle);
+        if (keyPos == std::string::npos)
+        {
+            return std::nullopt;
+        }
+        std::size_t pos = keyPos + needle.size();
+        if (pos >= objectText.size())
+        {
+            return std::nullopt;
+        }
+        const std::size_t start = pos;
+        int depth = 0;
+        bool inString = false;
+        bool escaped = false;
+        for (; pos < objectText.size(); ++pos)
+        {
+            const char c = objectText[pos];
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                }
+                else if (c == '\\')
+                {
+                    escaped = true;
+                }
+                else if (c == '"')
+                {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"')
+            {
+                inString = true;
+            }
+            else if (c == '{' || c == '[')
+            {
+                ++depth;
+            }
+            else if (c == '}' || c == ']')
+            {
+                if (depth == 0)
+                {
+                    break;  // 親オブジェクトの閉じ括弧に到達。
+                }
+                --depth;
+            }
+            else if ((c == ',' || c == ':') && depth == 0)
+            {
+                break;  // トップレベルの値区切りに到達。
+            }
+        }
+        return objectText.substr(start, pos - start);
+    }
+
+    // @brief コンパクトな JSON オブジェクトテキストから、トップレベルの文字列フィールドの値
+    // （引用符なし）を取り出す。見つからない / 文字列でないなら nullopt。
+    std::optional<std::string> ExtractStringField(const std::string& objectText,
+                                                  std::string_view key)
+    {
+        const std::optional<std::string> raw = ExtractJsonField(objectText, key);
+        if (!raw.has_value())
+        {
+            return std::nullopt;
+        }
+        const std::string& value = raw.value();
+        if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+        {
+            return value.substr(1, value.size() - 2);
+        }
+        return std::nullopt;
     }
 
     // @brief 最小限の stderr ログシンク。SDK の Warn/Error 診断をテスト失敗時の
@@ -196,11 +284,87 @@ namespace
             return Result<JsonValue, BridgeError>::ok(ParseOrDie(R"({"unsubscribed":true})"));
         }
 
+        // --- オプション（scene / object / schema）-----------------------------
+        //
+        // @note これら 4 メソッドの返値は mock_adapter.hpp の MockAdapter と 1 対 1 で一致し、
+        // かつ対応するスペックポジティブフィクスチャ（methods/scene.getTree |
+        // object.getSnapshot | object.setProperty | schema.getSnapshot /
+        // positive/response-valid.json）の result と値等価である。両者が乖離すると H-D 適合
+        // ランナーが検出する。値コピーでのみ JsonValue を構築する。
+
+        Result<JsonValue, BridgeError> sceneGetTree(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(ParseOrDie(
+                R"({"root":{"id":"n-0","name":"Root","kind":"object","children":[)"
+                R"({"id":"n-1","name":"NodeA","kind":"object"},)"
+                R"({"id":"n-2","name":"GroupNode","kind":"object","children":[)"
+                R"({"id":"n-3","name":"NodeB"}]}]}})"));
+        }
+
+        Result<JsonValue, BridgeError> objectGetSnapshot(const JsonValue& /*params*/) override
+        {
+            std::string fieldOfView = "60";
+            const auto it = m_ObjectFieldOfView.find("n-1");
+            if (it != m_ObjectFieldOfView.end())
+            {
+                fieldOfView = it->second;
+            }
+            std::string snapshot =
+                R"({"objectId":"n-1","name":"NodeA","kind":"object","properties":[)"
+                R"({"name":"label","value":"Example Name","valueType":"string"},)"
+                R"({"name":"fieldOfView","value":)";
+            snapshot += fieldOfView;
+            snapshot +=
+                R"(,"valueType":"number"},)"
+                R"({"name":"enabled","value":true,"valueType":"boolean"},)"
+                R"({"name":"parent","value":null},)"
+                R"({"name":"position","value":[0,1.5,-10],"valueType":"vector3"},)"
+                R"({"name":"metadata","value":{"locked":false,"tag":"primary"}}]})";
+            return Result<JsonValue, BridgeError>::ok(ParseOrDie(snapshot));
+        }
+
+        // @note 状態更新（m_ObjectFieldOfView への書き込み）は mock のシングルスレッド recv
+        // ループ前提でのみ安全である。handleFrame はアダプタを同期・同スレッドで呼ぶため、
+        // この可変状態にロックは要らない。将来もマルチスレッド化しないこと。
+        Result<JsonValue, BridgeError> objectSetProperty(const JsonValue& params) override
+        {
+            const std::string paramsText = params.dump();
+            const std::optional<std::string> propertyName = ExtractStringField(paramsText, "property");
+            const std::optional<std::string> valueText = ExtractJsonField(paramsText, "value");
+
+            if (propertyName.has_value() && propertyName.value() == "fieldOfView" &&
+                valueText.has_value())
+            {
+                m_ObjectFieldOfView["n-1"] = valueText.value();
+            }
+
+            std::string ack = R"({"accepted":true,"appliedValue":)";
+            ack += valueText.has_value() ? valueText.value() : std::string("null");
+            ack += "}";
+            return Result<JsonValue, BridgeError>::ok(ParseOrDie(ack));
+        }
+
+        Result<JsonValue, BridgeError> schemaGetSnapshot(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(
+                ParseOrDie(R"({"types":[)"
+                           R"({"typeName":"TypeA","kind":"object","properties":[)"
+                           R"({"name":"fieldOfView","valueType":"number"},)"
+                           R"({"name":"enabled","valueType":"boolean"}]},)"
+                           R"({"typeName":"TypeB","kind":"component"}]})"));
+        }
+
         // @brief logSubscribe() によってセットされ、recv ループが消費する。
         // @note handleFrame
         // とループは同一スレッドで実行されるため、実質シングルスレッドのハンドオフ。
         // クロスメソッドの契約を明示するため、それでも atomic にする。
         std::atomic<bool> emit_log_burst{false};
+
+    private:
+        // @brief objectId -> fieldOfView の現在値（JSON 数値テキスト）。objectSetProperty が
+        // 更新し objectGetSnapshot が読む。MockAdapter::object_field_of_view と同役割。
+        // @note mock のシングルスレッド recv ループ前提でのみ安全。マルチスレッド化しないこと。
+        std::map<std::string, std::string> m_ObjectFieldOfView;
     };
 
     // @brief --bridge-port を読み取る。成功時はポートを返す。不正・欠落時は

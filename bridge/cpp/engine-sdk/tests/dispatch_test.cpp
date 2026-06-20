@@ -116,6 +116,25 @@ namespace
         // オプショナルメソッドは意図的にオーバーライドしない。
     };
 
+    // @brief オプショナルな scene/object メソッドをオーバーライドする偽アダプタ。
+    // サーバがオプショナルメソッドのディスパッチ分岐を正しく配線していること（result の
+    // パススルー）を検証する。FakeAdapter（オーバーライドしない）が
+    // METHOD_NOT_SUPPORTED を返すこととは別の経路。
+    class OptionalMethodAdapter : public FakeAdapter
+    {
+    public:
+        Result<JsonValue, BridgeError> sceneGetTree(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(
+                ParseOrFail(R"({"root":{"id":"n-0","name":"Root"}})"));
+        }
+
+        Result<JsonValue, BridgeError> objectGetSnapshot(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"objectId":"n-1"})"));
+        }
+    };
+
     // ワイヤーフレームビルダー -----------------------------------------------------------
 
     std::string RequestFrame(std::string_view id, std::string_view method,
@@ -296,6 +315,40 @@ namespace
         }
     }
 
+    void TestOptionalMethodPassesAdapterResult()
+    {
+        OptionalMethodAdapter adapter;  // scene.getTree / object.getSnapshot をオーバーライドする
+        BridgeEngineServer server(adapter);
+
+        {
+            const std::string frame = RequestFrame("sc-1", "scene.getTree", "");
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (response.has_value())
+            {
+                const Envelope env = DecodeOrFail(*response);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"sc-1"});
+                NORVES_CHECK(!env.error.has_value());
+                const JsonValue expected = ParseOrFail(R"({"root":{"id":"n-0","name":"Root"}})");
+                NORVES_CHECK(env.result.has_value() && *env.result == expected);
+            }
+        }
+
+        {
+            const std::string frame = RequestFrame("ob-1", "object.getSnapshot", "");
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (response.has_value())
+            {
+                const Envelope env = DecodeOrFail(*response);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"ob-1"});
+                NORVES_CHECK(!env.error.has_value());
+                const JsonValue expected = ParseOrFail(R"({"objectId":"n-1"})");
+                NORVES_CHECK(env.result.has_value() && *env.result == expected);
+            }
+        }
+    }
+
     void TestEmitEventRoundTrips()
     {
         FakeAdapter adapter;
@@ -367,6 +420,7 @@ int main()
     TestKnownMethodPassesAdapterResult();
     TestUnknownMethodIsMethodNotSupported();
     TestUnimplementedOptionalMethodIsMethodNotSupported();
+    TestOptionalMethodPassesAdapterResult();
     TestEmitEventRoundTrips();
     TestJsonValueParseDumpRoundTrips();
     TestNonRequestFrameReturnsNullopt();
