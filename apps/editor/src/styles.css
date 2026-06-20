@@ -443,6 +443,34 @@ html, body, #root {
   --dv-icon-hover-background-color: var(--color-surface-alt);
 }
 
+/* ---- P4 layout: Game View main + Log EdgeGroup drawer ---- */
+/*
+ * The new default layout (P4) makes Game View the centre/largest panel, the
+ * right column carries Scene Outliner (top) over a Connection/Settings/Inspector
+ * tab group (bottom), and the Log lives in a bottom EdgeGroup drawer that is
+ * collapsed by default. dockview owns the splitview geometry; these rules only
+ * tune presentation using the shell tokens (no inline-style sprawl).
+ */
+
+/* The viewport thumbnail image inside the Game View main panel. */
+.viewport-thumbnail {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+}
+
+/*
+ * Log EdgeGroup drawer. dockview renders the edge group inside its own shell
+ * container; we give the collapsed bar / drawer a surface consistent with the
+ * rest of the shell. The tab strip uses the dockview --dv-* variables already
+ * mapped under .dockview-theme-dark, so the collapsed bar reads as a clickable
+ * header band.
+ */
+.dockview-theme-dark .dv-edge-group {
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+}
+
 /* ---- log list ---- */
 .log-list {
   list-style: none;
