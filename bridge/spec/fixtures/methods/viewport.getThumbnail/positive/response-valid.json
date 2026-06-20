@@ -1,0 +1,13 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "response",
+  "id": "req-71",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "imageBase64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mNwaDgARAwQCgAoDgYBqzvMVQAAAABJRU5ErkJggg==",
+    "mimeType": "image/png",
+    "width": 2,
+    "height": 2
+  }
+}

@@ -27,6 +27,7 @@ import type {
   ObjectSnapshot,
   PropertyValue,
   TypeDescriptor,
+  ViewportThumbnail,
 } from '@norves/bridge-ui';
 import type { ConnectionStatePayload } from '@norves/bridge-ui';
 
@@ -131,6 +132,21 @@ export interface BridgeState {
    * to show an "unsupported" notice. Reset on (re)connect.
    */
   objectUnsupported?: boolean;
+  /**
+   * Latest viewport thumbnail (viewport.getThumbnail), or undefined before any
+   * thumbnail has been fetched (or after disconnect). The image is an inline
+   * base64 snapshot (PNG by default); the GameView renders it as a data: URL.
+   * Generic — carries no engine-specific assumptions. Cleared on disconnect /
+   * process exit so a stale frame never lingers.
+   */
+  viewportThumbnail?: ViewportThumbnail;
+  /**
+   * True when the connected engine answered viewport.getThumbnail with
+   * METHOD_NOT_SUPPORTED — i.e. it does not provide thumbnails. Engine-agnostic
+   * degradation signal the GameView reads to fall back to the external-window
+   * notice instead of showing a thumbnail. Reset on (re)connect.
+   */
+  viewportThumbnailUnsupported?: boolean;
 }
 
 export const INITIAL_STATE: BridgeState = {
@@ -216,7 +232,18 @@ export type BridgeAction =
       objectId: string;
       property: string;
       appliedValue: PropertyValue;
-    };
+    }
+  /**
+   * Store a freshly fetched viewport.getThumbnail result (pull-style). Replaces
+   * any previous thumbnail. Engine-agnostic: a generic base64 image + mimeType.
+   */
+  | { type: 'viewportThumbnailLoaded'; thumbnail: ViewportThumbnail }
+  /**
+   * Mark viewport thumbnail as unsupported by the connected engine
+   * (viewport.getThumbnail answered METHOD_NOT_SUPPORTED). Engine-agnostic
+   * degradation signal: the GameView falls back to the external-window notice.
+   */
+  | { type: 'viewportThumbnailUnsupported' };
 
 // -------------------------------------------------------------------------
 // Scene-tree merge helper (for scene.treeChanged live events)
@@ -306,6 +333,10 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         objectSnapshot: p.connected ? state.objectSnapshot : undefined,
         schemaTypes: p.connected ? state.schemaTypes : undefined,
         objectUnsupported: p.connected ? false : state.objectUnsupported,
+        // The viewport thumbnail is per-connection: a fresh connection re-probes
+        // it, and a disconnect drops the stale frame + verdict.
+        viewportThumbnail: p.connected ? state.viewportThumbnail : undefined,
+        viewportThumbnailUnsupported: p.connected ? false : state.viewportThumbnailUnsupported,
       };
     }
 
@@ -374,6 +405,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         objectSnapshot: undefined,
         schemaTypes: undefined,
         objectUnsupported: undefined,
+        // The viewport thumbnail (and its verdict) is invalid once the engine dies.
+        viewportThumbnail: undefined,
+        viewportThumbnailUnsupported: undefined,
       };
     }
 
@@ -505,6 +539,24 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         return state;
       }
       return { ...state, objectSnapshot: { ...snapshot, properties } };
+    }
+
+    case 'viewportThumbnailLoaded': {
+      // A successful thumbnail clears any prior "unsupported" marker.
+      return {
+        ...state,
+        viewportThumbnail: action.thumbnail,
+        viewportThumbnailUnsupported: false,
+      };
+    }
+
+    case 'viewportThumbnailUnsupported': {
+      // No thumbnail to show; record the engine's degradation for the GameView.
+      return {
+        ...state,
+        viewportThumbnail: undefined,
+        viewportThumbnailUnsupported: true,
+      };
     }
 
     default: {

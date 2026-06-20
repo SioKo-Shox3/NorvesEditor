@@ -41,6 +41,7 @@ import type {
   ObjectSnapshot,
   SchemaSnapshot,
   SetObjectPropertyResult,
+  ViewportThumbnail,
 } from '@norves/bridge-ui';
 import { useBridgeDispatch } from '../state/BridgeContext.js';
 
@@ -294,6 +295,15 @@ export interface BridgeActions {
     property: string,
     value: unknown,
   ) => Promise<SetObjectPropertyResult>;
+  /**
+   * Fetch a still viewport thumbnail (viewport.getThumbnail, pull-style) and
+   * store it. Optional maxWidth/maxHeight cap the size (the engine downscales).
+   * On METHOD_NOT_SUPPORTED (an engine without thumbnails) this is a graceful
+   * degradation (viewportThumbnailUnsupported), not a user-facing error; other
+   * errors flow through the store like any command. Per docs/memory-buffer-policy
+   * callers must not poll faster than 1 fps.
+   */
+  getViewportThumbnail: (maxWidth?: number, maxHeight?: number) => Promise<void>;
   play: () => Promise<void>;
   pause: () => Promise<void>;
   stop: () => Promise<void>;
@@ -501,6 +511,34 @@ export function useBridgeActions(): BridgeActions {
     [dispatch],
   );
 
+  const getViewportThumbnail = useCallback(
+    async (maxWidth?: number, maxHeight?: number): Promise<void> => {
+      try {
+        const result = await invokeCommand<ViewportThumbnail>(
+          BRIDGE_COMMANDS.viewportGetThumbnail,
+          { maxWidth, maxHeight },
+        );
+        dispatch({ type: 'viewportThumbnailLoaded', thumbnail: result });
+      } catch (err: unknown) {
+        // An engine without thumbnails answers METHOD_NOT_SUPPORTED. Treat that
+        // as a graceful degradation (engine-agnostic), not a user-facing error:
+        // the GameView falls back to the external-window notice.
+        if (isMethodNotSupported(err)) {
+          dispatch({ type: 'viewportThumbnailUnsupported' });
+          return;
+        }
+        const { kind, message } = extractBackendError(err);
+        dispatch({
+          type: 'errorReported',
+          payload: {
+            error: { code: kind ?? 'VIEWPORT_GET_THUMBNAIL_FAILED', message },
+          },
+        });
+      }
+    },
+    [dispatch],
+  );
+
   const play = useCallback(async (): Promise<void> => {
     try {
       await invokeCommand(BRIDGE_COMMANDS.runtimePlay);
@@ -599,5 +637,5 @@ export function useBridgeActions(): BridgeActions {
     dispatch({ type: 'objectSelected', id });
   }, [dispatch]);
 
-  return { connect, disconnect, reconnect, getStatus, getSceneTree, getObjectSnapshot, getSchemaSnapshot, setObjectProperty, play, pause, stop, focusViewport, launch, stopProcess, dismissError, selectObject };
+  return { connect, disconnect, reconnect, getStatus, getSceneTree, getObjectSnapshot, getSchemaSnapshot, setObjectProperty, getViewportThumbnail, play, pause, stop, focusViewport, launch, stopProcess, dismissError, selectObject };
 }

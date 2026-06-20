@@ -61,6 +61,7 @@ const mockActions = {
   getObjectSnapshot: vi.fn<BridgeActions['getObjectSnapshot']>().mockResolvedValue(undefined),
   getSchemaSnapshot: vi.fn<BridgeActions['getSchemaSnapshot']>().mockResolvedValue(undefined),
   setObjectProperty: vi.fn<BridgeActions['setObjectProperty']>().mockResolvedValue({ accepted: true }),
+  getViewportThumbnail: vi.fn<BridgeActions['getViewportThumbnail']>().mockResolvedValue(undefined),
   play:           vi.fn<BridgeActions['play']>().mockResolvedValue(undefined),
   pause:          vi.fn<BridgeActions['pause']>().mockResolvedValue(undefined),
   stop:           vi.fn<BridgeActions['stop']>().mockResolvedValue(undefined),
@@ -247,5 +248,85 @@ describe('GameViewPanel viewport state badge', () => {
     mockState = { ...INITIAL_STATE, viewportState: 'focused' };
     render(<GameViewPanel {...makeDockviewProps()} />);
     expect(screen.getByText('Focused')).toBeTruthy();
+  });
+});
+
+// -------------------------------------------------------------------------
+// Viewport thumbnail (Phase 7b)
+// -------------------------------------------------------------------------
+
+describe('GameViewPanel viewport thumbnail', () => {
+  // A 1x1 transparent PNG (base64) — engine-agnostic generic image bytes.
+  const PNG_1X1 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
+  it('renders an <img> with a data: URL when a thumbnail is present and connected', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      viewportThumbnail: { imageBase64: PNG_1X1, mimeType: 'image/png', width: 1, height: 1 },
+    };
+    render(<GameViewPanel {...makeDockviewProps()} />);
+    const img = screen.getByAltText('Engine viewport thumbnail') as HTMLImageElement;
+    expect(img).toBeTruthy();
+    expect(img.getAttribute('src')).toBe(`data:image/png;base64,${PNG_1X1}`);
+    // The thumbnail title replaces the external-window notice.
+    expect(screen.getByText('Engine Viewport (Thumbnail)')).toBeTruthy();
+    expect(screen.queryByText('Engine Viewport (External Window)')).toBeNull();
+  });
+
+  it('falls back to the external-window notice when the engine reports unsupported', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      viewportThumbnailUnsupported: true,
+    };
+    render(<GameViewPanel {...makeDockviewProps()} />);
+    expect(screen.getByText('Engine Viewport (External Window)')).toBeTruthy();
+    expect(screen.queryByAltText('Engine viewport thumbnail')).toBeNull();
+    // The refresh button is disabled when unsupported.
+    const btn = screen.getByRole('button', { name: 'Refresh Thumbnail' }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it('falls back to the external-window notice when no thumbnail has been fetched', () => {
+    mockState = { ...INITIAL_STATE, connection: { status: 'connected' } };
+    render(<GameViewPanel {...makeDockviewProps()} />);
+    expect(screen.getByText('Engine Viewport (External Window)')).toBeTruthy();
+    expect(screen.queryByAltText('Engine viewport thumbnail')).toBeNull();
+  });
+
+  it('Refresh Thumbnail button fires getViewportThumbnail with the policy resolution cap', () => {
+    mockState = { ...INITIAL_STATE, connection: { status: 'connected' } };
+    render(<GameViewPanel {...makeDockviewProps()} />);
+    mockActions.getViewportThumbnail.mockClear();
+    const btn = screen.getByRole('button', { name: 'Refresh Thumbnail' });
+    fireEvent.click(btn);
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledWith(640, 360);
+  });
+
+  it('does not auto-fetch a thumbnail while disconnected', () => {
+    mockState = { ...INITIAL_STATE, connection: { status: 'disconnected' } };
+    render(<GameViewPanel {...makeDockviewProps()} />);
+    expect(mockActions.getViewportThumbnail).not.toHaveBeenCalled();
+    const btn = screen.getByRole('button', { name: 'Refresh Thumbnail' }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it('auto-fetches a thumbnail once on connect (mount)', () => {
+    mockState = { ...INITIAL_STATE, connection: { status: 'connected' } };
+    render(<GameViewPanel {...makeDockviewProps()} />);
+    // The mount effect issues one immediate pull at the policy resolution.
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledWith(640, 360);
+  });
+
+  it('reports a thumbnail fetch error through the error banner kind label', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'error' },
+      lastError: { kind: 'VIEWPORT_GET_THUMBNAIL_FAILED', message: 'boom' },
+    };
+    render(<GameViewPanel {...makeDockviewProps()} />);
+    expect(screen.getByText('Thumbnail fetch failed')).toBeTruthy();
   });
 });
