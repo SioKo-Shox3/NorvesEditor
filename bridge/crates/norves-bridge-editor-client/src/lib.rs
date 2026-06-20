@@ -17,6 +17,7 @@
 pub mod dispatcher;
 pub mod handshake;
 pub mod log;
+pub mod object;
 pub mod reconnect;
 pub mod scene;
 pub mod seq;
@@ -30,6 +31,10 @@ pub use handshake::{
     HelloRole,
 };
 pub use log::{parse_log_message, LogError, LogMessage};
+pub use object::{
+    parse_object_snapshot_result, parse_schema_snapshot_result, ObjectError, ObjectSnapshot,
+    PropertyDefinition, PropertyEntry, SchemaSnapshot, TypeDescriptor,
+};
 pub use reconnect::{connect_with_retry, ConnectError, ReconnectManager, RetryConfig};
 pub use scene::{parse_scene_tree_result, SceneError, SceneNode, SceneTree};
 pub use seq::observe_event_seq;

@@ -390,6 +390,120 @@ describe('scene snapshot is cleared on disconnect', () => {
 });
 
 // -------------------------------------------------------------------------
+// objectSnapshotLoaded / schemaSnapshotLoaded / objectSnapshotUnsupported
+// -------------------------------------------------------------------------
+
+describe('objectSnapshotLoaded', () => {
+  it('stores the snapshot and clears any unsupported marker', () => {
+    const state: BridgeState = { ...INITIAL_STATE, objectUnsupported: true };
+    const next = applyAction(
+      {
+        type: 'objectSnapshotLoaded',
+        snapshot: { objectId: 'n-1', name: 'NodeA', properties: [{ name: 'x', value: 1 }] },
+      },
+      state,
+    );
+    expect(next.objectSnapshot?.objectId).toBe('n-1');
+    expect(next.objectSnapshot?.properties[0]?.value).toBe(1);
+    expect(next.objectUnsupported).toBe(false);
+  });
+});
+
+describe('schemaSnapshotLoaded', () => {
+  it('stores the type descriptors', () => {
+    const next = applyAction({
+      type: 'schemaSnapshotLoaded',
+      types: [{ typeName: 'TypeA', properties: [{ name: 'fieldOfView', valueType: 'number' }] }],
+    });
+    expect(next.schemaTypes?.[0]?.typeName).toBe('TypeA');
+  });
+});
+
+describe('objectSnapshotUnsupported', () => {
+  it('sets the unsupported marker and drops any stale snapshot', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      objectSnapshot: { objectId: 'n-1', properties: [] },
+    };
+    const next = applyAction({ type: 'objectSnapshotUnsupported' }, state);
+    expect(next.objectUnsupported).toBe(true);
+    expect(next.objectSnapshot).toBeUndefined();
+  });
+});
+
+describe('objectSelected clears the prior object snapshot', () => {
+  it('drops objectSnapshot when the selection changes to a different id', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      selectedObjectId: 'n-1',
+      objectSnapshot: { objectId: 'n-1', properties: [] },
+    };
+    const next = applyAction({ type: 'objectSelected', id: 'n-2' }, state);
+    expect(next.selectedObjectId).toBe('n-2');
+    expect(next.objectSnapshot).toBeUndefined();
+  });
+
+  it('drops objectSnapshot on deselect (id undefined)', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      selectedObjectId: 'n-1',
+      objectSnapshot: { objectId: 'n-1', properties: [] },
+    };
+    const next = applyAction({ type: 'objectSelected', id: undefined }, state);
+    expect(next.selectedObjectId).toBeUndefined();
+    expect(next.objectSnapshot).toBeUndefined();
+  });
+
+  it('keeps objectSnapshot when re-selecting the same id', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      selectedObjectId: 'n-1',
+      objectSnapshot: { objectId: 'n-1', properties: [] },
+    };
+    const next = applyAction({ type: 'objectSelected', id: 'n-1' }, state);
+    expect(next.objectSnapshot?.objectId).toBe('n-1');
+  });
+});
+
+describe('inspector data is cleared on disconnect / process exit', () => {
+  it('connectionStateChanged(connected:false) drops objectSnapshot + schema', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      objectSnapshot: { objectId: 'n-1', properties: [] },
+      schemaTypes: [{ typeName: 'TypeA' }],
+    };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: false, reason: 'closed' } },
+      state,
+    );
+    expect(next.objectSnapshot).toBeUndefined();
+    expect(next.schemaTypes).toBeUndefined();
+  });
+
+  it('connectionStateChanged(connected:true) clears a stale objectUnsupported marker', () => {
+    const state: BridgeState = { ...INITIAL_STATE, objectUnsupported: true };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: true, sessionId: 's' } },
+      state,
+    );
+    expect(next.objectUnsupported).toBe(false);
+  });
+
+  it('engineProcessExited drops objectSnapshot + schema', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      objectSnapshot: { objectId: 'n-1', properties: [] },
+      schemaTypes: [{ typeName: 'TypeA' }],
+    };
+    const next = applyAction({ type: 'engineProcessExited', payload: { exitCode: 0 } }, state);
+    expect(next.objectSnapshot).toBeUndefined();
+    expect(next.schemaTypes).toBeUndefined();
+  });
+});
+
+// -------------------------------------------------------------------------
 // viewportStateChanged
 // -------------------------------------------------------------------------
 

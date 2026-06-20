@@ -387,3 +387,110 @@ html, body, #root {
 .scene-node__row--selected .scene-node__kind {
   color: rgba(255, 255, 255, 0.75);
 }
+
+/* ---- property inspector ---- */
+.inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.inspector__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.inspector__name {
+  font-weight: 600;
+  color: var(--color-text);
+  word-break: break-word;
+}
+
+.inspector__kind {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  padding: 1px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.inspector__id {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.inspector__props {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.inspector-prop {
+  display: grid;
+  grid-template-columns: minmax(80px, 35%) 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.inspector-prop:hover {
+  background: var(--color-surface-alt);
+}
+
+.inspector-prop__name {
+  color: var(--color-text-muted);
+  word-break: break-word;
+}
+
+.inspector-prop__value {
+  color: var(--color-text);
+  min-width: 0;
+  word-break: break-word;
+}
+
+.inspector-prop__type {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.value--null {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.value--number {
+  color: #93c5fd;
+}
+
+.value--boolean {
+  color: #c4b5fd;
+}
+
+.value__summary {
+  cursor: pointer;
+  color: var(--color-accent);
+}
+
+.value__json {
+  margin: 4px 0 0;
+  padding: 6px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
