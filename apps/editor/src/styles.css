@@ -394,6 +394,29 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+/* ---- toolbar action buttons ---- */
+/*
+ * .toolbar__btn: compact variant of .btn sized for the toolbar strip.
+ * Overrides .btn padding to fit within --header-h.
+ */
+.toolbar__btn {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+/*
+ * .toolbar__sep: thin vertical rule that visually groups button sets.
+ * Uses var(--color-border) so it stays consistent with the rest of the shell.
+ */
+.toolbar__sep {
+  display: inline-block;
+  width: 1px;
+  height: 16px;
+  background: var(--color-border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
 /* ---- dockview theme mapping ---- */
 /*
  * Map dockview-dark theme variables to NorvesEditor design tokens.
