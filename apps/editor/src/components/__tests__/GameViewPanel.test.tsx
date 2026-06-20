@@ -12,15 +12,21 @@
  *     assert which action a button fires (e.g. dismissError).
  *  3. Mock dockview-react to avoid browser API requirements (ResizeObserver etc.)
  *
- * Covers (same semantics as before the refactor):
+ * Covers:
  *   - Error banner renders when lastError is present.
  *   - Error banner absent when no lastError.
  *   - Dismiss button click fires actions.dismissError().
  *   - Regression (M2): notConnected kind with [object Object] message
  *     shows humanized label, does NOT render "[object Object]".
- *   - Reconnect button enabled when connectionStatus='error'.
- *   - Reconnect button disabled when connectionStatus='connecting'.
  *   - viewportState badge renders the value.
+ *   - viewport thumbnail (Phase 7b).
+ *
+ * P4: the engine/runtime/process control buttons (Launch / Stop Process /
+ * Reconnect / Play / Pause / Stop / Focus Viewport) were moved to the main
+ * toolbar (ToolbarActions, P3); their behaviour is covered by
+ * ToolbarActions.test.tsx. This panel no longer renders them, so the former
+ * Reconnect-button tests are removed and replaced by an assertion that the
+ * panel does NOT render those controls (no duplicate controls — m1).
  */
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
@@ -179,48 +185,32 @@ describe('GameViewPanel error banner — M2 regression', () => {
 });
 
 // -------------------------------------------------------------------------
-// Reconnect button disabled state
+// P4 (m1): engine/runtime/process controls were moved to the toolbar.
+// GameViewPanel must NOT render them anymore (no duplicate controls).
 // -------------------------------------------------------------------------
 
-describe('GameViewPanel Reconnect button', () => {
-  it('is enabled when connectionStatus is "error"', () => {
-    mockState = {
-      ...INITIAL_STATE,
-      connection: { status: 'error' },
-    };
+describe('GameViewPanel no duplicate engine/runtime controls (P4 m1)', () => {
+  const movedButtonNames = [
+    'Launch',
+    'Stop',
+    'Reconnect',
+    'Play',
+    'Pause',
+    'Focus Viewport',
+  ] as const;
+
+  it.each(movedButtonNames)('does not render the "%s" control', (name) => {
+    // Connected so that, were these controls present, they would be enabled
+    // and findable — i.e. their absence is genuine, not just disabled.
+    mockState = { ...INITIAL_STATE, connection: { status: 'connected' } };
     render(<GameViewPanel {...makeDockviewProps()} />);
-    const btn = screen.getByRole('button', { name: 'Reconnect' });
-    expect((btn as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole('button', { name })).toBeNull();
   });
 
-  it('is disabled when connectionStatus is "connecting"', () => {
-    mockState = {
-      ...INITIAL_STATE,
-      connection: { status: 'connecting' },
-    };
+  it('still renders the Refresh Thumbnail control (panel-local, kept)', () => {
+    mockState = { ...INITIAL_STATE, connection: { status: 'connected' } };
     render(<GameViewPanel {...makeDockviewProps()} />);
-    const btn = screen.getByRole('button', { name: 'Reconnect' });
-    expect((btn as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it('is disabled when connectionStatus is "disconnected"', () => {
-    mockState = {
-      ...INITIAL_STATE,
-      connection: { status: 'disconnected' },
-    };
-    render(<GameViewPanel {...makeDockviewProps()} />);
-    const btn = screen.getByRole('button', { name: 'Reconnect' });
-    expect((btn as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it('is enabled when connectionStatus is "connected"', () => {
-    mockState = {
-      ...INITIAL_STATE,
-      connection: { status: 'connected' },
-    };
-    render(<GameViewPanel {...makeDockviewProps()} />);
-    const btn = screen.getByRole('button', { name: 'Reconnect' });
-    expect((btn as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole('button', { name: 'Refresh Thumbnail' })).toBeTruthy();
   });
 });
 
