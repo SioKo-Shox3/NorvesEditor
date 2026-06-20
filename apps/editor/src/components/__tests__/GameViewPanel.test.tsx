@@ -20,6 +20,8 @@
  *     shows humanized label, does NOT render "[object Object]".
  *   - viewportState badge renders the value.
  *   - viewport thumbnail (Phase 7b).
+ *   - thumbnail auto-refresh back-off (P7): exponential back-off on error,
+ *     reset on ok, manual Refresh, unsupported stops the loop.
  *
  * P4: the engine/runtime/process control buttons (Launch / Stop Process /
  * Reconnect / Play / Pause / Stop / Focus Viewport) were moved to the main
@@ -30,10 +32,10 @@
  */
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 import type { BridgeState } from '../../state/store.js';
 import { INITIAL_STATE } from '../../state/store.js';
-import type { BridgeActions } from '../../hooks/useBridge.js';
+import type { BridgeActions, ThumbnailPullResult } from '../../hooks/useBridge.js';
 
 // -------------------------------------------------------------------------
 // Mock dockview-react (no browser-native APIs needed for unit tests)
@@ -67,7 +69,7 @@ const mockActions = {
   getObjectSnapshot: vi.fn<BridgeActions['getObjectSnapshot']>().mockResolvedValue(undefined),
   getSchemaSnapshot: vi.fn<BridgeActions['getSchemaSnapshot']>().mockResolvedValue(undefined),
   setObjectProperty: vi.fn<BridgeActions['setObjectProperty']>().mockResolvedValue({ accepted: true }),
-  getViewportThumbnail: vi.fn<BridgeActions['getViewportThumbnail']>().mockResolvedValue(undefined),
+  getViewportThumbnail: vi.fn<BridgeActions['getViewportThumbnail']>().mockResolvedValue('ok' as ThumbnailPullResult),
   play:           vi.fn<BridgeActions['play']>().mockResolvedValue(undefined),
   pause:          vi.fn<BridgeActions['pause']>().mockResolvedValue(undefined),
   stop:           vi.fn<BridgeActions['stop']>().mockResolvedValue(undefined),
@@ -318,5 +320,199 @@ describe('GameViewPanel viewport thumbnail', () => {
     };
     render(<GameViewPanel {...makeDockviewProps()} />);
     expect(screen.getByText('Thumbnail fetch failed')).toBeTruthy();
+  });
+});
+
+// -------------------------------------------------------------------------
+// P7: thumbnail auto-refresh back-off
+//
+// useThumbnailAutoRefresh は GameViewPanel 内部のカスタムフック。
+// ここでは GameViewPanel 経由で動作を検証する（useBridgeActions のモックで
+// getViewportThumbnail の戻り値を制御し、vi.useFakeTimers で setTimeout を操る）。
+//
+// 検証項目:
+//   1. 連続 'error' → 間隔が指数的に伸びる (1s → 2s → 4s → … → CAP=30s)
+//   2. 'ok' で間隔が基準 (1000ms) にリセットされる
+//   3. 手動 Refresh で失敗カウントがリセットされ即時 pull される
+//   4. 'unsupported' でポーリングが停止する
+//   5. 1fps 上限: 基準間隔 1000ms 未満で叩かない
+// -------------------------------------------------------------------------
+
+describe('GameViewPanel thumbnail auto-refresh back-off (P7)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockState = { ...INITIAL_STATE, connection: { status: 'connected' } };
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('calls pull immediately on mount (initial fetch)', async () => {
+    mockActions.getViewportThumbnail.mockResolvedValue('ok');
+    render(<GameViewPanel {...makeDockviewProps()} />);
+    // flush the initial tick (Promise microtask)
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies exponential back-off on consecutive errors (1s → 2s → 4s)', async () => {
+    // Every pull returns 'error'.
+    mockActions.getViewportThumbnail.mockResolvedValue('error');
+    render(<GameViewPanel {...makeDockviewProps()} />);
+
+    // tick 0: immediate (mount)
+    await act(async () => { await Promise.resolve(); });
+    const callsAfterMount = mockActions.getViewportThumbnail.mock.calls.length;
+    expect(callsAfterMount).toBe(1);
+
+    // After 1st error, back-off = 1000ms * 2^(1-1) = 1000ms
+    await act(async () => { vi.advanceTimersByTime(999); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(1);
+    await act(async () => { vi.advanceTimersByTime(1); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(2);
+
+    // After 2nd error, back-off = 1000ms * 2^(2-1) = 2000ms
+    await act(async () => { vi.advanceTimersByTime(1999); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(2);
+    await act(async () => { vi.advanceTimersByTime(1); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(3);
+
+    // After 3rd error, back-off = 1000ms * 2^(3-1) = 4000ms
+    await act(async () => { vi.advanceTimersByTime(3999); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(3);
+    await act(async () => { vi.advanceTimersByTime(1); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(4);
+  });
+
+  it('caps back-off at 30 000ms even with many consecutive errors', async () => {
+    mockActions.getViewportThumbnail.mockResolvedValue('error');
+    render(<GameViewPanel {...makeDockviewProps()} />);
+    // Drive enough errors to exceed the cap (2^5 = 32 → 32000ms > 30000ms)
+    for (let i = 0; i < 6; i++) {
+      await act(async () => { await Promise.resolve(); });
+      // Advance past cap ceiling
+      await act(async () => { vi.advanceTimersByTime(30_000); });
+    }
+    // After the 5th error and beyond, interval is capped at 30000ms.
+    // Advancing only 29999ms after a pull must NOT trigger another pull.
+    const countBefore = mockActions.getViewportThumbnail.mock.calls.length;
+    await act(async () => { vi.advanceTimersByTime(29_999); });
+    // Lower bound: no early fire within the cap window.
+    expect(mockActions.getViewportThumbnail.mock.calls.length).toBe(countBefore);
+    // Upper bound: exactly +1ms (total 30000ms) triggers the next pull.
+    await act(async () => { vi.advanceTimersByTime(1); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail.mock.calls.length).toBeGreaterThan(countBefore);
+  });
+
+  it("resets failure counter to 0 on 'ok' and resumes base interval", async () => {
+    // First two pulls return error, then ok.
+    mockActions.getViewportThumbnail
+      .mockResolvedValueOnce('error')
+      .mockResolvedValueOnce('error')
+      .mockResolvedValue('ok');
+
+    render(<GameViewPanel {...makeDockviewProps()} />);
+
+    // tick 0: error #1 → next at 1000ms
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(1);
+
+    // tick 1: error #2 → next at 2000ms
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(2);
+
+    // tick 2: ok → counter reset → next at 1000ms
+    await act(async () => { vi.advanceTimersByTime(2000); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(3);
+
+    // Now interval must be 1000ms (base), not 4000ms (what 3rd error would give).
+    await act(async () => { vi.advanceTimersByTime(999); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(3);
+    await act(async () => { vi.advanceTimersByTime(1); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(4);
+  });
+
+  it("stops polling on 'unsupported' — no further pulls after the unsupported response", async () => {
+    mockActions.getViewportThumbnail.mockResolvedValue('unsupported');
+    render(<GameViewPanel {...makeDockviewProps()} />);
+
+    // Initial pull returns unsupported.
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(1);
+
+    // Advance far into the future — no more pulls should occur.
+    await act(async () => { vi.advanceTimersByTime(60_000); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(1);
+  });
+
+  it('manual Refresh resets failure counter and triggers an immediate pull', async () => {
+    // Two errors, then a manual refresh.
+    mockActions.getViewportThumbnail
+      .mockResolvedValueOnce('error')
+      .mockResolvedValueOnce('error')
+      .mockResolvedValue('ok');
+
+    render(<GameViewPanel {...makeDockviewProps()} />);
+
+    // tick 0: error #1 → next at 1000ms
+    await act(async () => { await Promise.resolve(); });
+    // tick 1: error #2 → next at 2000ms
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(2);
+
+    // Manual Refresh before the 2000ms back-off expires.
+    // Should fire immediately (no waiting for the pending timeout).
+    const btn = screen.getByRole('button', { name: 'Refresh Thumbnail' });
+    fireEvent.click(btn);
+    await act(async () => { await Promise.resolve(); });
+
+    // Pull was triggered immediately by the manual refresh.
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(3);
+
+    // After the manual-refresh ok, the next auto-pull should come in 1000ms
+    // (base interval), not 4000ms (what the 3rd consecutive error would give).
+    await act(async () => { vi.advanceTimersByTime(999); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(3);
+    await act(async () => { vi.advanceTimersByTime(1); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(4);
+  });
+
+  it('never pulls faster than 1000ms (1 fps floor maintained on ok)', async () => {
+    mockActions.getViewportThumbnail.mockResolvedValue('ok');
+    render(<GameViewPanel {...makeDockviewProps()} />);
+
+    // tick 0: immediate pull
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(1);
+
+    // 999ms must NOT have triggered a second pull.
+    await act(async () => { vi.advanceTimersByTime(999); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(1);
+
+    // At exactly 1000ms the second pull fires.
+    await act(async () => { vi.advanceTimersByTime(1); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not poll while disconnected (loop never starts)', async () => {
+    mockState = { ...INITIAL_STATE, connection: { status: 'disconnected' } };
+    mockActions.getViewportThumbnail.mockResolvedValue('ok');
+    render(<GameViewPanel {...makeDockviewProps()} />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(5000); });
+    await act(async () => { await Promise.resolve(); });
+    expect(mockActions.getViewportThumbnail).not.toHaveBeenCalled();
   });
 });
