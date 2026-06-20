@@ -31,7 +31,16 @@
     "  engine.getStatus     none - mock StatusSnapshot equals the fixture result field-for-field.",
     "  runtime.play         none - mock PlayAck {accepted:true,requestedState:'playing'} equals the fixture.",
     "  log.message          /timestamp mock LogMessageEvent leaves timestamp unset (omitted); the fixture pins",
-    "                       a wall-clock value. After masking, {level, category, message} match exactly."
+    "                       a wall-clock value. After masking, {level, category, message} match exactly.",
+    "  scene.getTree        none - mock returns the static demo tree (Root -> NodeA / GroupNode -> NodeB)",
+    "                       value-equal to the fixture result. Any drift on this method is detected.",
+    "  object.getSnapshot   none - mock returns the n-1 property bag value-equal to the fixture result.",
+    "                       This step runs BEFORE object.setProperty so fieldOfView is still its initial 60.",
+    "  schema.getSnapshot   none - mock returns the type descriptors (TypeA / TypeB) value-equal to the fixture.",
+    "  object.setProperty   none - mock echoes params.value as appliedValue and updates its in-memory map.",
+    "                       The request fixture sends {property:'fieldOfView', value:75}; the mock returns",
+    "                       {accepted:true, appliedValue:75}, value-equal to the fixture result. This step is",
+    "                       intentionally LAST so its in-memory mutation does not affect the getSnapshot step."
   ],
   "scenario": "alpha-method-sequence",
   "steps": [
@@ -68,6 +77,34 @@
       "event": "log.message",
       "expect_fixture": "events/log.message/positive/event-engine-valid.json",
       "ignore": ["/timestamp"]
+    },
+    {
+      "kind": "request",
+      "method": "scene.getTree",
+      "request_fixture": "methods/scene.getTree/positive/request-valid.json",
+      "expect_fixture": "methods/scene.getTree/positive/response-valid.json",
+      "ignore": []
+    },
+    {
+      "kind": "request",
+      "method": "object.getSnapshot",
+      "request_fixture": "methods/object.getSnapshot/positive/request-valid.json",
+      "expect_fixture": "methods/object.getSnapshot/positive/response-valid.json",
+      "ignore": []
+    },
+    {
+      "kind": "request",
+      "method": "schema.getSnapshot",
+      "request_fixture": "methods/schema.getSnapshot/positive/request-valid.json",
+      "expect_fixture": "methods/schema.getSnapshot/positive/response-valid.json",
+      "ignore": []
+    },
+    {
+      "kind": "request",
+      "method": "object.setProperty",
+      "request_fixture": "methods/object.setProperty/positive/request-valid.json",
+      "expect_fixture": "methods/object.setProperty/positive/response-valid.json",
+      "ignore": []
     }
   ]
 }
