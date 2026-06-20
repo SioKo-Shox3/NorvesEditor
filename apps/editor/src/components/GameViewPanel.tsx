@@ -9,8 +9,9 @@
  * (ToolbarActions), so they are removed here to avoid duplicate controls
  * (m1). This panel now focuses on the viewport view: live thumbnail (or the
  * external-window notice when unsupported), the viewport status badge, the
- * engine/runtime status read-out, and the error banner. The thumbnail pull
- * logic itself is unchanged (backoff is a later phase).
+ * engine/runtime status read-out, and the error banner. P7: thumbnail pull
+ * uses a self-scheduling setTimeout loop with exponential back-off on errors
+ * (useThumbnailAutoRefresh).
  *
  * NOTE: Alpha has NO embedded viewport. The engine renders in its own
  * external window.
@@ -21,11 +22,12 @@
  */
 
 import type React from 'react';
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { EngineState, RuntimeState, ViewportState } from '@norves/bridge-types';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { useBridgeState } from '../state/BridgeContext.js';
 import { useBridgeActions } from '../hooks/useBridge.js';
+import type { ThumbnailPullResult } from '../hooks/useBridge.js';
 
 // -------------------------------------------------------------------------
 // Thumbnail policy constants (docs/memory-buffer-policy.md, Phase 7b).
@@ -37,6 +39,123 @@ const THUMBNAIL_MAX_WIDTH = 640;
 const THUMBNAIL_MAX_HEIGHT = 360;
 /** Auto-refresh cadence: 1 fps cap (>= 1000 ms between pulls). */
 const THUMBNAIL_REFRESH_MS = 1000;
+/** Exponential back-off ceiling: do not wait longer than 30 s after errors. */
+const THUMBNAIL_BACKOFF_CAP_MS = 30_000;
+
+// -------------------------------------------------------------------------
+// useThumbnailAutoRefresh — self-scheduling setTimeout loop with exponential
+// back-off on consecutive errors. Engine-agnostic: back-off absorbs any
+// transient failure without hammering the engine or the WebSocket at 1 fps.
+//
+// Interface:
+//   pull       — the async function that fetches one thumbnail (returns
+//                ThumbnailPullResult: 'ok' | 'unsupported' | 'error').
+//   connected  — when false the loop does not start (or stops on transition).
+//   unsupported— when true the loop does not start (engine lacks the method).
+//
+// Returns:
+//   refreshNow()  — reset failure counter, pull once immediately, restart loop
+//                   at the base interval (wired to the manual Refresh button).
+//
+// Back-off schedule (consecutive errors):
+//   0 errors → 1000 ms (BASE)
+//   1 error  → 2000 ms
+//   2 errors → 4000 ms
+//   …        → min(BASE * 2^failures, CAP=30 000 ms)
+//
+// Reset triggers:
+//   - 'ok' result         → counter = 0, next interval = BASE
+//   - new effect run      → connected false→true or unsupported changes →
+//                           effect tears down + re-mounts → counter = 0
+//   - refreshNow()        → counter = 0, immediate pull, BASE interval
+// -------------------------------------------------------------------------
+
+function useThumbnailAutoRefresh(
+  connected: boolean,
+  unsupported: boolean,
+  pull: (maxWidth: number, maxHeight: number) => Promise<ThumbnailPullResult>,
+): { refreshNow: () => void } {
+  // Mutable state kept in refs (not useState) to avoid triggering re-renders.
+  const failuresRef  = useRef<number>(0);
+  const timeoutRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // cancelledRef lets async pull continuations know the effect was torn down.
+  const cancelledRef = useRef<boolean>(false);
+
+  // refreshNowRef holds a stable function reference so it can be returned from
+  // the hook without becoming a useEffect dependency itself.
+  const refreshNowRef = useRef<() => void>(() => { /* initialised below */ });
+
+  useEffect(() => {
+    if (!connected || unsupported) {
+      return;
+    }
+
+    cancelledRef.current = false;
+    failuresRef.current  = 0;
+
+    function clearPending(): void {
+      if (timeoutRef.current !== null) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+    }
+
+    function scheduleNext(delayMs: number): void {
+      clearPending();
+      timeoutRef.current = setTimeout((): void => { void tick(); }, delayMs);
+    }
+
+    async function tick(): Promise<void> {
+      if (cancelledRef.current) return;
+
+      const result = await pull(THUMBNAIL_MAX_WIDTH, THUMBNAIL_MAX_HEIGHT);
+
+      if (cancelledRef.current) return;
+
+      if (result === 'unsupported') {
+        // viewportThumbnailUnsupported flag already dispatched inside pull().
+        // Do not reschedule — stop the loop.
+        return;
+      }
+
+      if (result === 'ok') {
+        failuresRef.current = 0;
+        scheduleNext(THUMBNAIL_REFRESH_MS);
+      } else {
+        // 'error': apply exponential back-off, capped at THUMBNAIL_BACKOFF_CAP_MS.
+        failuresRef.current += 1;
+        const delay = Math.min(
+          THUMBNAIL_REFRESH_MS * Math.pow(2, failuresRef.current - 1),
+          THUMBNAIL_BACKOFF_CAP_MS,
+        );
+        scheduleNext(delay);
+      }
+    }
+
+    // Wire refreshNow: reset counter, pull immediately, loop restarts via tick().
+    refreshNowRef.current = (): void => {
+      clearPending();
+      failuresRef.current = 0;
+      void tick();
+    };
+
+    // Initial immediate pull on connect/mount.
+    void tick();
+
+    return (): void => {
+      cancelledRef.current = true;
+      clearPending();
+      // Reset refreshNow to a no-op while the loop is torn down.
+      refreshNowRef.current = (): void => { /* loop not running */ };
+    };
+  }, [connected, unsupported, pull]);
+
+  const refreshNow = useCallback((): void => {
+    refreshNowRef.current();
+  }, []);
+
+  return { refreshNow };
+}
 
 // -------------------------------------------------------------------------
 // Label / class maps covering ALL enum values (no silent fall-through)
@@ -158,27 +277,21 @@ export function GameViewPanel(_props: IDockviewPanelProps): React.JSX.Element {
 
   const handleDismissError  = (): void => { actions.dismissError(); };
 
-  // Pull a thumbnail capped at the policy resolution (engine downscales).
-  const refreshThumbnail = useCallback((): void => {
-    void getViewportThumbnail(THUMBNAIL_MAX_WIDTH, THUMBNAIL_MAX_HEIGHT);
-  }, [getViewportThumbnail]);
-
-  const handleRefreshThumbnail = (): void => { refreshThumbnail(); };
+  // pull — stable callback referencing getViewportThumbnail.
+  // Passed to useThumbnailAutoRefresh as the async pull function.
+  const pull = useCallback(
+    (maxWidth: number, maxHeight: number) => getViewportThumbnail(maxWidth, maxHeight),
+    [getViewportThumbnail],
+  );
 
   // -----------------------------------------------------------------------
-  // Low-frequency auto-refresh (<= 1 fps, docs/memory-buffer-policy.md).
-  // Only polls while connected and the engine has not reported the method as
-  // unsupported. Engine-agnostic: the interval simply re-issues the pull.
+  // Low-frequency auto-refresh with exponential back-off (<= 1 fps,
+  // docs/memory-buffer-policy.md). Engine-agnostic: back-off absorbs
+  // transient errors without hammering the engine.
   // -----------------------------------------------------------------------
-  useEffect(() => {
-    if (!connected || thumbnailUnsupported) {
-      return;
-    }
-    // Fetch once immediately, then on a >= 1000 ms cadence (1 fps cap).
-    refreshThumbnail();
-    const handle = setInterval(refreshThumbnail, THUMBNAIL_REFRESH_MS);
-    return (): void => { clearInterval(handle); };
-  }, [connected, thumbnailUnsupported, refreshThumbnail]);
+  const { refreshNow } = useThumbnailAutoRefresh(connected, thumbnailUnsupported, pull);
+
+  const handleRefreshThumbnail = (): void => { refreshNow(); };
 
   // Build the data: URL once per thumbnail change so an unrelated re-render
   // does not churn the <img src> (which would re-decode the image).
