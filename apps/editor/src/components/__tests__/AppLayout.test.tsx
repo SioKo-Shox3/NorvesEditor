@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * AppLayout tests — P4 layout redesign.
+ * AppLayout tests — P6 layout redesign.
  *
  * dockview-react is mocked with a *behavioural* fake DockviewApi so we can
  * assert the API-level contract AppLayout relies on, without dragging in
@@ -9,16 +9,16 @@
  * re-invokes onReady when we want to simulate a fresh mount.
  *
  * Covered:
- *   - Default layout: the expected panels are created (gameView, sceneOutliner,
- *     connection, settings) and Connection/Settings share the bottom-right
- *     group (reachability of Connection/Settings — integrity adjustment).
+ *   - Default layout: the expected panels are created (gameView, sceneOutliner)
+ *     and Connection/Settings are NOT present (they moved to their own windows
+ *     in P6).
  *   - Log is created in a bottom EdgeGroup, collapsed by default.
- *   - Persistence uses the v2 key; the stale v1 key is removed once on startup.
- *     The edge group (and its collapsed/expanded state) round-trips through
- *     toJSON/fromJSON, matching dockview 6.6.1.
- *   - Property Inspector is selection-driven: added when selectedObjectId is
- *     set, removed when cleared; idempotent (no double-add); reconciled after
- *     restore.
+ *   - Persistence uses the v3 key; the stale v1 AND v2 keys are removed once on
+ *     startup. The edge group (and its collapsed/expanded state) round-trips
+ *     through toJSON/fromJSON, matching dockview 6.6.1.
+ *   - Property Inspector is selection-driven: added below the Scene Outliner
+ *     when selectedObjectId is set, removed when cleared; idempotent (no
+ *     double-add); reconciled after restore.
  *   - Log toggle is published to the parent via onLogToggleReady and flips the
  *     EdgeGroup between collapsed and expanded (open/close the drawer).
  */
@@ -27,7 +27,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, cleanup, act } from '@testing-library/react';
 import React from 'react';
 import { BridgeProvider, useBridgeDispatch } from '../../state/BridgeContext.js';
-import { LAYOUT_STORAGE_KEY, LEGACY_LAYOUT_STORAGE_KEY_V1 } from '../shell/layoutKey.js';
+import { LAYOUT_STORAGE_KEY, LEGACY_LAYOUT_STORAGE_KEYS } from '../shell/layoutKey.js';
 
 // -------------------------------------------------------------------------
 // localStorage polyfill — this jsdom configuration does not provide a Storage
@@ -223,23 +223,29 @@ class FakeDockviewApi {
     }
     // Like the real fromJSON, a restore rebuilds the full layout from the
     // snapshot: the dockable panels first, then the edge group(s) with their
-    // inner panel(s) and saved collapsed state.
+    // inner panel(s) and saved collapsed state. P6 default = Game View centre +
+    // Scene Outliner right column (no Connection/Settings).
+    //
+    // We also restore any extra dockable panels recorded in the snapshot's
+    // `panels` array (e.g. propertyInspector from a saved layout), so that the
+    // reconcileInspector path "layout contains inspector but nothing selected →
+    // remove" can be exercised by tests.
+    const savedPanels = this.readSerializedPanelIds(data);
     this.addPanel({ id: 'gameView', component: 'gameView' });
     this.addPanel({
       id: 'sceneOutliner',
       component: 'sceneOutliner',
       position: { direction: 'right', referencePanel: 'gameView' },
     });
-    this.addPanel({
-      id: 'connection',
-      component: 'connection',
-      position: { direction: 'below', referencePanel: 'sceneOutliner' },
-    });
-    this.addPanel({
-      id: 'settings',
-      component: 'settings',
-      position: { referenceGroup: this.panels.get('connection')!.group.id },
-    });
+    for (const panelId of savedPanels) {
+      if (panelId !== 'gameView' && panelId !== 'sceneOutliner') {
+        this.addPanel({
+          id: panelId,
+          component: panelId,
+          position: { referencePanel: 'sceneOutliner' },
+        });
+      }
+    }
 
     // Restore edge groups (the Log drawer) from the snapshot, preserving the
     // serialized collapsed/expanded state. Falls back to a collapsed bottom
@@ -252,6 +258,14 @@ class FakeDockviewApi {
         this.restoreLogEdgeGroup(eg);
       }
     }
+  }
+
+  /** Parse the top-level `panels` array out of a serialized snapshot. */
+  private readSerializedPanelIds(data: unknown): string[] {
+    if (typeof data !== 'object' || data === null) return [];
+    const raw = (data as { panels?: unknown }).panels;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((id): id is string => typeof id === 'string');
   }
 
   /** Parse the edgeGroups array out of a serialized snapshot, defensively. */
@@ -426,21 +440,17 @@ describe('AppLayout smoke', () => {
 // Default layout
 // -------------------------------------------------------------------------
 
-describe('AppLayout default layout (P4)', () => {
-  it('creates Game View, Scene Outliner, Connection and Settings', () => {
+describe('AppLayout default layout (P6)', () => {
+  it('creates Game View and Scene Outliner', () => {
     renderApp();
     expect(currentApi.getPanel('gameView')).toBeTruthy();
     expect(currentApi.getPanel('sceneOutliner')).toBeTruthy();
-    expect(currentApi.getPanel('connection')).toBeTruthy();
-    expect(currentApi.getPanel('settings')).toBeTruthy();
   });
 
-  it('keeps Connection and Settings reachable in the same bottom-right group', () => {
+  it('does NOT add Connection or Settings (they moved to their own windows in P6)', () => {
     renderApp();
-    const connectionGroup = currentApi.getPanel('connection')?.group.id;
-    const settingsGroup = currentApi.getPanel('settings')?.group.id;
-    expect(connectionGroup).toBeTruthy();
-    expect(settingsGroup).toBe(connectionGroup);
+    expect(currentApi.getPanel('connection')).toBeUndefined();
+    expect(currentApi.getPanel('settings')).toBeUndefined();
   });
 
   it('places Scene Outliner in a different group from Game View (right column)', () => {
@@ -495,17 +505,21 @@ describe('AppLayout Log EdgeGroup drawer', () => {
 });
 
 // -------------------------------------------------------------------------
-// Persistence: v2 key + v1 cleanup
+// Persistence: v3 key + v1/v2 cleanup
 // -------------------------------------------------------------------------
 
-describe('AppLayout persistence (v2 + v1 cleanup)', () => {
-  it('removes the stale v1 key on startup', () => {
-    localStorage.setItem(LEGACY_LAYOUT_STORAGE_KEY_V1, '{"old":true}');
+describe('AppLayout persistence (v3 + v1/v2 cleanup)', () => {
+  it('removes the stale v1 and v2 keys on startup', () => {
+    for (const key of LEGACY_LAYOUT_STORAGE_KEYS) {
+      localStorage.setItem(key, '{"old":true}');
+    }
     renderApp();
-    expect(localStorage.getItem(LEGACY_LAYOUT_STORAGE_KEY_V1)).toBeNull();
+    for (const key of LEGACY_LAYOUT_STORAGE_KEYS) {
+      expect(localStorage.getItem(key)).toBeNull();
+    }
   });
 
-  it('persists the layout under the v2 key on a layout change', () => {
+  it('persists the layout under the v3 key on a layout change', () => {
     renderApp();
     expect(localStorage.getItem(LAYOUT_STORAGE_KEY)).toBeNull();
     act(() => {
@@ -513,12 +527,14 @@ describe('AppLayout persistence (v2 + v1 cleanup)', () => {
     });
     const saved = localStorage.getItem(LAYOUT_STORAGE_KEY);
     expect(saved).not.toBeNull();
-    // The v2 key is the storage target (not v1).
-    expect(localStorage.getItem(LEGACY_LAYOUT_STORAGE_KEY_V1)).toBeNull();
-    expect(LAYOUT_STORAGE_KEY).toBe('norveseditor-layout-v2');
+    // The v3 key is the storage target (not the legacy keys).
+    for (const key of LEGACY_LAYOUT_STORAGE_KEYS) {
+      expect(localStorage.getItem(key)).toBeNull();
+    }
+    expect(LAYOUT_STORAGE_KEY).toBe('norveseditor-layout-v3');
   });
 
-  it('restores a saved v2 layout (fromJSON) including the edge group and Log panel', () => {
+  it('restores a saved v3 layout (fromJSON) including the edge group and Log panel', () => {
     localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({ panels: ['gameView'] }));
     renderApp();
     expect(currentApi.fromJSONCalled).toBe(true);
@@ -549,13 +565,15 @@ describe('AppLayout persistence (v2 + v1 cleanup)', () => {
     expect(currentApi.getEdgeGroup('bottom')?.isCollapsed()).toBe(false);
   });
 
-  it('purges a corrupt v2 layout and rebuilds the default', () => {
+  it('purges a corrupt v3 layout and rebuilds the default', () => {
     localStorage.setItem(LAYOUT_STORAGE_KEY, '{not valid json');
     renderApp();
     // Corrupt JSON.parse throws before fromJSON; key purged, default rebuilt.
     expect(localStorage.getItem(LAYOUT_STORAGE_KEY)).toBeNull();
     expect(currentApi.getPanel('gameView')).toBeTruthy();
-    expect(currentApi.getPanel('connection')).toBeTruthy();
+    expect(currentApi.getPanel('sceneOutliner')).toBeTruthy();
+    // Connection/Settings are not part of the rebuilt default in P6.
+    expect(currentApi.getPanel('connection')).toBeUndefined();
   });
 });
 
@@ -567,10 +585,11 @@ describe('AppLayout Property Inspector (selection-driven)', () => {
   it('adds the Inspector (reconciled at onReady) when an object is already selected at mount', () => {
     renderAppWithPreSelection('obj-1');
     expect(currentApi.getPanel('propertyInspector')).toBeTruthy();
-    // Added into the bottom-right group (same group as Connection).
+    // Docked below the Scene Outliner (its own group, not the Game View group).
     const inspectorGroup = currentApi.getPanel('propertyInspector')?.group.id;
-    const connectionGroup = currentApi.getPanel('connection')?.group.id;
-    expect(inspectorGroup).toBe(connectionGroup);
+    const gameGroup = currentApi.getPanel('gameView')?.group.id;
+    expect(inspectorGroup).toBeTruthy();
+    expect(inspectorGroup).not.toBe(gameGroup);
   });
 
   it('adds the Inspector when an object becomes selected', () => {
@@ -609,5 +628,31 @@ describe('AppLayout Property Inspector (selection-driven)', () => {
     ).length;
     expect(inspectorCount).toBe(1);
     expect(currentApi.getPanel('propertyInspector')).toBeTruthy();
+  });
+
+  it('removes the Inspector at onReady when layout was restored with propertyInspector but nothing is selected', () => {
+    // Save a v3 layout snapshot that includes propertyInspector (as would
+    // happen if the user had an object selected when they last saved, then
+    // restarted without selecting anything).
+    localStorage.setItem(
+      LAYOUT_STORAGE_KEY,
+      JSON.stringify({
+        panels: ['gameView', 'sceneOutliner', 'propertyInspector'],
+        edgeGroups: [
+          {
+            id: 'logEdgeGroup',
+            position: 'bottom',
+            collapsed: true,
+            panels: ['log'],
+          },
+        ],
+      }),
+    );
+    // Mount with no pre-selection (selectedObjectId === undefined).
+    renderApp();
+    // fromJSON restores propertyInspector from the snapshot, then reconcileInspector
+    // removes it because no object is currently selected.
+    expect(currentApi.fromJSONCalled).toBe(true);
+    expect(currentApi.getPanel('propertyInspector')).toBeUndefined();
   });
 });

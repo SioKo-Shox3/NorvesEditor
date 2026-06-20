@@ -12,7 +12,8 @@
  *   - Connection: wired in P5 (onOpenConnection)
  *   - Settings:   wired in P5 (onOpenSettings)
  *   - Log:        wired in P4 (onToggleLog)
- *   - Reset Layout: wired in P6 (onResetLayout — currently disabled)
+ *   - Reset Layout: wired in P6 (onResetLayout — clears the saved layout and
+ *     reloads the main window via clearSavedLayoutAndReload)
  *
  * Engine-agnostic: no mock-specific control is hard-coded.
  * No event subscription added here — useBridgeSubscriptions() still called
@@ -46,7 +47,7 @@ export interface ToolbarActionsProps {
   onOpenSettings?: (() => void) | undefined;
   /** Expand the Log panel (P4). undefined → button disabled. */
   onToggleLog?: (() => void) | undefined;
-  /** Reset the dockview layout (P6). undefined → button disabled. */
+  /** Reset the dockview layout (P6, wired). undefined → button disabled. */
   onResetLayout?: (() => void) | undefined;
 }
 

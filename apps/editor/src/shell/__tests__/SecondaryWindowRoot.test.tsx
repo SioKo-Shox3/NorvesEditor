@@ -27,6 +27,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(() => Promise.resolve(() => undefined)),
+  emit: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('@tauri-apps/api/window', () => ({

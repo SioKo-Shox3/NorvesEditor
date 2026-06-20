@@ -1,45 +1,49 @@
 /**
  * AppLayout — dockview-based layout container for NorvesEditor.
  *
- * P4 layout redesign. New default arrangement:
+ * P6 layout redesign. New default arrangement:
  *
  *   +-------------------------------------+----------------------+
  *   |                                     |  Scene Outliner      |
  *   |                                     |  (right column top)  |
  *   |          Game View                  +----------------------+
- *   |          (centre / largest)         |  Connection | Settings
- *   |                                     |  [ Inspector ]  (tabs)
- *   |                                     |  (right column bottom)
+ *   |          (centre / largest)         |  [ Inspector ]       |
+ *   |                                     |  (below Scene        |
+ *   |                                     |   Outliner, on       |
+ *   |                                     |   selection)         |
  *   +-------------------------------------+----------------------+
  *   |  Log (bottom EdgeGroup drawer, collapsed by default)       |
  *   +------------------------------------------------------------+
  *
  *   - Game View is the centre/root panel (largest area).
  *   - Scene Outliner sits at the top of the right column.
- *   - The bottom of the right column is a TAB GROUP holding Connection and
- *     Settings (and, when an object is selected, the Property Inspector).
+ *   - The Property Inspector (when an object is selected) is added BELOW the
+ *     Scene Outliner — it no longer depends on a Connection/Settings group.
  *   - Log lives in a bottom EdgeGroup drawer, collapsed by default; the main
  *     toolbar's "Log" toggle (P3) expands/collapses it.
  *
- * Connection/Settings stay in the layout (not moved to their own window) so
- * they remain reachable in P4; moving them to dedicated windows happens in P6.
+ * Connection and Settings are NO LONGER in the main window's dockview (P6):
+ * they open in their own Tauri windows from the toolbar (see windowManager /
+ * SecondaryWindowRoot). SecondaryWindowRoot imports those panels directly, so
+ * the panel components stay; only the main-window dockview entries are removed.
  *
  * Property Inspector visibility:
  *   - Driven solely by selectedObjectId (engine-agnostic — no mock-specific
- *     names). When an object is selected the Inspector is added as a tab in the
- *     bottom-right group; when deselected it is removed.
+ *     names). When an object is selected the Inspector is added below the Scene
+ *     Outliner; when deselected it is removed.
  *   - Idempotent: never double-adds (existence checked via getPanel).
  *   - Reconciled after restore so the restored layout matches the current
  *     selection (Inspector shown iff an object is selected).
  *
  * Layout persistence:
- *   - Saved to localStorage under LAYOUT_STORAGE_KEY (v2) on every change.
+ *   - Saved to localStorage under LAYOUT_STORAGE_KEY (v3) on every change.
  *   - Restored on startup (fromJSON). Corrupt JSON purges the key and rebuilds.
- *   - On startup any stale v1 key is removed once (cleanup).
+ *   - On startup any stale legacy keys (v1, v2) are removed once (cleanup).
  *
- * Layout reset is exposed by SettingsPanel (shared key import).
- * Floating groups are disabled (disableFloatingGroups) for alpha (tear-off is
- * a future phase).
+ * Layout reset is exposed by the toolbar (clearSavedLayoutAndReload) and by the
+ * Settings window (requestLayoutReset, relayed to the main window); see
+ * shell/layoutReset.ts. Floating groups are disabled (disableFloatingGroups)
+ * for alpha (tear-off is a future phase).
  */
 
 import { useCallback, useEffect, useRef } from 'react';
@@ -52,12 +56,10 @@ import type {
   EdgeGroupPosition,
 } from 'dockview-react';
 import { GameViewPanel }          from './GameViewPanel.js';
-import { ConnectionPanel }        from './ConnectionPanel.js';
-import { SettingsPanel }          from './SettingsPanel.js';
 import { LogPanel }               from './LogPanel.js';
 import { SceneOutlinerPanel }     from './SceneOutlinerPanel.js';
 import { PropertyInspectorPanel } from './PropertyInspectorPanel.js';
-import { LAYOUT_STORAGE_KEY, LEGACY_LAYOUT_STORAGE_KEY_V1 } from './shell/layoutKey.js';
+import { LAYOUT_STORAGE_KEY, LEGACY_LAYOUT_STORAGE_KEYS } from './shell/layoutKey.js';
 import { useBridgeState } from '../state/BridgeContext.js';
 
 // -------------------------------------------------------------------------
@@ -67,8 +69,6 @@ import { useBridgeState } from '../state/BridgeContext.js';
 /** Panel ids — shared between the default builder and dynamic reconciliation. */
 const PANEL_GAME_VIEW      = 'gameView';
 const PANEL_SCENE_OUTLINER = 'sceneOutliner';
-const PANEL_CONNECTION     = 'connection';
-const PANEL_SETTINGS       = 'settings';
 const PANEL_INSPECTOR      = 'propertyInspector';
 const PANEL_LOG            = 'log';
 
@@ -84,10 +84,11 @@ const LOG_EDGE_COLLAPSED_SIZE = 28;
 // Panel component map
 // -------------------------------------------------------------------------
 
+// Connection / Settings are deliberately absent: P6 moves them to their own
+// Tauri windows (SecondaryWindowRoot imports those panels directly), so the
+// main-window dockview no longer hosts them.
 const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
   [PANEL_GAME_VIEW]:      GameViewPanel,
-  [PANEL_CONNECTION]:     ConnectionPanel,
-  [PANEL_SETTINGS]:       SettingsPanel,
   [PANEL_LOG]:            LogPanel,
   [PANEL_SCENE_OUTLINER]: SceneOutlinerPanel,
   [PANEL_INSPECTOR]:      PropertyInspectorPanel,
@@ -99,11 +100,12 @@ const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelPro
 
 /**
  * Build the default layout. Game View is the root (centre/largest); the right
- * column holds Scene Outliner on top and a Connection/Settings tab group below;
- * the Log lives in a collapsed bottom EdgeGroup drawer.
+ * column holds the Scene Outliner on top (the Property Inspector is added below
+ * it on demand); the Log lives in a collapsed bottom EdgeGroup drawer.
  *
- * The Property Inspector is NOT added here — it is added on demand by the
- * selection-driven reconciliation (reconcileInspector).
+ * Connection and Settings are NOT added here (P6: they open in their own Tauri
+ * windows). The Property Inspector is NOT added here either — it is added on
+ * demand by the selection-driven reconciliation (reconcileInspector).
  */
 function buildDefaultLayout(api: DockviewApi): void {
   // 1. Centre: Game View (first panel — becomes the root, largest area).
@@ -113,7 +115,8 @@ function buildDefaultLayout(api: DockviewApi): void {
     title: 'Game View',
   });
 
-  // 2. Right column top: Scene Outliner (to the right of Game View).
+  // 2. Right column top: Scene Outliner (to the right of Game View). This is
+  //    also the anchor the Property Inspector docks below (reconcileInspector).
   api.addPanel({
     id: PANEL_SCENE_OUTLINER,
     component: PANEL_SCENE_OUTLINER,
@@ -124,52 +127,8 @@ function buildDefaultLayout(api: DockviewApi): void {
     },
   });
 
-  // 3. Right column bottom: Connection (below the outliner) — this becomes the
-  //    bottom-right tab group that also hosts Settings and the Inspector.
-  api.addPanel({
-    id: PANEL_CONNECTION,
-    component: PANEL_CONNECTION,
-    title: 'Connection',
-    position: {
-      direction: 'below',
-      referencePanel: PANEL_SCENE_OUTLINER,
-    },
-  });
-
-  // 4. Settings as a tab in the same group as Connection (kept reachable in
-  //    P4; moved to its own window in P6).
-  api.addPanel({
-    id: PANEL_SETTINGS,
-    component: PANEL_SETTINGS,
-    title: 'Settings',
-    position: {
-      referenceGroup: connectionGroupId(api) ?? PANEL_CONNECTION,
-    },
-  });
-
-  // 5. Log: bottom EdgeGroup drawer, collapsed by default.
+  // 3. Log: bottom EdgeGroup drawer, collapsed by default.
   ensureLogEdgeGroup(api);
-}
-
-/**
- * Return the dockview group id that contains the Connection panel, or undefined
- * if Connection is not present. This is the bottom-right tab group that hosts
- * Connection / Settings / Inspector.
- */
-function connectionGroupId(api: DockviewApi): string | undefined {
-  return api.getPanel(PANEL_CONNECTION)?.group.id;
-}
-
-/**
- * Resolve the bottom-right tab group id, preferring the Connection group, then
- * the Settings group (Connection may have been moved/closed in a future phase).
- * Returns undefined when neither is present.
- */
-function bottomRightGroupId(api: DockviewApi): string | undefined {
-  return (
-    api.getPanel(PANEL_CONNECTION)?.group.id ??
-    api.getPanel(PANEL_SETTINGS)?.group.id
-  );
 }
 
 // -------------------------------------------------------------------------
@@ -236,9 +195,13 @@ function toggleLog(api: DockviewApi): void {
 /**
  * Reconcile the Property Inspector panel with the current selection.
  *
- *   selectedObjectId set + no Inspector panel → add it (as a tab in the
- *                                                bottom-right group).
+ *   selectedObjectId set + no Inspector panel → add it below the Scene Outliner.
  *   selectedObjectId unset + Inspector present → remove it.
+ *
+ * The Inspector docks BELOW the Scene Outliner (P6: it no longer depends on a
+ * Connection/Settings group, which was removed). If the Scene Outliner is
+ * somehow absent, dockview places the panel in a default location rather than
+ * throwing.
  *
  * Idempotent: the existence check (getPanel) prevents double-add, and removal
  * only runs when the panel exists. Safe to call on selection change AND right
@@ -251,15 +214,15 @@ function reconcileInspector(api: DockviewApi, hasSelection: boolean): void {
     if (existing !== undefined) {
       return; // already present — do not double-add
     }
-    const groupId = bottomRightGroupId(api);
+    const outlinerPresent = api.getPanel(PANEL_SCENE_OUTLINER) !== undefined;
     api.addPanel({
       id: PANEL_INSPECTOR,
       component: PANEL_INSPECTOR,
       title: 'Property Inspector',
-      // Prefer the bottom-right tab group; if it is gone, dockview places the
-      // panel in a default location rather than throwing.
-      ...(groupId !== undefined
-        ? { position: { referenceGroup: groupId } }
+      // Dock below the Scene Outliner; if it is gone, dockview places the panel
+      // in a default location rather than throwing.
+      ...(outlinerPresent
+        ? { position: { direction: 'below', referencePanel: PANEL_SCENE_OUTLINER } }
         : {}),
     });
     return;
@@ -285,19 +248,24 @@ function saveLayout(api: DockviewApi): void {
 }
 
 /**
- * Remove the stale v1 layout key once on startup so old garbage does not
- * linger in localStorage. Never re-written. Failures are ignored.
+ * Remove the stale legacy layout keys (v1, v2) once on startup so old garbage
+ * does not linger in localStorage. P6 bumped the active key to v3; a saved v2
+ * layout still encodes the now-removed Connection/Settings panels, so it must
+ * not survive (same rationale as the v1 → v2 bump in P4). Never re-written.
+ * Failures are ignored.
  */
 function cleanupLegacyLayout(): void {
-  try {
-    localStorage.removeItem(LEGACY_LAYOUT_STORAGE_KEY_V1);
-  } catch {
-    // localStorage may be unavailable — ignore silently.
+  for (const key of LEGACY_LAYOUT_STORAGE_KEYS) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // localStorage may be unavailable — ignore silently.
+    }
   }
 }
 
 /**
- * Try to restore a saved layout (v2 key only).
+ * Try to restore a saved layout (v3 key only).
  * Returns true on success, false if there was no saved layout or it was corrupt.
  * On corruption the storage key is purged so the next load rebuilds the default.
  */
@@ -352,7 +320,7 @@ export function AppLayout({ onLogToggleReady }: AppLayoutProps = {}): React.JSX.
     const api = event.api;
     apiRef.current = api;
 
-    // One-time cleanup of the old v1 layout key.
+    // One-time cleanup of the stale legacy layout keys (v1, v2).
     cleanupLegacyLayout();
 
     // Attempt to restore persisted layout; fall back to default.

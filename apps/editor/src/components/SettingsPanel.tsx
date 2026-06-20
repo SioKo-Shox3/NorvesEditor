@@ -1,33 +1,33 @@
 /**
  * SettingsPanel — editor settings and layout controls.
  *
- * Phase 1 refactor: added layout reset button that:
- *   1. Removes the persisted layout from localStorage.
- *   2. Reloads the page so the default layout is reconstructed.
+ * P6: Settings is rendered ONLY in its own Tauri window (SecondaryWindowRoot);
+ * it is no longer a panel in the main window's dockview. The layout it resets
+ * lives in the MAIN window, so the reset button here cannot clear localStorage
+ * or reload locally — that would touch the wrong window. Instead it emits a
+ * frontend layout-reset request (requestLayoutReset); the main window listens
+ * for it and performs the actual clear + reload (see shell/layoutReset.ts).
+ * This avoids relying on shared localStorage between windows.
  *
- * P4: the layout key is shared with AppLayout via ./shell/layoutKey.js
- * (single source of truth, bumped to v2). The reset behaviour is unchanged;
- * moving Settings to its own window is deferred to P6.
- *
- * IDockviewPanelProps is accepted but containerApi is not used here;
- * the reset works via localStorage purge + page reload which is sufficient.
+ * IDockviewPanelProps is accepted but containerApi is not used here; the reset
+ * works via the cross-window event, not the dockview API.
  */
 
 import type React from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
-import { LAYOUT_STORAGE_KEY } from './shell/layoutKey.js';
+import { requestLayoutReset } from '../shell/layoutReset.js';
 
 // IDockviewPanelProps is accepted but not currently used for data.
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export function SettingsPanel(_props: IDockviewPanelProps): React.JSX.Element {
   function handleResetLayout(): void {
-    try {
-      localStorage.removeItem(LAYOUT_STORAGE_KEY);
-    } catch {
-      // localStorage may be unavailable in some environments — ignore silently.
-    }
-    // Reload the page to trigger AppLayout's onReady with the default layout.
-    window.location.reload();
+    // Fire-and-forget: emit a reset request to the main window. We do NOT touch
+    // this window's localStorage or reload it — the main window owns the layout
+    // and performs the actual reset on receiving the event. A failed emit is
+    // non-fatal (the main toolbar's Reset Layout button is an alternative path).
+    void requestLayoutReset().catch((err: unknown) => {
+      console.error('[SettingsPanel] Failed to request layout reset:', err);
+    });
   }
 
   return (
@@ -43,7 +43,7 @@ export function SettingsPanel(_props: IDockviewPanelProps): React.JSX.Element {
           <span style={{ fontSize: 11 }}>Coming in a future release.</span>
         </div>
 
-        {/* Layout reset — Phase 1 deliverable (c) */}
+        {/* Layout reset — relays the request to the main window (P6). */}
         <div className="divider" />
         <div className="col" style={{ gap: 4 }}>
           <span className="label">Layout</span>
@@ -51,7 +51,7 @@ export function SettingsPanel(_props: IDockviewPanelProps): React.JSX.Element {
             className="btn"
             type="button"
             onClick={handleResetLayout}
-            title="Delete saved layout and restore defaults"
+            title="Delete the main window's saved layout and restore defaults"
           >
             レイアウトをリセット
           </button>
