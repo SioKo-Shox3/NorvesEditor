@@ -51,8 +51,9 @@ use norves_bridge_core::{
     VersionString,
 };
 use norves_bridge_editor_client::{
-    connect_with_retry, parse_hello_result, parse_log_message, parse_scene_tree_result,
-    parse_status_result, HelloParams, RequestError, RetryConfig,
+    connect_with_retry, parse_hello_result, parse_log_message, parse_object_snapshot_result,
+    parse_scene_tree_result, parse_schema_snapshot_result, parse_status_result, HelloParams,
+    RequestError, RetryConfig,
 };
 use tokio::sync::broadcast;
 
@@ -611,6 +612,124 @@ async fn engine_scene_get_tree_contract() {
 
     handle.shutdown().await;
     eprintln!("[PASS] engine_scene_get_tree_contract: all steps passed");
+}
+
+/// object.getSnapshot + schema.getSnapshot round-trip contract against the mock
+/// engine.
+///
+/// Opt-in via `NORVES_ENGINE_PATH` (the mock engine path; distinct from
+/// `NORVES_NORVESLIB_ENGINE_PATH` and from `NORVES_MOCK_ENGINE`). Skips (passes)
+/// when unset or non-file so `cargo test` stays green without the C++ build.
+///
+/// Proves the read paths the Inspector depends on: after `bridge.hello`, an
+/// `object.getSnapshot` request for `n-1` returns a property bag that parses via
+/// `parse_object_snapshot_result` (covering scalar/array/object/null values), and
+/// a `schema.getSnapshot` request returns type descriptors that parse via
+/// `parse_schema_snapshot_result`. Both are value-equal to the spec fixtures.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_object_and_schema_snapshot_contract() {
+    let exe = match std::env::var("NORVES_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_object_and_schema_snapshot_contract: \
+                 set NORVES_ENGINE_PATH to the norves_mock_engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_object_and_schema_snapshot_contract: \
+             NORVES_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    // bridge.hello first (establishes the session).
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+
+    // object.getSnapshot round trip for the demo object n-1.
+    let mut object_params = serde_json::Map::new();
+    object_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String("n-1".to_owned()),
+    );
+    let object_value = send_and_expect_result(
+        &handle,
+        request_envelope("obj-snap", "object.getSnapshot", Some(object_params)),
+        "object.getSnapshot",
+    )
+    .await;
+    let snapshot = parse_object_snapshot_result(&object_value)
+        .unwrap_or_else(|e| panic!("[object.getSnapshot] parse failed: {e}"));
+    assert_eq!(
+        snapshot.object_id, "n-1",
+        "[object.getSnapshot] unexpected objectId"
+    );
+    // The demo bag covers every property-value kind the Inspector renders.
+    assert!(
+        snapshot.properties.iter().any(|p| p.value.is_string()),
+        "[object.getSnapshot] expected a string-valued property"
+    );
+    assert!(
+        snapshot.properties.iter().any(|p| p.value.is_null()),
+        "[object.getSnapshot] expected a null-valued property"
+    );
+    assert!(
+        snapshot.properties.iter().any(|p| p.value.is_array()),
+        "[object.getSnapshot] expected an array-valued property"
+    );
+    assert!(
+        snapshot.properties.iter().any(|p| p.value.is_object()),
+        "[object.getSnapshot] expected an object-valued property"
+    );
+    eprintln!(
+        "[PASS] object.getSnapshot: objectId={} with {} properties",
+        snapshot.object_id,
+        snapshot.properties.len()
+    );
+
+    // schema.getSnapshot round trip.
+    let schema_value = send_and_expect_result(
+        &handle,
+        request_envelope(
+            "schema-snap",
+            "schema.getSnapshot",
+            Some(serde_json::Map::new()),
+        ),
+        "schema.getSnapshot",
+    )
+    .await;
+    let schema = parse_schema_snapshot_result(&schema_value)
+        .unwrap_or_else(|e| panic!("[schema.getSnapshot] parse failed: {e}"));
+    assert!(
+        !schema.types.is_empty(),
+        "[schema.getSnapshot] expected at least one type descriptor"
+    );
+    assert_eq!(schema.types[0].type_name, "TypeA");
+    eprintln!(
+        "[PASS] schema.getSnapshot: {} type descriptor(s)",
+        schema.types.len()
+    );
+
+    handle.shutdown().await;
+    eprintln!("[PASS] engine_object_and_schema_snapshot_contract: all steps passed");
 }
 
 // ---------------------------------------------------------------------------

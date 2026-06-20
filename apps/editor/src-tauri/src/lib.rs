@@ -31,6 +31,8 @@ pub fn run() {
             bridge_state::bridge_reconnect,
             bridge_state::get_status,
             bridge_state::scene_get_tree,
+            bridge_state::object_get_snapshot,
+            bridge_state::schema_get_snapshot,
             bridge_state::runtime_play,
             bridge_state::runtime_pause,
             bridge_state::runtime_stop,

@@ -36,6 +36,8 @@ import type {
   ViewportStateChangedEvent,
   GetStatusResult,
   SceneGetTreeResult,
+  ObjectSnapshot,
+  SchemaSnapshot,
 } from '@norves/bridge-ui';
 import { useBridgeDispatch } from '../state/BridgeContext.js';
 
@@ -243,6 +245,18 @@ export interface BridgeActions {
    * query) the error is reported through the store like any other command.
    */
   getSceneTree: () => Promise<void>;
+  /**
+   * Fetch a single object's property snapshot (object.getSnapshot) for `id` and
+   * store it. On METHOD_NOT_SUPPORTED (an engine without object query) this is a
+   * graceful degradation (objectSnapshotUnsupported), not a user-facing error;
+   * other errors flow through the store like any command.
+   */
+  getObjectSnapshot: (id: string) => Promise<void>;
+  /**
+   * Fetch the engine's type-schema descriptors (schema.getSnapshot) and store
+   * them. METHOD_NOT_SUPPORTED degrades the same way as getObjectSnapshot.
+   */
+  getSchemaSnapshot: () => Promise<void>;
   play: () => Promise<void>;
   pause: () => Promise<void>;
   stop: () => Promise<void>;
@@ -363,6 +377,51 @@ export function useBridgeActions(): BridgeActions {
     }
   }, [dispatch]);
 
+  const getObjectSnapshot = useCallback(async (id: string): Promise<void> => {
+    try {
+      const result = await invokeCommand<ObjectSnapshot>(
+        BRIDGE_COMMANDS.objectGetSnapshot,
+        { objectId: id },
+      );
+      dispatch({ type: 'objectSnapshotLoaded', snapshot: result });
+    } catch (err: unknown) {
+      // An engine without object query answers METHOD_NOT_SUPPORTED. Treat that
+      // as a graceful degradation (engine-agnostic), not a user-facing error.
+      if (isMethodNotSupported(err)) {
+        dispatch({ type: 'objectSnapshotUnsupported' });
+        return;
+      }
+      const { kind, message } = extractBackendError(err);
+      dispatch({
+        type: 'errorReported',
+        payload: {
+          error: { code: kind ?? 'OBJECT_GET_SNAPSHOT_FAILED', message },
+        },
+      });
+    }
+  }, [dispatch]);
+
+  const getSchemaSnapshot = useCallback(async (): Promise<void> => {
+    try {
+      const result = await invokeCommand<SchemaSnapshot>(
+        BRIDGE_COMMANDS.schemaGetSnapshot,
+      );
+      dispatch({ type: 'schemaSnapshotLoaded', types: result.types });
+    } catch (err: unknown) {
+      if (isMethodNotSupported(err)) {
+        dispatch({ type: 'objectSnapshotUnsupported' });
+        return;
+      }
+      const { kind, message } = extractBackendError(err);
+      dispatch({
+        type: 'errorReported',
+        payload: {
+          error: { code: kind ?? 'SCHEMA_GET_SNAPSHOT_FAILED', message },
+        },
+      });
+    }
+  }, [dispatch]);
+
   const play = useCallback(async (): Promise<void> => {
     try {
       await invokeCommand(BRIDGE_COMMANDS.runtimePlay);
@@ -461,5 +520,5 @@ export function useBridgeActions(): BridgeActions {
     dispatch({ type: 'objectSelected', id });
   }, [dispatch]);
 
-  return { connect, disconnect, reconnect, getStatus, getSceneTree, play, pause, stop, focusViewport, launch, stopProcess, dismissError, selectObject };
+  return { connect, disconnect, reconnect, getStatus, getSceneTree, getObjectSnapshot, getSchemaSnapshot, play, pause, stop, focusViewport, launch, stopProcess, dismissError, selectObject };
 }
