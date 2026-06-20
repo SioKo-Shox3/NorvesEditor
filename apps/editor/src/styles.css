@@ -21,6 +21,18 @@
   --color-disabled-bg: #2e2e36;
   --color-disabled-fg: #52525b;
 
+  /* --- derived / interaction tokens (P1 tokenisation) --- */
+  --color-surface-hover:    #35353e;
+  --color-border-hover:     #55556a;
+  --color-surface-active:   #2a2a34;
+  --color-danger-bg:        #7f1d1d;
+  --color-danger-bg-hover:  #991b1b;
+  --color-danger-text:      #fca5a5;
+  --color-error-bg:         #3b0e0e;
+  --color-info-text:        #60a5fa;
+  --color-value-number:     #93c5fd;
+  --color-value-boolean:    #c4b5fd;
+
   --radius-sm: 3px;
   --radius-md: 5px;
 
@@ -95,12 +107,12 @@ html, body, #root {
 }
 
 .btn:hover:not(:disabled) {
-  background: #35353e;
-  border-color: #55556a;
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-hover);
 }
 
 .btn:active:not(:disabled) {
-  background: #2a2a34;
+  background: var(--color-surface-active);
 }
 
 .btn:disabled {
@@ -121,13 +133,13 @@ html, body, #root {
 }
 
 .btn--danger {
-  background: #7f1d1d;
+  background: var(--color-danger-bg);
   border-color: var(--color-danger);
-  color: #fca5a5;
+  color: var(--color-danger-text);
 }
 
 .btn--danger:hover:not(:disabled) {
-  background: #991b1b;
+  background: var(--color-danger-bg-hover);
 }
 
 /* ---- inputs ---- */
@@ -230,11 +242,11 @@ html, body, #root {
   align-items: baseline;
   gap: 4px;
   padding: 6px 10px;
-  background: #3b0e0e;
+  background: var(--color-error-bg);
   border: 1px solid var(--color-danger);
   border-radius: var(--radius-sm);
   font-size: 12px;
-  color: #fca5a5;
+  color: var(--color-danger-text);
   flex-wrap: wrap;
 }
 
@@ -263,6 +275,54 @@ html, body, #root {
 
 .error-banner__dismiss:hover {
   color: var(--color-text);
+}
+
+/* ---- shell primitives (P1: TitleBar / Toolbar) ---- */
+/*
+ * These classes back the presentational shell components introduced in P1.
+ * They reference only design tokens from :root — no raw hex values.
+ * data-tauri-drag-region and window API bindings are added at P2.
+ */
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  height: var(--header-h);
+  background: var(--color-surface-alt);
+  border-bottom: 1px solid var(--color-border);
+  padding: 0 10px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.titlebar__title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.titlebar__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--header-h);
+  padding: 0 8px;
+  background: var(--color-surface-alt);
+  border-bottom: 1px solid var(--color-border);
+  user-select: none;
+  flex-shrink: 0;
 }
 
 /* ---- dockview theme mapping ---- */
@@ -323,7 +383,7 @@ html, body, #root {
 .log-entry__level { font-weight: 600; }
 .log-entry__msg   { word-break: break-all; }
 
-.log-entry--info  .log-entry__level { color: #60a5fa; }
+.log-entry--info  .log-entry__level { color: var(--color-info-text); }
 .log-entry--warn  .log-entry__level { color: var(--color-warning); }
 .log-entry--error .log-entry__level { color: var(--color-danger); }
 .log-entry--debug .log-entry__level { color: var(--color-text-muted); }
@@ -469,11 +529,11 @@ html, body, #root {
 }
 
 .value--number {
-  color: #93c5fd;
+  color: var(--color-value-number);
 }
 
 .value--boolean {
-  color: #c4b5fd;
+  color: var(--color-value-boolean);
 }
 
 .value__summary {
@@ -570,5 +630,5 @@ html, body, #root {
 }
 
 .prop-editor__hint--error {
-  color: #fca5a5;
+  color: var(--color-danger-text);
 }
