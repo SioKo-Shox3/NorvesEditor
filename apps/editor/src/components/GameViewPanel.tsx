@@ -1,15 +1,16 @@
 /**
  * GameViewPanel — primary control panel for the engine process.
  *
- * P6: wired to real bridge state and hook actions.
- * Types come from @norves/bridge-types (not local placeholders).
+ * Phase 1 refactor: props drilling removed. State is obtained via
+ * useBridgeState() and command callbacks via useBridgeActions().
+ * Rendering logic is unchanged from the original implementation.
  *
  * NOTE: Alpha has NO embedded viewport. The engine renders in its own
  * external window. This panel drives the process and runtime only.
  *
  * Process lifecycle (Launch / Stop-process) wired in Workstream J4.
- * - onLaunch: spawns + connects a new engine process (via launch_engine command).
- * - onStopProcess: terminates the running engine process (via stop_engine command).
+ * - launch: spawns + connects a new engine process (via launch_engine command).
+ * - stopProcess: terminates the running engine process (via stop_engine command).
  * - The ConnectionPanel's connect(port) path (attach to existing engine) is
  *   separate and unaffected.
  * Reconnect IS wired (bridge-ui action).
@@ -22,35 +23,9 @@
 
 import type React from 'react';
 import type { EngineState, RuntimeState, ViewportState } from '@norves/bridge-types';
-import type { ConnectionStatus } from '../state/store.js';
-
-export interface GameViewPanelProps {
-  /** Current engine process state (from bridge state store). */
-  engineState?: EngineState;
-  /** Current runtime simulation state (from bridge state store). */
-  runtimeState?: RuntimeState;
-  /** Whether the bridge is connected (gates runtime controls). */
-  connected: boolean;
-  /** Full connection status — used to derive process-button disabled logic. */
-  connectionStatus?: ConnectionStatus;
-  /** Latest viewport state from the engine (Workstream K). */
-  viewportState?: ViewportState;
-  /** Current error to display (Workstream K). */
-  lastError?: { kind?: string; message: string };
-  /** Called when the user dismisses the error banner (Workstream K). */
-  onDismissError?: () => void;
-  /** Reconnect to the bridge (wired to useBridge.reconnect). */
-  onReconnect?: () => void;
-  /** Runtime simulation handlers (wired to useBridge). */
-  onPlay?: () => void;
-  onPause?: () => void;
-  onStopRuntime?: () => void;
-  onFocusViewport?: () => void;
-  /** Spawn + connect a new engine process (wired to useBridge.launch). */
-  onLaunch?: () => void;
-  /** Terminate the running engine process (wired to useBridge.stopProcess). */
-  onStopProcess?: () => void;
-}
+import type { IDockviewPanelProps } from 'dockview-react';
+import { useBridgeState } from '../state/BridgeContext.js';
+import { useBridgeActions } from '../hooks/useBridge.js';
 
 // -------------------------------------------------------------------------
 // Label / class maps covering ALL enum values (no silent fall-through)
@@ -101,7 +76,7 @@ function runtimeChipClass(state: RuntimeState): string {
 
 // -------------------------------------------------------------------------
 // Error kind -> human-readable label map
-// Covers all BackendError serde tags + frontend fallback codes from useBridge.
+// Covers all BackendError serde tags + frontend fallback codes from useBridgeActions.
 // -------------------------------------------------------------------------
 
 const ERROR_KIND_LABELS: Record<string, string> = {
@@ -113,7 +88,7 @@ const ERROR_KIND_LABELS: Record<string, string> = {
   process:          'Process error',
   notConnected:     'Not connected',
   alreadyConnected: 'Already connected',
-  // Frontend fallback codes set by useBridge catch blocks
+  // Frontend fallback codes set by useBridgeActions catch blocks
   CONNECT_FAILED:       'Connection error',
   DISCONNECT_FAILED:    'Disconnect failed',
   RECONNECT_FAILED:     'Reconnect failed',
@@ -140,39 +115,48 @@ function isUselessMessage(msg: string | undefined): boolean {
 }
 
 // -------------------------------------------------------------------------
-// Component
+// Component (dockview panel — no props drilling from AppLayout)
 // -------------------------------------------------------------------------
 
-export function GameViewPanel({
-  engineState,
-  runtimeState,
-  connected,
-  connectionStatus,
-  viewportState,
-  lastError,
-  onDismissError,
-  onReconnect,
-  onPlay,
-  onPause,
-  onStopRuntime,
-  onFocusViewport,
-  onLaunch,
-  onStopProcess,
-}: GameViewPanelProps): React.JSX.Element {
-  // Runtime controls disabled when not connected
+// IDockviewPanelProps is accepted but not currently used for data.
+// It is required by the dockview component map type signature.
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export function GameViewPanel(_props: IDockviewPanelProps): React.JSX.Element {
+  const state   = useBridgeState();
+  const actions = useBridgeActions();
+
+  const engineState      = state.engineState;
+  const runtimeState     = state.runtimeState;
+  const viewportState    = state.viewportState;
+  const lastError        = state.lastError;
+  const connectionStatus = state.connection.status;
+  const connected        = connectionStatus === 'connected';
+
+  // -----------------------------------------------------------------------
+  // Action handlers — delegate to useBridgeActions() (error mapping lives
+  // there, in a single place). Button onClick expects a () => void.
+  // -----------------------------------------------------------------------
+
+  const handleDismissError  = (): void => { actions.dismissError(); };
+  const handleReconnect     = (): void => { void actions.reconnect(); };
+  const handlePlay          = (): void => { void actions.play(); };
+  const handlePause         = (): void => { void actions.pause(); };
+  const handleStopRuntime   = (): void => { void actions.stop(); };
+  const handleFocusViewport = (): void => { void actions.focusViewport(); };
+  const handleLaunch        = (): void => { void actions.launch(); };
+  const handleStopProcess   = (): void => { void actions.stopProcess(); };
+
+  // -----------------------------------------------------------------------
+  // Derived disabled states (identical logic to the original prop-driven impl)
+  // -----------------------------------------------------------------------
+
   const runtimeDisabled = !connected;
 
-  // Launch is only meaningful when there is no active connection (process not running).
-  // Disable while connecting/connected/launching (status 'connecting' or 'connected').
   const launchDisabled =
     connectionStatus === 'connected' || connectionStatus === 'connecting';
 
-  // Stop-process is only meaningful when a process is running (connected).
   const stopProcessDisabled = !connected;
 
-  // Reconnect: disabled while connecting or disconnected.
-  // 'connected' AND 'error' both enable the button.
-  // Treat undefined as disconnected (safe fallback -> disabled).
   const reconnectDisabled =
     connectionStatus === 'connecting' ||
     connectionStatus === 'disconnected' ||
@@ -201,7 +185,7 @@ export function GameViewPanel({
               className="error-banner__dismiss"
               type="button"
               aria-label="Dismiss error"
-              onClick={onDismissError}
+              onClick={handleDismissError}
             >
               x
             </button>
@@ -255,7 +239,7 @@ export function GameViewPanel({
           <button
             className="btn btn--primary"
             disabled={launchDisabled}
-            onClick={onLaunch}
+            onClick={handleLaunch}
             title="Spawn and connect a new engine process"
             type="button"
           >
@@ -264,7 +248,7 @@ export function GameViewPanel({
           <button
             className="btn btn--danger"
             disabled={stopProcessDisabled}
-            onClick={onStopProcess}
+            onClick={handleStopProcess}
             title="Terminate the running engine process"
             type="button"
           >
@@ -273,7 +257,7 @@ export function GameViewPanel({
           <button
             className="btn"
             disabled={reconnectDisabled}
-            onClick={onReconnect}
+            onClick={handleReconnect}
             type="button"
           >
             Reconnect
@@ -287,7 +271,7 @@ export function GameViewPanel({
           <button
             className="btn"
             disabled={runtimeDisabled}
-            onClick={onPlay}
+            onClick={handlePlay}
             type="button"
           >
             Play
@@ -295,7 +279,7 @@ export function GameViewPanel({
           <button
             className="btn"
             disabled={runtimeDisabled}
-            onClick={onPause}
+            onClick={handlePause}
             type="button"
           >
             Pause
@@ -303,7 +287,7 @@ export function GameViewPanel({
           <button
             className="btn"
             disabled={runtimeDisabled}
-            onClick={onStopRuntime}
+            onClick={handleStopRuntime}
             type="button"
           >
             Stop
@@ -311,7 +295,7 @@ export function GameViewPanel({
           <button
             className="btn"
             disabled={runtimeDisabled}
-            onClick={onFocusViewport}
+            onClick={handleFocusViewport}
             type="button"
           >
             Focus Viewport

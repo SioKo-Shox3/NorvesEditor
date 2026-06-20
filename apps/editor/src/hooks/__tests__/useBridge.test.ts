@@ -1,23 +1,18 @@
 /**
- * useBridge hook tests — action error mapping + unmount cleanup.
+ * Bridge hook contract tests — invoke command names + subscribe lifecycle.
  *
  * Mocks @tauri-apps/api/core and @tauri-apps/api/event so tests run
  * without a real Tauri runtime. Uses the same pattern as bridge-ui's
  * existing wrappers.test.ts.
  *
- * These tests are the substitute for a real GUI round-trip test;
- * true end-to-end testing requires a running Tauri process + engine
+ * These tests exercise the @norves/bridge-ui wrappers that the bridge hooks
+ * (useBridgeActions / useBridgeSubscriptions) build on: invokeCommand call
+ * names + the subscribeEvent unlisten lifecycle. Full action error-mapping
+ * and subscription mount/unmount behaviour is covered in
+ * useBridge.lifecycle.test.tsx.
+ *
+ * True end-to-end testing requires a running Tauri process + engine
  * (see plan §10 manual acceptance).
- *
- * NOTE: React hooks must be called inside a React component. We use
- * renderHook from @testing-library/react, but since adding that dep is
- * heavy, we instead test the internal dispatch logic by rendering a
- * minimal wrapper component via a direct vitest render approach.
- *
- * Because the hook integrates deeply with React Context, we test the
- * command dispatch side (invokeCommand calls / error mapping) using a
- * vitest spy on @norves/bridge-ui's invokeCommand re-export, and verify
- * the subscription lifecycle via the listen mock.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
@@ -150,7 +145,7 @@ describe('subscribeEvent unlisten lifecycle', () => {
 });
 
 // -------------------------------------------------------------------------
-// Error extraction shape (tests the pattern used in useBridge)
+// Error extraction shape (tests the pattern used in useBridgeActions)
 // -------------------------------------------------------------------------
 
 describe('BackendError extraction', () => {

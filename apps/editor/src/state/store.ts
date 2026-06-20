@@ -74,11 +74,18 @@ export interface BridgeState {
   title?: string;
   logs: LogEntry[];
   lastError?: BackendError;
+  /**
+   * ID of the currently selected scene object, or undefined when nothing is selected.
+   * Generic string — not tied to any specific engine or mock.
+   * Set via objectSelected action; undefined means deselected.
+   */
+  selectedObjectId?: string;
 }
 
 export const INITIAL_STATE: BridgeState = {
   connection: { status: 'disconnected' },
   logs: [],
+  selectedObjectId: undefined,
 };
 
 // -------------------------------------------------------------------------
@@ -102,7 +109,12 @@ export type BridgeAction =
   | { type: 'errorReported'; payload: ErrorReportedEvent }
   | { type: 'engineProcessExited'; payload: EngineProcessExitedEvent }
   | { type: 'viewportStateChanged'; payload: ViewportStateChangedEvent }
-  | { type: 'dismissError' };
+  | { type: 'dismissError' }
+  /**
+   * Select a scene object by id. Pass undefined to deselect.
+   * Engine-agnostic: id is a plain string token, not mock-specific.
+   */
+  | { type: 'objectSelected'; id: string | undefined };
 
 // -------------------------------------------------------------------------
 // Pure reducer
@@ -210,6 +222,10 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
 
     case 'dismissError': {
       return { ...state, lastError: undefined };
+    }
+
+    case 'objectSelected': {
+      return { ...state, selectedObjectId: action.id };
     }
 
     default: {

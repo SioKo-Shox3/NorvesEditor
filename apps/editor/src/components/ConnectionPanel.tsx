@@ -1,7 +1,10 @@
 /**
  * ConnectionPanel — bridge connection controls.
  *
- * P6: wired to real bridge state and useBridge actions.
+ * Phase 1 refactor: props drilling removed. State is obtained via
+ * useBridgeState() and command callbacks via useBridgeActions().
+ * Rendering logic is unchanged from the original implementation.
+ *
  * Connection is by PORT (numeric), not ws:// URL — the Rust backend
  * builds the WebSocket URL from the port internally.
  *
@@ -10,6 +13,9 @@
 
 import type React from 'react';
 import { useState } from 'react';
+import type { IDockviewPanelProps } from 'dockview-react';
+import { useBridgeState } from '../state/BridgeContext.js';
+import { useBridgeActions } from '../hooks/useBridge.js';
 import type { ConnectionStatus } from '../state/store.js';
 
 // Status label / CSS map covers ALL ConnectionStatus values (no fall-through).
@@ -27,40 +33,36 @@ const STATUS_CSS: Record<ConnectionStatus, string> = {
   error:        'status-badge--error',
 };
 
-export interface ConnectionPanelProps {
-  /** Live connection status from bridge state store. */
-  status: ConnectionStatus;
-  /** Server name shown when connected. */
-  serverName?: string;
-  /** Session id shown when connected. */
-  sessionId?: string;
-  /** Default port value (editable by the user). */
-  defaultPort?: number;
-  /** Called when user clicks Connect — receives the numeric port. */
-  onConnect?: (port: number) => void;
-  /** Called when user clicks Disconnect. */
-  onDisconnect?: () => void;
-  /** Called when user clicks Reconnect. */
-  onReconnect?: () => void;
-}
+// -------------------------------------------------------------------------
+// Default port constant
+// -------------------------------------------------------------------------
 
-export function ConnectionPanel({
-  status,
-  serverName,
-  sessionId,
-  defaultPort = 9001,
-  onConnect,
-  onDisconnect,
-  onReconnect,
-}: ConnectionPanelProps): React.JSX.Element {
-  const [port, setPort] = useState<number>(defaultPort);
+const DEFAULT_PORT = 9001;
+
+// -------------------------------------------------------------------------
+// Component (dockview panel — no props drilling from AppLayout)
+// -------------------------------------------------------------------------
+
+// IDockviewPanelProps is accepted but not currently used for data.
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export function ConnectionPanel(_props: IDockviewPanelProps): React.JSX.Element {
+  const state   = useBridgeState();
+  const actions = useBridgeActions();
+
+  const status     = state.connection.status;
+  const serverName = state.connection.serverName;
+  const sessionId  = state.connection.sessionId;
+
+  const [port, setPort] = useState<number>(DEFAULT_PORT);
 
   const isConnected  = status === 'connected';
   const isConnecting = status === 'connecting';
 
-  function handleConnect(): void {
-    onConnect?.(port);
-  }
+  // Action handlers — delegate to useBridgeActions() (error mapping lives
+  // there, in a single place). Button onClick expects a () => void.
+  const handleConnect    = (): void => { void actions.connect(port); };
+  const handleDisconnect = (): void => { void actions.disconnect(); };
+  const handleReconnect  = (): void => { void actions.reconnect(); };
 
   function handlePortChange(e: React.ChangeEvent<HTMLInputElement>): void {
     const n = Number(e.target.value);
@@ -137,7 +139,7 @@ export function ConnectionPanel({
             className="btn btn--danger"
             type="button"
             disabled={!isConnected}
-            onClick={onDisconnect}
+            onClick={handleDisconnect}
           >
             Disconnect
           </button>
@@ -145,7 +147,7 @@ export function ConnectionPanel({
             className="btn"
             type="button"
             disabled={status === 'disconnected'}
-            onClick={onReconnect}
+            onClick={handleReconnect}
           >
             Reconnect
           </button>
