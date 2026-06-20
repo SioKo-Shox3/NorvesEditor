@@ -3,12 +3,19 @@
  *
  * Phase 1 refactor: props drilling removed. State is obtained via
  * useBridgeState() and command callbacks via useBridgeActions().
- * Rendering logic is unchanged from the original implementation.
  *
  * Connection is by PORT (numeric), not ws:// URL — the Rust backend
  * builds the WebSocket URL from the port internally.
  *
  * ConnectionStatus is the UI-level concept from the state store.
+ *
+ * Role separation (P6): this panel is the connection-setup surface only —
+ * connect / disconnect / reconnect. Process and runtime commands (Launch,
+ * Stop Process, Play, Pause, Stop, Focus Viewport) live ONLY on the main
+ * window's toolbar (ToolbarActions). Do NOT add those here: a single command
+ * path avoids a duplicate, drift-prone control surface. The Reconnect disabled
+ * condition is kept identical to ToolbarActions (the canonical surface, the
+ * main toolbar) so the two surfaces never disagree.
  */
 
 import type React from 'react';
@@ -57,6 +64,11 @@ export function ConnectionPanel(_props: IDockviewPanelProps): React.JSX.Element 
 
   const isConnected  = status === 'connected';
   const isConnecting = status === 'connecting';
+
+  // Reconnect: enabled only when status is 'connected' or 'error' — identical to
+  // ToolbarActions (the main toolbar, the canonical surface), so the two
+  // surfaces never disagree. Disabled while connecting or disconnected.
+  const reconnectDisabled = isConnecting || status === 'disconnected';
 
   // Action handlers — delegate to useBridgeActions() (error mapping lives
   // there, in a single place). Button onClick expects a () => void.
@@ -146,7 +158,7 @@ export function ConnectionPanel(_props: IDockviewPanelProps): React.JSX.Element 
           <button
             className="btn"
             type="button"
-            disabled={status === 'disconnected'}
+            disabled={reconnectDisabled}
             onClick={handleReconnect}
           >
             Reconnect
