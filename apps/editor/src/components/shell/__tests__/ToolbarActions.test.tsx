@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * ToolbarActions tests — P3 main toolbar engine-control wiring.
+ * ToolbarActions tests — main toolbar engine-control wiring.
  *
  * Strategy
  * --------
@@ -16,7 +16,8 @@
  *     - stopProcessDisabled: !connected
  *     - reconnectDisabled  : connecting || disconnected || undefined
  *     - runtimeDisabled    : !connected
- * (c) View-toggle buttons are disabled when callback props are undefined (P3 stubs).
+ * (c) View-toggle buttons are disabled when callback props are undefined.
+ *     Connection/Settings/Log are wired (P5/P4); Reset Layout wired in P6.
  * (d) StatusBadge renders with the current connection status.
  */
 
@@ -238,7 +239,7 @@ describe('ToolbarActions disabled: runtime buttons', () => {
 // (c) View-toggle buttons are disabled when callbacks are undefined (P3 stubs)
 // -------------------------------------------------------------------------
 
-describe('ToolbarActions view-toggle placeholders (P3)', () => {
+describe('ToolbarActions view-toggle disabled-when-unwired', () => {
   const viewBtnLabels = [
     'Open Connection window',
     'Toggle Log',

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core capabilities for the main window: events plus the four mutating window controls used by the custom title bar (start-dragging, minimize, toggle-maximize, close). is-maximized is already covered by core:default via core:window:default.",
+  "description": "Core capabilities for the main window: events, the four mutating window controls used by the custom title bar (start-dragging, minimize, toggle-maximize, close), and create-webview-window so the toolbar can spawn the Connection / Settings secondary windows (P5). is-maximized is already covered by core:default via core:window:default.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -9,6 +9,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
-    "core:window:allow-close"
+    "core:window:allow-close",
+    "core:webview:allow-create-webview-window"
   ]
 }
