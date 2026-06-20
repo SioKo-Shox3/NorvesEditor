@@ -205,3 +205,91 @@ describe('SceneOutlinerPanel — fetch', () => {
     expect(getSceneTree).toHaveBeenCalledTimes(1);
   });
 });
+
+// -------------------------------------------------------------------------
+// Live-refresh consume (sceneRefreshRequired set by scene.treeChanged)
+// -------------------------------------------------------------------------
+
+describe('SceneOutlinerPanel — live-refresh consume', () => {
+  it('issues exactly one getSceneTree when sceneRefreshRequired flips on while connected', () => {
+    // Mount connected with the flag unset so the connected-edge fetch fires once;
+    // clear the mock to isolate the consume path, then flip the flag on.
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      sceneRefreshRequired: false,
+    };
+    const { rerender } = render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    getSceneTree.mockClear();
+
+    mockState = { ...mockState, sceneRefreshRequired: true };
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    expect(getSceneTree).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fetch from the consume effect when the flag is unset', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      sceneRefreshRequired: false,
+    };
+    const { rerender } = render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    // Connected-edge fetch fired once on mount; clear it and confirm a re-render
+    // with the flag still unset triggers no further fetch.
+    getSceneTree.mockClear();
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    expect(getSceneTree).not.toHaveBeenCalled();
+  });
+
+  it('does not loop: a stuck flag across re-renders issues only one consume fetch', () => {
+    // Simulate the window where the live flag is still true (reducer has not yet
+    // cleared it) and the component re-renders. The ref guard must prevent a
+    // second consume fetch.
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      sceneRefreshRequired: true,
+    };
+    const { rerender } = render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    // Drop the connected-edge fetch; only the consume path is under test now.
+    getSceneTree.mockClear();
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    expect(getSceneTree).not.toHaveBeenCalled();
+  });
+
+  it('re-arms after the flag clears: a later set fires another consume fetch', () => {
+    // First render with the flag set consumes one fetch.
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      sceneRefreshRequired: true,
+    };
+    const { rerender } = render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    getSceneTree.mockClear();
+
+    // Reducer clears the flag (sceneTreeLoaded). The ref re-arms.
+    mockState = { ...mockState, sceneRefreshRequired: false };
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    expect(getSceneTree).not.toHaveBeenCalled();
+
+    // A new live event sets the flag again -> exactly one more consume fetch.
+    mockState = { ...mockState, sceneRefreshRequired: true };
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    expect(getSceneTree).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not consume while disconnected even if the flag is set', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'disconnected' },
+      sceneRefreshRequired: true,
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    expect(getSceneTree).not.toHaveBeenCalled();
+  });
+});

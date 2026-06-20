@@ -1,0 +1,25 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "event",
+  "event": "object.changed",
+  "sessionId": "sess-7f3a",
+  "seq": 43,
+  "params": {
+    "objectId": "n-1",
+    "name": "NodeA",
+    "kind": "object",
+    "properties": [
+      {
+        "name": "label",
+        "value": "Renamed",
+        "valueType": "string"
+      },
+      {
+        "name": "enabled",
+        "value": false,
+        "valueType": "boolean"
+      }
+    ]
+  }
+}

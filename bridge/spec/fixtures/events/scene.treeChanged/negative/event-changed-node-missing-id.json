@@ -1,0 +1,16 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "event",
+  "event": "scene.treeChanged",
+  "sessionId": "sess-7f3a",
+  "seq": 42,
+  "params": {
+    "changedNodes": [
+      {
+        "name": "NodeWithoutId",
+        "kind": "object"
+      }
+    ]
+  }
+}

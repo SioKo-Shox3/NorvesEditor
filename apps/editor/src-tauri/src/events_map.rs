@@ -20,6 +20,8 @@ pub fn ui_channel_for_event(event_name: &str) -> Option<&'static str> {
         "viewport.stateChanged" => Some(events::VIEWPORT_STATE_CHANGED),
         "bridge.connected" => Some(events::BRIDGE_CONNECTED),
         "bridge.disconnected" => Some(events::BRIDGE_DISCONNECTED),
+        "scene.treeChanged" => Some(events::SCENE_TREE_CHANGED),
+        "object.changed" => Some(events::OBJECT_CHANGED),
         _ => None,
     }
 }
@@ -89,6 +91,22 @@ mod tests {
         assert_eq!(
             ui_channel_for_event("bridge.disconnected"),
             Some(events::BRIDGE_DISCONNECTED)
+        );
+    }
+
+    #[test]
+    fn maps_scene_tree_changed() {
+        assert_eq!(
+            ui_channel_for_event("scene.treeChanged"),
+            Some(events::SCENE_TREE_CHANGED)
+        );
+    }
+
+    #[test]
+    fn maps_object_changed() {
+        assert_eq!(
+            ui_channel_for_event("object.changed"),
+            Some(events::OBJECT_CHANGED)
         );
     }
 

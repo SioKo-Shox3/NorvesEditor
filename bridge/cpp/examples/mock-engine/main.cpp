@@ -268,8 +268,12 @@ int main(int argc, char** argv)
             if (!transport->send(std::move(*response)))
             {
                 // フライト中にピアがいなくなった。終了しない: このエンジンは常駐型のため、
-                // このフレームを破棄し次の接続の提供を継続する。
+                // このフレームを破棄し次の接続の提供を継続する。レスポンスに紐づく保留中の
+                // 発行フラグはすべてここでクリアし、次のリクエストに残留しないようにする
+                // （emit_log_burst と対称）。
                 adapter.emit_log_burst.store(false);
+                adapter.emit_object_changed.store(false);
+                adapter.emit_scene_tree_changed.store(false);
                 continue;
             }
         }
@@ -283,6 +287,24 @@ int main(int argc, char** argv)
                     break;  // フライト中にピアがいなくなった。バーストを中断し提供を継続する。
                 }
             }
+        }
+
+        // Phase 6: setProperty の ack 後にライブ更新イベントを発行する。フレームは実行時に
+        // 1 回ビルドする（params は更新済みのインメモリ状態に依存するため）。ack を先に送って
+        // あるので、レスポンスを id で相関しイベントを別扱いする conformance ランナーの
+        // exact-match を壊さない（log.message バーストと同じ共存パターン）。1 リクエストあたり
+        // 最大 2 イベントであり SendCap=256 を超えない。
+        if (adapter.emit_object_changed.exchange(false))
+        {
+            const std::string objectChangedFrame =
+                server.emitEvent("object.changed", adapter.object_changed_params());
+            transport->send(std::string(objectChangedFrame));
+        }
+        if (adapter.emit_scene_tree_changed.exchange(false))
+        {
+            const std::string sceneTreeChangedFrame =
+                server.emitEvent("scene.treeChanged", MockAdapter::scene_tree_changed_params());
+            transport->send(std::string(sceneTreeChangedFrame));
         }
     }
 

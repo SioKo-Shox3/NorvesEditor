@@ -34,6 +34,8 @@ import type {
   ErrorReportedEvent,
   EngineProcessExitedEvent,
   ViewportStateChangedEvent,
+  SceneTreeChangedEvent,
+  ObjectChangedEvent,
   GetStatusResult,
   SceneGetTreeResult,
   ObjectSnapshot,
@@ -202,6 +204,26 @@ export function useBridgeSubscriptions(): void {
           (payload) => {
             if (!aborted) {
               dispatch({ type: 'viewportStateChanged', payload });
+            }
+          },
+        ),
+
+        // scene.treeChanged (protocol 0.2) — best-effort live tree update
+        subscribeEvent<SceneTreeChangedEvent>(
+          BRIDGE_EVENTS.sceneTreeChanged,
+          (payload) => {
+            if (!aborted) {
+              dispatch({ type: 'sceneTreeChangedLive', payload });
+            }
+          },
+        ),
+
+        // object.changed (protocol 0.2) — best-effort live object update
+        subscribeEvent<ObjectChangedEvent>(
+          BRIDGE_EVENTS.objectChanged,
+          (payload) => {
+            if (!aborted) {
+              dispatch({ type: 'objectChangedLive', payload });
             }
           },
         ),

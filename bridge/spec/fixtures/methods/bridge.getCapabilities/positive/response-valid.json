@@ -11,7 +11,8 @@
       { "name": "viewport.focus" },
       { "name": "scene.query" },
       { "name": "object.query" },
-      { "name": "object.edit" }
+      { "name": "object.edit" },
+      { "name": "scene.liveUpdate" }
     ]
   }
 }

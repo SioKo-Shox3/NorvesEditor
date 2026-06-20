@@ -601,3 +601,153 @@ describe('viewportStateChanged', () => {
     expect(next.viewportState).toBe('visible');
   });
 });
+
+// -------------------------------------------------------------------------
+// sceneTreeChangedLive (live event, protocol 0.2)
+// -------------------------------------------------------------------------
+
+describe('sceneTreeChangedLive', () => {
+  const seeded: BridgeState = {
+    ...INITIAL_STATE,
+    sceneTree: {
+      id: 'n-0',
+      name: 'Root',
+      children: [
+        { id: 'n-1', name: 'NodeA' },
+        { id: 'n-2', name: 'GroupNode', children: [{ id: 'n-3', name: 'NodeB' }] },
+      ],
+    },
+  };
+
+  it('merges a changed node by id, replacing it in place', () => {
+    const next = applyAction(
+      {
+        type: 'sceneTreeChangedLive',
+        payload: { changedNodes: [{ id: 'n-1', name: 'Renamed', kind: 'object' }] },
+      },
+      seeded,
+    );
+    expect(next.sceneTree?.children?.[0]).toEqual({ id: 'n-1', name: 'Renamed', kind: 'object' });
+    // Sibling untouched.
+    expect(next.sceneTree?.children?.[1]?.name).toBe('GroupNode');
+  });
+
+  it('merges a deeply nested changed node', () => {
+    const next = applyAction(
+      {
+        type: 'sceneTreeChangedLive',
+        payload: { changedNodes: [{ id: 'n-3', name: 'NodeB2' }] },
+      },
+      seeded,
+    );
+    expect(next.sceneTree?.children?.[1]?.children?.[0]).toEqual({ id: 'n-3', name: 'NodeB2' });
+  });
+
+  it('sets sceneRefreshRequired when fullRefreshRequired is true', () => {
+    const next = applyAction(
+      { type: 'sceneTreeChangedLive', payload: { fullRefreshRequired: true } },
+      seeded,
+    );
+    expect(next.sceneRefreshRequired).toBe(true);
+    // The stale tree is left intact until the refetch lands.
+    expect(next.sceneTree).toBe(seeded.sceneTree);
+  });
+
+  it('is a no-op when no tree is in store yet', () => {
+    const next = applyAction(
+      {
+        type: 'sceneTreeChangedLive',
+        payload: { changedNodes: [{ id: 'n-1', name: 'X' }] },
+      },
+      INITIAL_STATE,
+    );
+    expect(next).toBe(INITIAL_STATE);
+  });
+
+  it('is a no-op when no changed node matches an id in the tree', () => {
+    const next = applyAction(
+      {
+        type: 'sceneTreeChangedLive',
+        payload: { changedNodes: [{ id: 'does-not-exist', name: 'X' }] },
+      },
+      seeded,
+    );
+    expect(next).toBe(seeded);
+  });
+
+  it('is a no-op when changedNodes is empty/absent and no full refresh', () => {
+    const next = applyAction({ type: 'sceneTreeChangedLive', payload: {} }, seeded);
+    expect(next).toBe(seeded);
+  });
+});
+
+// -------------------------------------------------------------------------
+// objectChangedLive (live event, protocol 0.2)
+// -------------------------------------------------------------------------
+
+describe('objectChangedLive', () => {
+  const seeded: BridgeState = {
+    ...INITIAL_STATE,
+    selectedObjectId: 'n-1',
+    objectSnapshot: {
+      objectId: 'n-1',
+      name: 'NodeA',
+      kind: 'object',
+      properties: [{ name: 'fieldOfView', value: 60, valueType: 'number' }],
+    },
+  };
+
+  it('refreshes the snapshot when the changed object is selected', () => {
+    const next = applyAction(
+      {
+        type: 'objectChangedLive',
+        payload: {
+          objectId: 'n-1',
+          name: 'NodeA',
+          kind: 'object',
+          properties: [{ name: 'fieldOfView', value: 90, valueType: 'number' }],
+        },
+      },
+      seeded,
+    );
+    expect(next.objectSnapshot?.properties[0]?.value).toBe(90);
+    expect(next.objectSnapshot?.objectId).toBe('n-1');
+  });
+
+  it('keeps existing name/kind when the event omits them', () => {
+    const next = applyAction(
+      {
+        type: 'objectChangedLive',
+        payload: {
+          objectId: 'n-1',
+          properties: [{ name: 'fieldOfView', value: 33, valueType: 'number' }],
+        },
+      },
+      seeded,
+    );
+    expect(next.objectSnapshot?.name).toBe('NodeA');
+    expect(next.objectSnapshot?.kind).toBe('object');
+  });
+
+  it('is a no-op when the changed object is not the one in the snapshot', () => {
+    const next = applyAction(
+      {
+        type: 'objectChangedLive',
+        payload: { objectId: 'n-2', properties: [] },
+      },
+      seeded,
+    );
+    expect(next).toBe(seeded);
+  });
+
+  it('is a no-op when there is no snapshot', () => {
+    const next = applyAction(
+      {
+        type: 'objectChangedLive',
+        payload: { objectId: 'n-1', properties: [] },
+      },
+      INITIAL_STATE,
+    );
+    expect(next).toBe(INITIAL_STATE);
+  });
+});
