@@ -2,8 +2,12 @@
  * SettingsPanel — editor settings and layout controls.
  *
  * Phase 1 refactor: added layout reset button that:
- *   1. Removes the persisted layout from localStorage (key: norveseditor-layout-v1).
+ *   1. Removes the persisted layout from localStorage.
  *   2. Reloads the page so the default layout is reconstructed.
+ *
+ * P4: the layout key is shared with AppLayout via ./shell/layoutKey.js
+ * (single source of truth, bumped to v2). The reset behaviour is unchanged;
+ * moving Settings to its own window is deferred to P6.
  *
  * IDockviewPanelProps is accepted but containerApi is not used here;
  * the reset works via localStorage purge + page reload which is sufficient.
@@ -11,9 +15,7 @@
 
 import type React from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
-
-/** localStorage key used for dockview layout persistence (Phase 1). */
-const LAYOUT_STORAGE_KEY = 'norveseditor-layout-v1';
+import { LAYOUT_STORAGE_KEY } from './shell/layoutKey.js';
 
 // IDockviewPanelProps is accepted but not currently used for data.
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type

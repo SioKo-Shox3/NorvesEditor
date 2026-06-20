@@ -1,24 +1,23 @@
 /**
- * GameViewPanel — primary control panel for the engine process.
+ * GameViewPanel — primary engine view (centre / largest panel).
  *
  * Phase 1 refactor: props drilling removed. State is obtained via
  * useBridgeState() and command callbacks via useBridgeActions().
- * Rendering logic is unchanged from the original implementation.
+ *
+ * P4: engine/runtime control buttons (Launch / Stop Process / Reconnect /
+ * Play / Pause / Stop / Focus Viewport) were moved to the main toolbar in P3
+ * (ToolbarActions), so they are removed here to avoid duplicate controls
+ * (m1). This panel now focuses on the viewport view: live thumbnail (or the
+ * external-window notice when unsupported), the viewport status badge, the
+ * engine/runtime status read-out, and the error banner. The thumbnail pull
+ * logic itself is unchanged (backoff is a later phase).
  *
  * NOTE: Alpha has NO embedded viewport. The engine renders in its own
- * external window. This panel drives the process and runtime only.
+ * external window.
  *
- * Process lifecycle (Launch / Stop-process) wired in Workstream J4.
- * - launch: spawns + connects a new engine process (via launch_engine command).
- * - stopProcess: terminates the running engine process (via stop_engine command).
- * - The ConnectionPanel's connect(port) path (attach to existing engine) is
- *   separate and unaffected.
- * Reconnect IS wired (bridge-ui action).
- *
- * Workstream K finalization:
+ * Workstream K finalization (retained here):
  * - Error banner with humanized kind labels + [object Object] guard.
  * - Viewport status badge.
- * - Reconnect button enabled on 'error' status.
  */
 
 import type React from 'react';
@@ -152,17 +151,12 @@ export function GameViewPanel(_props: IDockviewPanelProps): React.JSX.Element {
 
   // -----------------------------------------------------------------------
   // Action handlers — delegate to useBridgeActions() (error mapping lives
-  // there, in a single place). Button onClick expects a () => void.
+  // there, in a single place). Engine/runtime controls now live in the main
+  // toolbar (ToolbarActions, P3); this panel keeps only the controls tied to
+  // its own view: dismiss-error and refresh-thumbnail.
   // -----------------------------------------------------------------------
 
   const handleDismissError  = (): void => { actions.dismissError(); };
-  const handleReconnect     = (): void => { void actions.reconnect(); };
-  const handlePlay          = (): void => { void actions.play(); };
-  const handlePause         = (): void => { void actions.pause(); };
-  const handleStopRuntime   = (): void => { void actions.stop(); };
-  const handleFocusViewport = (): void => { void actions.focusViewport(); };
-  const handleLaunch        = (): void => { void actions.launch(); };
-  const handleStopProcess   = (): void => { void actions.stopProcess(); };
 
   // Pull a thumbnail capped at the policy resolution (engine downscales).
   const refreshThumbnail = useCallback((): void => {
@@ -198,22 +192,6 @@ export function GameViewPanel(_props: IDockviewPanelProps): React.JSX.Element {
   // Show the live thumbnail only while connected and the engine supports it.
   // Otherwise fall back to the external-window notice (engine-agnostic).
   const showThumbnail = connected && !thumbnailUnsupported && thumbnailSrc !== undefined;
-
-  // -----------------------------------------------------------------------
-  // Derived disabled states (identical logic to the original prop-driven impl)
-  // -----------------------------------------------------------------------
-
-  const runtimeDisabled = !connected;
-
-  const launchDisabled =
-    connectionStatus === 'connected' || connectionStatus === 'connecting';
-
-  const stopProcessDisabled = !connected;
-
-  const reconnectDisabled =
-    connectionStatus === 'connecting' ||
-    connectionStatus === 'disconnected' ||
-    connectionStatus === undefined;
 
   return (
     <div className="panel">
@@ -313,76 +291,8 @@ export function GameViewPanel(_props: IDockviewPanelProps): React.JSX.Element {
             </span>
           )}
         </div>
-
-        {/* Process controls — Launch/Stop wired (Workstream J4). Reconnect is wired. */}
-        <div className="divider" />
-        <div className="label">Process</div>
-        <div className="row">
-          <button
-            className="btn btn--primary"
-            disabled={launchDisabled}
-            onClick={handleLaunch}
-            title="Spawn and connect a new engine process"
-            type="button"
-          >
-            Launch
-          </button>
-          <button
-            className="btn btn--danger"
-            disabled={stopProcessDisabled}
-            onClick={handleStopProcess}
-            title="Terminate the running engine process"
-            type="button"
-          >
-            Stop
-          </button>
-          <button
-            className="btn"
-            disabled={reconnectDisabled}
-            onClick={handleReconnect}
-            type="button"
-          >
-            Reconnect
-          </button>
-        </div>
-
-        {/* Runtime controls */}
-        <div className="divider" />
-        <div className="label">Runtime</div>
-        <div className="row">
-          <button
-            className="btn"
-            disabled={runtimeDisabled}
-            onClick={handlePlay}
-            type="button"
-          >
-            Play
-          </button>
-          <button
-            className="btn"
-            disabled={runtimeDisabled}
-            onClick={handlePause}
-            type="button"
-          >
-            Pause
-          </button>
-          <button
-            className="btn"
-            disabled={runtimeDisabled}
-            onClick={handleStopRuntime}
-            type="button"
-          >
-            Stop
-          </button>
-          <button
-            className="btn"
-            disabled={runtimeDisabled}
-            onClick={handleFocusViewport}
-            type="button"
-          >
-            Focus Viewport
-          </button>
-        </div>
+        {/* Engine/runtime/process controls live in the main toolbar
+            (ToolbarActions, P3) — not duplicated here (m1). */}
       </div>
     </div>
   );
