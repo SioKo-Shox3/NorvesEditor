@@ -296,6 +296,20 @@ html, body, #root {
   position: relative;
 }
 
+/*
+ * Secondary windows (Connection / Settings) host a single panel directly,
+ * without dockview. The body becomes a padded flex column so the panel fills
+ * the available height (P5 multi-window base).
+ */
+.app-shell__body--secondary {
+  display: flex;
+  padding: 8px;
+}
+
+.app-shell__body--secondary > .panel {
+  flex: 1;
+}
+
 /* ---- shell primitives (P1 layout, P2 window controls) ---- */
 /*
  * These classes back the shell components. They reference only design tokens

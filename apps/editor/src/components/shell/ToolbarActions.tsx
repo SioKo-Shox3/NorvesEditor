@@ -7,10 +7,12 @@
  *
  * Disabled logic mirrors GameViewPanel exactly (see comment per button).
  *
- * View-toggle buttons (Connection, Settings, Log, Reset Layout) are
- * placeholder stubs in P3. They accept optional on* callbacks; when the
- * callback is undefined (App.tsx leaves them unset) the button is disabled
- * with a title explaining it is not yet wired.
+ * View-toggle buttons accept optional on* callbacks; when the callback is
+ * undefined the button is disabled. Wiring status per phase:
+ *   - Connection: wired in P5 (onOpenConnection)
+ *   - Settings:   wired in P5 (onOpenSettings)
+ *   - Log:        wired in P4 (onToggleLog)
+ *   - Reset Layout: wired in P6 (onResetLayout — currently disabled)
  *
  * Engine-agnostic: no mock-specific control is hard-coded.
  * No event subscription added here — useBridgeSubscriptions() still called
@@ -40,7 +42,7 @@ const STATUS_LABELS = {
 export interface ToolbarActionsProps {
   /** Open the Connection window (P5). undefined → button disabled. */
   onOpenConnection?: (() => void) | undefined;
-  /** Open the Settings window (P6). undefined → button disabled. */
+  /** Open the Settings window (P5). undefined → button disabled. */
   onOpenSettings?: (() => void) | undefined;
   /** Expand the Log panel (P4). undefined → button disabled. */
   onToggleLog?: (() => void) | undefined;
@@ -107,12 +109,6 @@ export function ToolbarActions({
   const handlePause         = (): void => { void actions.pause(); };
   const handleStopRuntime   = (): void => { void actions.stop(); };
   const handleFocusViewport = (): void => { void actions.focusViewport(); };
-
-  // -----------------------------------------------------------------------
-  // View-toggle handlers (P3: disabled placeholders when callback absent)
-  // -----------------------------------------------------------------------
-
-  const viewTogglePlaceholder = 'Available in a future phase';
 
   return (
     <>
@@ -202,17 +198,13 @@ export function ToolbarActions({
 
       <Sep />
 
-      {/* View toggles — P3 stubs (disabled until later phases wire callbacks) */}
+      {/* View toggles — disabled when callback is undefined (not yet wired) */}
       <button
         className="btn toolbar__btn"
         type="button"
         disabled={onOpenConnection === undefined}
         onClick={onOpenConnection}
-        title={
-          onOpenConnection !== undefined
-            ? 'Open Connection window'
-            : viewTogglePlaceholder
-        }
+        title="Connection ウィンドウを開く"
         aria-label="Open Connection window"
       >
         Connection
@@ -222,11 +214,7 @@ export function ToolbarActions({
         type="button"
         disabled={onToggleLog === undefined}
         onClick={onToggleLog}
-        title={
-          onToggleLog !== undefined
-            ? 'Toggle Log panel'
-            : viewTogglePlaceholder
-        }
+        title="Log の展開/折りたたみ"
         aria-label="Toggle Log"
       >
         Log
@@ -236,11 +224,7 @@ export function ToolbarActions({
         type="button"
         disabled={onOpenSettings === undefined}
         onClick={onOpenSettings}
-        title={
-          onOpenSettings !== undefined
-            ? 'Open Settings window'
-            : viewTogglePlaceholder
-        }
+        title="Settings ウィンドウを開く"
         aria-label="Open Settings window"
       >
         Settings
@@ -250,11 +234,7 @@ export function ToolbarActions({
         type="button"
         disabled={onResetLayout === undefined}
         onClick={onResetLayout}
-        title={
-          onResetLayout !== undefined
-            ? 'Reset panel layout'
-            : viewTogglePlaceholder
-        }
+        title="レイアウトをリセット"
         aria-label="Reset Layout"
       >
         Reset Layout
