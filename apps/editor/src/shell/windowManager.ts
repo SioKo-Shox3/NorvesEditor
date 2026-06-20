@@ -55,7 +55,9 @@ const WINDOW_SPECS: Record<SecondaryWindowTarget, SecondaryWindowSpec> = {
  *   production.
  *
  * Window-creation failures are logged but never thrown: a failed open is
- * non-fatal (the panel is still reachable inside the main window in P5).
+ * non-fatal — Connection and Settings no longer exist inside the main window's
+ * dockview (removed in P6), so if the window fails to open the user can retry
+ * via the main toolbar buttons.
  */
 export async function openSecondaryWindow(target: SecondaryWindowTarget): Promise<void> {
   const spec = WINDOW_SPECS[target];

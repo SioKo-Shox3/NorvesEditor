@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import './styles.css';
 import { AppLayout }              from './components/AppLayout.js';
 import { AppTitleBar }            from './shell/AppTitleBar.js';
@@ -10,6 +10,10 @@ import { useBridgeSubscriptions } from './hooks/useBridge.js';
 import { SecondaryWindowRoot }    from './shell/SecondaryWindowRoot.js';
 import { openSecondaryWindow }    from './shell/windowManager.js';
 import { resolveWindowRoute }     from './shell/windowRoute.js';
+import {
+  clearSavedLayoutAndReload,
+  subscribeLayoutReset,
+} from './shell/layoutReset.js';
 
 /**
  * BridgeRoot — mounts the bridge event subscriptions once inside
@@ -32,10 +36,15 @@ import { resolveWindowRoute }     from './shell/windowRoute.js';
  * the dockview API is ready; we keep it in state and pass it to ToolbarActions
  * as onToggleLog.
  *
- * P5: the Connection / Settings toolbar buttons open those panels in their own
- * Tauri windows via openSecondaryWindow(); the panels also remain inside this
- * window's AppLayout (additive — they are removed from the layout in P6). The
- * Reset-Layout toggle stays unset (wired in P6).
+ * P6: Connection / Settings are no longer panels in this window's AppLayout —
+ * the toolbar buttons open them in their own Tauri windows via
+ * openSecondaryWindow(). The Reset-Layout toggle is wired here:
+ *   - the toolbar button clears the saved layout and reloads this window
+ *     directly (clearSavedLayoutAndReload), and
+ *   - this window also listens for a cross-window reset request emitted by the
+ *     Settings window (subscribeLayoutReset) and performs the same clear +
+ *     reload, since the layout (and its localStorage entry) lives here.
+ * The listener is registered once and unlistened on unmount.
  *
  * useBridgeSubscriptions() is still called exactly once (per window);
  * ToolbarActions uses useBridgeActions() (invoke-only, no subscriptions).
@@ -43,6 +52,35 @@ import { resolveWindowRoute }     from './shell/windowRoute.js';
 function BridgeRoot(): React.JSX.Element {
   // Register the event subscriptions once at the application root.
   useBridgeSubscriptions();
+
+  // Listen (in the main window only) for layout-reset requests emitted by the
+  // Settings window, and clear + reload here. The async listen registration is
+  // guarded so a request that arrives, or an unmount that fires, before the
+  // listener resolves never leaks: we unlisten immediately if cleanup already
+  // ran (same pattern as AppTitleBar.onResized).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    subscribeLayoutReset(() => {
+      clearSavedLayoutAndReload();
+    })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      })
+      .catch((err: unknown) => {
+        // Non-fatal: the toolbar's own Reset Layout button still works.
+        console.error('[BridgeRoot] Failed to subscribe to layout-reset:', err);
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Log-drawer toggle handle, published by AppLayout once dockview is ready.
   const [toggleLog, setToggleLog] = useState<(() => void) | undefined>(undefined);
@@ -67,6 +105,12 @@ function BridgeRoot(): React.JSX.Element {
     void openSecondaryWindow('settings');
   }, []);
 
+  // Reset the layout: clear this (main) window's saved layout and reload so
+  // AppLayout rebuilds the default. Local — no cross-window hop needed.
+  const handleResetLayout = useCallback((): void => {
+    clearSavedLayoutAndReload();
+  }, []);
+
   return (
     <div className="app-shell">
       <AppTitleBar title="NorvesEditor" />
@@ -75,6 +119,7 @@ function BridgeRoot(): React.JSX.Element {
           onToggleLog={toggleLog}
           onOpenConnection={handleOpenConnection}
           onOpenSettings={handleOpenSettings}
+          onResetLayout={handleResetLayout}
         />
       </Toolbar>
       <div className="app-shell__body">
