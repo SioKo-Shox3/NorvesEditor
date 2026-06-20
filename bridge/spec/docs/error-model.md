@@ -105,10 +105,15 @@ registry member.
 
 The protocol version is `MAJOR.MINOR` (the envelope `version` field, shaped by
 [`common.schema.json#/$defs/versionString`](../schema/common.schema.json)).
-Backward-compatibility semantics:
+The current protocol generation is **0.2** — a MINOR bump from 0.1, hence
+backward-compatible. Backward-compatibility semantics:
 
 - **MINOR** bumps are backward-compatible, purely additive changes.
 - **MAJOR** bumps are breaking changes.
+
+Because 0.1 -> 0.2 is a MINOR bump, the editor offers `["0.2", "0.1"]` and a
+legacy 0.1-only engine still negotiates successfully, falling back to 0.1 (see
+[Hello version negotiation](#hello-version-negotiation)).
 
 ### Hello version negotiation
 

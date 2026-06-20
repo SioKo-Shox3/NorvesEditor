@@ -121,7 +121,7 @@ fn fixture_counts_are_exhaustive() {
         }
     }
 
-    assert_eq!(positive, 55, "positive fixture count drifted");
+    assert_eq!(positive, 57, "positive fixture count drifted");
     assert_eq!(
         envelope_rejectable, 14,
         "envelope-rejectable fixture count drifted"
@@ -129,7 +129,7 @@ fn fixture_counts_are_exhaustive() {
     assert_eq!(payload_only, 45, "payload-only fixture count drifted");
     assert_eq!(
         positive + envelope_rejectable + payload_only,
-        114,
+        116,
         "total classified fixture count drifted"
     );
     assert_eq!(ignored, 0, "unexpectedly ignored a *.json fixture");
@@ -172,7 +172,7 @@ fn roundtrip_positive_fixtures() {
         );
         checked += 1;
     }
-    assert_eq!(checked, 55, "expected to round-trip 55 positive fixtures");
+    assert_eq!(checked, 57, "expected to round-trip 57 positive fixtures");
 }
 
 /// Envelope-layer negatives must be rejected by `decode_validated` — either at

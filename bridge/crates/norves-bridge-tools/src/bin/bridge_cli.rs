@@ -35,10 +35,22 @@ const DEFAULT_URL: &str = "ws://127.0.0.1:38080";
 /// Timeout for a single request/response round trip.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The protocol version the editor supports.
+/// The protocol version this CLI stamps on every envelope it sends (the current
+/// protocol generation). Like the editor backend, this is fixed and does not
+/// follow the negotiated value.
 fn protocol_version() -> VersionString {
-    // "0.1" always satisfies the VersionString invariant (non-empty, valid).
-    VersionString::try_from("0.1".to_owned()).expect("0.1 is a valid version string")
+    // "0.2" always satisfies the VersionString invariant (non-empty, valid).
+    VersionString::try_from("0.2".to_owned()).expect("0.2 is a valid version string")
+}
+
+/// The protocol versions this CLI offers in `bridge.hello`, in preference order.
+/// `["0.2", "0.1"]` negotiates 0.2 with a 0.2-capable engine and falls back to
+/// 0.1 with a legacy 0.1-only engine.
+fn offered_protocol_versions() -> Vec<VersionString> {
+    ["0.2", "0.1"]
+        .into_iter()
+        .map(|v| VersionString::try_from(v.to_owned()).expect("offered version is valid"))
+        .collect()
 }
 
 /// Builds a request-kind [`ValidatedEnvelope`] with the supplied `id`, `method`,
@@ -132,7 +144,7 @@ async fn dial_and_hello(
     debug!("dispatcher spawned");
 
     // Build and send bridge.hello.
-    let hello_params = HelloParams::new("NorvesEditor", vec![protocol_version()])
+    let hello_params = HelloParams::new("NorvesEditor", offered_protocol_versions())
         .to_params()
         .context("failed to serialize bridge.hello params")?;
 

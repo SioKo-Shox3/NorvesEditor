@@ -1,0 +1,14 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "request",
+  "id": "req-1",
+  "method": "bridge.hello",
+  "params": {
+    "role": "editor",
+    "clientName": "NorvesEditor",
+    "clientVersion": "0.1.0",
+    "protocolVersions": ["0.2"],
+    "capabilities": ["runtime.control", "log.stream"]
+  }
+}

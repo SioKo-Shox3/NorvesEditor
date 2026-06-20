@@ -1,0 +1,20 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "response",
+  "id": "req-1",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "sessionId": "sess-7f3a",
+    "protocolVersion": "0.2",
+    "server": {
+      "name": "MockEngine",
+      "version": "0.1.0",
+      "engine": "mock"
+    },
+    "capabilities": [
+      { "name": "runtime.control", "version": "0.1" },
+      { "name": "log.stream", "description": "Streams engine log lines." }
+    ]
+  }
+}
