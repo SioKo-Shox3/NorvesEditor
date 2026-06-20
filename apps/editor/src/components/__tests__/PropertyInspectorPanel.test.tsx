@@ -1,24 +1,28 @@
 // @vitest-environment jsdom
 /**
- * PropertyInspectorPanel tests — Phase 4 (object.getSnapshot + schema.getSnapshot).
+ * PropertyInspectorPanel tests — Phase 5 (object.setProperty write path) on top
+ * of the Phase 4 read paths.
  *
  * Covers:
  *   - Four degradation states: disconnected / no-selection / METHOD_NOT_SUPPORTED /
  *     empty property bag.
- *   - Property rendering for every value kind (string/number/boolean/null/
- *     array/object), proving the type-driven renderer.
  *   - schema fetch on the connected edge; object fetch on selection change.
- *   - Selection -> fetch race guard: a stored snapshot for a DIFFERENT object
- *     than the current selection is not rendered.
+ *   - Selection -> fetch race guard.
+ *   - Editing: an edit control per value kind (string/number/boolean/null/array/
+ *     object); commit on blur/Enter (scalars), toggle (boolean), Apply (JSON).
+ *   - JSON editor local validation (invalid JSON is shown inline, never sent).
+ *   - Edit-state locality: typing does NOT dispatch setObjectProperty per
+ *     keystroke (commit-only).
+ *   - accepted:false and backend-error feedback rendered inline.
  *
  * IDockviewPanelProps is stubbed; the panel only uses the bridge hooks.
  */
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import type { BridgeState } from '../../state/store.js';
 import { INITIAL_STATE } from '../../state/store.js';
-import type { ObjectSnapshot } from '@norves/bridge-ui';
+import type { ObjectSnapshot, SetObjectPropertyResult } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Mock dockview-react
@@ -41,9 +45,12 @@ vi.mock('../../state/BridgeContext.js', () => ({
 
 const getObjectSnapshot = vi.fn();
 const getSchemaSnapshot = vi.fn();
+const setObjectProperty = vi.fn<
+  (objectId: string, property: string, value: unknown) => Promise<SetObjectPropertyResult>
+>();
 
 vi.mock('../../hooks/useBridge.js', () => ({
-  useBridgeActions: () => ({ getObjectSnapshot, getSchemaSnapshot }),
+  useBridgeActions: () => ({ getObjectSnapshot, getSchemaSnapshot, setObjectProperty }),
 }));
 
 import { PropertyInspectorPanel } from '../PropertyInspectorPanel.js';
@@ -53,6 +60,11 @@ beforeEach(() => {
   mockState = { ...INITIAL_STATE };
   getObjectSnapshot.mockClear();
   getSchemaSnapshot.mockClear();
+  setObjectProperty.mockReset();
+  // Default: every write is accepted with the requested value echoed.
+  setObjectProperty.mockImplementation((_id, _prop, value) =>
+    Promise.resolve({ accepted: true, appliedValue: value as SetObjectPropertyResult['appliedValue'] }),
+  );
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -71,6 +83,16 @@ const DEMO_SNAPSHOT: ObjectSnapshot = {
     { name: 'metadata', value: { locked: false, tag: 'primary' } },
   ],
 };
+
+function renderSelected(snapshot: ObjectSnapshot): void {
+  mockState = {
+    ...INITIAL_STATE,
+    connection: { status: 'connected' },
+    selectedObjectId: snapshot.objectId,
+    objectSnapshot: snapshot,
+  };
+  render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+}
 
 // -------------------------------------------------------------------------
 // Degradation states
@@ -130,52 +152,183 @@ describe('PropertyInspectorPanel — empty property bag', () => {
 });
 
 // -------------------------------------------------------------------------
-// Property rendering (type-driven)
+// Editor controls per value kind
 // -------------------------------------------------------------------------
 
-describe('PropertyInspectorPanel — property rendering', () => {
-  beforeEach(() => {
-    mockState = {
-      ...INITIAL_STATE,
-      connection: { status: 'connected' },
-      selectedObjectId: 'n-1',
-      objectSnapshot: DEMO_SNAPSHOT,
-    };
-  });
-
+describe('PropertyInspectorPanel — editor controls', () => {
   it('renders the object header (name + kind + id)', () => {
-    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    renderSelected(DEMO_SNAPSHOT);
     expect(screen.getByText('NodeA')).toBeTruthy();
     expect(screen.getByText('object')).toBeTruthy();
     expect(screen.getByText('n-1')).toBeTruthy();
   });
 
   it('renders all property names', () => {
-    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    renderSelected(DEMO_SNAPSHOT);
     for (const name of ['label', 'fieldOfView', 'enabled', 'parent', 'position', 'metadata']) {
       expect(screen.getByText(name)).toBeTruthy();
     }
   });
 
-  it('renders scalar values branched by kind', () => {
-    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
-    expect(screen.getByText('Example Name')).toBeTruthy(); // string
-    expect(screen.getByText('60')).toBeTruthy();           // number
-    expect(screen.getByText('true')).toBeTruthy();         // boolean
-    expect(screen.getByText('null')).toBeTruthy();         // null
+  it('renders a text input for a string, seeded with the value', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const input = screen.getByDisplayValue('Example Name') as HTMLInputElement;
+    expect(input.tagName).toBe('INPUT');
+    expect(input.type).toBe('text');
   });
 
-  it('renders array / object values as collapsible JSON previews', () => {
-    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
-    // Array summary.
-    expect(screen.getByText(/Array\(3\)/)).toBeTruthy();
-    // Object summary.
-    expect(screen.getByText(/Object\{2\}/)).toBeTruthy();
+  it('renders a number input for a number', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const input = screen.getByDisplayValue('60') as HTMLInputElement;
+    expect(input.type).toBe('number');
+  });
+
+  it('renders a checkbox for a boolean, checked when true', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const checkbox = screen.getByRole('checkbox') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+  });
+
+  it('renders JSON textareas for null / array / object values', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const textareas = screen.getAllByRole('textbox').filter(
+      (el): el is HTMLTextAreaElement => el.tagName === 'TEXTAREA',
+    );
+    // null + array + object = 3 JSON editors.
+    expect(textareas.length).toBe(3);
+    // The array editor is seeded with the pretty-printed JSON.
+    const arrayEditor = textareas.find((t) => t.value.includes('1.5'));
+    expect(arrayEditor).toBeTruthy();
   });
 });
 
 // -------------------------------------------------------------------------
-// Fetch behaviour
+// Commit behaviour (scalars: blur / Enter)
+// -------------------------------------------------------------------------
+
+describe('PropertyInspectorPanel — scalar commit', () => {
+  it('commits a string edit on blur with the new value', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const input = screen.getByDisplayValue('Example Name') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'Renamed' } });
+    // Typing alone does NOT dispatch (edit-state locality).
+    expect(setObjectProperty).not.toHaveBeenCalled();
+    fireEvent.blur(input);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'label', 'Renamed');
+  });
+
+  it('does not commit when the string is unchanged on blur', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const input = screen.getByDisplayValue('Example Name') as HTMLInputElement;
+    fireEvent.blur(input);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+  });
+
+  it('commits a number edit as a number (not a string)', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const input = screen.getByDisplayValue('60') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '75' } });
+    fireEvent.blur(input);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'fieldOfView', 75);
+  });
+
+  it('shows an inline error and does not commit a non-numeric number entry', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const input = screen.getByDisplayValue('60') as HTMLInputElement;
+    // type=number inputs reject letters in the DOM, but an empty entry is the
+    // realistic invalid case; assert the empty-string path does not commit.
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+    expect(screen.getByText(/数値として解釈できません/)).toBeTruthy();
+  });
+
+  it('commits a boolean immediately on toggle', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const checkbox = screen.getByRole('checkbox') as HTMLInputElement;
+    fireEvent.click(checkbox);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'enabled', false);
+  });
+});
+
+// -------------------------------------------------------------------------
+// JSON editor (array / object / null): Apply + local validation
+// -------------------------------------------------------------------------
+
+describe('PropertyInspectorPanel — JSON editor', () => {
+  function arrayTextarea(): HTMLTextAreaElement {
+    const textareas = screen.getAllByRole('textbox').filter(
+      (el): el is HTMLTextAreaElement => el.tagName === 'TEXTAREA',
+    );
+    const t = textareas.find((x) => x.value.includes('1.5'));
+    if (!t) throw new Error('array JSON editor not found');
+    return t;
+  }
+
+  it('shows an inline error for invalid JSON and does not commit', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const textarea = arrayTextarea();
+    fireEvent.change(textarea, { target: { value: '[1, 2,' } });
+    // Click the Apply button that belongs to this editor (its parent span).
+    const apply = textarea.parentElement?.querySelector('button');
+    expect(apply).toBeTruthy();
+    fireEvent.click(apply as HTMLButtonElement);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+    expect(screen.getByText(/不正な JSON/)).toBeTruthy();
+  });
+
+  it('commits the array via its own Apply button with the parsed value', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const textarea = arrayTextarea();
+    fireEvent.change(textarea, { target: { value: '[9, 8, 7]' } });
+    const apply = textarea.parentElement?.querySelector('button') as HTMLButtonElement;
+    fireEvent.click(apply);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [9, 8, 7]);
+  });
+
+  it('lets a null value be edited to a scalar via the JSON editor', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    // The null editor is seeded with the text "null".
+    const textareas = screen.getAllByRole('textbox').filter(
+      (el): el is HTMLTextAreaElement => el.tagName === 'TEXTAREA',
+    );
+    const nullEditor = textareas.find((t) => t.value === 'null');
+    expect(nullEditor).toBeTruthy();
+    fireEvent.change(nullEditor as HTMLTextAreaElement, { target: { value: '"now-a-string"' } });
+    const apply = (nullEditor as HTMLTextAreaElement).parentElement?.querySelector(
+      'button',
+    ) as HTMLButtonElement;
+    fireEvent.click(apply);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'parent', 'now-a-string');
+  });
+});
+
+// -------------------------------------------------------------------------
+// Write feedback (accepted:false / backend error)
+// -------------------------------------------------------------------------
+
+describe('PropertyInspectorPanel — write feedback', () => {
+  it('shows a rejected notice when the engine answers accepted:false', async () => {
+    setObjectProperty.mockResolvedValue({ accepted: false });
+    renderSelected(DEMO_SNAPSHOT);
+    const input = screen.getByDisplayValue('Example Name') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'X' } });
+    fireEvent.blur(input);
+    expect(await screen.findByText(/エンジンが変更を拒否しました/)).toBeTruthy();
+  });
+
+  it('shows an error notice when the write throws', async () => {
+    setObjectProperty.mockRejectedValue(new Error('boom'));
+    renderSelected(DEMO_SNAPSHOT);
+    const input = screen.getByDisplayValue('Example Name') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'X' } });
+    fireEvent.blur(input);
+    expect(await screen.findByText(/送信に失敗しました: boom/)).toBeTruthy();
+  });
+});
+
+// -------------------------------------------------------------------------
+// Fetch behaviour (unchanged from Phase 4)
 // -------------------------------------------------------------------------
 
 describe('PropertyInspectorPanel — fetch', () => {
@@ -221,18 +374,12 @@ describe('PropertyInspectorPanel — race guard', () => {
     };
     render(<PropertyInspectorPanel {...makeDockviewProps()} />);
     // The stale n-1 property is NOT shown; the loading state for n-2 is.
-    expect(screen.queryByText('Example Name')).toBeNull();
+    expect(screen.queryByDisplayValue('Example Name')).toBeNull();
     expect(screen.getByText(/プロパティを読み込み中/)).toBeTruthy();
   });
 
   it('renders the snapshot when its objectId matches the current selection', () => {
-    mockState = {
-      ...INITIAL_STATE,
-      connection: { status: 'connected' },
-      selectedObjectId: 'n-1',
-      objectSnapshot: DEMO_SNAPSHOT,
-    };
-    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
-    expect(screen.getByText('Example Name')).toBeTruthy();
+    renderSelected(DEMO_SNAPSHOT);
+    expect(screen.getByDisplayValue('Example Name')).toBeTruthy();
   });
 });

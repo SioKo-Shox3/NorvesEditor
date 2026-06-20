@@ -19,6 +19,7 @@ export const BRIDGE_COMMANDS = {
   getStatus: 'get_status',
   sceneGetTree: 'scene_get_tree',
   objectGetSnapshot: 'object_get_snapshot',
+  objectSetProperty: 'object_set_property',
   schemaGetSnapshot: 'schema_get_snapshot',
   runtimePlay: 'runtime_play',
   runtimePause: 'runtime_pause',

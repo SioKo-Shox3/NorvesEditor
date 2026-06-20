@@ -1,15 +1,30 @@
 /**
- * PropertyInspectorPanel — read-only property inspector (Phase 4:
- * object.getSnapshot + schema.getSnapshot wired).
+ * PropertyInspectorPanel — editable property inspector (Phase 5:
+ * object.setProperty write path, on top of Phase 4 read paths).
  *
- * Shows the selected object's properties as a read-only list. The object
+ * Shows the selected object's properties and lets the user edit them. The object
  * snapshot is fetched whenever selectedObjectId changes; the type schema is
  * fetched once on (re)connect and used as an auxiliary hint for property
- * valueTypes. There is NO write path here (Phase 5 adds editing) — the value
- * renderer is, however, split by value kind so Phase 5 can swap a display cell
- * for an edit control per type without restructuring.
+ * valueTypes. Each property row carries an edit control chosen by value kind:
+ *   string  → text input          (commit on blur / Enter)
+ *   number  → number input        (commit on blur / Enter)
+ *   boolean → checkbox            (commit immediately on toggle)
+ *   null    → JSON editor         (so it can be set to any JSON value)
+ *   array   → JSON editor + Apply (JSON.parse on commit; inline error if invalid)
+ *   object  → JSON editor + Apply (JSON.parse on commit; inline error if invalid)
+ * Value-kind classification reuses classifyValue (from Phase 4).
  *
- * Selection -> fetch race guard:
+ * Edit-state locality (Phase 1 review): the in-progress edit lives in
+ * component-local state inside each PropertyEditor row. A keystroke never
+ * dispatches, so the BridgeStateContext single-value broadcast does not
+ * re-render every panel on every keystroke. We dispatch (via setObjectProperty)
+ * ONLY on commit (blur / Enter for scalars, Apply for JSON, toggle for boolean).
+ *
+ * On a successful write the engine's appliedValue updates the store snapshot
+ * (objectPropertyApplied). A rejected write (accepted:false) or a backend/engine
+ * error is surfaced inline on the row; a pending write disables the row.
+ *
+ * Selection -> fetch race guard (unchanged from Phase 4):
  *  - An effect keyed on selectedObjectId calls getObjectSnapshot(id) on change.
  *  - The store clears objectSnapshot on selection change, so a stale snapshot is
  *    never shown for a newer selection. We additionally guard the displayed
@@ -26,10 +41,15 @@
  *  (d) empty property bag        → "プロパティがありません"
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
-import type { ObjectSnapshot, PropertyEntry, PropertyValue, TypeDescriptor } from '@norves/bridge-ui';
+import type {
+  ObjectSnapshot,
+  PropertyEntry,
+  PropertyValue,
+  TypeDescriptor,
+} from '@norves/bridge-ui';
 import { useBridgeState } from '../state/BridgeContext.js';
 import { useBridgeActions } from '../hooks/useBridge.js';
 
@@ -175,7 +195,18 @@ function ObjectProperties({ snapshot, schemaTypes }: ObjectPropertiesProps): Rea
           <li className="inspector-prop" key={entry.name}>
             <span className="inspector-prop__name">{entry.name}</span>
             <span className="inspector-prop__value">
-              <PropertyValueView value={entry.value} />
+              {/*
+                Key the editor by objectId + property + a serialization of the
+                committed value so that when the store snapshot is replaced (a
+                fresh fetch or an applied write) the editor re-seeds its local
+                state from the new value instead of keeping stale local edits.
+              */}
+              <PropertyEditor
+                key={`${snapshot.objectId}:${entry.name}:${stableValueKey(entry.value)}`}
+                objectId={snapshot.objectId}
+                property={entry.name}
+                value={entry.value}
+              />
             </span>
             {valueTypeFor(entry) !== undefined && (
               <span className="inspector-prop__type">{valueTypeFor(entry)}</span>
@@ -188,7 +219,7 @@ function ObjectProperties({ snapshot, schemaTypes }: ObjectPropertiesProps): Rea
 }
 
 // -------------------------------------------------------------------------
-// Type-driven value renderer (Phase 5 will swap display cells for editors)
+// Type-driven value classification (shared by display + edit)
 // -------------------------------------------------------------------------
 
 /** Coarse classification of a PropertyValue for type-driven rendering. */
@@ -209,49 +240,303 @@ function classifyValue(value: PropertyValue): ValueKind {
   }
 }
 
-interface PropertyValueViewProps {
+/** A stable string key for a committed value, used to reset editor local state. */
+function stableValueKey(value: PropertyValue): string {
+  return JSON.stringify(value) ?? 'undefined';
+}
+
+// -------------------------------------------------------------------------
+// Per-property editor (component-local edit state; commit-only dispatch)
+// -------------------------------------------------------------------------
+
+interface PropertyEditorProps {
+  objectId: string;
+  property: string;
+  /** The committed value from the store snapshot (the seed for local state). */
   value: PropertyValue;
 }
 
+/** Inline feedback shown under a row after a commit attempt. */
+type RowFeedback =
+  | { kind: 'none' }
+  | { kind: 'invalidJson'; message: string }
+  | { kind: 'rejected' }
+  | { kind: 'error'; message: string };
+
 /**
- * Renders a property value branched by kind. Scalars render inline; array /
- * object values render a readable JSON preview inside a <details> so deep
- * structures are collapsible (no unbounded recursion: JSON.stringify is a
- * single, depth-safe serialization). Each branch is an explicit cell so Phase 5
- * can replace a display cell with an edit control per kind.
+ * One editable property row. Holds the in-progress edit in LOCAL state so a
+ * keystroke never dispatches (no per-keystroke全パネル re-render). Commits via
+ * setObjectProperty only on blur / Enter (scalars), toggle (boolean), or Apply
+ * (JSON for null / array / object). On a successful accepted write the store
+ * snapshot is updated by the action; this row's key changes and it re-seeds.
  */
-function PropertyValueView({ value }: PropertyValueViewProps): React.JSX.Element {
+function PropertyEditor({ objectId, property, value }: PropertyEditorProps): React.JSX.Element {
+  const actions = useBridgeActions();
   const kind = classifyValue(value);
 
-  switch (kind) {
-    case 'null':
-      return <span className="value value--null">null</span>;
-    case 'string':
-      return <span className="value value--string">{value as string}</span>;
-    case 'number':
-      return <span className="value value--number">{String(value as number)}</span>;
-    case 'boolean':
-      return <span className="value value--boolean">{(value as boolean) ? 'true' : 'false'}</span>;
-    case 'array':
-    case 'object': {
-      // Compact summary on the row + collapsible full JSON preview. JSON.stringify
-      // serializes the whole structure once (depth-safe), avoiding any per-node
-      // recursive React tree for arbitrarily nested values.
-      const isArray = kind === 'array';
-      const summary = isArray
-        ? `Array(${(value as PropertyValue[]).length})`
-        : `Object{${Object.keys(value as Record<string, PropertyValue>).length}}`;
-      const preview = JSON.stringify(value, null, 2);
-      return (
-        <details className={`value value--${kind}`}>
-          <summary className="value__summary">{summary}</summary>
-          <pre className="value__json">{preview}</pre>
-        </details>
-      );
+  // Whether a commit is in flight (disables the control + shows a hint).
+  const [pending, setPending] = useState(false);
+  const [feedback, setFeedback] = useState<RowFeedback>({ kind: 'none' });
+
+  // Submit a committed value to the engine. Centralizes the pending / feedback
+  // lifecycle for every editor kind. The value here is already a real
+  // PropertyValue (scalars are coerced before calling; JSON editors JSON.parse
+  // before calling and report invalid JSON without ever calling commit).
+  async function commit(next: PropertyValue): Promise<void> {
+    setPending(true);
+    setFeedback({ kind: 'none' });
+    try {
+      const result = await actions.setObjectProperty(objectId, property, next);
+      if (!result.accepted) {
+        setFeedback({ kind: 'rejected' });
+      }
+      // On accept the store snapshot updates and this row re-seeds via its key.
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setFeedback({ kind: 'error', message });
+    } finally {
+      setPending(false);
     }
+  }
+
+  return (
+    <span className="prop-editor">
+      <PropertyEditorControl
+        kind={kind}
+        value={value}
+        pending={pending}
+        onCommitValue={(next) => void commit(next)}
+        onInvalidJson={(message) => setFeedback({ kind: 'invalidJson', message })}
+        onClearFeedback={() => setFeedback({ kind: 'none' })}
+      />
+      <RowFeedbackView feedback={feedback} pending={pending} />
+    </span>
+  );
+}
+
+interface PropertyEditorControlProps {
+  kind: ValueKind;
+  value: PropertyValue;
+  pending: boolean;
+  /** Commit a parsed/coerced PropertyValue to the engine. */
+  onCommitValue: (next: PropertyValue) => void;
+  /** Report a JSON parse failure (JSON editors only) for inline display. */
+  onInvalidJson: (message: string) => void;
+  /** Clear any prior inline feedback (e.g. when the user starts editing again). */
+  onClearFeedback: () => void;
+}
+
+/** Picks the edit control by value kind. */
+function PropertyEditorControl(props: PropertyEditorControlProps): React.JSX.Element {
+  switch (props.kind) {
+    case 'string':
+      return <StringEditor {...props} />;
+    case 'number':
+      return <NumberEditor {...props} />;
+    case 'boolean':
+      return <BooleanEditor {...props} />;
+    case 'null':
+    case 'array':
+    case 'object':
+      // null / array / object all edit through the JSON editor so the user can
+      // set any JSON value (a null can become a scalar, an array can be reshaped).
+      return <JsonEditor {...props} />;
     default: {
       // Exhaustiveness guard — TypeScript catches any unhandled kind.
-      const _exhaustive: never = kind;
+      const _exhaustive: never = props.kind;
+      return <span>{String(_exhaustive)}</span>;
+    }
+  }
+}
+
+// ---- scalar editors -------------------------------------------------------
+
+function StringEditor({
+  value,
+  pending,
+  onCommitValue,
+  onClearFeedback,
+}: PropertyEditorControlProps): React.JSX.Element {
+  const [draft, setDraft] = useState<string>(value as string);
+
+  function commitIfChanged(): void {
+    if (draft !== (value as string)) {
+      onCommitValue(draft);
+    }
+  }
+
+  return (
+    <input
+      className="value value--string prop-editor__input"
+      type="text"
+      value={draft}
+      disabled={pending}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        onClearFeedback();
+      }}
+      onBlur={commitIfChanged}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
+function NumberEditor({
+  value,
+  pending,
+  onCommitValue,
+  onInvalidJson,
+  onClearFeedback,
+}: PropertyEditorControlProps): React.JSX.Element {
+  const [draft, setDraft] = useState<string>(String(value as number));
+
+  function commitIfChanged(): void {
+    if (draft === String(value as number)) return;
+    const parsed = Number(draft);
+    if (draft.trim() === '' || Number.isNaN(parsed)) {
+      // Reuse the invalid-feedback channel for a non-numeric entry.
+      onInvalidJson('数値として解釈できません。');
+      return;
+    }
+    onCommitValue(parsed);
+  }
+
+  return (
+    <input
+      className="value value--number prop-editor__input"
+      type="number"
+      value={draft}
+      disabled={pending}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        onClearFeedback();
+      }}
+      onBlur={commitIfChanged}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
+function BooleanEditor({
+  value,
+  pending,
+  onCommitValue,
+  onClearFeedback,
+}: PropertyEditorControlProps): React.JSX.Element {
+  // Boolean commits immediately on toggle (a checkbox has no "blur to commit"
+  // affordance); the value is local only between click and the store update.
+  return (
+    <label className="value value--boolean prop-editor__checkbox">
+      <input
+        type="checkbox"
+        checked={value as boolean}
+        disabled={pending}
+        onChange={(e) => {
+          onClearFeedback();
+          onCommitValue(e.target.checked);
+        }}
+      />
+      <span>{(value as boolean) ? 'true' : 'false'}</span>
+    </label>
+  );
+}
+
+// ---- JSON editor (null / array / object) ----------------------------------
+
+function JsonEditor({
+  value,
+  pending,
+  onCommitValue,
+  onInvalidJson,
+  onClearFeedback,
+}: PropertyEditorControlProps): React.JSX.Element {
+  // Seed from a pretty-printed serialization of the committed value. The user
+  // edits raw JSON text; nothing is dispatched until Apply (JSON.parse here).
+  const initial = JSON.stringify(value, null, 2) ?? 'null';
+  const [draft, setDraft] = useState<string>(initial);
+
+  function apply(): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(draft);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Component-local validation error: shown inline, NOT sent to the engine.
+      onInvalidJson(`不正な JSON: ${message}`);
+      return;
+    }
+    onCommitValue(parsed as PropertyValue);
+  }
+
+  const dirty = draft !== initial;
+
+  return (
+    <span className="prop-editor__json">
+      <textarea
+        className="value__json prop-editor__textarea"
+        value={draft}
+        disabled={pending}
+        spellCheck={false}
+        rows={Math.min(8, Math.max(2, draft.split('\n').length))}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          onClearFeedback();
+        }}
+      />
+      <button
+        type="button"
+        className="prop-editor__apply"
+        disabled={pending || !dirty}
+        onClick={apply}
+      >
+        Apply
+      </button>
+    </span>
+  );
+}
+
+// ---- inline row feedback ---------------------------------------------------
+
+interface RowFeedbackViewProps {
+  feedback: RowFeedback;
+  pending: boolean;
+}
+
+function RowFeedbackView({ feedback, pending }: RowFeedbackViewProps): React.JSX.Element | null {
+  if (pending) {
+    return <span className="prop-editor__hint prop-editor__hint--pending">送信中...</span>;
+  }
+  switch (feedback.kind) {
+    case 'none':
+      return null;
+    case 'invalidJson':
+      return (
+        <span className="prop-editor__hint prop-editor__hint--error" role="alert">
+          {feedback.message}
+        </span>
+      );
+    case 'rejected':
+      return (
+        <span className="prop-editor__hint prop-editor__hint--error" role="alert">
+          エンジンが変更を拒否しました (accepted: false)。
+        </span>
+      );
+    case 'error':
+      return (
+        <span className="prop-editor__hint prop-editor__hint--error" role="alert">
+          送信に失敗しました: {feedback.message}
+        </span>
+      );
+    default: {
+      const _exhaustive: never = feedback;
       return <span>{String(_exhaustive)}</span>;
     }
   }

@@ -52,8 +52,8 @@ use norves_bridge_core::{
 };
 use norves_bridge_editor_client::{
     connect_with_retry, parse_hello_result, parse_log_message, parse_object_snapshot_result,
-    parse_scene_tree_result, parse_schema_snapshot_result, parse_status_result, HelloParams,
-    RequestError, RetryConfig,
+    parse_scene_tree_result, parse_schema_snapshot_result, parse_set_property_result,
+    parse_status_result, HelloParams, RequestError, RetryConfig,
 };
 use tokio::sync::broadcast;
 
@@ -730,6 +730,138 @@ async fn engine_object_and_schema_snapshot_contract() {
 
     handle.shutdown().await;
     eprintln!("[PASS] engine_object_and_schema_snapshot_contract: all steps passed");
+}
+
+/// object.setProperty (write path) round-trip contract against the mock engine.
+///
+/// Opt-in via `NORVES_ENGINE_PATH` (the mock engine path; distinct from
+/// `NORVES_MOCK_ENGINE`). Skips (passes) when unset or non-file so `cargo test`
+/// stays green without the C++ build.
+///
+/// Proves the write path the Inspector depends on. After `bridge.hello`:
+///   1. an `object.setProperty` for `n-1`/`fieldOfView=75` returns
+///      `{accepted:true, appliedValue:75}` (the mock echoes the value);
+///   2. a follow-up `object.getSnapshot` for `n-1` shows `fieldOfView` is now 75,
+///      proving the mock's in-memory map was updated by the write;
+///   3. a per-node `object.getSnapshot` for `n-2` (GroupNode) returns its own
+///      additive demo property bag, proving the mock is per-objectId (not just
+///      the single n-1 demo).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_object_set_property_contract() {
+    let exe = match std::env::var("NORVES_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_object_set_property_contract: \
+                 set NORVES_ENGINE_PATH to the norves_mock_engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_object_set_property_contract: NORVES_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    // bridge.hello first (establishes the session).
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+
+    // 1. object.setProperty: write fieldOfView=75 on n-1.
+    let mut set_params = serde_json::Map::new();
+    set_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String("n-1".to_owned()),
+    );
+    set_params.insert(
+        "property".to_owned(),
+        serde_json::Value::String("fieldOfView".to_owned()),
+    );
+    set_params.insert("value".to_owned(), serde_json::Value::from(75));
+    let set_value = send_and_expect_result(
+        &handle,
+        request_envelope("obj-set", "object.setProperty", Some(set_params)),
+        "object.setProperty",
+    )
+    .await;
+    let ack = parse_set_property_result(&set_value)
+        .unwrap_or_else(|e| panic!("[object.setProperty] parse failed: {e}"));
+    assert!(ack.accepted, "[object.setProperty] expected accepted:true");
+    assert_eq!(
+        ack.applied_value,
+        Some(serde_json::Value::from(75)),
+        "[object.setProperty] expected appliedValue 75"
+    );
+    eprintln!("[PASS] object.setProperty: accepted with appliedValue 75");
+
+    // 2. object.getSnapshot for n-1 now reflects the write (fieldOfView=75).
+    let mut snap_params = serde_json::Map::new();
+    snap_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String("n-1".to_owned()),
+    );
+    let snap_value = send_and_expect_result(
+        &handle,
+        request_envelope("obj-after-set", "object.getSnapshot", Some(snap_params)),
+        "object.getSnapshot",
+    )
+    .await;
+    let snapshot = parse_object_snapshot_result(&snap_value)
+        .unwrap_or_else(|e| panic!("[object.getSnapshot after set] parse failed: {e}"));
+    let fov = snapshot
+        .properties
+        .iter()
+        .find(|p| p.name == "fieldOfView")
+        .unwrap_or_else(|| panic!("[object.getSnapshot after set] fieldOfView missing"));
+    assert_eq!(
+        fov.value,
+        serde_json::Value::from(75),
+        "[object.getSnapshot after set] fieldOfView should now be 75"
+    );
+    eprintln!("[PASS] object.getSnapshot after set: fieldOfView updated to 75");
+
+    // 3. per-node getSnapshot: n-2 (GroupNode) returns its own additive demo bag.
+    let mut group_params = serde_json::Map::new();
+    group_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String("n-2".to_owned()),
+    );
+    let group_value = send_and_expect_result(
+        &handle,
+        request_envelope("obj-n2", "object.getSnapshot", Some(group_params)),
+        "object.getSnapshot",
+    )
+    .await;
+    let group = parse_object_snapshot_result(&group_value)
+        .unwrap_or_else(|e| panic!("[object.getSnapshot n-2] parse failed: {e}"));
+    assert_eq!(group.object_id, "n-2", "[object.getSnapshot n-2] objectId");
+    assert!(
+        !group.properties.is_empty(),
+        "[object.getSnapshot n-2] expected per-node demo properties"
+    );
+    eprintln!(
+        "[PASS] object.getSnapshot n-2: per-node bag with {} properties",
+        group.properties.len()
+    );
+
+    handle.shutdown().await;
+    eprintln!("[PASS] engine_object_set_property_contract: all steps passed");
 }
 
 // ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ import type {
   GetStatusResult,
   SceneNode,
   ObjectSnapshot,
+  PropertyValue,
   TypeDescriptor,
 } from '@norves/bridge-ui';
 import type { ConnectionStatePayload } from '@norves/bridge-ui';
@@ -176,7 +177,20 @@ export type BridgeAction =
    * (object.getSnapshot or schema.getSnapshot answered METHOD_NOT_SUPPORTED).
    * Engine-agnostic degradation signal.
    */
-  | { type: 'objectSnapshotUnsupported' };
+  | { type: 'objectSnapshotUnsupported' }
+  /**
+   * Apply an accepted object.setProperty result to the in-store snapshot: the
+   * named property's value is replaced with the engine's appliedValue so the
+   * Inspector reflects what the engine actually stored (which may be normalized).
+   * Scoped to objectId so a late ack for a no-longer-selected object cannot
+   * clobber the current snapshot. Engine-agnostic: property/value are generic.
+   */
+  | {
+      type: 'objectPropertyApplied';
+      objectId: string;
+      property: string;
+      appliedValue: PropertyValue;
+    };
 
 // -------------------------------------------------------------------------
 // Pure reducer
@@ -340,6 +354,30 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     case 'objectSnapshotUnsupported': {
       // No snapshot to show; record the engine's degradation for the Inspector.
       return { ...state, objectSnapshot: undefined, objectUnsupported: true };
+    }
+
+    case 'objectPropertyApplied': {
+      // Apply an accepted write to the stored snapshot so the Inspector shows the
+      // engine's appliedValue without a full re-fetch. Guard on objectId so a
+      // late ack for a different object cannot clobber the current snapshot; if
+      // the snapshot is gone (deselect/disconnect) or the property is absent,
+      // leave state unchanged.
+      const snapshot = state.objectSnapshot;
+      if (snapshot === undefined || snapshot.objectId !== action.objectId) {
+        return state;
+      }
+      let changed = false;
+      const properties = snapshot.properties.map((entry) => {
+        if (entry.name === action.property) {
+          changed = true;
+          return { ...entry, value: action.appliedValue };
+        }
+        return entry;
+      });
+      if (!changed) {
+        return state;
+      }
+      return { ...state, objectSnapshot: { ...snapshot, properties } };
     }
 
     default: {

@@ -63,3 +63,22 @@ export interface ObjectSnapshot {
   /** Serialized property entries for this object; may be empty. */
   properties: PropertyEntry[];
 }
+
+/**
+ * Result of the `object.setProperty` method: the engine's acknowledgement of a
+ * property write. Mirrors the schema
+ * methods/object.setProperty.result.schema.json (result = { accepted,
+ * appliedValue? }) and the Rust SetPropertyAck in
+ * bridge/crates/norves-bridge-editor-client/src/object.rs.
+ *
+ * `accepted` reports whether the engine applied the change. `appliedValue`, when
+ * present, is a snapshot copy of the value the engine actually stored (which may
+ * be normalized from the requested value) — a plain JSON value, never a live
+ * engine pointer. Absent `appliedValue` means the engine did not echo a value.
+ */
+export interface SetObjectPropertyResult {
+  /** Whether the engine accepted and applied the property change. */
+  accepted: boolean;
+  /** Optional snapshot copy of the value actually applied. */
+  appliedValue?: PropertyValue;
+}

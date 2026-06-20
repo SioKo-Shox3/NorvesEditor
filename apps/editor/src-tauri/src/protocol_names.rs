@@ -23,6 +23,7 @@ pub mod commands {
     pub const GET_STATUS: &str = "get_status";
     pub const SCENE_GET_TREE: &str = "scene_get_tree";
     pub const OBJECT_GET_SNAPSHOT: &str = "object_get_snapshot";
+    pub const OBJECT_SET_PROPERTY: &str = "object_set_property";
     pub const SCHEMA_GET_SNAPSHOT: &str = "schema_get_snapshot";
     pub const RUNTIME_PLAY: &str = "runtime_play";
     pub const RUNTIME_PAUSE: &str = "runtime_pause";
@@ -84,6 +85,11 @@ mod tests {
     #[test]
     fn command_object_get_snapshot() {
         assert_eq!(commands::OBJECT_GET_SNAPSHOT, "object_get_snapshot");
+    }
+
+    #[test]
+    fn command_object_set_property() {
+        assert_eq!(commands::OBJECT_SET_PROPERTY, "object_set_property");
     }
 
     #[test]
@@ -192,6 +198,7 @@ mod tests {
             commands::GET_STATUS,
             commands::SCENE_GET_TREE,
             commands::OBJECT_GET_SNAPSHOT,
+            commands::OBJECT_SET_PROPERTY,
             commands::SCHEMA_GET_SNAPSHOT,
             commands::RUNTIME_PLAY,
             commands::RUNTIME_PAUSE,

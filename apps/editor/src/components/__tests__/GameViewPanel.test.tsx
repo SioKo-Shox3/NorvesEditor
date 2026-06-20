@@ -60,6 +60,7 @@ const mockActions = {
   getSceneTree:   vi.fn<BridgeActions['getSceneTree']>().mockResolvedValue(undefined),
   getObjectSnapshot: vi.fn<BridgeActions['getObjectSnapshot']>().mockResolvedValue(undefined),
   getSchemaSnapshot: vi.fn<BridgeActions['getSchemaSnapshot']>().mockResolvedValue(undefined),
+  setObjectProperty: vi.fn<BridgeActions['setObjectProperty']>().mockResolvedValue({ accepted: true }),
   play:           vi.fn<BridgeActions['play']>().mockResolvedValue(undefined),
   pause:          vi.fn<BridgeActions['pause']>().mockResolvedValue(undefined),
   stop:           vi.fn<BridgeActions['stop']>().mockResolvedValue(undefined),
