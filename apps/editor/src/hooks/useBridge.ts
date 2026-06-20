@@ -35,6 +35,7 @@ import type {
   EngineProcessExitedEvent,
   ViewportStateChangedEvent,
   GetStatusResult,
+  SceneGetTreeResult,
 } from '@norves/bridge-ui';
 import { useBridgeDispatch } from '../state/BridgeContext.js';
 
@@ -70,6 +71,21 @@ function extractBackendError(err: unknown): { kind?: string; message: string } {
     };
   }
   return { message: String(err) };
+}
+
+/**
+ * Returns true when `err` is an engine protocol error whose stable `code` is
+ * METHOD_NOT_SUPPORTED. The Rust BackendError::Engine variant serializes as
+ * { kind: "engine", code, message }, so the engine code lives in `code`
+ * (extractBackendError only surfaces `kind`/`message`). Engine-agnostic: any
+ * engine that does not implement an optional method answers this way.
+ */
+function isMethodNotSupported(err: unknown): boolean {
+  if (err !== null && typeof err === 'object') {
+    const e = err as BackendErrorPayload;
+    return e['kind'] === 'engine' && e['code'] === 'METHOD_NOT_SUPPORTED';
+  }
+  return false;
 }
 
 // -------------------------------------------------------------------------
@@ -221,6 +237,12 @@ export interface BridgeActions {
   disconnect: () => Promise<void>;
   reconnect: () => Promise<void>;
   getStatus: () => Promise<void>;
+  /**
+   * Fetch the engine's scene tree (scene.getTree) and store its root.
+   * On an engine error (e.g. METHOD_NOT_SUPPORTED for an engine without scene
+   * query) the error is reported through the store like any other command.
+   */
+  getSceneTree: () => Promise<void>;
   play: () => Promise<void>;
   pause: () => Promise<void>;
   stop: () => Promise<void>;
@@ -313,6 +335,29 @@ export function useBridgeActions(): BridgeActions {
         type: 'errorReported',
         payload: {
           error: { code: kind ?? 'GET_STATUS_FAILED', message },
+        },
+      });
+    }
+  }, [dispatch]);
+
+  const getSceneTree = useCallback(async (): Promise<void> => {
+    try {
+      const result = await invokeCommand<SceneGetTreeResult>(
+        BRIDGE_COMMANDS.sceneGetTree,
+      );
+      dispatch({ type: 'sceneTreeLoaded', root: result.root });
+    } catch (err: unknown) {
+      // An engine without scene query answers METHOD_NOT_SUPPORTED. Treat that
+      // as a graceful degradation (engine-agnostic), not a user-facing error.
+      if (isMethodNotSupported(err)) {
+        dispatch({ type: 'sceneTreeUnsupported' });
+        return;
+      }
+      const { kind, message } = extractBackendError(err);
+      dispatch({
+        type: 'errorReported',
+        payload: {
+          error: { code: kind ?? 'SCENE_GET_TREE_FAILED', message },
         },
       });
     }
@@ -416,5 +461,5 @@ export function useBridgeActions(): BridgeActions {
     dispatch({ type: 'objectSelected', id });
   }, [dispatch]);
 
-  return { connect, disconnect, reconnect, getStatus, play, pause, stop, focusViewport, launch, stopProcess, dismissError, selectObject };
+  return { connect, disconnect, reconnect, getStatus, getSceneTree, play, pause, stop, focusViewport, launch, stopProcess, dismissError, selectObject };
 }

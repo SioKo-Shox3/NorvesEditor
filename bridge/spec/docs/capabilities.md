@@ -32,7 +32,15 @@ A capability is identified by a namespaced token with the same lowerCamel
 runtime.control     runtime play/pause/stop control (phase C3 surface)
 viewport.focus      best-effort focus/raise of the external engine window
 log.stream          push log.message events without polling
+scene.query         read the engine's scene tree via scene.getTree (Phase 3 surface)
 ```
+
+The `scene.query` token advertises that an engine can answer `scene.getTree`
+(read-only scene hierarchy). It is an optional, engine-agnostic feature
+advertisement: an engine that does not implement scene query simply omits the
+token and answers `scene.getTree` with `METHOD_NOT_SUPPORTED`, which the editor
+degrades on gracefully (no scene Outliner content). The token is independent of
+protocol version negotiation.
 
 Tokens are the unit of negotiation. A `capabilityDescriptor` wraps a token with
 optional metadata:

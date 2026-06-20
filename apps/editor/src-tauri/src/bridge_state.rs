@@ -590,6 +590,28 @@ pub async fn get_status(state: State<'_, BridgeState>) -> Result<Value, BackendE
     Ok(value)
 }
 
+/// `scene_get_tree`: `scene.getTree` with an empty params object. Returns the
+/// raw wire-shaped `result` Value (UI types it as `SceneGetTreeResult`).
+///
+/// Validated with `parse_scene_tree_result` so a malformed result surfaces as a
+/// clean backend error rather than being forwarded; the ORIGINAL wire Value is
+/// still returned so the UI sees exactly what the engine sent (same
+/// validate-then-forward pattern as `get_status`). An engine that does not
+/// implement scene query answers with a protocol error, which `send_method`
+/// maps to [`BackendError::Engine`] (e.g. `METHOD_NOT_SUPPORTED`) for the UI to
+/// degrade on.
+#[tauri::command]
+pub async fn scene_get_tree(state: State<'_, BridgeState>) -> Result<Value, BackendError> {
+    let value = send_method(state.inner(), "scene.getTree", Some(serde_json::Map::new())).await?;
+    // Validate shape (drift guard) but forward the original wire Value.
+    norves_bridge_editor_client::parse_scene_tree_result(&value).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed scene.getTree result: {err}"),
+        }
+    })?;
+    Ok(value)
+}
+
 /// `runtime_play`: `runtime.play` with an empty params object. Returns the raw
 /// result Value.
 #[tauri::command]
@@ -693,6 +715,18 @@ mod tests {
             session_id: "session".to_owned(),
             server_name: "server".to_owned(),
         }
+    }
+
+    /// `send_method` (and thus `scene_get_tree`) must fail with `NotConnected`
+    /// when no live connection exists, never panicking or hanging. This is the
+    /// disconnected-path drift guard for the new command; the connected
+    /// round-trip is covered by the conformance / process e2e suites against the
+    /// real mock engine.
+    #[tokio::test]
+    async fn send_method_when_disconnected_is_not_connected() {
+        let state = BridgeState::default();
+        let result = send_method(&state, "scene.getTree", Some(serde_json::Map::new())).await;
+        assert!(matches!(result, Err(BackendError::NotConnected)));
     }
 
     /// Core of Fix 1: a relay whose generation no longer matches the current
