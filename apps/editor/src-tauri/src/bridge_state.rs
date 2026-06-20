@@ -612,6 +612,59 @@ pub async fn scene_get_tree(state: State<'_, BridgeState>) -> Result<Value, Back
     Ok(value)
 }
 
+/// `object_get_snapshot`: `object.getSnapshot` for `object_id`. Returns the raw
+/// wire-shaped `result` Value (UI types it as `ObjectSnapshot`).
+///
+/// Sends `params = { objectId: object_id }` (the schema requires `objectId`).
+/// Validated with `parse_object_snapshot_result` so a malformed result surfaces
+/// as a clean backend error rather than being forwarded; the ORIGINAL wire Value
+/// is still returned (same validate-then-forward pattern as `get_status` /
+/// `scene_get_tree`). An engine that does not implement object query answers with
+/// a protocol error, which `send_method` maps to [`BackendError::Engine`] (e.g.
+/// `METHOD_NOT_SUPPORTED`) for the UI to degrade on.
+#[tauri::command]
+pub async fn object_get_snapshot(
+    state: State<'_, BridgeState>,
+    object_id: String,
+) -> Result<Value, BackendError> {
+    let mut params = serde_json::Map::new();
+    params.insert("objectId".to_owned(), Value::String(object_id));
+    let value = send_method(state.inner(), "object.getSnapshot", Some(params)).await?;
+    // Validate shape (drift guard) but forward the original wire Value.
+    norves_bridge_editor_client::parse_object_snapshot_result(&value).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed object.getSnapshot result: {err}"),
+        }
+    })?;
+    Ok(value)
+}
+
+/// `schema_get_snapshot`: `schema.getSnapshot` with an empty params object.
+/// Returns the raw wire-shaped `result` Value (UI types it as `SchemaSnapshot`).
+///
+/// Validated with `parse_schema_snapshot_result` so a malformed result surfaces
+/// as a clean backend error rather than being forwarded; the ORIGINAL wire Value
+/// is still returned (same validate-then-forward pattern as `get_status` /
+/// `scene_get_tree`). An engine without schema query answers with a protocol
+/// error, which `send_method` maps to [`BackendError::Engine`] (e.g.
+/// `METHOD_NOT_SUPPORTED`) for the UI to degrade on.
+#[tauri::command]
+pub async fn schema_get_snapshot(state: State<'_, BridgeState>) -> Result<Value, BackendError> {
+    let value = send_method(
+        state.inner(),
+        "schema.getSnapshot",
+        Some(serde_json::Map::new()),
+    )
+    .await?;
+    // Validate shape (drift guard) but forward the original wire Value.
+    norves_bridge_editor_client::parse_schema_snapshot_result(&value).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed schema.getSnapshot result: {err}"),
+        }
+    })?;
+    Ok(value)
+}
+
 /// `runtime_play`: `runtime.play` with an empty params object. Returns the raw
 /// result Value.
 #[tauri::command]
@@ -727,6 +780,25 @@ mod tests {
         let state = BridgeState::default();
         let result = send_method(&state, "scene.getTree", Some(serde_json::Map::new())).await;
         assert!(matches!(result, Err(BackendError::NotConnected)));
+    }
+
+    /// The object/schema snapshot commands (via `send_method`) must also fail
+    /// with `NotConnected` when no live connection exists, never panicking or
+    /// hanging. This is the disconnected-path drift guard for the new commands;
+    /// the connected round-trip is covered by the conformance / process e2e
+    /// suites against the real mock engine.
+    #[tokio::test]
+    async fn object_and_schema_snapshot_when_disconnected_is_not_connected() {
+        let state = BridgeState::default();
+
+        let mut params = serde_json::Map::new();
+        params.insert("objectId".to_owned(), Value::String("n-1".to_owned()));
+        let object_result = send_method(&state, "object.getSnapshot", Some(params)).await;
+        assert!(matches!(object_result, Err(BackendError::NotConnected)));
+
+        let schema_result =
+            send_method(&state, "schema.getSnapshot", Some(serde_json::Map::new())).await;
+        assert!(matches!(schema_result, Err(BackendError::NotConnected)));
     }
 
     /// Core of Fix 1: a relay whose generation no longer matches the current
