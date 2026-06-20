@@ -51,8 +51,8 @@ use norves_bridge_core::{
     VersionString,
 };
 use norves_bridge_editor_client::{
-    connect_with_retry, parse_hello_result, parse_log_message, parse_status_result, HelloParams,
-    RequestError, RetryConfig,
+    connect_with_retry, parse_hello_result, parse_log_message, parse_scene_tree_result,
+    parse_status_result, HelloParams, RequestError, RetryConfig,
 };
 use tokio::sync::broadcast;
 
@@ -527,6 +527,90 @@ async fn engine_launch_kill_relaunch_contract() {
     // RAII guard kills + reaps the second engine on drop.
     drop(guard2);
     eprintln!("[PASS] Kill 2: second engine reaped -- relaunch contract verified");
+}
+
+/// scene.getTree round-trip contract against the mock engine.
+///
+/// Opt-in via `NORVES_ENGINE_PATH` (the mock engine path; distinct from
+/// `NORVES_NORVESLIB_ENGINE_PATH` used by the runtime-control test and from
+/// `NORVES_MOCK_ENGINE` used by the conformance runner). Skips (passes) when
+/// unset or non-file so `cargo test` stays green without the C++ build.
+///
+/// Proves the read path the Outliner depends on: after `bridge.hello`, a
+/// `scene.getTree` request returns a result whose `{ root }` shape parses via
+/// `parse_scene_tree_result` and matches the mock's static demo tree
+/// (Root -> NodeA / GroupNode -> NodeB), value-equal to the spec fixture.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_scene_get_tree_contract() {
+    let exe = match std::env::var("NORVES_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_scene_get_tree_contract: \
+                 set NORVES_ENGINE_PATH to the norves_mock_engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_scene_get_tree_contract: NORVES_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    // bridge.hello first (establishes the session).
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+
+    // scene.getTree round trip.
+    let tree_value = send_and_expect_result(
+        &handle,
+        request_envelope("sc-tree", "scene.getTree", Some(serde_json::Map::new())),
+        "scene.getTree",
+    )
+    .await;
+    let tree = parse_scene_tree_result(&tree_value)
+        .unwrap_or_else(|e| panic!("[scene.getTree] parse_scene_tree_result failed: {e}"));
+
+    // Mock demo tree: Root (n-0) -> [NodeA (n-1), GroupNode (n-2) -> NodeB (n-3)].
+    assert_eq!(tree.root.id, "n-0", "[scene.getTree] unexpected root id");
+    assert_eq!(tree.root.name.as_deref(), Some("Root"));
+    assert_eq!(
+        tree.root.children.len(),
+        2,
+        "[scene.getTree] expected two top-level children, got {}",
+        tree.root.children.len()
+    );
+    assert_eq!(tree.root.children[0].id, "n-1");
+    assert_eq!(tree.root.children[1].id, "n-2");
+    assert_eq!(
+        tree.root.children[1].children.len(),
+        1,
+        "[scene.getTree] GroupNode should have one child"
+    );
+    assert_eq!(tree.root.children[1].children[0].id, "n-3");
+    eprintln!(
+        "[PASS] scene.getTree: root={} with nested demo tree",
+        tree.root.id
+    );
+
+    handle.shutdown().await;
+    eprintln!("[PASS] engine_scene_get_tree_contract: all steps passed");
 }
 
 // ---------------------------------------------------------------------------

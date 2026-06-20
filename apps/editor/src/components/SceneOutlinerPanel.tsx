@@ -1,52 +1,181 @@
 /**
- * SceneOutlinerPanel — scene hierarchy browser (Phase 1 placeholder).
+ * SceneOutlinerPanel — scene hierarchy browser (Phase 3: scene.getTree wired).
  *
- * This is a structural placeholder that establishes:
- *  - The IDockviewPanelProps interface contract.
- *  - The three empty-state branches: disconnected / empty scene / no selection.
- *  - Reference to useBridgeState() for future Phase 3 data wiring.
+ * Reads the scene snapshot (root SceneNode) from the store, renders it as a
+ * recursive tree, and lets the user select a node (writing selectedObjectId via
+ * actions.selectObject). Clicking the selected node again, or the empty area,
+ * deselects (selectObject(undefined)).
  *
- * Actual scene data (sceneTree) will be wired in Phase 3 (scene.getTree).
- * Until then, the panel displays a context-appropriate empty state.
+ * Data flow:
+ *  - On (re)connect the panel fetches the tree once (actions.getSceneTree).
+ *  - A manual "更新 / Refresh" button re-fetches on demand.
  *
- * Engine-agnostic: no mock-specific names or assumptions.
+ * Engine-agnostic degradation (no mock-specific assumptions):
+ *  (a) disconnected            → "エンジンに接続するとシーンが表示されます"
+ *  (b) empty scene (no children) → "オブジェクトがありません"
+ *  (c) METHOD_NOT_SUPPORTED     → "この engine はシーン照会に未対応"
+ *      (driven by store.sceneUnsupported, set when scene.getTree answers
+ *       METHOD_NOT_SUPPORTED — works for any engine, not just the mock).
  */
 
+import { useEffect, useRef } from 'react';
 import type React from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
+import type { SceneNode } from '@norves/bridge-ui';
 import { useBridgeState } from '../state/BridgeContext.js';
+import { useBridgeActions } from '../hooks/useBridge.js';
 
 // IDockviewPanelProps is accepted but not currently used for data.
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Element {
   const state = useBridgeState();
+  const actions = useBridgeActions();
+
   const isConnected = state.connection.status === 'connected';
+  const sceneTree = state.sceneTree;
+  const sceneUnsupported = state.sceneUnsupported === true;
+  const selectedObjectId = state.selectedObjectId;
+
+  // -----------------------------------------------------------------------
+  // Fetch the tree once each time we (re)enter the connected state. A ref
+  // tracks the previous connection status so we only fetch on the
+  // disconnected/connecting -> connected edge, not on every re-render. The
+  // store clears sceneTree on disconnect, so this re-probes a fresh engine.
+  // -----------------------------------------------------------------------
+  const wasConnectedRef = useRef(false);
+  useEffect(() => {
+    if (isConnected && !wasConnectedRef.current) {
+      void actions.getSceneTree();
+    }
+    wasConnectedRef.current = isConnected;
+  }, [isConnected, actions]);
+
+  const handleRefresh = (): void => {
+    void actions.getSceneTree();
+  };
+
+  // Clicking a node toggles selection: re-clicking the selected node deselects.
+  const handleSelect = (id: string): void => {
+    actions.selectObject(id === selectedObjectId ? undefined : id);
+  };
+
+  // Clicking empty body area deselects (only when something is selected).
+  const handleBodyClick = (): void => {
+    if (selectedObjectId !== undefined) {
+      actions.selectObject(undefined);
+    }
+  };
+
+  const hasTree = sceneTree !== undefined;
+  // "Empty scene" = a root with no children (root itself is still selectable).
+  const isEmptyScene = hasTree && (sceneTree.children?.length ?? 0) === 0;
 
   return (
     <div className="panel">
       <div className="panel__header">
         <span>Scene Outliner</span>
+        {isConnected && (
+          <button
+            className="btn"
+            type="button"
+            onClick={handleRefresh}
+            title="Re-fetch the scene tree (scene.getTree)"
+            style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }}
+          >
+            更新
+          </button>
+        )}
       </div>
 
-      <div className="panel__body col">
+      {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
+      <div className="panel__body col" onClick={handleBodyClick}>
         {!isConnected ? (
-          /* State 1: Disconnected — engine not attached */
+          /* (a) Disconnected — engine not attached */
           <div className="placeholder-box" style={{ flex: 1 }}>
             <span className="placeholder-box__title">Scene Outliner</span>
             <span>エンジンに接続するとシーンが表示されます。</span>
             <span style={{ fontSize: 11 }}>Connect to an engine to view the scene hierarchy.</span>
           </div>
-        ) : (
-          /* State 2 / 3: Connected but no scene data yet (Phase 3 will populate this) */
+        ) : sceneUnsupported ? (
+          /* (c) Engine does not implement scene query (METHOD_NOT_SUPPORTED) */
+          <div className="placeholder-box" style={{ flex: 1 }}>
+            <span className="placeholder-box__title">シーン照会に未対応</span>
+            <span>この engine はシーン照会に未対応です。</span>
+            <span style={{ fontSize: 11 }}>This engine does not support scene queries.</span>
+          </div>
+        ) : !hasTree ? (
+          /* Connected but the tree has not arrived yet (initial fetch pending) */
+          <div className="placeholder-box" style={{ flex: 1 }}>
+            <span className="placeholder-box__title">読み込み中</span>
+            <span>シーンを取得しています...</span>
+            <span style={{ fontSize: 11 }}>Loading scene...</span>
+          </div>
+        ) : isEmptyScene ? (
+          /* (b) Empty scene — root present but no children */
           <div className="placeholder-box" style={{ flex: 1 }}>
             <span className="placeholder-box__title">空のシーン</span>
             <span>オブジェクトがありません。</span>
-            <span style={{ fontSize: 11 }}>
-              Scene data will appear here once scene.getTree is wired (Phase 3).
-            </span>
+            <span style={{ fontSize: 11 }}>The scene has no objects.</span>
           </div>
+        ) : (
+          <ul className="scene-tree">
+            <SceneTreeNode
+              node={sceneTree}
+              selectedId={selectedObjectId}
+              onSelect={handleSelect}
+            />
+          </ul>
         )}
       </div>
     </div>
+  );
+}
+
+// -------------------------------------------------------------------------
+// Recursive tree node
+// -------------------------------------------------------------------------
+
+interface SceneTreeNodeProps {
+  node: SceneNode;
+  selectedId: string | undefined;
+  onSelect: (id: string) => void;
+}
+
+function SceneTreeNode({ node, selectedId, onSelect }: SceneTreeNodeProps): React.JSX.Element {
+  const isSelected = node.id === selectedId;
+  const children = node.children ?? [];
+  const label = node.name ?? node.id;
+
+  // Stop propagation so clicking a node row does not bubble to the body
+  // deselect handler.
+  const handleClick = (event: React.MouseEvent): void => {
+    event.stopPropagation();
+    onSelect(node.id);
+  };
+
+  return (
+    <li className="scene-node">
+      <button
+        type="button"
+        className={`scene-node__row${isSelected ? ' scene-node__row--selected' : ''}`}
+        aria-selected={isSelected}
+        onClick={handleClick}
+      >
+        <span className="scene-node__name">{label}</span>
+        {node.kind !== undefined && <span className="scene-node__kind">{node.kind}</span>}
+      </button>
+      {children.length > 0 && (
+        <ul className="scene-tree__children" style={{ marginLeft: 12 }}>
+          {children.map((child) => (
+            <SceneTreeNode
+              key={child.id}
+              node={child}
+              selectedId={selectedId}
+              onSelect={onSelect}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
   );
 }

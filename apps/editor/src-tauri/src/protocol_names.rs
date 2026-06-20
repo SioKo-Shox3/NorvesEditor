@@ -21,6 +21,7 @@ pub mod commands {
     pub const DISCONNECT: &str = "bridge_disconnect";
     pub const RECONNECT: &str = "bridge_reconnect";
     pub const GET_STATUS: &str = "get_status";
+    pub const SCENE_GET_TREE: &str = "scene_get_tree";
     pub const RUNTIME_PLAY: &str = "runtime_play";
     pub const RUNTIME_PAUSE: &str = "runtime_pause";
     pub const RUNTIME_STOP: &str = "runtime_stop";
@@ -71,6 +72,11 @@ mod tests {
     #[test]
     fn command_get_status() {
         assert_eq!(commands::GET_STATUS, "get_status");
+    }
+
+    #[test]
+    fn command_scene_get_tree() {
+        assert_eq!(commands::SCENE_GET_TREE, "scene_get_tree");
     }
 
     #[test]
@@ -172,6 +178,7 @@ mod tests {
             commands::DISCONNECT,
             commands::RECONNECT,
             commands::GET_STATUS,
+            commands::SCENE_GET_TREE,
             commands::RUNTIME_PLAY,
             commands::RUNTIME_PAUSE,
             commands::RUNTIME_STOP,

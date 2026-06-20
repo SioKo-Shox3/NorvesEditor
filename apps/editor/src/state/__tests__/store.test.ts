@@ -307,6 +307,89 @@ describe('objectSelected', () => {
 });
 
 // -------------------------------------------------------------------------
+// sceneTreeLoaded / sceneTreeUnsupported
+// -------------------------------------------------------------------------
+
+describe('sceneTreeLoaded', () => {
+  it('stores the root node and clears any unsupported marker', () => {
+    const state: BridgeState = { ...INITIAL_STATE, sceneUnsupported: true };
+    const next = applyAction(
+      { type: 'sceneTreeLoaded', root: { id: 'n-0', name: 'Root', children: [{ id: 'n-1' }] } },
+      state,
+    );
+    expect(next.sceneTree?.id).toBe('n-0');
+    expect(next.sceneTree?.children?.[0]?.id).toBe('n-1');
+    expect(next.sceneUnsupported).toBe(false);
+  });
+});
+
+describe('sceneTreeUnsupported', () => {
+  it('sets the unsupported marker and drops any stale tree', () => {
+    const state: BridgeState = { ...INITIAL_STATE, sceneTree: { id: 'n-0' } };
+    const next = applyAction({ type: 'sceneTreeUnsupported' }, state);
+    expect(next.sceneUnsupported).toBe(true);
+    expect(next.sceneTree).toBeUndefined();
+  });
+});
+
+describe('scene snapshot is cleared on disconnect', () => {
+  it('connectionStateChanged(connected:false) drops sceneTree + selection', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: { id: 'n-0' },
+      selectedObjectId: 'n-0',
+    };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: false, reason: 'closed' } },
+      state,
+    );
+    expect(next.sceneTree).toBeUndefined();
+    expect(next.selectedObjectId).toBeUndefined();
+  });
+
+  it('connectionStateChanged(connected:true) clears a stale unsupported marker', () => {
+    // A fresh connection re-probes the engine, so the prior "unsupported" verdict
+    // must not leak across connections.
+    const state: BridgeState = { ...INITIAL_STATE, sceneUnsupported: true };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: true, sessionId: 's' } },
+      state,
+    );
+    expect(next.sceneUnsupported).toBe(false);
+  });
+
+  it('connectionStateChanged(connected:true) preserves an existing tree', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      sceneTree: { id: 'n-0' },
+      selectedObjectId: 'n-0',
+    };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: true, sessionId: 's' } },
+      state,
+    );
+    expect(next.sceneTree?.id).toBe('n-0');
+    expect(next.selectedObjectId).toBe('n-0');
+  });
+
+  it('engineProcessExited drops sceneTree + selection', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: { id: 'n-0' },
+      selectedObjectId: 'n-0',
+    };
+    const next = applyAction(
+      { type: 'engineProcessExited', payload: { exitCode: 0 } },
+      state,
+    );
+    expect(next.sceneTree).toBeUndefined();
+    expect(next.selectedObjectId).toBeUndefined();
+  });
+});
+
+// -------------------------------------------------------------------------
 // viewportStateChanged
 // -------------------------------------------------------------------------
 

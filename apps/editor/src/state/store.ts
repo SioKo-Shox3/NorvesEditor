@@ -21,6 +21,7 @@ import type {
   EngineProcessExitedEvent,
   ViewportStateChangedEvent,
   GetStatusResult,
+  SceneNode,
 } from '@norves/bridge-ui';
 import type { ConnectionStatePayload } from '@norves/bridge-ui';
 
@@ -80,6 +81,20 @@ export interface BridgeState {
    * Set via objectSelected action; undefined means deselected.
    */
   selectedObjectId?: string;
+  /**
+   * Root node of the latest scene.getTree snapshot, or undefined before any
+   * tree has been fetched (or after disconnect). The wire shape is a single
+   * root SceneNode ({ root: SceneNode }); we store the root directly.
+   * Generic — carries no engine-specific assumptions.
+   */
+  sceneTree?: SceneNode;
+  /**
+   * True when the connected engine answered scene.getTree with
+   * METHOD_NOT_SUPPORTED — i.e. it does not implement scene query. This is the
+   * engine-agnostic degradation signal the Outliner reads to show an
+   * "unsupported" notice instead of an empty scene. Reset on (re)connect.
+   */
+  sceneUnsupported?: boolean;
 }
 
 export const INITIAL_STATE: BridgeState = {
@@ -114,7 +129,17 @@ export type BridgeAction =
    * Select a scene object by id. Pass undefined to deselect.
    * Engine-agnostic: id is a plain string token, not mock-specific.
    */
-  | { type: 'objectSelected'; id: string | undefined };
+  | { type: 'objectSelected'; id: string | undefined }
+  /**
+   * Store the root of a freshly fetched scene.getTree snapshot.
+   * `root` is the single root SceneNode from the wire result { root }.
+   */
+  | { type: 'sceneTreeLoaded'; root: SceneNode }
+  /**
+   * Mark scene query as unsupported by the connected engine (scene.getTree
+   * answered METHOD_NOT_SUPPORTED). Engine-agnostic degradation signal.
+   */
+  | { type: 'sceneTreeUnsupported' };
 
 // -------------------------------------------------------------------------
 // Pure reducer
@@ -154,6 +179,13 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         },
         // Clear lastError on successful connection
         lastError: p.connected ? undefined : state.lastError,
+        // Drop the scene snapshot + selection on disconnect so the Outliner
+        // degrades to its disconnected empty state and stale ids cannot linger.
+        // A fresh connection also clears any prior "unsupported" marker so the
+        // next engine is re-probed.
+        sceneTree: p.connected ? state.sceneTree : undefined,
+        selectedObjectId: p.connected ? state.selectedObjectId : undefined,
+        sceneUnsupported: p.connected ? false : state.sceneUnsupported,
       };
     }
 
@@ -213,6 +245,10 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         engineState: undefined,
         runtimeState: undefined,
         connection: { ...state.connection, status: 'disconnected' },
+        // The engine is gone: its scene snapshot + selection are no longer valid.
+        sceneTree: undefined,
+        selectedObjectId: undefined,
+        sceneUnsupported: undefined,
       };
     }
 
@@ -226,6 +262,16 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
 
     case 'objectSelected': {
       return { ...state, selectedObjectId: action.id };
+    }
+
+    case 'sceneTreeLoaded': {
+      // A successful tree clears any prior "unsupported" marker.
+      return { ...state, sceneTree: action.root, sceneUnsupported: false };
+    }
+
+    case 'sceneTreeUnsupported': {
+      // No tree to show; record the engine's degradation for the Outliner.
+      return { ...state, sceneTree: undefined, sceneUnsupported: true };
     }
 
     default: {

@@ -17,6 +17,7 @@ export const BRIDGE_COMMANDS = {
   disconnect: 'bridge_disconnect',
   reconnect: 'bridge_reconnect',
   getStatus: 'get_status',
+  sceneGetTree: 'scene_get_tree',
   runtimePlay: 'runtime_play',
   runtimePause: 'runtime_pause',
   runtimeStop: 'runtime_stop',
