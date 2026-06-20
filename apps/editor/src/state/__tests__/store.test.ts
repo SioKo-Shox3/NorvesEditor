@@ -272,6 +272,41 @@ describe('dismissError', () => {
 });
 
 // -------------------------------------------------------------------------
+// objectSelected
+// -------------------------------------------------------------------------
+
+describe('objectSelected', () => {
+  it('sets selectedObjectId to the given id', () => {
+    const next = applyAction({ type: 'objectSelected', id: 'obj-123' });
+    expect(next.selectedObjectId).toBe('obj-123');
+  });
+
+  it('sets selectedObjectId to undefined (deselect)', () => {
+    const state: BridgeState = { ...INITIAL_STATE, selectedObjectId: 'obj-123' };
+    const next = applyAction({ type: 'objectSelected', id: undefined }, state);
+    expect(next.selectedObjectId).toBeUndefined();
+  });
+
+  it('overwrites a previous selection', () => {
+    const state: BridgeState = { ...INITIAL_STATE, selectedObjectId: 'obj-111' };
+    const next = applyAction({ type: 'objectSelected', id: 'obj-222' }, state);
+    expect(next.selectedObjectId).toBe('obj-222');
+  });
+
+  it('does not mutate other state fields', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      engineState: 'running',
+      runtimeState: 'playing',
+    };
+    const next = applyAction({ type: 'objectSelected', id: 'obj-abc' }, state);
+    expect(next.engineState).toBe('running');
+    expect(next.runtimeState).toBe('playing');
+    expect(next.selectedObjectId).toBe('obj-abc');
+  });
+});
+
+// -------------------------------------------------------------------------
 // viewportStateChanged
 // -------------------------------------------------------------------------
 

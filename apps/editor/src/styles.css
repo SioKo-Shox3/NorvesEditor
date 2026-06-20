@@ -265,6 +265,32 @@ html, body, #root {
   color: var(--color-text);
 }
 
+/* ---- dockview theme mapping ---- */
+/*
+ * Map dockview-dark theme variables to NorvesEditor design tokens.
+ * Scoped to .dockview-theme-dark to avoid collisions with base rules.
+ * --dv-* variables are dockview's own naming convention.
+ */
+.dockview-theme-dark {
+  --dv-background-color: var(--color-bg);
+  --dv-separator-border: var(--color-border);
+  --dv-paneview-header-border-color: var(--color-border);
+  --dv-tabs-and-actions-container-background-color: var(--color-surface-alt);
+  --dv-tabs-and-actions-container-height: var(--header-h);
+  --dv-tab-background-color: var(--color-surface-alt);
+  --dv-tab-color: var(--color-text-muted);
+  --dv-active-tab-background-color: var(--color-surface);
+  --dv-active-tab-color: var(--color-text);
+  --dv-tab-border-color: var(--color-border);
+  --dv-active-tab-border-color: var(--color-accent);
+  --dv-group-control-color: var(--color-text-muted);
+  --dv-group-header-tabs-container-border-bottom: 1px solid var(--color-border);
+  --dv-drag-over-background-color: rgba(99, 102, 241, 0.15);
+  --dv-drag-over-border-color: var(--color-accent);
+  --dv-paneview-active-outline-color: var(--color-accent);
+  --dv-icon-hover-background-color: var(--color-surface-alt);
+}
+
 /* ---- log list ---- */
 .log-list {
   list-style: none;
