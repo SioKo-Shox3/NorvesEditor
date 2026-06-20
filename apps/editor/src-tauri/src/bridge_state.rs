@@ -708,6 +708,48 @@ pub async fn schema_get_snapshot(state: State<'_, BridgeState>) -> Result<Value,
     Ok(value)
 }
 
+/// `viewport_get_thumbnail`: `viewport.getThumbnail` with optional `maxWidth` /
+/// `maxHeight`. Returns the raw wire-shaped `result` Value (UI types it as
+/// `ViewportThumbnail`).
+///
+/// Sends `params = { maxWidth?, maxHeight? }` (both optional; omitted keys let the
+/// engine pick). Validated with `parse_thumbnail_result` so a malformed result
+/// surfaces as a clean backend error rather than being forwarded; the ORIGINAL
+/// wire Value (carrying the engine's base64 image) is still returned (same
+/// validate-then-forward pattern as the read commands). The image is a snapshot
+/// copy carried inline as base64, never a live engine pointer (see
+/// docs/memory-buffer-policy.md large-payload strategy: PNG, max 640x360, 256 KiB
+/// hard cap, pull-style, <= 1 fps). An engine that does not provide thumbnails
+/// answers with a protocol error, which `send_method` maps to
+/// [`BackendError::Engine`] (e.g. `METHOD_NOT_SUPPORTED`) for the UI to degrade
+/// on (it falls back to the external-window notice).
+///
+/// No lock is held across the request `.await` — `send_method` clones the handle
+/// out of state and drops the guard before awaiting (see module docs).
+#[tauri::command]
+pub async fn viewport_get_thumbnail(
+    state: State<'_, BridgeState>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+) -> Result<Value, BackendError> {
+    let mut params = serde_json::Map::new();
+    if let Some(w) = max_width {
+        params.insert("maxWidth".to_owned(), Value::from(w));
+    }
+    if let Some(h) = max_height {
+        params.insert("maxHeight".to_owned(), Value::from(h));
+    }
+    let value = send_method(state.inner(), "viewport.getThumbnail", Some(params)).await?;
+    // Validate shape (drift guard) but forward the original wire Value so the UI
+    // sees exactly the engine's base64 image and mimeType.
+    norves_bridge_editor_client::parse_thumbnail_result(&value).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed viewport.getThumbnail result: {err}"),
+        }
+    })?;
+    Ok(value)
+}
+
 /// `runtime_play`: `runtime.play` with an empty params object. Returns the raw
 /// result Value.
 #[tauri::command]
@@ -892,6 +934,66 @@ mod tests {
                 assert_eq!(map.get("value"), Some(&serde_json::json!([0, 1.5, -10])));
             }
             _ => panic!("expected a request envelope with params"),
+        }
+    }
+
+    /// The thumbnail command (`viewport.getThumbnail`, via `send_method`) must
+    /// also fail with `NotConnected` when no live connection exists, never
+    /// panicking or hanging. This is the disconnected-path drift guard for the new
+    /// pull-style command; the connected round-trip (the mock's fixed PNG) is
+    /// covered by the conformance / process e2e suites against the real mock
+    /// engine.
+    #[tokio::test]
+    async fn viewport_get_thumbnail_when_disconnected_is_not_connected() {
+        let state = BridgeState::default();
+        let mut params = serde_json::Map::new();
+        params.insert("maxWidth".to_owned(), Value::from(640u32));
+        params.insert("maxHeight".to_owned(), Value::from(360u32));
+        let result = send_method(&state, "viewport.getThumbnail", Some(params)).await;
+        assert!(matches!(result, Err(BackendError::NotConnected)));
+    }
+
+    /// `viewport_get_thumbnail` includes only the dimension keys that were
+    /// supplied: with both `maxWidth`/`maxHeight` present they appear; this is a
+    /// pure shaping check on `build_request` so optional params are not silently
+    /// coerced. The round-trip is covered by e2e.
+    #[test]
+    fn viewport_get_thumbnail_shapes_optional_dimensions() {
+        // Both present.
+        let mut params = serde_json::Map::new();
+        params.insert("maxWidth".to_owned(), Value::from(640u32));
+        params.insert("maxHeight".to_owned(), Value::from(360u32));
+        let env = build_request(
+            CorrelationId::try_from("req-1".to_owned()).expect("valid id"),
+            "viewport.getThumbnail",
+            Some(params),
+        )
+        .expect("builds");
+        match env {
+            ValidatedEnvelope::Request {
+                method,
+                params: Some(map),
+                ..
+            } => {
+                assert_eq!(method.as_str(), "viewport.getThumbnail");
+                assert_eq!(map.get("maxWidth"), Some(&Value::from(640u32)));
+                assert_eq!(map.get("maxHeight"), Some(&Value::from(360u32)));
+            }
+            _ => panic!("expected a request envelope with params"),
+        }
+
+        // Empty params object is also valid (engine picks the size).
+        let env = build_request(
+            CorrelationId::try_from("req-2".to_owned()).expect("valid id"),
+            "viewport.getThumbnail",
+            Some(serde_json::Map::new()),
+        )
+        .expect("builds");
+        match env {
+            ValidatedEnvelope::Request {
+                params: Some(map), ..
+            } => assert!(map.is_empty()),
+            _ => panic!("expected a request envelope with empty params"),
         }
     }
 

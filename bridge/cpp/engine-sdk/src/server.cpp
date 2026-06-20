@@ -238,6 +238,10 @@ namespace norves::bridge
             {
                 return finish(id, m_Adapter.schemaGetSnapshot(params));
             }
+            if (method == "viewport.getThumbnail")
+            {
+                return finish(id, m_Adapter.viewportGetThumbnail(params));
+            }
 
             // 未知のメソッド（ディスパッチテーブルにない）-> METHOD_NOT_SUPPORTED。
             log(LogSeverity::Debug, std::string("unknown method: ") + method);

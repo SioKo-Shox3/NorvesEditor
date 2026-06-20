@@ -1,0 +1,12 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "request",
+  "id": "req-71",
+  "method": "viewport.getThumbnail",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "maxWidth": 640,
+    "format": "png"
+  }
+}
