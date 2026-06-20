@@ -57,7 +57,7 @@ function makeActions(overrides: Partial<BridgeActions> = {}): BridgeActions {
     getObjectSnapshot: vi.fn().mockResolvedValue(undefined),
     getSchemaSnapshot: vi.fn().mockResolvedValue(undefined),
     setObjectProperty: vi.fn().mockResolvedValue({ accepted: true }),
-    getViewportThumbnail: vi.fn().mockResolvedValue(undefined),
+    getViewportThumbnail: vi.fn().mockResolvedValue('ok' as const),
     play:              vi.fn().mockResolvedValue(undefined),
     pause:             vi.fn().mockResolvedValue(undefined),
     stop:              vi.fn().mockResolvedValue(undefined),

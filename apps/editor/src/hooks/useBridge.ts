@@ -255,6 +255,18 @@ export function useBridgeSubscriptions(): void {
 }
 
 // -------------------------------------------------------------------------
+// Thumbnail pull result type (P7: backoff support)
+// -------------------------------------------------------------------------
+
+/**
+ * Result returned by getViewportThumbnail.
+ *   'ok'          — thumbnail loaded; caller may reset failure counter.
+ *   'unsupported' — engine does not implement thumbnails; stop polling.
+ *   'error'       — any other error; caller may apply exponential back-off.
+ */
+export type ThumbnailPullResult = 'ok' | 'unsupported' | 'error';
+
+// -------------------------------------------------------------------------
 // Action callbacks hook (safe to call from any panel — no subscriptions)
 // -------------------------------------------------------------------------
 
@@ -302,8 +314,13 @@ export interface BridgeActions {
    * degradation (viewportThumbnailUnsupported), not a user-facing error; other
    * errors flow through the store like any command. Per docs/memory-buffer-policy
    * callers must not poll faster than 1 fps.
+   *
+   * Returns a ThumbnailPullResult so callers can drive backoff logic:
+   *   'ok'          — thumbnail loaded successfully.
+   *   'unsupported' — engine does not support thumbnails (stop polling).
+   *   'error'       — transient/permanent error (caller may back off).
    */
-  getViewportThumbnail: (maxWidth?: number, maxHeight?: number) => Promise<void>;
+  getViewportThumbnail: (maxWidth?: number, maxHeight?: number) => Promise<ThumbnailPullResult>;
   play: () => Promise<void>;
   pause: () => Promise<void>;
   stop: () => Promise<void>;
@@ -512,20 +529,21 @@ export function useBridgeActions(): BridgeActions {
   );
 
   const getViewportThumbnail = useCallback(
-    async (maxWidth?: number, maxHeight?: number): Promise<void> => {
+    async (maxWidth?: number, maxHeight?: number): Promise<ThumbnailPullResult> => {
       try {
         const result = await invokeCommand<ViewportThumbnail>(
           BRIDGE_COMMANDS.viewportGetThumbnail,
           { maxWidth, maxHeight },
         );
         dispatch({ type: 'viewportThumbnailLoaded', thumbnail: result });
+        return 'ok';
       } catch (err: unknown) {
         // An engine without thumbnails answers METHOD_NOT_SUPPORTED. Treat that
         // as a graceful degradation (engine-agnostic), not a user-facing error:
         // the GameView falls back to the external-window notice.
         if (isMethodNotSupported(err)) {
           dispatch({ type: 'viewportThumbnailUnsupported' });
-          return;
+          return 'unsupported';
         }
         const { kind, message } = extractBackendError(err);
         dispatch({
@@ -534,6 +552,7 @@ export function useBridgeActions(): BridgeActions {
             error: { code: kind ?? 'VIEWPORT_GET_THUMBNAIL_FAILED', message },
           },
         });
+        return 'error';
       }
     },
     [dispatch],
