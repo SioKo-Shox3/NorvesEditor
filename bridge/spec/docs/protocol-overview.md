@@ -89,12 +89,21 @@ runtime.stateChanged
 viewport.stateChanged
 log.message
 error.reported
+scene.treeChanged
+object.changed
 ```
 
 Scene, object, and schema methods (`scene.getTree`, `object.getSnapshot`,
 `object.setProperty`, `schema.getSnapshot`) are added in phase C4. They carry
 serialized snapshots/DTOs only — never references into engine live memory (see
 [`docs/memory-buffer-policy.md`](../../../docs/memory-buffer-policy.md)).
+
+The live-update events `scene.treeChanged` and `object.changed` are added in
+protocol **0.2** (additive). They are engine-wire events that push scene/object
+changes so the editor need not poll; like the C4 methods they carry serialized
+snapshots/DTOs only. They are best-effort — the editor's connect-time and
+selection-time fetches remain the primary guarantee — and are advertised by the
+`scene.liveUpdate` capability token.
 
 ## Lifecycle events: engine wire vs editor-backend synthesized
 
@@ -114,6 +123,8 @@ locally. Both kinds use the identical envelope shape; the distinction is about
 | `viewport.stateChanged` | **engine (wire)** | sent by the engine about its external native viewport. |
 | `log.message` | **engine (wire)** | engine log line forwarded to the editor. |
 | `error.reported` | **both** | the engine may report engine-side errors over the wire; the editor backend may synthesize transport/process errors locally. |
+| `scene.treeChanged` | **engine (wire)** | sent by the engine when its scene tree changes (protocol 0.2, best-effort). |
+| `object.changed` | **engine (wire)** | sent by the engine when an object's properties change, e.g. after `object.setProperty` (protocol 0.2, best-effort). |
 
 Why this matters:
 

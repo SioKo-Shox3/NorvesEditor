@@ -361,10 +361,45 @@ namespace
                 m_ObjectFieldOfView[objectId.value()] = valueText.value();
             }
 
+            // Phase 6: MockAdapter と同値。setProperty の ack 後にライブ更新イベントを
+            // 発行するフラグを立て、変更対象 id を記録する（二重管理）。Rust e2e は
+            // setProperty を発行しないため、この経路はこのハーネスでは休止状態だが、
+            // MockAdapter とのツイン契約を維持する。
+            if (objectId.has_value())
+            {
+                m_LastChangedObjectId = objectId.value();
+            }
+            emit_object_changed.store(true);
+            emit_scene_tree_changed.store(true);
+
             std::string ack = R"({"accepted":true,"appliedValue":)";
             ack += valueText.has_value() ? valueText.value() : std::string("null");
             ack += "}";
             return Result<JsonValue, BridgeError>::ok(ParseOrDie(ack));
+        }
+
+        // @brief Phase 6: object.changed の params を更新済みマップから組み立てる。
+        // MockAdapter::object_changed_params と同値（二重管理）。値コピーのみ。
+        JsonValue ObjectChangedParams()
+        {
+            std::string params = R"({"objectId":")";
+            params += m_LastChangedObjectId.empty() ? std::string("n-1") : m_LastChangedObjectId;
+            params += R"("})";
+            auto snapshot = objectGetSnapshot(ParseOrDie(params));
+            if (snapshot.is_err())
+            {
+                std::exit(2);
+            }
+            return std::move(snapshot).value();
+        }
+
+        // @brief Phase 6: scene.treeChanged の params。MockAdapter::scene_tree_changed_params と
+        // 同値（二重管理）。
+        static JsonValue SceneTreeChangedParams()
+        {
+            return ParseOrDie(
+                R"({"changedNodes":[{"id":"n-1","name":"NodeA","kind":"object"}],)"
+                R"("fullRefreshRequired":false})");
         }
 
         Result<JsonValue, BridgeError> schemaGetSnapshot(const JsonValue& /*params*/) override
@@ -383,11 +418,20 @@ namespace
         // クロスメソッドの契約を明示するため、それでも atomic にする。
         std::atomic<bool> emit_log_burst{false};
 
+        // @brief Phase 6: objectSetProperty() によってセットされ、recv ループが消費する。
+        // MockAdapter::emit_object_changed / emit_scene_tree_changed と同値（二重管理）。
+        std::atomic<bool> emit_object_changed{false};
+        std::atomic<bool> emit_scene_tree_changed{false};
+
     private:
         // @brief objectId -> fieldOfView の現在値（JSON 数値テキスト）。objectSetProperty が
         // 更新し objectGetSnapshot が読む。MockAdapter::object_field_of_view と同役割。
         // @note mock のシングルスレッド recv ループ前提でのみ安全。マルチスレッド化しないこと。
         std::map<std::string, std::string> m_ObjectFieldOfView;
+
+        // @brief Phase 6: 直近の objectSetProperty が対象とした objectId。
+        // MockAdapter::last_changed_object_id と同役割（二重管理）。
+        std::string m_LastChangedObjectId;
 
         // @brief n-1 以外の既知ノードに対する小さなデモスナップショット JSON。
         // MockAdapter::demo_snapshot_for と同値（二重管理）。未知 id では nullopt。
@@ -574,6 +618,21 @@ int main(int argc, char** argv)
                     break;
                 }
             }
+        }
+
+        // Phase 6: MockAdapter / mock-engine と同値のライブ更新発行（二重管理）。Rust e2e は
+        // setProperty を発行しないためこの経路は休止状態だが、ツイン契約を保つため対称に置く。
+        if (adapter.emit_object_changed.exchange(false))
+        {
+            const std::string objectChangedFrame =
+                server.emitEvent("object.changed", adapter.ObjectChangedParams());
+            transport->send(std::string(objectChangedFrame));
+        }
+        if (adapter.emit_scene_tree_changed.exchange(false))
+        {
+            const std::string sceneTreeChangedFrame =
+                server.emitEvent("scene.treeChanged", FakeAdapter::SceneTreeChangedParams());
+            transport->send(std::string(sceneTreeChangedFrame));
         }
     }
 

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/events/object.changed.params.schema.json",
+  "title": "object.changed event params",
+  "description": "Sent by the engine over the wire when an object's properties change, e.g. after object.setProperty is accepted. Introduced in protocol version 0.2. properties is a snapshot copy of the object's property bag (DTO, never a live engine pointer).",
+  "type": "object",
+  "required": ["objectId", "properties"],
+  "additionalProperties": false,
+  "properties": {
+    "objectId": {
+      "description": "Opaque identifier of the object that changed.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    },
+    "properties": {
+      "description": "Snapshot copy of the object's current property bag.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/propertyBag"
+    },
+    "name": {
+      "description": "Optional current human-readable object name.",
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "description": "Optional generic object classification (free-form, not a NorvesLib type name).",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

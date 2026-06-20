@@ -43,7 +43,7 @@ import { BridgeProvider, useBridgeState } from '../../state/BridgeContext.js';
 // -------------------------------------------------------------------------
 
 /** Total event subscriptions that useBridgeSubscriptions registers (must equal BRIDGE_EVENTS entries). */
-const EXPECTED_SUBSCRIPTION_COUNT = 9;
+const EXPECTED_SUBSCRIPTION_COUNT = 11;
 
 /**
  * Setup listen mock: each call returns a unique unlisten fn.

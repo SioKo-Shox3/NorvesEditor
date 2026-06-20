@@ -36,6 +36,8 @@ scene.query         read the engine's scene tree via scene.getTree (Phase 3 surf
 object.query        read an object's properties / the type schema via
                     object.getSnapshot and schema.getSnapshot (Phase 4 surface)
 object.edit         write an object's property via object.setProperty (Phase 5 surface)
+scene.liveUpdate    push scene.treeChanged / object.changed events without
+                    polling (Phase 6 surface, protocol 0.2)
 ```
 
 The `scene.query` token advertises that an engine can answer `scene.getTree`
@@ -60,6 +62,16 @@ an engine that does not implement object editing omits the token and answers
 `object.setProperty` with `METHOD_NOT_SUPPORTED`, which the editor degrades on
 gracefully (a read-only Inspector). The token is independent of protocol version
 negotiation.
+
+The `scene.liveUpdate` token advertises that an engine pushes live-update events
+(`scene.treeChanged`, `object.changed`) over the wire instead of requiring the
+editor to poll. These events are additive and were introduced in protocol
+version 0.2. It is an optional, engine-agnostic advertisement: an engine that
+does not emit live updates simply omits the token, and the editor falls back to
+its connect-time and selection-time fetches (live updates are best-effort, not
+the primary guarantee). The token is independent of protocol version negotiation
+and also serves as the degradation signal for a 0.1-only engine that cannot send
+these 0.2 events.
 
 Tokens are the unit of negotiation. A `capabilityDescriptor` wraps a token with
 optional metadata:

@@ -47,6 +47,8 @@ pub mod events {
     pub const VIEWPORT_STATE_CHANGED: &str = "bridge:viewport-state-changed";
     pub const BRIDGE_CONNECTED: &str = "bridge:bridge-connected";
     pub const BRIDGE_DISCONNECTED: &str = "bridge:bridge-disconnected";
+    pub const SCENE_TREE_CHANGED: &str = "bridge:scene-tree-changed";
+    pub const OBJECT_CHANGED: &str = "bridge:object-changed";
 }
 
 #[cfg(test)]
@@ -185,6 +187,16 @@ mod tests {
         assert_eq!(events::BRIDGE_DISCONNECTED, "bridge:bridge-disconnected");
     }
 
+    #[test]
+    fn event_scene_tree_changed() {
+        assert_eq!(events::SCENE_TREE_CHANGED, "bridge:scene-tree-changed");
+    }
+
+    #[test]
+    fn event_object_changed() {
+        assert_eq!(events::OBJECT_CHANGED, "bridge:object-changed");
+    }
+
     // -----------------------------------------------------------------------
     // No-duplicate guards within each set
     // -----------------------------------------------------------------------
@@ -225,6 +237,8 @@ mod tests {
             events::VIEWPORT_STATE_CHANGED,
             events::BRIDGE_CONNECTED,
             events::BRIDGE_DISCONNECTED,
+            events::SCENE_TREE_CHANGED,
+            events::OBJECT_CHANGED,
         ];
         let mut sorted = all;
         sorted.sort_unstable();

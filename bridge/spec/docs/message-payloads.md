@@ -281,6 +281,8 @@ cases; the producer column below mirrors the lifecycle table in
 | `viewport.stateChanged` | engine (wire) | [schema](../schema/events/viewport.stateChanged.params.schema.json) | `state` (`viewportState`); optional `previous`. |
 | `log.message` | engine (wire) | [schema](../schema/events/log.message.params.schema.json) | `level`, `message`; optional `category`, `timestamp`. |
 | `error.reported` | both | [schema](../schema/events/error.reported.params.schema.json) | `error` (envelope error object); optional `origin`. |
+| `scene.treeChanged` | engine (wire) | [schema](../schema/events/scene.treeChanged.params.schema.json) | none required; optional `changedNodes` (`sceneNode[]`), `fullRefreshRequired`. Added in protocol 0.2. |
+| `object.changed` | engine (wire) | [schema](../schema/events/object.changed.params.schema.json) | `objectId`, `properties` (`propertyBag`); optional `name`, `kind`. Added in protocol 0.2. |
 
 `error.reported.params.error` reuses
 [`envelope.schema.json#/$defs/error`](../schema/envelope.schema.json) by
