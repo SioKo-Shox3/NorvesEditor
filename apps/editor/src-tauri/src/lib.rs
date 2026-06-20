@@ -34,6 +34,7 @@ pub fn run() {
             bridge_state::object_get_snapshot,
             bridge_state::object_set_property,
             bridge_state::schema_get_snapshot,
+            bridge_state::viewport_get_thumbnail,
             bridge_state::runtime_play,
             bridge_state::runtime_pause,
             bridge_state::runtime_stop,

@@ -119,6 +119,18 @@ namespace norves::bridge
             return not_supported(params);
         }
 
+        /// @brief viewport.getThumbnail。エンジンの外部ビューポートの静止画サムネイルを
+        ///        低頻度の pull 型レスポンスとして返す。result は
+        ///        { imageBase64, mimeType, width?, height? }。imageBase64 はフレーム
+        ///        バッファのスナップショットを base64 化した値であり、エンジンのライブ
+        ///        メモリへの参照（ポインタ / span / framebuffer view）を渡してはならない
+        ///        （docs/memory-buffer-policy.md の large-payload 戦略: PNG / 最大
+        ///        640x360 / 256 KiB ハードキャップ / 最大 1 fps の pull 型）。
+        virtual Result<JsonValue, BridgeError> viewportGetThumbnail(const JsonValue& params)
+        {
+            return not_supported(params);
+        }
+
     protected:
         IBridgeEngineAdapter() = default;
         IBridgeEngineAdapter(const IBridgeEngineAdapter&) = default;

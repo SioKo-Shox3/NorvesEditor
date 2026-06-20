@@ -22,10 +22,22 @@
  */
 
 import type React from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import type { EngineState, RuntimeState, ViewportState } from '@norves/bridge-types';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { useBridgeState } from '../state/BridgeContext.js';
 import { useBridgeActions } from '../hooks/useBridge.js';
+
+// -------------------------------------------------------------------------
+// Thumbnail policy constants (docs/memory-buffer-policy.md, Phase 7b).
+// pull-style, PNG, max 640x360, <= 1 fps. The auto-refresh interval is a
+// floor of 1000 ms so the UI never asks faster than 1 fps.
+// -------------------------------------------------------------------------
+
+const THUMBNAIL_MAX_WIDTH = 640;
+const THUMBNAIL_MAX_HEIGHT = 360;
+/** Auto-refresh cadence: 1 fps cap (>= 1000 ms between pulls). */
+const THUMBNAIL_REFRESH_MS = 1000;
 
 // -------------------------------------------------------------------------
 // Label / class maps covering ALL enum values (no silent fall-through)
@@ -99,6 +111,7 @@ const ERROR_KIND_LABELS: Record<string, string> = {
   FOCUS_FAILED:         'Focus failed',
   LAUNCH_FAILED:        'Launch failed',
   STOP_PROCESS_FAILED:  'Stop process failed',
+  VIEWPORT_GET_THUMBNAIL_FAILED: 'Thumbnail fetch failed',
 };
 
 function kindLabel(kind: string | undefined): string {
@@ -132,6 +145,11 @@ export function GameViewPanel(_props: IDockviewPanelProps): React.JSX.Element {
   const connectionStatus = state.connection.status;
   const connected        = connectionStatus === 'connected';
 
+  const thumbnail            = state.viewportThumbnail;
+  const thumbnailUnsupported = state.viewportThumbnailUnsupported === true;
+
+  const getViewportThumbnail = actions.getViewportThumbnail;
+
   // -----------------------------------------------------------------------
   // Action handlers — delegate to useBridgeActions() (error mapping lives
   // there, in a single place). Button onClick expects a () => void.
@@ -145,6 +163,41 @@ export function GameViewPanel(_props: IDockviewPanelProps): React.JSX.Element {
   const handleFocusViewport = (): void => { void actions.focusViewport(); };
   const handleLaunch        = (): void => { void actions.launch(); };
   const handleStopProcess   = (): void => { void actions.stopProcess(); };
+
+  // Pull a thumbnail capped at the policy resolution (engine downscales).
+  const refreshThumbnail = useCallback((): void => {
+    void getViewportThumbnail(THUMBNAIL_MAX_WIDTH, THUMBNAIL_MAX_HEIGHT);
+  }, [getViewportThumbnail]);
+
+  const handleRefreshThumbnail = (): void => { refreshThumbnail(); };
+
+  // -----------------------------------------------------------------------
+  // Low-frequency auto-refresh (<= 1 fps, docs/memory-buffer-policy.md).
+  // Only polls while connected and the engine has not reported the method as
+  // unsupported. Engine-agnostic: the interval simply re-issues the pull.
+  // -----------------------------------------------------------------------
+  useEffect(() => {
+    if (!connected || thumbnailUnsupported) {
+      return;
+    }
+    // Fetch once immediately, then on a >= 1000 ms cadence (1 fps cap).
+    refreshThumbnail();
+    const handle = setInterval(refreshThumbnail, THUMBNAIL_REFRESH_MS);
+    return (): void => { clearInterval(handle); };
+  }, [connected, thumbnailUnsupported, refreshThumbnail]);
+
+  // Build the data: URL once per thumbnail change so an unrelated re-render
+  // does not churn the <img src> (which would re-decode the image).
+  const thumbnailSrc = useMemo<string | undefined>(() => {
+    if (thumbnail === undefined) {
+      return undefined;
+    }
+    return `data:${thumbnail.mimeType};base64,${thumbnail.imageBase64}`;
+  }, [thumbnail]);
+
+  // Show the live thumbnail only while connected and the engine supports it.
+  // Otherwise fall back to the external-window notice (engine-agnostic).
+  const showThumbnail = connected && !thumbnailUnsupported && thumbnailSrc !== undefined;
 
   // -----------------------------------------------------------------------
   // Derived disabled states (identical logic to the original prop-driven impl)
@@ -192,20 +245,49 @@ export function GameViewPanel(_props: IDockviewPanelProps): React.JSX.Element {
           </div>
         )}
 
-        {/* Viewport notice */}
+        {/* Viewport area — live thumbnail (pull-style, <= 1 fps) when the engine
+            supports viewport.getThumbnail; otherwise the external-window notice.
+            The viewport status badge (Phase 7a) is shown in both cases. */}
         <div className="placeholder-box">
-          <span className="placeholder-box__title">Engine Viewport (External Window)</span>
-          <span>
-            In alpha, the engine renders in its own window.
-            Use &quot;Focus Viewport&quot; to bring it to the foreground.
-          </span>
-          {/* Viewport status badge */}
+          {showThumbnail ? (
+            <>
+              <span className="placeholder-box__title">Engine Viewport (Thumbnail)</span>
+              <img
+                className="viewport-thumbnail"
+                src={thumbnailSrc}
+                alt="Engine viewport thumbnail"
+                style={{ maxWidth: '100%', height: 'auto', imageRendering: 'auto' }}
+              />
+            </>
+          ) : (
+            <>
+              <span className="placeholder-box__title">Engine Viewport (External Window)</span>
+              <span>
+                In alpha, the engine renders in its own window.
+                Use &quot;Focus Viewport&quot; to bring it to the foreground.
+              </span>
+            </>
+          )}
+          {/* Viewport status badge (Phase 7a) — always shown */}
           <div className="row" style={{ justifyContent: 'center', marginTop: 4 }}>
             <span className="label">Viewport:</span>
             <span className="status-badge status-badge--disconnected">
               <span className="status-badge__dot" />
               {viewportState !== undefined ? VIEWPORT_LABELS[viewportState] : '--'}
             </span>
+          </div>
+          {/* Manual thumbnail refresh (pull). Disabled while disconnected or
+              when the engine reported the method unsupported. */}
+          <div className="row" style={{ justifyContent: 'center', marginTop: 4 }}>
+            <button
+              className="btn"
+              disabled={!connected || thumbnailUnsupported}
+              onClick={handleRefreshThumbnail}
+              title="Fetch a still thumbnail of the engine viewport"
+              type="button"
+            >
+              Refresh Thumbnail
+            </button>
           </div>
         </div>
 

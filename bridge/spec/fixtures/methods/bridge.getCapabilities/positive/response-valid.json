@@ -12,7 +12,8 @@
       { "name": "scene.query" },
       { "name": "object.query" },
       { "name": "object.edit" },
-      { "name": "scene.liveUpdate" }
+      { "name": "scene.liveUpdate" },
+      { "name": "viewport.thumbnail" }
     ]
   }
 }

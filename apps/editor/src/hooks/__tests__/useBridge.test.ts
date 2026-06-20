@@ -107,6 +107,28 @@ describe('invokeCommand contract — runtime controls', () => {
   });
 });
 
+describe('invokeCommand contract — viewport thumbnail', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('viewport_get_thumbnail uses BRIDGE_COMMANDS.viewportGetThumbnail with the dimension caps', async () => {
+    (tauriCore.invoke as Mock).mockResolvedValue({
+      imageBase64: 'AAAA',
+      mimeType: 'image/png',
+    });
+    const { invokeCommand } = await import('@norves/bridge-ui');
+    const result = await invokeCommand<{ imageBase64: string; mimeType: string }>(
+      BRIDGE_COMMANDS.viewportGetThumbnail,
+      { maxWidth: 640, maxHeight: 360 },
+    );
+    expect(tauriCore.invoke).toHaveBeenCalledWith(
+      BRIDGE_COMMANDS.viewportGetThumbnail,
+      { maxWidth: 640, maxHeight: 360 },
+    );
+    expect(result.imageBase64).toBe('AAAA');
+    expect(result.mimeType).toBe('image/png');
+  });
+});
+
 // -------------------------------------------------------------------------
 // subscribeEvent / unlisten lifecycle
 // -------------------------------------------------------------------------

@@ -78,7 +78,8 @@ namespace norves::mock
                     R"({"name":"scene.query"},)"
                     R"({"name":"object.query"},)"
                     R"({"name":"object.edit"},)"
-                    R"({"name":"scene.liveUpdate"}]})"));
+                    R"({"name":"scene.liveUpdate"},)"
+                    R"({"name":"viewport.thumbnail"}]})"));
         }
 
         norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> getStatus(
@@ -318,6 +319,23 @@ namespace norves::mock
                     R"({"name":"fieldOfView","valueType":"number"},)"
                     R"({"name":"enabled","valueType":"boolean"}]},)"
                     R"({"typeName":"TypeB","kind":"component"}]})"));
+        }
+
+        // @brief viewport.getThumbnail。小さなテスト用 PNG（2x2、base64 後でも 100 バイト程度
+        // で 256 KiB ハードキャップの遥か内）の固定スナップショットを返す。返値は正典フィクスチャ
+        // （viewport.getThumbnail/positive/response-valid.json）の result と値等価であり、
+        // H-D 適合ランナーが result 全体を厳密比較してこのメソッドの乖離を検出できるようにする。
+        // base64 文字列は値コピーで JsonValue を構築し、エンジンのフレームバッファや内部
+        // ポインタ・span を一切渡さない（docs/memory-buffer-policy.md の large-payload 戦略:
+        // PNG / 最大 640x360 / 256 KiB / 最大 1 fps の pull 型）。
+        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
+        viewportGetThumbnail(const norves::bridge::JsonValue& /*params*/) override
+        {
+            return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+                ok(parse_or_die(
+                    R"({"imageBase64":")"
+                    R"(iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mNwaDgARAwQCgAoDgYBqzvMVQAAAABJRU5ErkJggg==)"
+                    R"(","mimeType":"image/png","width":2,"height":2})"));
         }
 
         // @brief logSubscribe() によってセットされ、recv ループが消費する。

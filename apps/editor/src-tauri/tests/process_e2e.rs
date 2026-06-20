@@ -53,7 +53,7 @@ use norves_bridge_core::{
 use norves_bridge_editor_client::{
     connect_with_retry, parse_hello_result, parse_log_message, parse_object_snapshot_result,
     parse_scene_tree_result, parse_schema_snapshot_result, parse_set_property_result,
-    parse_status_result, HelloParams, RequestError, RetryConfig,
+    parse_status_result, parse_thumbnail_result, HelloParams, RequestError, RetryConfig,
 };
 use tokio::sync::broadcast;
 
@@ -612,6 +612,100 @@ async fn engine_scene_get_tree_contract() {
 
     handle.shutdown().await;
     eprintln!("[PASS] engine_scene_get_tree_contract: all steps passed");
+}
+
+/// `viewport.getThumbnail` round-trip contract against the mock engine (Phase 7b).
+///
+/// Opt-in via `NORVES_ENGINE_PATH` (the mock engine path; distinct from
+/// `NORVES_NORVESLIB_ENGINE_PATH` and from `NORVES_MOCK_ENGINE`). Skips (passes)
+/// when unset or non-file so `cargo test` stays green without the C++ build.
+///
+/// Proves the large-payload pull path the Game View depends on: after
+/// `bridge.hello`, a `viewport.getThumbnail` request returns a result whose
+/// `{ imageBase64, mimeType, width?, height? }` shape parses via
+/// `parse_thumbnail_result`, carries a PNG (mimeType == "image/png", base64 bytes
+/// beginning with the PNG signature), and is value-equal to the mock's static
+/// thumbnail / the spec fixture. The image is an inline base64 snapshot copy, not
+/// a live engine pointer (docs/memory-buffer-policy.md: pull, PNG, max 640x360,
+/// 256 KiB hard cap, <= 1 fps).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_viewport_get_thumbnail_contract() {
+    let exe = match std::env::var("NORVES_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_viewport_get_thumbnail_contract: \
+                 set NORVES_ENGINE_PATH to the norves_mock_engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_viewport_get_thumbnail_contract: \
+             NORVES_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    // bridge.hello first (establishes the session).
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+
+    // viewport.getThumbnail round trip, capped at the policy resolution (the mock
+    // ignores the caps and returns its static 2x2 PNG, which is within them).
+    let mut params = serde_json::Map::new();
+    params.insert("maxWidth".to_owned(), serde_json::Value::from(640u32));
+    params.insert("maxHeight".to_owned(), serde_json::Value::from(360u32));
+    let thumb_value = send_and_expect_result(
+        &handle,
+        request_envelope("vp-thumb", "viewport.getThumbnail", Some(params)),
+        "viewport.getThumbnail",
+    )
+    .await;
+    let thumb = parse_thumbnail_result(&thumb_value)
+        .unwrap_or_else(|e| panic!("[viewport.getThumbnail] parse_thumbnail_result failed: {e}"));
+
+    // PNG format + a non-empty base64 snapshot (the PNG magic header base64-encodes
+    // to the "iVBOR" prefix). Value-equal to the mock's static thumbnail.
+    assert_eq!(
+        thumb.mime_type, "image/png",
+        "[viewport.getThumbnail] expected PNG mimeType"
+    );
+    assert!(
+        thumb.image_base64.starts_with("iVBOR"),
+        "[viewport.getThumbnail] imageBase64 should be a base64 PNG (got prefix {:?})",
+        &thumb.image_base64[..thumb.image_base64.len().min(8)]
+    );
+    assert_eq!(thumb.width, Some(2), "[viewport.getThumbnail] width");
+    assert_eq!(thumb.height, Some(2), "[viewport.getThumbnail] height");
+    // The base64 image stays comfortably within the 256 KiB hard cap
+    // (~342 KiB once base64-encoded); the mock's 2x2 PNG is ~100 bytes.
+    assert!(
+        thumb.image_base64.len() < 342 * 1024,
+        "[viewport.getThumbnail] base64 image exceeded the documented cap"
+    );
+
+    handle.shutdown().await;
+    eprintln!(
+        "[PASS] engine_viewport_get_thumbnail_contract: mimeType={} base64_len={}",
+        thumb.mime_type,
+        thumb.image_base64.len()
+    );
 }
 
 /// object.getSnapshot + schema.getSnapshot round-trip contract against the mock

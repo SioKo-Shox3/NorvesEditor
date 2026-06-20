@@ -133,6 +133,12 @@ namespace
         {
             return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"objectId":"n-1"})"));
         }
+
+        Result<JsonValue, BridgeError> viewportGetThumbnail(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(
+                ParseOrFail(R"({"imageBase64":"AAAA","mimeType":"image/png"})"));
+        }
     };
 
     // ワイヤーフレームビルダー -----------------------------------------------------------
@@ -344,6 +350,21 @@ namespace
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"ob-1"});
                 NORVES_CHECK(!env.error.has_value());
                 const JsonValue expected = ParseOrFail(R"({"objectId":"n-1"})");
+                NORVES_CHECK(env.result.has_value() && *env.result == expected);
+            }
+        }
+
+        {
+            const std::string frame = RequestFrame("vp-1", "viewport.getThumbnail", "");
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (response.has_value())
+            {
+                const Envelope env = DecodeOrFail(*response);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"vp-1"});
+                NORVES_CHECK(!env.error.has_value());
+                const JsonValue expected =
+                    ParseOrFail(R"({"imageBase64":"AAAA","mimeType":"image/png"})");
                 NORVES_CHECK(env.result.has_value() && *env.result == expected);
             }
         }
