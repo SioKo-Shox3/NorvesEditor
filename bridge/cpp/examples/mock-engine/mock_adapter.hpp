@@ -74,7 +74,8 @@ namespace norves::mock
                     R"({"capabilities":[)"
                     R"({"name":"runtime.control","version":"0.1","description":"Play/pause/stop control."},)"
                     R"({"name":"log.stream"},)"
-                    R"({"name":"viewport.focus"}]})"));
+                    R"({"name":"viewport.focus"},)"
+                    R"({"name":"scene.query"}]})"));
         }
 
         norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> getStatus(

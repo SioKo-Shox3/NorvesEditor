@@ -287,6 +287,43 @@ describe('methods/runtime.focusViewport positive fixtures', () => {
 });
 
 // -------------------------------------------------------------------------
+// methods/scene.getTree -- SceneGetTreeResult (result = { root: SceneNode })
+// -------------------------------------------------------------------------
+
+describe('methods/scene.getTree positive fixtures', () => {
+  it('request-valid: params carries optional rootId/maxDepth (both optional on the wire)', () => {
+    const f = loadFixture('methods/scene.getTree/positive/request-valid.json');
+    const params = paramsOf(f);
+    // rootId and maxDepth are optional; the fixture exercises both present.
+    expect(typeof params['rootId']).toBe('string');
+    expect(typeof params['maxDepth']).toBe('number');
+  });
+
+  it('response-valid: result has a single root sceneNode with id', () => {
+    const f = loadFixture('methods/scene.getTree/positive/response-valid.json');
+    const result = resultOf(f);
+    // Wire shape is { root }, not an array.
+    expect(result).toHaveProperty('root');
+    expect(Array.isArray(result['root'])).toBe(false);
+    const root = result['root'] as Record<string, unknown>;
+    expect(typeof root['id']).toBe('string');
+    // Nested children recurse via the same sceneNode shape.
+    const children = root['children'] as unknown[];
+    expect(Array.isArray(children)).toBe(true);
+    for (const child of children) {
+      expect(typeof (child as Record<string, unknown>)['id']).toBe('string');
+    }
+  });
+
+  it('response-minimal: root with only an id is valid (leaf, no children)', () => {
+    const f = loadFixture('methods/scene.getTree/positive/response-minimal.json');
+    const result = resultOf(f);
+    const root = result['root'] as Record<string, unknown>;
+    expect(typeof root['id']).toBe('string');
+  });
+});
+
+// -------------------------------------------------------------------------
 // Enum-widening guard (type-level, not runtime)
 // Tests that EngineState/RuntimeState etc. are exactly the const array unions.
 // -------------------------------------------------------------------------
@@ -319,9 +356,23 @@ void _engineExact; void _runtimeExact; void _logLevelExact; void _viewportExact;
 // These @ts-expect-error lines prove the types actually enforce shape/enums.
 // -------------------------------------------------------------------------
 
-import type { GetStatusResult, HelloResult } from '../index.js';
+import type { GetStatusResult, HelloResult, SceneGetTreeResult } from '../index.js';
 
 function _negativeProofs(): void {
+  // SceneGetTreeResult must require a `root` node.
+  // @ts-expect-error missing root
+  const _badScene1: SceneGetTreeResult = {};
+
+  // root must be a single SceneNode object, not an array.
+  // @ts-expect-error root is an array, not a SceneNode
+  const _badScene2: SceneGetTreeResult = { root: [{ id: 'n-0' }] };
+
+  // A SceneNode must have an id.
+  // @ts-expect-error root node missing required id
+  const _badScene3: SceneGetTreeResult = { root: { name: 'no id' } };
+
+  void _badScene1; void _badScene2; void _badScene3;
+
   // Misspelled enum value must be rejected
   // @ts-expect-error 'runing' is not a valid EngineState
   const _bad1: GetStatusResult = { engineState: 'runing', runtimeState: 'edit' };

@@ -327,3 +327,63 @@ html, body, #root {
 .log-entry--warn  .log-entry__level { color: var(--color-warning); }
 .log-entry--error .log-entry__level { color: var(--color-danger); }
 .log-entry--debug .log-entry__level { color: var(--color-text-muted); }
+
+/* ---- scene outliner tree ---- */
+.scene-tree {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 12px;
+}
+
+.scene-tree__children {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.scene-node__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.scene-node__row:hover {
+  background: var(--color-surface-alt);
+}
+
+.scene-node__row--selected {
+  background: var(--color-accent-dim);
+  color: #fff;
+}
+
+.scene-node__row--selected:hover {
+  background: var(--color-accent);
+}
+
+.scene-node__name {
+  flex: 1;
+  word-break: break-word;
+}
+
+.scene-node__kind {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.scene-node__row--selected .scene-node__kind {
+  color: rgba(255, 255, 255, 0.75);
+}

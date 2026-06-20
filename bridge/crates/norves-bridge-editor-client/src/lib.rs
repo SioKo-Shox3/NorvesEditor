@@ -18,6 +18,7 @@ pub mod dispatcher;
 pub mod handshake;
 pub mod log;
 pub mod reconnect;
+pub mod scene;
 pub mod seq;
 pub mod status;
 pub mod transport;
@@ -30,6 +31,7 @@ pub use handshake::{
 };
 pub use log::{parse_log_message, LogError, LogMessage};
 pub use reconnect::{connect_with_retry, ConnectError, ReconnectManager, RetryConfig};
+pub use scene::{parse_scene_tree_result, SceneError, SceneNode, SceneTree};
 pub use seq::observe_event_seq;
 pub use status::{parse_status_result, StatusError, StatusSnapshot};
 pub use transport::{loopback_pair, LoopbackTransport, Transport, TransportError};
