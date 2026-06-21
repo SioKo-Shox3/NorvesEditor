@@ -4,9 +4,59 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NorvesEditor</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #1a1a1e;
+      }
+      #root {
+        height: 100%;
+      }
+      #splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #1a1a1e;
+        color: #d4d4d8;
+        font-family: system-ui, sans-serif;
+        user-select: none;
+        gap: 12px;
+      }
+      #splash-title {
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: #d4d4d8;
+      }
+      #splash-sub {
+        font-size: 12px;
+        color: #71717a;
+      }
+      #splash-spinner {
+        width: 24px;
+        height: 24px;
+        border: 2px solid #3a3a44;
+        border-top-color: #6366f1;
+        border-radius: 50%;
+        animation: norves-spin 0.8s linear infinite;
+      }
+      @keyframes norves-spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="splash" aria-hidden="true">
+        <div id="splash-spinner"></div>
+        <div id="splash-title">NorvesEditor</div>
+        <div id="splash-sub">Loading&hellip;</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
