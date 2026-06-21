@@ -1,22 +1,24 @@
 /**
  * AppLayout — dockview-based layout container for NorvesEditor.
  *
- * P6 layout redesign. New default arrangement:
+ * P6 layout redesign (updated in fix/default-layout: right column narrowed to
+ * ~25 %). New default arrangement:
  *
- *   +-------------------------------------+----------------------+
- *   |                                     |  Scene Outliner      |
- *   |                                     |  (right column top)  |
- *   |          Game View                  +----------------------+
- *   |          (centre / largest)         |  [ Inspector ]       |
- *   |                                     |  (below Scene        |
- *   |                                     |   Outliner, on       |
- *   |                                     |   selection)         |
- *   +-------------------------------------+----------------------+
+ *   +------------------------------------------+----------------+
+ *   |                                           | Scene Outliner |
+ *   |                                           | (~25% width,   |
+ *   |          Game View                        | right column)  |
+ *   |          (~75% width, centre / largest)   +----------------+
+ *   |                                           | [ Inspector ]  |
+ *   |                                           | (below Scene   |
+ *   |                                           |  Outliner, on  |
+ *   |                                           |  selection)    |
+ *   +------------------------------------------+----------------+
  *   |  Log (bottom EdgeGroup drawer, collapsed by default)       |
  *   +------------------------------------------------------------+
  *
- *   - Game View is the centre/root panel (largest area).
- *   - Scene Outliner sits at the top of the right column.
+ *   - Game View is the centre/root panel (~75 % of the width).
+ *   - Scene Outliner sits at the top of the right column (~25 %).
  *   - The Property Inspector (when an object is selected) is added BELOW the
  *     Scene Outliner — it no longer depends on a Connection/Settings group.
  *   - Log lives in a bottom EdgeGroup drawer, collapsed by default; the main
@@ -36,9 +38,9 @@
  *     selection (Inspector shown iff an object is selected).
  *
  * Layout persistence:
- *   - Saved to localStorage under LAYOUT_STORAGE_KEY (v3) on every change.
+ *   - Saved to localStorage under LAYOUT_STORAGE_KEY (v4) on every change.
  *   - Restored on startup (fromJSON). Corrupt JSON purges the key and rebuilds.
- *   - On startup any stale legacy keys (v1, v2) are removed once (cleanup).
+ *   - On startup any stale legacy keys (v1, v2, v3) are removed once (cleanup).
  *
  * Layout reset is exposed by the toolbar (clearSavedLayoutAndReload) and by the
  * Settings window (requestLayoutReset, relayed to the main window); see
@@ -99,9 +101,31 @@ const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelPro
 // -------------------------------------------------------------------------
 
 /**
- * Build the default layout. Game View is the root (centre/largest); the right
- * column holds the Scene Outliner on top (the Property Inspector is added below
- * it on demand); the Log lives in a collapsed bottom EdgeGroup drawer.
+ * Target right-column width as a fraction of the total dockview width.
+ * Game View gets the remainder (~75 %).
+ */
+const RIGHT_COLUMN_RATIO = 0.25;
+
+/**
+ * Fallback right-column width in pixels, used when api.width is 0 at onReady
+ * (e.g. the container has not been painted yet). 400 px is a comfortable Scene
+ * Outliner width on typical HD+ displays and keeps the ratio close to 25 % on
+ * a 1600 px canvas.
+ */
+const RIGHT_COLUMN_FALLBACK_PX = 400;
+
+/**
+ * Build the default layout. Game View is the root (centre/largest, ~75 % of
+ * the width); the right column holds the Scene Outliner on top (the Property
+ * Inspector is added below it on demand); the Log lives in a collapsed bottom
+ * EdgeGroup drawer.
+ *
+ * The right-column width is set via addPanel's `initialWidth` option, which
+ * dockview 6.6.1 passes directly as the `size` argument to the underlying
+ * gridview split — this is the canonical way to control the initial split ratio
+ * (AddPanelOptions.initialWidth: number, see dockview-core/dist/cjs/dockview/
+ * options.d.ts and dockviewComponent.js). The value is also captured in the
+ * toJSON snapshot so the persisted layout retains the ratio.
  *
  * Connection and Settings are NOT added here (P6: they open in their own Tauri
  * windows). The Property Inspector is NOT added here either — it is added on
@@ -115,8 +139,16 @@ function buildDefaultLayout(api: DockviewApi): void {
     title: 'Game View',
   });
 
-  // 2. Right column top: Scene Outliner (to the right of Game View). This is
-  //    also the anchor the Property Inspector docks below (reconcileInspector).
+  // 2. Right column top: Scene Outliner (to the right of Game View).
+  //    initialWidth sets the new group's width in the gridview split.
+  //    api.width is the current rendered width of the dockview container; if it
+  //    is 0 (not yet painted) we fall back to RIGHT_COLUMN_FALLBACK_PX.
+  //    This is also the anchor the Property Inspector docks below (reconcileInspector).
+  const totalWidth = api.width;
+  const rightColumnWidth =
+    totalWidth > 0
+      ? Math.round(totalWidth * RIGHT_COLUMN_RATIO)
+      : RIGHT_COLUMN_FALLBACK_PX;
   api.addPanel({
     id: PANEL_SCENE_OUTLINER,
     component: PANEL_SCENE_OUTLINER,
@@ -125,6 +157,7 @@ function buildDefaultLayout(api: DockviewApi): void {
       direction: 'right',
       referencePanel: PANEL_GAME_VIEW,
     },
+    initialWidth: rightColumnWidth,
   });
 
   // 3. Log: bottom EdgeGroup drawer, collapsed by default.
@@ -248,11 +281,17 @@ function saveLayout(api: DockviewApi): void {
 }
 
 /**
- * Remove the stale legacy layout keys (v1, v2) once on startup so old garbage
- * does not linger in localStorage. P6 bumped the active key to v3; a saved v2
- * layout still encodes the now-removed Connection/Settings panels, so it must
- * not survive (same rationale as the v1 → v2 bump in P4). Never re-written.
- * Failures are ignored.
+ * Remove the stale legacy layout keys (v1, v2, v3) once on startup so old
+ * garbage does not linger in localStorage. fix/default-layout bumped the
+ * active key to v4 because the default panel ratio changed (~75:25 instead of
+ * 50:50); a saved v3 layout encodes the old split ratio in its gridview
+ * snapshot and must not survive. The array in LEGACY_LAYOUT_STORAGE_KEYS is
+ * the single source of truth — add v4 there when a future bump makes v5 active.
+ * NOTE: the active key (currently v4) must NOT be added to that legacy array;
+ * it is the current persistence target and must be excluded from startup purge
+ * so that persistence and cleanup remain disjoint (no risk of purging a key
+ * that is still being written).
+ * Never re-written. Failures are ignored.
  */
 function cleanupLegacyLayout(): void {
   for (const key of LEGACY_LAYOUT_STORAGE_KEYS) {
@@ -265,7 +304,7 @@ function cleanupLegacyLayout(): void {
 }
 
 /**
- * Try to restore a saved layout (v3 key only).
+ * Try to restore a saved layout (v4 key only).
  * Returns true on success, false if there was no saved layout or it was corrupt.
  * On corruption the storage key is purged so the next load rebuilds the default.
  */
@@ -320,7 +359,7 @@ export function AppLayout({ onLogToggleReady }: AppLayoutProps = {}): React.JSX.
     const api = event.api;
     apiRef.current = api;
 
-    // One-time cleanup of the stale legacy layout keys (v1, v2).
+    // One-time cleanup of the stale legacy layout keys (v1, v2, v3).
     cleanupLegacyLayout();
 
     // Attempt to restore persisted layout; fall back to default.

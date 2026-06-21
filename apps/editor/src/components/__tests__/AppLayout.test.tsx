@@ -13,9 +13,9 @@
  *     and Connection/Settings are NOT present (they moved to their own windows
  *     in P6).
  *   - Log is created in a bottom EdgeGroup, collapsed by default.
- *   - Persistence uses the v3 key; the stale v1 AND v2 keys are removed once on
- *     startup. The edge group (and its collapsed/expanded state) round-trips
- *     through toJSON/fromJSON, matching dockview 6.6.1.
+ *   - Persistence uses the v4 key; the stale v1, v2, AND v3 keys are removed
+ *     once on startup. The edge group (and its collapsed/expanded state)
+ *     round-trips through toJSON/fromJSON, matching dockview 6.6.1.
  *   - Property Inspector is selection-driven: added below the Scene Outliner
  *     when selectedObjectId is set, removed when cleared; idempotent (no
  *     double-add); reconciled after restore.
@@ -62,6 +62,8 @@ interface AddPanelOptions {
   id: string;
   component: string;
   title?: string;
+  initialWidth?: number;
+  initialHeight?: number;
   position?: {
     direction?: string;
     referencePanel?: string;
@@ -102,12 +104,29 @@ class FakeDockviewApi {
   fromJSONCalled = false;
   fromJSONThrows = false;
 
+  /**
+   * Simulated container width. Set to a non-zero value (e.g. 1600) in a test
+   * via `nextApiSetup` to exercise the api.width > 0 branch in buildDefaultLayout.
+   * Defaults to 0, which triggers the RIGHT_COLUMN_FALLBACK_PX path.
+   */
+  width = 0;
+
+  /**
+   * Records the initialWidth passed to each addPanel call, keyed by panel id.
+   * Allows tests to assert that the right-column panel received a smaller width
+   * than the Game View (dominant layout).
+   */
+  addPanelInitialWidths = new Map<string, number | undefined>();
+
   // -- panel API --------------------------------------------------------
   getPanel(id: string): FakePanel | undefined {
     return this.panels.get(id);
   }
 
   addPanel(options: AddPanelOptions): FakePanel {
+    // Record initialWidth for test assertions.
+    this.addPanelInitialWidths.set(options.id, options.initialWidth);
+
     let groupId: string;
     const ref = options.position?.referenceGroup;
     const refPanel = options.position?.referencePanel;
@@ -440,7 +459,7 @@ describe('AppLayout smoke', () => {
 // Default layout
 // -------------------------------------------------------------------------
 
-describe('AppLayout default layout (P6)', () => {
+describe('AppLayout default layout (P6 + fix/default-layout)', () => {
   it('creates Game View and Scene Outliner', () => {
     renderApp();
     expect(currentApi.getPanel('gameView')).toBeTruthy();
@@ -464,6 +483,40 @@ describe('AppLayout default layout (P6)', () => {
   it('does NOT add the Property Inspector when nothing is selected', () => {
     renderApp();
     expect(currentApi.getPanel('propertyInspector')).toBeUndefined();
+  });
+
+  it('passes initialWidth to Scene Outliner to make the right column narrower than Game View (fallback when api.width === 0)', () => {
+    // api.width defaults to 0 (container not yet painted) — the fallback
+    // RIGHT_COLUMN_FALLBACK_PX (400) should be used.
+    renderApp();
+    // Game View has no initialWidth (it is the root panel).
+    expect(currentApi.addPanelInitialWidths.get('gameView')).toBeUndefined();
+    // Scene Outliner receives an explicit initialWidth (the right-column size).
+    const outlinerWidth = currentApi.addPanelInitialWidths.get('sceneOutliner');
+    expect(outlinerWidth).toBeDefined();
+    expect(typeof outlinerWidth).toBe('number');
+    // The right column must be strictly less than half the default fallback
+    // total (800 px, matching the tauri.conf.json height=800 / width=1280).
+    // At 400 px fallback, a 50:50 split would also be 400 px, so we verify
+    // the right column is ≤ 400 (it is exactly 400 — the fallback itself is
+    // a reasonable ~25 % of a 1600 px canvas). The key assertion is that an
+    // initialWidth IS passed (not undefined), so the dominant-ratio logic ran.
+    expect((outlinerWidth as number)).toBeGreaterThan(0);
+    expect((outlinerWidth as number)).toBeLessThanOrEqual(400);
+  });
+
+  it('computes Scene Outliner initialWidth as ~25 % of api.width when api.width > 0', () => {
+    // Use api.width = 1200 (not 1600) so the expected result (300) is
+    // distinct from the fallback fixed value (400). This makes it possible to
+    // tell whether the multiplication path ran or whether the test would pass
+    // accidentally because both paths happen to produce the same number.
+    nextApiSetup = (api): void => { api.width = 1200; };
+    renderApp();
+    const outlinerWidth = currentApi.addPanelInitialWidths.get('sceneOutliner');
+    expect(outlinerWidth).toBeDefined();
+    // Math.round(1200 * 0.25) = 300. Allow ±1 for Math.round rounding.
+    expect((outlinerWidth as number)).toBeGreaterThanOrEqual(299);
+    expect((outlinerWidth as number)).toBeLessThanOrEqual(301);
   });
 });
 
@@ -505,11 +558,11 @@ describe('AppLayout Log EdgeGroup drawer', () => {
 });
 
 // -------------------------------------------------------------------------
-// Persistence: v3 key + v1/v2 cleanup
+// Persistence: v4 key + v1/v2/v3 cleanup
 // -------------------------------------------------------------------------
 
-describe('AppLayout persistence (v3 + v1/v2 cleanup)', () => {
-  it('removes the stale v1 and v2 keys on startup', () => {
+describe('AppLayout persistence (v4 + v1/v2/v3 cleanup)', () => {
+  it('removes the stale v1, v2, and v3 keys on startup', () => {
     for (const key of LEGACY_LAYOUT_STORAGE_KEYS) {
       localStorage.setItem(key, '{"old":true}');
     }
@@ -519,7 +572,7 @@ describe('AppLayout persistence (v3 + v1/v2 cleanup)', () => {
     }
   });
 
-  it('persists the layout under the v3 key on a layout change', () => {
+  it('persists the layout under the v4 key on a layout change', () => {
     renderApp();
     expect(localStorage.getItem(LAYOUT_STORAGE_KEY)).toBeNull();
     act(() => {
@@ -527,14 +580,14 @@ describe('AppLayout persistence (v3 + v1/v2 cleanup)', () => {
     });
     const saved = localStorage.getItem(LAYOUT_STORAGE_KEY);
     expect(saved).not.toBeNull();
-    // The v3 key is the storage target (not the legacy keys).
+    // The v4 key is the storage target (not the legacy keys).
     for (const key of LEGACY_LAYOUT_STORAGE_KEYS) {
       expect(localStorage.getItem(key)).toBeNull();
     }
-    expect(LAYOUT_STORAGE_KEY).toBe('norveseditor-layout-v3');
+    expect(LAYOUT_STORAGE_KEY).toBe('norveseditor-layout-v4');
   });
 
-  it('restores a saved v3 layout (fromJSON) including the edge group and Log panel', () => {
+  it('restores a saved v4 layout (fromJSON) including the edge group and Log panel', () => {
     localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({ panels: ['gameView'] }));
     renderApp();
     expect(currentApi.fromJSONCalled).toBe(true);
@@ -565,7 +618,7 @@ describe('AppLayout persistence (v3 + v1/v2 cleanup)', () => {
     expect(currentApi.getEdgeGroup('bottom')?.isCollapsed()).toBe(false);
   });
 
-  it('purges a corrupt v3 layout and rebuilds the default', () => {
+  it('purges a corrupt v4 layout and rebuilds the default', () => {
     localStorage.setItem(LAYOUT_STORAGE_KEY, '{not valid json');
     renderApp();
     // Corrupt JSON.parse throws before fromJSON; key purged, default rebuilt.

@@ -4,7 +4,7 @@
  *
  * @tauri-apps/api/event is mocked (emit / listen) so no Tauri runtime is needed.
  * Covered:
- *   - clearSavedLayoutAndReload: removes the v3 layout key AND reloads the page.
+ *   - clearSavedLayoutAndReload: removes the v4 layout key AND reloads the page.
  *   - requestLayoutReset: emits the LAYOUT_RESET_EVENT (and nothing else).
  *   - subscribeLayoutReset: registers a listener for LAYOUT_RESET_EVENT and
  *     returns the UnlistenFn; the handler fires when the event is delivered.
@@ -60,7 +60,7 @@ afterEach(() => {
 // -------------------------------------------------------------------------
 
 describe('clearSavedLayoutAndReload', () => {
-  it('removes the v3 layout key and reloads the window', () => {
+  it('removes the v4 layout key and reloads the window', () => {
     localStorage.setItem(LAYOUT_STORAGE_KEY, '{"saved":true}');
     const reload = vi.fn();
     // jsdom's location.reload is not implemented; stub it.
@@ -70,8 +70,8 @@ describe('clearSavedLayoutAndReload', () => {
 
     expect(localStorage.getItem(LAYOUT_STORAGE_KEY)).toBeNull();
     expect(reload).toHaveBeenCalledOnce();
-    // Active key is v3.
-    expect(LAYOUT_STORAGE_KEY).toBe('norveseditor-layout-v3');
+    // Active key is v4 (bumped from v3 in fix/default-layout: panel ratio changed).
+    expect(LAYOUT_STORAGE_KEY).toBe('norveseditor-layout-v4');
   });
 
   it('still reloads when localStorage.removeItem throws', () => {

@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vite
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { SettingsPanel } from '../SettingsPanel.js';
 import type { IDockviewPanelProps } from 'dockview-react';
+import { LAYOUT_STORAGE_KEY } from '../shell/layoutKey.js';
 
 // -------------------------------------------------------------------------
 // Mock the layoutReset relay so we can assert on requestLayoutReset.
@@ -62,7 +63,7 @@ describe('SettingsPanel layout reset (P6)', () => {
 
   it('does NOT clear its own localStorage or reload the window on reset', () => {
     const store = installMemoryLocalStorage();
-    store.set('norveseditor-layout-v3', '{"saved":true}');
+    store.set(LAYOUT_STORAGE_KEY, '{"saved":true}');
     const reload = vi.fn();
     vi.stubGlobal('location', { ...window.location, reload });
 
@@ -71,7 +72,7 @@ describe('SettingsPanel layout reset (P6)', () => {
 
     // The reset is relayed to the main window; this window leaves its own
     // storage untouched and does not reload itself.
-    expect(store.get('norveseditor-layout-v3')).toBe('{"saved":true}');
+    expect(store.get(LAYOUT_STORAGE_KEY)).toBe('{"saved":true}');
     expect(reload).not.toHaveBeenCalled();
     expect(requestLayoutReset as Mock).toHaveBeenCalledOnce();
   });
