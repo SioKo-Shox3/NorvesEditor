@@ -1180,6 +1180,132 @@ async fn engine_event_streaming_contract() {
 }
 
 // ---------------------------------------------------------------------------
+// engine_schema_snapshot_norveslib_contract
+// ---------------------------------------------------------------------------
+
+/// `schema.getSnapshot` round-trip contract against the real NorvesLib engine.
+///
+/// Opt-in via `NORVES_NORVESLIB_ENGINE_PATH`; skips (passes) when unset or
+/// pointing at a non-file path.  The env var is shared with
+/// `engine_runtime_control_contract` and `engine_event_streaming_contract`.
+///
+/// This test validates the schema pull path the Inspector depends on: after
+/// `bridge.hello`, a `schema.getSnapshot` request returns type descriptors that
+/// parse via `parse_schema_snapshot_result`.  Unlike the mock-engine test
+/// `engine_object_and_schema_snapshot_contract`, no mock-specific type names
+/// (e.g. "TypeA") are asserted — only generic structural invariants that hold
+/// regardless of the concrete engine type registry.
+///
+/// Steps:
+///  1. Spawn real engine, wait for READY.
+///  2. connect_with_retry -> single persistent connection.
+///  3. bridge.hello -> session established (session_id non-empty).
+///  4. schema.getSnapshot (params: empty object) -> type descriptors parsed.
+///  5. Assert types is non-empty (at least one type registered).
+///  6. Assert every type_name is non-empty.
+///  7. For each type that has properties, assert each property name and
+///     value_type are non-empty.
+///  8. handle.shutdown().
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_schema_snapshot_norveslib_contract() {
+    // --- Opt-in gate ---
+    let exe = match std::env::var("NORVES_NORVESLIB_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_schema_snapshot_norveslib_contract: \
+                 set NORVES_NORVESLIB_ENGINE_PATH to the NorvesLib engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_schema_snapshot_norveslib_contract: \
+             NORVES_NORVESLIB_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    // --- Step 1: spawn and wait for READY ---
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+    eprintln!("[PASS] engine_schema_snapshot_norveslib_contract: READY port={port}");
+
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+
+    // --- Step 2: open a single persistent connection ---
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    // --- Step 3: bridge.hello ---
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    let hello_outcome = parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+    assert!(
+        !hello_outcome.session_id.is_empty(),
+        "[bridge.hello] session_id must be non-empty"
+    );
+    eprintln!(
+        "[PASS] bridge.hello: session_id={}",
+        hello_outcome.session_id
+    );
+
+    // --- Step 4: schema.getSnapshot ---
+    let schema_value = send_and_expect_result(
+        &handle,
+        request_envelope("schema-snap", "schema.getSnapshot", Some(serde_json::Map::new())),
+        "schema.getSnapshot",
+    )
+    .await;
+    let schema = parse_schema_snapshot_result(&schema_value)
+        .unwrap_or_else(|e| panic!("[schema.getSnapshot] parse_schema_snapshot_result failed: {e}"));
+
+    // --- Step 5: at least one type must be registered ---
+    assert!(
+        !schema.types.is_empty(),
+        "[schema.getSnapshot] expected at least one type descriptor, got empty types array"
+    );
+
+    // --- Step 6: every type_name must be non-empty ---
+    for (i, td) in schema.types.iter().enumerate() {
+        assert!(
+            !td.type_name.is_empty(),
+            "[schema.getSnapshot] types[{i}].type_name must be non-empty"
+        );
+    }
+
+    // --- Step 7: for each type with properties, validate each property definition ---
+    for (i, td) in schema.types.iter().enumerate() {
+        for (j, prop_def) in td.properties.iter().enumerate() {
+            assert!(
+                !prop_def.name.is_empty(),
+                "[schema.getSnapshot] types[{i}].properties[{j}].name must be non-empty"
+            );
+            assert!(
+                !prop_def.value_type.is_empty(),
+                "[schema.getSnapshot] types[{i}].properties[{j}].value_type must be non-empty"
+            );
+        }
+    }
+
+    // --- Step 8: orderly shutdown ---
+    handle.shutdown().await;
+    eprintln!(
+        "[PASS] engine_schema_snapshot_norveslib_contract: {} type descriptor(s)",
+        schema.types.len()
+    );
+    // _guard drops here, killing the engine process.
+}
+
+// ---------------------------------------------------------------------------
 // engine_launch_info_schema_compliance_contract
 // ---------------------------------------------------------------------------
 
