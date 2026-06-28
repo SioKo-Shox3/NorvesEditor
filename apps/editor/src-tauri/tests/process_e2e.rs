@@ -1704,3 +1704,340 @@ async fn engine_scene_object_norveslib_contract() {
     );
     // _guard drops here, killing the engine process.
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_object_set_property_norveslib_contract() {
+    // --- Opt-in gate ---
+    let exe = match std::env::var("NORVES_NORVESLIB_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_object_set_property_norveslib_contract: \
+                 set NORVES_NORVESLIB_ENGINE_PATH to the NorvesLib engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!(
+            "[SKIP] engine_object_set_property_norveslib_contract: \
+             NORVES_NORVESLIB_ENGINE_PATH={exe:?} is not a file"
+        );
+        return;
+    }
+
+    // --- Step 1: spawn, connect, and bridge.hello ---
+    let (_guard, port) = spawn_engine_on_free_port(&exe);
+    eprintln!("[PASS] engine_object_set_property_norveslib_contract: READY port={port}");
+
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    let hello_outcome = parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] parse_hello_result failed: {e}"));
+    assert!(
+        !hello_outcome.session_id.is_empty(),
+        "[bridge.hello] session_id must be non-empty"
+    );
+    eprintln!(
+        "[PASS] bridge.hello: session_id={}",
+        hello_outcome.session_id
+    );
+
+    // --- Step 2: poll scene.getTree until root.children is non-empty ---
+    const POLL_INTERVAL: Duration = Duration::from_millis(200);
+    const POLL_MAX_ATTEMPTS: u32 = 40; // 40 * 200ms = 8000ms
+
+    let mut last_tree = None;
+    let mut tree_with_children = None;
+
+    for attempt in 1..=POLL_MAX_ATTEMPTS {
+        let tree_value = send_and_expect_result(
+            &handle,
+            request_envelope("set-sc-tree", "scene.getTree", Some(serde_json::Map::new())),
+            &format!("scene.getTree#set-poll{attempt}"),
+        )
+        .await;
+        let tree = parse_scene_tree_result(&tree_value)
+            .unwrap_or_else(|e| panic!("[scene.getTree] parse_scene_tree_result failed: {e}"));
+
+        eprintln!(
+            "[POLL] scene.getTree setProperty attempt {attempt}/{POLL_MAX_ATTEMPTS}: \
+             root.id={:?} children={}",
+            tree.root.id,
+            tree.root.children.len()
+        );
+
+        if !tree.root.children.is_empty() {
+            tree_with_children = Some(tree);
+            break;
+        }
+
+        last_tree = Some(tree);
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+
+    let tree = match tree_with_children {
+        Some(t) => t,
+        None => {
+            let last = last_tree.expect("at least one poll must have completed");
+            eprintln!(
+                "[TIMEOUT] scene.getTree: root.id={:?} children={} after ~8 s. \
+                 Full root.children (first 5): {:?}",
+                last.root.id,
+                last.root.children.len(),
+                &last.root.children[..last.root.children.len().min(5)]
+            );
+            panic!(
+                "[scene.getTree] root.children was empty after {POLL_MAX_ATTEMPTS} polls \
+                 (~8 s). The engine world may not have populated entities in time."
+            );
+        }
+    };
+
+    let entity_id = find_first_numeric_id_node(&tree.root).unwrap_or_else(|| {
+        panic!(
+            "[scene.getTree] no node with a numeric (Entity) id found in the tree. \
+             Root children: {:?}",
+            tree.root
+                .children
+                .iter()
+                .map(|n| &n.id)
+                .collect::<Vec<_>>()
+        )
+    });
+    eprintln!("[PASS] scene.getTree: first numeric-id entity={entity_id}");
+
+    // --- Step 3: object.getSnapshot and record Scale ---
+    let mut obj_params = serde_json::Map::new();
+    obj_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String(entity_id.clone()),
+    );
+    let obj_value = send_and_expect_result(
+        &handle,
+        request_envelope("set-obj-snap", "object.getSnapshot", Some(obj_params)),
+        "object.getSnapshot#before-set",
+    )
+    .await;
+    let snapshot = parse_object_snapshot_result(&obj_value).unwrap_or_else(|e| {
+        panic!("[object.getSnapshot before set] parse_object_snapshot_result failed: {e}")
+    });
+    assert_eq!(
+        snapshot.object_id, entity_id,
+        "[object.getSnapshot before set] expected objectId={entity_id}, got {:?}",
+        snapshot.object_id
+    );
+
+    let scale = snapshot
+        .properties
+        .iter()
+        .find(|p| p.name == "Scale" && p.value.as_array().map_or(false, |items| items.len() == 3))
+        .unwrap_or_else(|| {
+            let array3_properties = snapshot
+                .properties
+                .iter()
+                .filter(|p| p.value.as_array().map_or(false, |items| items.len() == 3))
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>();
+            panic!(
+                "[object.getSnapshot before set] expected Scale as a 3-element array; \
+                 available 3-element array properties: {:?}",
+                array3_properties
+            )
+        });
+    let original_scale = scale.value.clone();
+    eprintln!("[PASS] object.getSnapshot before set: Scale={original_scale}");
+
+    // --- Step 4: object.setProperty Scale=[2,3,4] and assert appliedValue ---
+    let expected_scale = serde_json::json!([2, 3, 4]);
+    let mut set_scale_params = serde_json::Map::new();
+    set_scale_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String(entity_id.clone()),
+    );
+    set_scale_params.insert(
+        "property".to_owned(),
+        serde_json::Value::String("Scale".to_owned()),
+    );
+    set_scale_params.insert("value".to_owned(), expected_scale.clone());
+    let set_scale_value = send_and_expect_result(
+        &handle,
+        request_envelope(
+            "set-scale",
+            "object.setProperty",
+            Some(set_scale_params),
+        ),
+        "object.setProperty#Scale",
+    )
+    .await;
+    let scale_ack = parse_set_property_result(&set_scale_value)
+        .unwrap_or_else(|e| panic!("[object.setProperty Scale] parse failed: {e}"));
+    assert!(
+        scale_ack.accepted,
+        "[object.setProperty Scale] expected accepted:true, got: {}",
+        set_scale_value
+    );
+    assert_eq!(
+        scale_ack.applied_value.as_ref(),
+        Some(&expected_scale),
+        "[object.setProperty Scale] expected appliedValue [2,3,4], got: {}",
+        set_scale_value
+    );
+    eprintln!("[PASS] object.setProperty Scale: accepted with appliedValue={expected_scale}");
+
+    // --- Step 5: object.getSnapshot reflects Scale=[2,3,4] ---
+    let mut after_scale_params = serde_json::Map::new();
+    after_scale_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String(entity_id.clone()),
+    );
+    let after_scale_value = send_and_expect_result(
+        &handle,
+        request_envelope(
+            "set-obj-after-scale",
+            "object.getSnapshot",
+            Some(after_scale_params),
+        ),
+        "object.getSnapshot#after-Scale",
+    )
+    .await;
+    let snapshot_after_scale = parse_object_snapshot_result(&after_scale_value).unwrap_or_else(|e| {
+        panic!("[object.getSnapshot after Scale] parse_object_snapshot_result failed: {e}")
+    });
+    let scale_after = snapshot_after_scale
+        .properties
+        .iter()
+        .find(|p| p.name == "Scale")
+        .unwrap_or_else(|| panic!("[object.getSnapshot after Scale] Scale missing"));
+    assert_eq!(
+        &scale_after.value, &expected_scale,
+        "[object.getSnapshot after Scale] Scale should be [2,3,4]"
+    );
+    let confirmed_scale = scale_after.value.clone();
+    eprintln!("[PASS] object.getSnapshot after Scale: Scale={confirmed_scale}");
+
+    // --- Step 6: bool property round-trip when one is exposed ---
+    let mut bool_summary = "skipped:no_bool_property".to_owned();
+    let bool_property = snapshot_after_scale
+        .properties
+        .iter()
+        .find(|p| p.name == "bTickEnabled" && p.value.is_boolean())
+        .or_else(|| {
+            snapshot_after_scale
+                .properties
+                .iter()
+                .find(|p| p.name == "bActive" && p.value.is_boolean())
+        })
+        .or_else(|| snapshot_after_scale.properties.iter().find(|p| p.value.is_boolean()));
+
+    if let Some(bool_property) = bool_property {
+        let bool_property_name = bool_property.name.clone();
+        let current_bool = bool_property
+            .value
+            .as_bool()
+            .expect("selected bool property has a boolean value");
+        let expected_bool = serde_json::Value::Bool(!current_bool);
+
+        let mut set_bool_params = serde_json::Map::new();
+        set_bool_params.insert(
+            "objectId".to_owned(),
+            serde_json::Value::String(entity_id.clone()),
+        );
+        set_bool_params.insert(
+            "property".to_owned(),
+            serde_json::Value::String(bool_property_name.clone()),
+        );
+        set_bool_params.insert("value".to_owned(), expected_bool.clone());
+        let set_bool_value = send_and_expect_result(
+            &handle,
+            request_envelope(
+                "set-bool",
+                "object.setProperty",
+                Some(set_bool_params),
+            ),
+            "object.setProperty#bool",
+        )
+        .await;
+        let bool_ack = parse_set_property_result(&set_bool_value)
+            .unwrap_or_else(|e| panic!("[object.setProperty bool] parse failed: {e}"));
+        assert!(
+            bool_ack.accepted,
+            "[object.setProperty bool] expected accepted:true, got: {}",
+            set_bool_value
+        );
+        assert_eq!(
+            bool_ack.applied_value.as_ref(),
+            Some(&expected_bool),
+            "[object.setProperty bool] expected appliedValue {}, got: {}",
+            expected_bool,
+            set_bool_value
+        );
+
+        let mut after_bool_params = serde_json::Map::new();
+        after_bool_params.insert(
+            "objectId".to_owned(),
+            serde_json::Value::String(entity_id.clone()),
+        );
+        let after_bool_value = send_and_expect_result(
+            &handle,
+            request_envelope(
+                "set-obj-after-bool",
+                "object.getSnapshot",
+                Some(after_bool_params),
+            ),
+            "object.getSnapshot#after-bool",
+        )
+        .await;
+        let snapshot_after_bool = parse_object_snapshot_result(&after_bool_value).unwrap_or_else(|e| {
+            panic!("[object.getSnapshot after bool] parse_object_snapshot_result failed: {e}")
+        });
+        let bool_after = snapshot_after_bool
+            .properties
+            .iter()
+            .find(|p| p.name == bool_property_name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "[object.getSnapshot after bool] {} missing",
+                    bool_property_name
+                )
+            });
+        assert_eq!(
+            &bool_after.value, &expected_bool,
+            "[object.getSnapshot after bool] {} should be {}",
+            bool_property_name, expected_bool
+        );
+        bool_summary = format!(
+            "{}:{}->{} confirmed={}",
+            bool_property_name, current_bool, expected_bool, bool_after.value
+        );
+        eprintln!(
+            "[PASS] object.setProperty bool: property={} {}->{}",
+            bool_property_name, current_bool, expected_bool
+        );
+    } else {
+        eprintln!(
+            "[SKIP] object.setProperty bool: no boolean property exposed for entity {entity_id}"
+        );
+    }
+
+    // --- Step 7: orderly shutdown ---
+    handle.shutdown().await;
+    eprintln!(
+        "[PASS] engine_object_set_property_norveslib_contract: \
+         objectId={entity_id} Scale {original_scale}->{expected_scale} confirmed={confirmed_scale} \
+         bool={bool_summary}"
+    );
+    // _guard drops here, killing the engine process.
+}
