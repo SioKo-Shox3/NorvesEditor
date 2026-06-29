@@ -25,3 +25,32 @@ export interface WorkspacePayload {
   assetsRoot: string;
   name: string;
 }
+
+/**
+ * One asset entry returned by asset_read_manifest.
+ *
+ * // Mirrors apps/editor/src-tauri/src/dto.rs AssetEntryDto
+ */
+export interface AssetEntry {
+  logicalPath: string;
+  kind: string;
+  variant?: string;
+  format?: string;
+  sourceHash?: string;
+  cookedPackage?: string;
+  entryName?: string;
+  entryType?: string;
+  cookedHash?: string;
+  cookedVersion?: number;
+}
+
+/**
+ * Payload returned by asset_read_manifest.
+ *
+ * // Mirrors apps/editor/src-tauri/src/dto.rs AssetManifestPayload
+ */
+export interface AssetManifestPayload {
+  version: number;
+  manifestPath: string;
+  assets: AssetEntry[];
+}

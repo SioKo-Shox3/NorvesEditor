@@ -36,7 +36,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 import * as tauriCore from '@tauri-apps/api/core';
 import * as tauriEvent from '@tauri-apps/api/event';
 import { useBridgeSubscriptions, useBridgeActions } from '../useBridge.js';
-import { BridgeProvider, useBridgeState } from '../../state/BridgeContext.js';
+import { BridgeProvider, useBridgeDispatch, useBridgeState } from '../../state/BridgeContext.js';
 
 // -------------------------------------------------------------------------
 // Helpers
@@ -539,5 +539,105 @@ describe('useBridgeActions — workspace helpers', () => {
     // Workspace errors are editor-local and MUST NOT flip the Bridge connection
     // status to 'error' (workspace is independent of the engine connection).
     expect(result.current.state.connection.status).toBe('disconnected');
+  });
+});
+
+// -------------------------------------------------------------------------
+// (h) asset manifest helpers — invoke + store updates + editor-local errors
+// -------------------------------------------------------------------------
+
+describe('useBridgeActions — asset manifest helpers', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('readAssetManifest() invokes asset_read_manifest and stores the manifest', async () => {
+    const manifest = {
+      version: 1,
+      manifestPath: 'C:/Project/manifest.json',
+      assets: [
+        {
+          logicalPath: 'textures/hero.png',
+          kind: 'texture',
+          variant: 'default',
+        },
+      ],
+    };
+    (tauriCore.invoke as Mock).mockResolvedValue(manifest);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(
+        result.current.actions.readAssetManifest('C:/Project/manifest.json'),
+      ).resolves.toBeUndefined();
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith(
+      'asset_read_manifest',
+      { manifestPath: 'C:/Project/manifest.json' },
+    );
+    expect(result.current.state.assetManifest).toEqual(manifest);
+  });
+
+  it('readAssetManifest() rejection sets assetError without changing connection status', async () => {
+    const fakeErr = { kind: 'asset', message: 'manifest parse failed' };
+    (tauriCore.invoke as Mock).mockRejectedValue(fakeErr);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const dispatch = useBridgeDispatch();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    act(() => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's1' },
+      });
+    });
+    expect(result.current.state.connection.status).toBe('connected');
+
+    await act(async () => {
+      await expect(
+        result.current.actions.readAssetManifest('C:/Project/broken.json'),
+      ).resolves.toBeUndefined();
+    });
+
+    expect(result.current.state.assetError).toMatchObject(fakeErr);
+    expect(result.current.state.lastError).toBeUndefined();
+    expect(result.current.state.connection.status).toBe('connected');
+  });
+
+  it('selectAsset() and clearAssetManifest() dispatch local asset state changes', async () => {
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    act(() => {
+      result.current.actions.selectAsset('["textures/hero.png","default"]');
+    });
+    expect(result.current.state.selectedAssetKey).toBe('["textures/hero.png","default"]');
+
+    act(() => {
+      result.current.actions.clearAssetManifest();
+    });
+    expect(result.current.state.selectedAssetKey).toBeUndefined();
+    expect(result.current.state.assetManifest).toBeUndefined();
   });
 });
