@@ -1,0 +1,12 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "response",
+  "id": "req-82",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "status": "successArchived",
+    "source": "cooked",
+    "normalizedLogicalPath": "textures/hero.png"
+  }
+}

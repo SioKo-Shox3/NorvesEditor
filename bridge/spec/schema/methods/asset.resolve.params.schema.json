@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/asset.resolve.params.schema.json",
+  "title": "asset.resolve request params",
+  "description": "Request resolution/health information for one logical asset path. The engine returns a serialized DTO snapshot, never live asset memory.",
+  "type": "object",
+  "required": ["logicalPath"],
+  "additionalProperties": false,
+  "properties": {
+    "logicalPath": {
+      "description": "Logical asset path to resolve.",
+      "type": "string"
+    },
+    "kind": {
+      "description": "Optional generic asset kind hint.",
+      "type": "string"
+    },
+    "variant": {
+      "description": "Optional asset variant hint.",
+      "type": "string"
+    }
+  }
+}

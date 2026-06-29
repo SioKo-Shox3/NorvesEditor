@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/asset.getManifest.params.schema.json",
+  "title": "asset.getManifest request params",
+  "description": "Request a snapshot of the engine's currently loaded asset manifest. Optional filter/page/pageSize bound large manifests.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "filter": {
+      "description": "Optional engine-defined filter string.",
+      "type": "string"
+    },
+    "page": {
+      "description": "Optional result page index.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "pageSize": {
+      "description": "Optional maximum number of entries to return.",
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

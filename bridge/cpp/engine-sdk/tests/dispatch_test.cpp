@@ -300,24 +300,28 @@ namespace
         }
     }
 
-    void TestUnimplementedOptionalMethodIsMethodNotSupported()
+    void TestUnimplementedOptionalMethodsAreMethodNotSupported()
     {
-        FakeAdapter adapter;  // scene.getTree をオーバーライドしない
+        FakeAdapter adapter;  // オプショナルメソッドをオーバーライドしない
         BridgeEngineServer server(adapter);
 
-        const std::string frame = RequestFrame("o-1", "scene.getTree", "");
-        auto response = server.handleFrame(frame);
-        NORVES_CHECK(response.has_value());
-        if (!response.has_value())
+        const std::string methods[] = {"scene.getTree", "asset.resolve", "asset.getManifest"};
+        for (std::string_view method : methods)
         {
-            return;
-        }
-        const Envelope env = DecodeOrFail(*response);
-        NORVES_CHECK_EQ(env.id, std::optional<std::string>{"o-1"});
-        NORVES_CHECK(env.error.has_value());
-        if (env.error.has_value())
-        {
-            NORVES_CHECK_EQ(env.error->code, std::string{"METHOD_NOT_SUPPORTED"});
+            const std::string frame = RequestFrame("o-1", method, "");
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (!response.has_value())
+            {
+                continue;
+            }
+            const Envelope env = DecodeOrFail(*response);
+            NORVES_CHECK_EQ(env.id, std::optional<std::string>{"o-1"});
+            NORVES_CHECK(env.error.has_value());
+            if (env.error.has_value())
+            {
+                NORVES_CHECK_EQ(env.error->code, std::string{"METHOD_NOT_SUPPORTED"});
+            }
         }
     }
 
@@ -440,7 +444,7 @@ int main()
     TestHelloVersionUnsupported();
     TestKnownMethodPassesAdapterResult();
     TestUnknownMethodIsMethodNotSupported();
-    TestUnimplementedOptionalMethodIsMethodNotSupported();
+    TestUnimplementedOptionalMethodsAreMethodNotSupported();
     TestOptionalMethodPassesAdapterResult();
     TestEmitEventRoundTrips();
     TestJsonValueParseDumpRoundTrips();
