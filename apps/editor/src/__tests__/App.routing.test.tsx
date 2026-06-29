@@ -153,7 +153,7 @@ describe('App window routing', () => {
     await renderApp('settings');
     expect(document.querySelector('[role="toolbar"]')).toBeNull();
     expect(document.querySelector('[data-testid="dockview-root"]')).toBeNull();
-    // Stable marker: Settings panel body text (not the reset button, which may move in P6).
-    expect(document.body.textContent).toContain('Editor settings are not yet available');
+    // Stable marker: Settings panel body text (the workspace controls are unique to it).
+    expect(document.body.textContent).toContain('Workspace root');
   });
 });
