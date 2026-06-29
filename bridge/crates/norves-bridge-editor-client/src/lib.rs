@@ -14,6 +14,7 @@
 //! the dispatcher; engine response logic and round-trip integration land in a
 //! later phase.
 
+pub mod asset;
 pub mod dispatcher;
 pub mod handshake;
 pub mod log;
@@ -26,6 +27,10 @@ pub mod transport;
 pub mod viewport;
 pub mod ws_transport;
 
+pub use asset::{
+    parse_asset_manifest_result, parse_asset_resolve_result, AssetEntry, AssetError,
+    AssetManifestResult, AssetResolveResult, AssetResolveSource, AssetResolveStatus,
+};
 pub use dispatcher::{DispatchHandle, Dispatcher, RequestError};
 pub use handshake::{
     hello_error_to_handshake, parse_hello_result, HandshakeError, HelloOutcome, HelloParams,

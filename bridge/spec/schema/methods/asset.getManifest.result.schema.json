@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/asset.getManifest.result.schema.json",
+  "title": "asset.getManifest response result",
+  "description": "Snapshot of the engine's currently loaded asset manifest. Entries are DTO copies, never references into engine live memory.",
+  "type": "object",
+  "required": ["version", "entries", "totalCount"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "description": "Manifest format version reported by the engine (non-negative integer; matches the offline manifest DTO).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "entries": {
+      "description": "Asset entries in this page/snapshot.",
+      "type": "array",
+      "items": {
+        "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/assetEntry"
+      }
+    },
+    "totalCount": {
+      "description": "Total number of entries matching the request before pagination.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "page": {
+      "description": "Page index the engine returned.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "pageSize": {
+      "description": "Maximum number of entries in this page.",
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

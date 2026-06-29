@@ -238,6 +238,14 @@ namespace norves::bridge
             {
                 return finish(id, m_Adapter.schemaGetSnapshot(params));
             }
+            if (method == "asset.resolve")
+            {
+                return finish(id, m_Adapter.assetResolve(params));
+            }
+            if (method == "asset.getManifest")
+            {
+                return finish(id, m_Adapter.assetGetManifest(params));
+            }
             if (method == "viewport.getThumbnail")
             {
                 return finish(id, m_Adapter.viewportGetThumbnail(params));

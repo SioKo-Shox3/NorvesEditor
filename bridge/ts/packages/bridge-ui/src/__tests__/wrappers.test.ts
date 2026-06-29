@@ -6,6 +6,8 @@ import {
   workspaceGet,
   workspaceClose,
   assetReadManifest,
+  assetResolve,
+  assetGetManifest,
 } from '../index.js';
 
 // Mock @tauri-apps/api/core and @tauri-apps/api/event before the module is
@@ -104,6 +106,47 @@ describe('asset manifest command wrapper', () => {
     expect(tauriCore.invoke).toHaveBeenCalledWith(
       'asset_read_manifest',
       { manifestPath: 'C:/Project/manifest.json' },
+    );
+    expect(result).toEqual(payload);
+  });
+});
+
+describe('asset bridge command wrappers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('assetResolve invokes the asset resolve command with supplied hints', async () => {
+    const payload = {
+      status: 'successCooked',
+      source: 'cooked',
+      normalizedLogicalPath: 'textures/hero.png',
+    };
+    (tauriCore.invoke as Mock).mockResolvedValue(payload);
+
+    const result = await assetResolve('textures/hero.png', 'texture');
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith(
+      'asset_resolve',
+      { logicalPath: 'textures/hero.png', kind: 'texture' },
+    );
+    expect(result).toEqual(payload);
+  });
+
+  it('assetGetManifest invokes the live manifest command with supplied bounds', async () => {
+    const payload = {
+      version: 1,
+      entries: [],
+      totalCount: 0,
+      pageSize: 50,
+    };
+    (tauriCore.invoke as Mock).mockResolvedValue(payload);
+
+    const result = await assetGetManifest(undefined, undefined, 50);
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith(
+      'asset_get_manifest',
+      { pageSize: 50 },
     );
     expect(result).toEqual(payload);
   });
