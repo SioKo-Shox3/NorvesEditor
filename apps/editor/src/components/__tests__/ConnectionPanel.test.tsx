@@ -40,6 +40,9 @@ const { useBridgeState }   = await import('../../state/BridgeContext.js');
 
 function makeActions(): BridgeActions {
   return {
+    openWorkspace:      vi.fn().mockResolvedValue(undefined),
+    getWorkspace:       vi.fn().mockResolvedValue(undefined),
+    closeWorkspace:     vi.fn().mockResolvedValue(undefined),
     connect:           vi.fn().mockResolvedValue(undefined),
     disconnect:        vi.fn().mockResolvedValue(undefined),
     reconnect:         vi.fn().mockResolvedValue(undefined),

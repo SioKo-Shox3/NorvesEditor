@@ -13,9 +13,11 @@ mod events_map;
 mod process;
 // J3: the LOAD-BEARING process runtime (spawn / READY / monitor / kill).
 mod process_runtime;
+mod workspace;
 
 use bridge_state::BridgeState;
 use process_runtime::ProcessState;
+use workspace::WorkspaceState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,6 +27,9 @@ pub fn run() {
         // J3: the (at most one) running engine process, separate from the
         // connection state.
         .manage(ProcessState::default())
+        // Phase A: workspace root state is a pure editor concern, independent
+        // from the Bridge connection and engine process lifecycle.
+        .manage(WorkspaceState::default())
         .invoke_handler(tauri::generate_handler![
             bridge_state::bridge_connect,
             bridge_state::bridge_disconnect,
@@ -41,6 +46,9 @@ pub fn run() {
             bridge_state::focus_viewport,
             process_runtime::launch_engine,
             process_runtime::stop_engine,
+            workspace::workspace_open,
+            workspace::workspace_get,
+            workspace::workspace_close,
         ])
         // Build (not `run`) so we can install the app-exit hook below.
         .build(tauri::generate_context!())

@@ -14,3 +14,14 @@ export interface ConnectionStatePayload {
   endpoint?: string;
   reason?: string;
 }
+
+/**
+ * Payload returned by workspace_open / workspace_get.
+ *
+ * // Mirrors apps/editor/src-tauri/src/dto.rs WorkspacePayload
+ */
+export interface WorkspacePayload {
+  rootPath: string;
+  assetsRoot: string;
+  name: string;
+}
