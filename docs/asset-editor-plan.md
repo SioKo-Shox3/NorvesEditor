@@ -1,6 +1,7 @@
 # アセット閲覧MVP + プロジェクト管理 実装計画
 
-> **ステータス**: 承認済み（2026-06-29）/ 実装は Phase A から着手予定（このコミット時点では未着手）。
+> **ステータス**: 承認済み（2026-06-29）。
+> **進捗**: ✅ Phase A（PROJ-1 ワークスペース管理）完了・main 統合済み（commit 34c8ec8、実装=Codex / レビュー=Claude impl-reviewer + Codex review 二重 / 全ゲート緑）。次は Phase B（オフライン manifest 直読み + Asset Browser/Inspector）。Phase C/D/E は未着手。
 > **由来**: ギャップ調査 → planner → plan-reviewer（verdict: approve-with-changes, blocker 0）→ 改訂 を経た最終版。
 > 報告/計画/コミットは日本語、コード/型/API/パス/コマンドは英語（CLAUDE.md 準拠）。
 
