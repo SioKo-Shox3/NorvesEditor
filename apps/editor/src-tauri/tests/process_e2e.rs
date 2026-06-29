@@ -1261,12 +1261,17 @@ async fn engine_schema_snapshot_norveslib_contract() {
     // --- Step 4: schema.getSnapshot ---
     let schema_value = send_and_expect_result(
         &handle,
-        request_envelope("schema-snap", "schema.getSnapshot", Some(serde_json::Map::new())),
+        request_envelope(
+            "schema-snap",
+            "schema.getSnapshot",
+            Some(serde_json::Map::new()),
+        ),
         "schema.getSnapshot",
     )
     .await;
-    let schema = parse_schema_snapshot_result(&schema_value)
-        .unwrap_or_else(|e| panic!("[schema.getSnapshot] parse_schema_snapshot_result failed: {e}"));
+    let schema = parse_schema_snapshot_result(&schema_value).unwrap_or_else(|e| {
+        panic!("[schema.getSnapshot] parse_schema_snapshot_result failed: {e}")
+    });
 
     // --- Step 5: at least one type must be registered ---
     assert!(
@@ -1605,11 +1610,7 @@ async fn engine_scene_object_norveslib_contract() {
         panic!(
             "[scene.getTree] no node with a numeric (Entity) id found in the tree. \
              Root children: {:?}",
-            tree.root
-                .children
-                .iter()
-                .map(|n| &n.id)
-                .collect::<Vec<_>>()
+            tree.root.children.iter().map(|n| &n.id).collect::<Vec<_>>()
         )
     });
     eprintln!("[PASS] scene.getTree: first numeric-id entity={entity_id}");
@@ -1626,8 +1627,9 @@ async fn engine_scene_object_norveslib_contract() {
         "object.getSnapshot",
     )
     .await;
-    let snapshot = parse_object_snapshot_result(&obj_value)
-        .unwrap_or_else(|e| panic!("[object.getSnapshot] parse_object_snapshot_result failed: {e}"));
+    let snapshot = parse_object_snapshot_result(&obj_value).unwrap_or_else(|e| {
+        panic!("[object.getSnapshot] parse_object_snapshot_result failed: {e}")
+    });
 
     // --- Step 8: basic snapshot invariants ---
     assert_eq!(
@@ -1669,7 +1671,10 @@ async fn engine_scene_object_norveslib_contract() {
         } else {
             "null"
         };
-        eprintln!("  property: name={:?} kind={kind} value={}", p.name, p.value);
+        eprintln!(
+            "  property: name={:?} kind={kind} value={}",
+            p.name, p.value
+        );
     }
 
     assert!(
@@ -1810,11 +1815,7 @@ async fn engine_object_set_property_norveslib_contract() {
         panic!(
             "[scene.getTree] no node with a numeric (Entity) id found in the tree. \
              Root children: {:?}",
-            tree.root
-                .children
-                .iter()
-                .map(|n| &n.id)
-                .collect::<Vec<_>>()
+            tree.root.children.iter().map(|n| &n.id).collect::<Vec<_>>()
         )
     });
     eprintln!("[PASS] scene.getTree: first numeric-id entity={entity_id}");
@@ -1843,12 +1844,12 @@ async fn engine_object_set_property_norveslib_contract() {
     let scale = snapshot
         .properties
         .iter()
-        .find(|p| p.name == "Scale" && p.value.as_array().map_or(false, |items| items.len() == 3))
+        .find(|p| p.name == "Scale" && p.value.as_array().is_some_and(|items| items.len() == 3))
         .unwrap_or_else(|| {
             let array3_properties = snapshot
                 .properties
                 .iter()
-                .filter(|p| p.value.as_array().map_or(false, |items| items.len() == 3))
+                .filter(|p| p.value.as_array().is_some_and(|items| items.len() == 3))
                 .map(|p| p.name.as_str())
                 .collect::<Vec<_>>();
             panic!(
@@ -1874,11 +1875,7 @@ async fn engine_object_set_property_norveslib_contract() {
     set_scale_params.insert("value".to_owned(), expected_scale.clone());
     let set_scale_value = send_and_expect_result(
         &handle,
-        request_envelope(
-            "set-scale",
-            "object.setProperty",
-            Some(set_scale_params),
-        ),
+        request_envelope("set-scale", "object.setProperty", Some(set_scale_params)),
         "object.setProperty#Scale",
     )
     .await;
@@ -1913,9 +1910,10 @@ async fn engine_object_set_property_norveslib_contract() {
         "object.getSnapshot#after-Scale",
     )
     .await;
-    let snapshot_after_scale = parse_object_snapshot_result(&after_scale_value).unwrap_or_else(|e| {
-        panic!("[object.getSnapshot after Scale] parse_object_snapshot_result failed: {e}")
-    });
+    let snapshot_after_scale =
+        parse_object_snapshot_result(&after_scale_value).unwrap_or_else(|e| {
+            panic!("[object.getSnapshot after Scale] parse_object_snapshot_result failed: {e}")
+        });
     let scale_after = snapshot_after_scale
         .properties
         .iter()
@@ -1940,7 +1938,12 @@ async fn engine_object_set_property_norveslib_contract() {
                 .iter()
                 .find(|p| p.name == "bActive" && p.value.is_boolean())
         })
-        .or_else(|| snapshot_after_scale.properties.iter().find(|p| p.value.is_boolean()));
+        .or_else(|| {
+            snapshot_after_scale
+                .properties
+                .iter()
+                .find(|p| p.value.is_boolean())
+        });
 
     if let Some(bool_property) = bool_property {
         let bool_property_name = bool_property.name.clone();
@@ -1962,11 +1965,7 @@ async fn engine_object_set_property_norveslib_contract() {
         set_bool_params.insert("value".to_owned(), expected_bool.clone());
         let set_bool_value = send_and_expect_result(
             &handle,
-            request_envelope(
-                "set-bool",
-                "object.setProperty",
-                Some(set_bool_params),
-            ),
+            request_envelope("set-bool", "object.setProperty", Some(set_bool_params)),
             "object.setProperty#bool",
         )
         .await;
@@ -2000,9 +1999,10 @@ async fn engine_object_set_property_norveslib_contract() {
             "object.getSnapshot#after-bool",
         )
         .await;
-        let snapshot_after_bool = parse_object_snapshot_result(&after_bool_value).unwrap_or_else(|e| {
-            panic!("[object.getSnapshot after bool] parse_object_snapshot_result failed: {e}")
-        });
+        let snapshot_after_bool =
+            parse_object_snapshot_result(&after_bool_value).unwrap_or_else(|e| {
+                panic!("[object.getSnapshot after bool] parse_object_snapshot_result failed: {e}")
+            });
         let bool_after = snapshot_after_bool
             .properties
             .iter()
