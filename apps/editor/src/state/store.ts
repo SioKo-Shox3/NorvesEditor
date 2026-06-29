@@ -29,7 +29,13 @@ import type {
   TypeDescriptor,
   ViewportThumbnail,
 } from '@norves/bridge-ui';
-import type { ConnectionStatePayload, WorkspacePayload } from '@norves/bridge-ui';
+import type {
+  AssetEntry,
+  AssetManifestPayload,
+  ConnectionStatePayload,
+  WorkspacePayload,
+} from '@norves/bridge-ui';
+export type { AssetEntry, AssetManifestPayload } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Derived connection status (UI layer concept)
@@ -61,12 +67,45 @@ export interface BackendError {
 }
 
 // -------------------------------------------------------------------------
+// Offline asset manifest helpers
+// -------------------------------------------------------------------------
+
+export function assetKeyForEntry(entry: Pick<AssetEntry, 'logicalPath' | 'variant'>): string {
+  return JSON.stringify([entry.logicalPath, entry.variant ?? null]);
+}
+
+export function findAssetEntryByKey(
+  manifest: AssetManifestPayload | undefined,
+  key: string | undefined,
+): AssetEntry | undefined {
+  if (manifest === undefined || key === undefined) {
+    return undefined;
+  }
+  return manifest.assets.find((entry) => assetKeyForEntry(entry) === key);
+}
+
+// -------------------------------------------------------------------------
 // Store state
 // -------------------------------------------------------------------------
 
 export interface BridgeState {
   /** Editor workspace root currently opened by the backend, independent of Bridge connection state. */
   workspace?: WorkspacePayload;
+  /**
+   * Offline asset manifest loaded from a workspace manifest.json via the
+   * backend filesystem command. Independent of Bridge connection state.
+   */
+  assetManifest?: AssetManifestPayload;
+  /** Selected asset key, derived from logicalPath + variant. */
+  selectedAssetKey?: string;
+  /**
+   * Last asset-manifest load/parse failure. Kept SEPARATE from `lastError`
+   * (which is shared with engine/workspace errors) so the Asset Browser shows
+   * only asset failures — including a failed *reload* while a previous manifest
+   * is still displayed — and never an unrelated Bridge error. Independent of
+   * Bridge connection state.
+   */
+  assetError?: BackendError;
   connection: {
     status: ConnectionStatus;
     sessionId?: string;
@@ -153,9 +192,11 @@ export interface BridgeState {
 
 export const INITIAL_STATE: BridgeState = {
   workspace: undefined,
+  assetManifest: undefined,
   connection: { status: 'disconnected' },
   logs: [],
   selectedObjectId: undefined,
+  selectedAssetKey: undefined,
 };
 
 // -------------------------------------------------------------------------
@@ -174,6 +215,11 @@ export type BridgeAction =
   | { type: 'workspaceOpened'; payload: WorkspacePayload }
   | { type: 'workspaceClosed' }
   | { type: 'workspaceError'; payload: { error: BackendError } }
+  | { type: 'assetManifestLoaded'; payload: AssetManifestPayload }
+  | { type: 'assetManifestCleared' }
+  | { type: 'assetSelected'; key: string | undefined }
+  | { type: 'assetManifestError'; payload: { error: BackendError } }
+  | { type: 'assetErrorDismissed' }
   | { type: 'connectionStateChanged'; payload: ConnectionStatePayload }
   | { type: 'statusUpdated'; payload: GetStatusResult }
   | { type: 'logAppended'; payload: LogMessageEvent; id: number }
@@ -312,11 +358,22 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     }
 
     case 'workspaceOpened': {
-      return { ...state, workspace: action.payload };
+      const workspaceChanged = state.workspace?.rootPath !== action.payload.rootPath;
+      return {
+        ...state,
+        workspace: action.payload,
+        assetManifest: workspaceChanged ? undefined : state.assetManifest,
+        selectedAssetKey: workspaceChanged ? undefined : state.selectedAssetKey,
+      };
     }
 
     case 'workspaceClosed': {
-      return { ...state, workspace: undefined };
+      return {
+        ...state,
+        workspace: undefined,
+        assetManifest: undefined,
+        selectedAssetKey: undefined,
+      };
     }
 
     case 'workspaceError': {
@@ -325,6 +382,43 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       // connection.status, or an invalid workspace path would wrongly show the
       // engine connection as errored and enable Reconnect.
       return { ...state, lastError: action.payload.error };
+    }
+
+    case 'assetManifestLoaded': {
+      const selectedStillExists =
+        findAssetEntryByKey(action.payload, state.selectedAssetKey) !== undefined;
+      return {
+        ...state,
+        assetManifest: action.payload,
+        selectedAssetKey: selectedStillExists ? state.selectedAssetKey : undefined,
+        // A successful load clears any prior asset error.
+        assetError: undefined,
+      };
+    }
+
+    case 'assetManifestCleared': {
+      return {
+        ...state,
+        assetManifest: undefined,
+        selectedAssetKey: undefined,
+        assetError: undefined,
+      };
+    }
+
+    case 'assetSelected': {
+      return { ...state, selectedAssetKey: action.key };
+    }
+
+    case 'assetManifestError': {
+      // Asset failures are editor-local (filesystem) and surface ONLY via the
+      // dedicated assetError field — never lastError or connection.status. This
+      // keeps a failed reload visible in the Asset Browser even while a prior
+      // manifest is still shown, without polluting engine/workspace error UI.
+      return { ...state, assetError: action.payload.error };
+    }
+
+    case 'assetErrorDismissed': {
+      return { ...state, assetError: undefined };
     }
 
     case 'connectionStateChanged': {

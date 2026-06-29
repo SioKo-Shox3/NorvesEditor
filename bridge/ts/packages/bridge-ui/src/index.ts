@@ -52,6 +52,7 @@ export {
   workspaceOpen,
   workspaceGet,
   workspaceClose,
+  assetReadManifest,
   type BridgeCommandName,
 } from './commands.js';
 export {
@@ -60,4 +61,9 @@ export {
 } from './events.js';
 
 // Re-export IPC contract types (P6).
-export type { ConnectionStatePayload, WorkspacePayload } from './ipc-types.js';
+export type {
+  AssetEntry,
+  AssetManifestPayload,
+  ConnectionStatePayload,
+  WorkspacePayload,
+} from './ipc-types.js';

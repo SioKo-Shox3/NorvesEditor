@@ -466,6 +466,12 @@ describe('AppLayout default layout (P6 + fix/default-layout)', () => {
     expect(currentApi.getPanel('sceneOutliner')).toBeTruthy();
   });
 
+  it('creates Asset Browser and Asset Inspector in the default layout', () => {
+    renderApp();
+    expect(currentApi.getPanel('assetBrowser')).toBeTruthy();
+    expect(currentApi.getPanel('assetInspector')).toBeTruthy();
+  });
+
   it('does NOT add Connection or Settings (they moved to their own windows in P6)', () => {
     renderApp();
     expect(currentApi.getPanel('connection')).toBeUndefined();
@@ -595,6 +601,10 @@ describe('AppLayout persistence (v4 + v1/v2/v3 cleanup)', () => {
     // fromJSON; ensureLogEdgeGroup then early-returns as an idempotent net.
     expect(currentApi.getEdgeGroup('bottom')).toBeTruthy();
     expect(currentApi.getPanel('log')).toBeTruthy();
+    // Phase B asset panels are added idempotently after restore, so the v4 key
+    // can remain active while old saved layouts are upgraded in place.
+    expect(currentApi.getPanel('assetBrowser')).toBeTruthy();
+    expect(currentApi.getPanel('assetInspector')).toBeTruthy();
   });
 
   it('preserves the saved collapsed/expanded drawer state across a save/restore round-trip', () => {

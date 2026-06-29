@@ -9,16 +9,17 @@
  *   |                                           | (~25% width,   |
  *   |          Game View                        | right column)  |
  *   |          (~75% width, centre / largest)   +----------------+
- *   |                                           | [ Inspector ]  |
- *   |                                           | (below Scene   |
- *   |                                           |  Outliner, on  |
- *   |                                           |  selection)    |
+ *   |                                           | Asset Browser  |
+ *   |                                           +----------------+
+ *   |                                           | Asset Inspector|
  *   +------------------------------------------+----------------+
  *   |  Log (bottom EdgeGroup drawer, collapsed by default)       |
  *   +------------------------------------------------------------+
  *
  *   - Game View is the centre/root panel (~75 % of the width).
  *   - Scene Outliner sits at the top of the right column (~25 %).
+ *   - Asset Browser and Asset Inspector sit below it for offline manifest
+ *     browsing (Phase B).
  *   - The Property Inspector (when an object is selected) is added BELOW the
  *     Scene Outliner — it no longer depends on a Connection/Settings group.
  *   - Log lives in a bottom EdgeGroup drawer, collapsed by default; the main
@@ -61,6 +62,8 @@ import { GameViewPanel }          from './GameViewPanel.js';
 import { LogPanel }               from './LogPanel.js';
 import { SceneOutlinerPanel }     from './SceneOutlinerPanel.js';
 import { PropertyInspectorPanel } from './PropertyInspectorPanel.js';
+import { AssetBrowserPanel }      from './AssetBrowserPanel.js';
+import { AssetInspectorPanel }    from './AssetInspectorPanel.js';
 import { LAYOUT_STORAGE_KEY, LEGACY_LAYOUT_STORAGE_KEYS } from './shell/layoutKey.js';
 import { useBridgeState } from '../state/BridgeContext.js';
 
@@ -72,6 +75,8 @@ import { useBridgeState } from '../state/BridgeContext.js';
 const PANEL_GAME_VIEW      = 'gameView';
 const PANEL_SCENE_OUTLINER = 'sceneOutliner';
 const PANEL_INSPECTOR      = 'propertyInspector';
+const PANEL_ASSET_BROWSER  = 'assetBrowser';
+const PANEL_ASSET_INSPECTOR = 'assetInspector';
 const PANEL_LOG            = 'log';
 
 /** Bottom EdgeGroup (Log drawer) position and options. */
@@ -94,6 +99,8 @@ const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelPro
   [PANEL_LOG]:            LogPanel,
   [PANEL_SCENE_OUTLINER]: SceneOutlinerPanel,
   [PANEL_INSPECTOR]:      PropertyInspectorPanel,
+  [PANEL_ASSET_BROWSER]:  AssetBrowserPanel,
+  [PANEL_ASSET_INSPECTOR]: AssetInspectorPanel,
 };
 
 // -------------------------------------------------------------------------
@@ -160,8 +167,46 @@ function buildDefaultLayout(api: DockviewApi): void {
     initialWidth: rightColumnWidth,
   });
 
-  // 3. Log: bottom EdgeGroup drawer, collapsed by default.
+  // 3. Right column lower panels: offline Asset Browser + read-only Inspector.
+  ensureAssetPanels(api);
+
+  // 4. Log: bottom EdgeGroup drawer, collapsed by default.
   ensureLogEdgeGroup(api);
+}
+
+// -------------------------------------------------------------------------
+// Asset panels
+// -------------------------------------------------------------------------
+
+function ensureAssetPanels(api: DockviewApi): void {
+  if (api.getPanel(PANEL_ASSET_BROWSER) === undefined) {
+    const outlinerPresent = api.getPanel(PANEL_SCENE_OUTLINER) !== undefined;
+    api.addPanel({
+      id: PANEL_ASSET_BROWSER,
+      component: PANEL_ASSET_BROWSER,
+      title: 'Asset Browser',
+      ...(outlinerPresent
+        ? { position: { direction: 'below', referencePanel: PANEL_SCENE_OUTLINER } }
+        : {}),
+      initialHeight: 260,
+    });
+  }
+
+  if (api.getPanel(PANEL_ASSET_INSPECTOR) === undefined) {
+    const browserPresent = api.getPanel(PANEL_ASSET_BROWSER) !== undefined;
+    const outlinerPresent = api.getPanel(PANEL_SCENE_OUTLINER) !== undefined;
+    api.addPanel({
+      id: PANEL_ASSET_INSPECTOR,
+      component: PANEL_ASSET_INSPECTOR,
+      title: 'Asset Inspector',
+      ...(browserPresent
+        ? { position: { direction: 'below', referencePanel: PANEL_ASSET_BROWSER } }
+        : outlinerPresent
+          ? { position: { direction: 'below', referencePanel: PANEL_SCENE_OUTLINER } }
+          : {}),
+      initialHeight: 220,
+    });
+  }
 }
 
 // -------------------------------------------------------------------------
@@ -375,6 +420,10 @@ export function AppLayout({ onLogToggleReady }: AppLayoutProps = {}): React.JSX.
       // persistence behaviour).
       ensureLogEdgeGroup(api);
     }
+    // Saved v4 layouts predate the asset panels. Add them idempotently so a
+    // restored layout still exposes the Phase B browser/inspector without
+    // forcing a persistence-key bump.
+    ensureAssetPanels(api);
 
     // Reconcile the Inspector with the live selection (handles a restored
     // layout that included/omitted the Inspector while the selection differs).

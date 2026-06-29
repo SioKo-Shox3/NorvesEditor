@@ -5,6 +5,7 @@ import {
   workspaceOpen,
   workspaceGet,
   workspaceClose,
+  assetReadManifest,
 } from '../index.js';
 
 // Mock @tauri-apps/api/core and @tauri-apps/api/event before the module is
@@ -82,6 +83,29 @@ describe('workspace command wrappers', () => {
     await workspaceClose();
 
     expect(tauriCore.invoke).toHaveBeenCalledWith('workspace_close');
+  });
+});
+
+describe('asset manifest command wrapper', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('assetReadManifest invokes the manifest reader command with manifestPath', async () => {
+    const payload = {
+      version: 1,
+      manifestPath: 'C:/Project/manifest.json',
+      assets: [],
+    };
+    (tauriCore.invoke as Mock).mockResolvedValue(payload);
+
+    const result = await assetReadManifest('C:/Project/manifest.json');
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith(
+      'asset_read_manifest',
+      { manifestPath: 'C:/Project/manifest.json' },
+    );
+    expect(result).toEqual(payload);
   });
 });
 
