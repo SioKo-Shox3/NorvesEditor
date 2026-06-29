@@ -417,3 +417,127 @@ describe('useBridgeActions — getSchemaSnapshot', () => {
     expect(result.current.state.objectUnsupported).toBe(true);
   });
 });
+
+// -------------------------------------------------------------------------
+// (g) workspace helpers — invoke + store updates
+// -------------------------------------------------------------------------
+
+describe('useBridgeActions — workspace helpers', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('openWorkspace() invokes workspace_open and stores the returned workspace', async () => {
+    const workspace = {
+      rootPath: 'C:/Project',
+      assetsRoot: 'C:/Project/Assets',
+      name: 'Project',
+    };
+    (tauriCore.invoke as Mock).mockResolvedValue(workspace);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.actions.openWorkspace('C:/Project')).resolves.toBeUndefined();
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('workspace_open', { rootPath: 'C:/Project' });
+    expect(result.current.state.workspace).toEqual(workspace);
+  });
+
+  it('getWorkspace() clears workspace when backend returns null', async () => {
+    const workspace = {
+      rootPath: 'C:/Project',
+      assetsRoot: 'C:/Project/Assets',
+      name: 'Project',
+    };
+    (tauriCore.invoke as Mock)
+      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce(null);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await result.current.actions.openWorkspace('C:/Project');
+    });
+    expect(result.current.state.workspace).toEqual(workspace);
+
+    await act(async () => {
+      await result.current.actions.getWorkspace();
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('workspace_get');
+    expect(result.current.state.workspace).toBeUndefined();
+  });
+
+  it('closeWorkspace() invokes workspace_close and clears the store', async () => {
+    const workspace = {
+      rootPath: 'C:/Project',
+      assetsRoot: 'C:/Project/Assets',
+      name: 'Project',
+    };
+    (tauriCore.invoke as Mock)
+      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce(undefined);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await result.current.actions.openWorkspace('C:/Project');
+    });
+    expect(result.current.state.workspace).toEqual(workspace);
+
+    await act(async () => {
+      await result.current.actions.closeWorkspace();
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('workspace_close');
+    expect(result.current.state.workspace).toBeUndefined();
+  });
+
+  it('openWorkspace() rejection maps to lastError without throwing', async () => {
+    const fakeErr = { kind: 'process', message: 'workspace Assets directory is missing' };
+    (tauriCore.invoke as Mock).mockRejectedValue(fakeErr);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.actions.openWorkspace('C:/Project')).resolves.toBeUndefined();
+    });
+
+    expect(result.current.state.lastError).toMatchObject({
+      kind: 'process',
+      message: 'workspace Assets directory is missing',
+    });
+    // Workspace errors are editor-local and MUST NOT flip the Bridge connection
+    // status to 'error' (workspace is independent of the engine connection).
+    expect(result.current.state.connection.status).toBe('disconnected');
+  });
+});

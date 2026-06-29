@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
-import { invokeCommand, subscribeEvent } from '../index.js';
+import {
+  invokeCommand,
+  subscribeEvent,
+  workspaceOpen,
+  workspaceGet,
+  workspaceClose,
+} from '../index.js';
 
 // Mock @tauri-apps/api/core and @tauri-apps/api/event before the module is
 // imported so vitest intercepts the ESM imports.
@@ -39,6 +45,43 @@ describe('invokeCommand', () => {
     await invokeCommand('engine_get_status');
 
     expect(tauriCore.invoke).toHaveBeenCalledWith('engine_get_status', undefined);
+  });
+});
+
+describe('workspace command wrappers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('workspaceOpen invokes the workspace open command with rootPath', async () => {
+    const payload = {
+      rootPath: 'C:/Project',
+      assetsRoot: 'C:/Project/Assets',
+      name: 'Project',
+    };
+    (tauriCore.invoke as Mock).mockResolvedValue(payload);
+
+    const result = await workspaceOpen('C:/Project');
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('workspace_open', { rootPath: 'C:/Project' });
+    expect(result).toEqual(payload);
+  });
+
+  it('workspaceGet invokes the workspace get command without args', async () => {
+    (tauriCore.invoke as Mock).mockResolvedValue(null);
+
+    const result = await workspaceGet();
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('workspace_get');
+    expect(result).toBeNull();
+  });
+
+  it('workspaceClose invokes the workspace close command without args', async () => {
+    (tauriCore.invoke as Mock).mockResolvedValue(undefined);
+
+    await workspaceClose();
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('workspace_close');
   });
 });
 

@@ -2,6 +2,9 @@
 // apps/editor/src-tauri/src/protocol_names.rs -- verified by
 // scripts/check-protocol-names.mjs.
 
+import { invoke } from '@tauri-apps/api/core';
+import type { WorkspacePayload } from './ipc-types.js';
+
 /**
  * Tauri command name constants.
  *
@@ -28,7 +31,22 @@ export const BRIDGE_COMMANDS = {
   focusViewport: 'focus_viewport',
   launchEngine: 'launch_engine',
   stopEngine: 'stop_engine',
+  workspaceOpen: 'workspace_open',
+  workspaceGet: 'workspace_get',
+  workspaceClose: 'workspace_close',
 } as const;
 
 /** Union of all valid Tauri command name strings. */
 export type BridgeCommandName = (typeof BRIDGE_COMMANDS)[keyof typeof BRIDGE_COMMANDS];
+
+export async function workspaceOpen(rootPath: string): Promise<WorkspacePayload> {
+  return invoke<WorkspacePayload>(BRIDGE_COMMANDS.workspaceOpen, { rootPath });
+}
+
+export async function workspaceGet(): Promise<WorkspacePayload | null> {
+  return invoke<WorkspacePayload | null>(BRIDGE_COMMANDS.workspaceGet);
+}
+
+export async function workspaceClose(): Promise<void> {
+  await invoke<void>(BRIDGE_COMMANDS.workspaceClose);
+}

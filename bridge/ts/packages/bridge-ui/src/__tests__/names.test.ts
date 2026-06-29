@@ -48,6 +48,15 @@ describe('BRIDGE_COMMANDS literal values', () => {
   it('stopEngine = stop_engine', () => {
     expect(BRIDGE_COMMANDS.stopEngine).toBe('stop_engine');
   });
+  it('workspaceOpen = workspace_open', () => {
+    expect(BRIDGE_COMMANDS.workspaceOpen).toBe('workspace_open');
+  });
+  it('workspaceGet = workspace_get', () => {
+    expect(BRIDGE_COMMANDS.workspaceGet).toBe('workspace_get');
+  });
+  it('workspaceClose = workspace_close', () => {
+    expect(BRIDGE_COMMANDS.workspaceClose).toBe('workspace_close');
+  });
 });
 
 describe('BRIDGE_EVENTS literal values', () => {

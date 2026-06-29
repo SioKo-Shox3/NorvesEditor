@@ -3,8 +3,8 @@
 //! Where the backend forwards a raw engine `result` / event `params`
 //! ([`serde_json::Value`]), no struct exists here on purpose — re-modeling would
 //! risk drift from the wire schema. The only synthesized payloads are the
-//! connection-state event and the connect command's return value, both defined
-//! here in camelCase to match the TS convention.
+//! connection-state event / connect command return value and workspace payloads,
+//! both defined here in camelCase to match the TS convention.
 
 use serde::Serialize;
 
@@ -31,6 +31,16 @@ pub struct ConnectionStatePayload {
     /// Human-readable reason for a disconnect (disconnected only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Payload returned by workspace management commands.
+// Phase A: mirror this shape in bridge-ui/src/ipc-types.ts.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePayload {
+    pub root_path: String,
+    pub assets_root: String,
+    pub name: String,
 }
 
 impl ConnectionStatePayload {
@@ -102,6 +112,24 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&EngineState::Ready).expect("serializes"),
             "\"ready\""
+        );
+    }
+
+    #[test]
+    fn workspace_payload_serializes_camel_case() {
+        let payload = WorkspacePayload {
+            root_path: "C:/Project".to_owned(),
+            assets_root: "C:/Project/Assets".to_owned(),
+            name: "Project".to_owned(),
+        };
+        let json = serde_json::to_value(&payload).expect("serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "rootPath": "C:/Project",
+                "assetsRoot": "C:/Project/Assets",
+                "name": "Project"
+            })
         );
     }
 }

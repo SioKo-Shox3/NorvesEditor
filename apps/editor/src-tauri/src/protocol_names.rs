@@ -32,6 +32,9 @@ pub mod commands {
     pub const FOCUS_VIEWPORT: &str = "focus_viewport";
     pub const LAUNCH_ENGINE: &str = "launch_engine";
     pub const STOP_ENGINE: &str = "stop_engine";
+    pub const WORKSPACE_OPEN: &str = "workspace_open";
+    pub const WORKSPACE_GET: &str = "workspace_get";
+    pub const WORKSPACE_CLOSE: &str = "workspace_close";
 }
 
 /// Tauri event names (backend -> frontend).
@@ -135,6 +138,21 @@ mod tests {
         assert_eq!(commands::STOP_ENGINE, "stop_engine");
     }
 
+    #[test]
+    fn command_workspace_open() {
+        assert_eq!(commands::WORKSPACE_OPEN, "workspace_open");
+    }
+
+    #[test]
+    fn command_workspace_get() {
+        assert_eq!(commands::WORKSPACE_GET, "workspace_get");
+    }
+
+    #[test]
+    fn command_workspace_close() {
+        assert_eq!(commands::WORKSPACE_CLOSE, "workspace_close");
+    }
+
     // -----------------------------------------------------------------------
     // Event literal assertions
     // -----------------------------------------------------------------------
@@ -225,6 +243,9 @@ mod tests {
             commands::FOCUS_VIEWPORT,
             commands::LAUNCH_ENGINE,
             commands::STOP_ENGINE,
+            commands::WORKSPACE_OPEN,
+            commands::WORKSPACE_GET,
+            commands::WORKSPACE_CLOSE,
         ];
         let mut sorted = all;
         sorted.sort_unstable();
