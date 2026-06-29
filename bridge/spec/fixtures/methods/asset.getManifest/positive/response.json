@@ -1,0 +1,27 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "response",
+  "id": "req-84",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "version": 1,
+    "entries": [
+      {
+        "logicalPath": "textures/hero.png",
+        "kind": "texture",
+        "variant": "default",
+        "format": "png",
+        "sourceHash": "source-hash",
+        "cookedPackage": "packs/textures.ncp",
+        "entryName": "textures/hero.png",
+        "entryType": "texture",
+        "cookedHash": "cooked-hash",
+        "cookedVersion": 1
+      }
+    ],
+    "totalCount": 1,
+    "page": 0,
+    "pageSize": 50
+  }
+}

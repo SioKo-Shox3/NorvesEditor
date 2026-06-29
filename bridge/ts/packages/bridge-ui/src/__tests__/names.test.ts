@@ -60,6 +60,12 @@ describe('BRIDGE_COMMANDS literal values', () => {
   it('assetReadManifest = asset_read_manifest', () => {
     expect(BRIDGE_COMMANDS.assetReadManifest).toBe('asset_read_manifest');
   });
+  it('assetResolve = asset_resolve', () => {
+    expect(BRIDGE_COMMANDS.assetResolve).toBe('asset_resolve');
+  });
+  it('assetGetManifest = asset_get_manifest', () => {
+    expect(BRIDGE_COMMANDS.assetGetManifest).toBe('asset_get_manifest');
+  });
 });
 
 describe('BRIDGE_EVENTS literal values', () => {

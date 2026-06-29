@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "request",
+  "id": "req-81",
+  "method": "asset.resolve",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "kind": "texture"
+  }
+}

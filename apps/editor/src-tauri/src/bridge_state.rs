@@ -750,6 +750,76 @@ pub async fn viewport_get_thumbnail(
     Ok(value)
 }
 
+/// `asset_resolve`: `asset.resolve` for `logical_path` plus optional
+/// `kind`/`variant` hints. Returns the raw wire-shaped `result` Value (UI types
+/// it as `AssetResolveResult`).
+///
+/// Validated with `parse_asset_resolve_result` so a malformed result surfaces
+/// as a clean backend error rather than being forwarded; the ORIGINAL wire
+/// Value is still returned. The result is resolution metadata only — asset bytes
+/// and live engine memory never cross this transport boundary.
+#[tauri::command]
+pub async fn asset_resolve(
+    state: State<'_, BridgeState>,
+    logical_path: String,
+    kind: Option<String>,
+    variant: Option<String>,
+) -> Result<Value, BackendError> {
+    let mut params = serde_json::Map::new();
+    params.insert("logicalPath".to_owned(), Value::String(logical_path));
+    if let Some(kind) = kind {
+        params.insert("kind".to_owned(), Value::String(kind));
+    }
+    if let Some(variant) = variant {
+        params.insert("variant".to_owned(), Value::String(variant));
+    }
+
+    let value = send_method(state.inner(), "asset.resolve", Some(params)).await?;
+    // Validate shape (drift guard) but forward the original wire Value.
+    norves_bridge_editor_client::parse_asset_resolve_result(&value).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed asset.resolve result: {err}"),
+        }
+    })?;
+    Ok(value)
+}
+
+/// `asset_get_manifest`: `asset.getManifest` with optional filter/page/pageSize.
+/// Returns the raw wire-shaped `result` Value (UI types it as
+/// `AssetManifestResult`).
+///
+/// Validated with `parse_asset_manifest_result` so a malformed result surfaces
+/// as a clean backend error rather than being forwarded; the ORIGINAL wire
+/// Value is still returned. Entries are manifest DTO snapshots, never live
+/// engine storage.
+#[tauri::command]
+pub async fn asset_get_manifest(
+    state: State<'_, BridgeState>,
+    filter: Option<String>,
+    page: Option<i64>,
+    page_size: Option<i64>,
+) -> Result<Value, BackendError> {
+    let mut params = serde_json::Map::new();
+    if let Some(filter) = filter {
+        params.insert("filter".to_owned(), Value::String(filter));
+    }
+    if let Some(page) = page {
+        params.insert("page".to_owned(), Value::from(page));
+    }
+    if let Some(page_size) = page_size {
+        params.insert("pageSize".to_owned(), Value::from(page_size));
+    }
+
+    let value = send_method(state.inner(), "asset.getManifest", Some(params)).await?;
+    // Validate shape (drift guard) but forward the original wire Value.
+    norves_bridge_editor_client::parse_asset_manifest_result(&value).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed asset.getManifest result: {err}"),
+        }
+    })?;
+    Ok(value)
+}
+
 /// `runtime_play`: `runtime.play` with an empty params object. Returns the raw
 /// result Value.
 #[tauri::command]
@@ -953,6 +1023,27 @@ mod tests {
         assert!(matches!(result, Err(BackendError::NotConnected)));
     }
 
+    /// The asset read commands (via `send_method`) must also fail with
+    /// `NotConnected` when no live connection exists, never panicking or
+    /// hanging. The connected round-trip is covered by conformance / process e2e
+    /// suites once an engine implements the optional methods.
+    #[tokio::test]
+    async fn asset_methods_when_disconnected_are_not_connected() {
+        let state = BridgeState::default();
+
+        let mut resolve_params = serde_json::Map::new();
+        resolve_params.insert(
+            "logicalPath".to_owned(),
+            Value::String("textures/hero.png".to_owned()),
+        );
+        let resolve_result = send_method(&state, "asset.resolve", Some(resolve_params)).await;
+        assert!(matches!(resolve_result, Err(BackendError::NotConnected)));
+
+        let manifest_result =
+            send_method(&state, "asset.getManifest", Some(serde_json::Map::new())).await;
+        assert!(matches!(manifest_result, Err(BackendError::NotConnected)));
+    }
+
     /// `viewport_get_thumbnail` includes only the dimension keys that were
     /// supplied: with both `maxWidth`/`maxHeight` present they appear; this is a
     /// pure shaping check on `build_request` so optional params are not silently
@@ -994,6 +1085,71 @@ mod tests {
                 params: Some(map), ..
             } => assert!(map.is_empty()),
             _ => panic!("expected a request envelope with empty params"),
+        }
+    }
+
+    /// `asset.resolve` includes the required logicalPath and only the optional
+    /// hints that were supplied.
+    #[test]
+    fn asset_resolve_shapes_optional_hints() {
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "logicalPath".to_owned(),
+            Value::String("textures/hero.png".to_owned()),
+        );
+        params.insert("kind".to_owned(), Value::String("texture".to_owned()));
+        let env = build_request(
+            CorrelationId::try_from("req-1".to_owned()).expect("valid id"),
+            "asset.resolve",
+            Some(params),
+        )
+        .expect("builds");
+        match env {
+            ValidatedEnvelope::Request {
+                method,
+                params: Some(map),
+                ..
+            } => {
+                assert_eq!(method.as_str(), "asset.resolve");
+                assert_eq!(
+                    map.get("logicalPath"),
+                    Some(&Value::String("textures/hero.png".to_owned()))
+                );
+                assert_eq!(map.get("kind"), Some(&Value::String("texture".to_owned())));
+                assert_eq!(map.get("variant"), None);
+            }
+            _ => panic!("expected a request envelope with params"),
+        }
+    }
+
+    /// `asset.getManifest` includes only the filter/page fields that were
+    /// supplied.
+    #[test]
+    fn asset_get_manifest_shapes_optional_bounds() {
+        let mut params = serde_json::Map::new();
+        params.insert("filter".to_owned(), Value::String("texture".to_owned()));
+        params.insert("pageSize".to_owned(), Value::from(50));
+        let env = build_request(
+            CorrelationId::try_from("req-1".to_owned()).expect("valid id"),
+            "asset.getManifest",
+            Some(params),
+        )
+        .expect("builds");
+        match env {
+            ValidatedEnvelope::Request {
+                method,
+                params: Some(map),
+                ..
+            } => {
+                assert_eq!(method.as_str(), "asset.getManifest");
+                assert_eq!(
+                    map.get("filter"),
+                    Some(&Value::String("texture".to_owned()))
+                );
+                assert_eq!(map.get("page"), None);
+                assert_eq!(map.get("pageSize"), Some(&Value::from(50)));
+            }
+            _ => panic!("expected a request envelope with params"),
         }
     }
 

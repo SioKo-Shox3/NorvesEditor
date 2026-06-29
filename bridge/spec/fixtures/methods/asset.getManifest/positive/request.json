@@ -1,0 +1,13 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "request",
+  "id": "req-84",
+  "method": "asset.getManifest",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "filter": "texture",
+    "page": 0,
+    "pageSize": 50
+  }
+}

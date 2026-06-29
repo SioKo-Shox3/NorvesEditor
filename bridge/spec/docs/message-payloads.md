@@ -44,6 +44,7 @@ convention in `AGENTS.md` / `CLAUDE.md`.
 | `propertyBag` | array of `propertyEntry` (may be empty). |
 | `propertyDefinition` | `{ name, valueType }` schema property definition. |
 | `typeDescriptor` | `{ typeName, kind?, properties? }` generic type description. |
+| `assetEntry` | `{ logicalPath, kind, variant?, format?, sourceHash?, cookedPackage?, entryName?, entryType?, cookedHash?, cookedVersion? }` asset manifest entry. |
 | `sceneNode` | recursive `{ id, name?, kind?, children? }` scene tree node. |
 
 ## Methods
@@ -263,6 +264,59 @@ generic type descriptors, not a reference into engine live memory. Schemas:
 | field | type | required | description |
 | --- | --- | --- | --- |
 | `types` | array of `typeDescriptor` | yes | generic type descriptors the engine exposes; may be empty. |
+
+### asset.resolve
+
+Resolve one logical asset path and return health/source metadata. The result is a
+DTO copy of resolution metadata, not asset bytes or a reference into engine live
+memory/storage. Schemas:
+[params](../schema/methods/asset.resolve.params.schema.json),
+[result](../schema/methods/asset.resolve.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `logicalPath` | string | yes | logical asset path to resolve. |
+| `kind` | string | no | optional generic asset kind hint. |
+| `variant` | string | no | optional asset variant hint. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `status` | `successCooked` \| `successLoose` \| `invalidRequest` \| `invalidManifest` \| `looseReadFailed` \| `cookedPackageReadFailed` \| `cookedPackageParseFailed` \| `cookedEntryMissing` \| `cookedEntryHashMismatch` | yes | resolution outcome. |
+| `source` | `none` \| `cooked` \| `loose` \| `debugLooseFallback` | yes | source used for the resolved asset, or `none` on failure. |
+| `normalizedLogicalPath` | string | yes | engine-normalized logical path. |
+| `requiresExplicitLog` | boolean | no | whether the editor should surface the outcome explicitly in logs. |
+| `fallbackAction` | string | no | engine-selected fallback action label. |
+| `failureKind` | string | no | generic failure classification. |
+| `reason` | string | no | human-readable reason for failure or fallback. |
+
+### asset.getManifest
+
+Snapshot of the engine's currently loaded asset manifest. Entries are DTO copies,
+not references into engine manifest storage. Schemas:
+[params](../schema/methods/asset.getManifest.params.schema.json),
+[result](../schema/methods/asset.getManifest.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `filter` | string | no | optional engine-defined filter string. |
+| `page` | integer | no | optional result page index. |
+| `pageSize` | integer | no | optional maximum entries to return. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `version` | string | yes | manifest schema/version string reported by the engine. |
+| `entries` | array of `assetEntry` | yes | entries in this page/snapshot. |
+| `totalCount` | integer | yes | total matching entries before pagination. |
+| `page` | integer | no | page index the engine returned. |
+| `pageSize` | integer | no | maximum entries in this page. |
 
 ## Events
 

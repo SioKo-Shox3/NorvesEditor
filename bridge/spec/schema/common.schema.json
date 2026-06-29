@@ -137,6 +137,55 @@
         }
       }
     },
+    "assetEntry": {
+      "description": "Generic asset manifest entry. A serialized DTO copy, not a reference into engine live memory.",
+      "type": "object",
+      "required": ["logicalPath", "kind"],
+      "additionalProperties": false,
+      "properties": {
+        "logicalPath": {
+          "description": "Logical asset path.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Generic asset kind.",
+          "type": "string"
+        },
+        "variant": {
+          "description": "Optional asset variant.",
+          "type": "string"
+        },
+        "format": {
+          "description": "Optional source/cooked format label.",
+          "type": "string"
+        },
+        "sourceHash": {
+          "description": "Optional source content hash.",
+          "type": "string"
+        },
+        "cookedPackage": {
+          "description": "Optional cooked package path/name.",
+          "type": "string"
+        },
+        "entryName": {
+          "description": "Optional cooked package entry name.",
+          "type": "string"
+        },
+        "entryType": {
+          "description": "Optional cooked package entry type.",
+          "type": "string"
+        },
+        "cookedHash": {
+          "description": "Optional cooked content hash.",
+          "type": "string"
+        },
+        "cookedVersion": {
+          "description": "Optional cooked artifact version (non-negative integer; matches NorvesLib uint32 and the offline manifest DTO).",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
     "sceneNode": {
       "description": "Recursive generic node in a scene tree snapshot. A serialized DTO copy, not a live engine pointer. children self-references this $def.",
       "type": "object",

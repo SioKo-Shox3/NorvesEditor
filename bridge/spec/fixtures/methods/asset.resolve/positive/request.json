@@ -1,0 +1,13 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "request",
+  "id": "req-80",
+  "method": "asset.resolve",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "logicalPath": "textures/hero.png",
+    "kind": "texture",
+    "variant": "default"
+  }
+}

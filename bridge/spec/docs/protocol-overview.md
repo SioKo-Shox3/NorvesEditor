@@ -76,6 +76,8 @@ scene.getTree
 object.getSnapshot
 object.setProperty
 schema.getSnapshot
+asset.resolve
+asset.getManifest
 ```
 
 Events:
@@ -97,6 +99,11 @@ Scene, object, and schema methods (`scene.getTree`, `object.getSnapshot`,
 `object.setProperty`, `schema.getSnapshot`) are added in phase C4. They carry
 serialized snapshots/DTOs only — never references into engine live memory (see
 [`docs/memory-buffer-policy.md`](../../../docs/memory-buffer-policy.md)).
+
+Asset read methods (`asset.resolve`, `asset.getManifest`) are additive optional
+methods in protocol **0.2**. They carry resolution health and manifest DTO
+snapshots only — never asset bytes, package buffers, or references into loaded
+engine memory/storage — and are advertised by the `asset.read` capability token.
 
 The live-update events `scene.treeChanged` and `object.changed` are added in
 protocol **0.2** (additive). They are engine-wire events that push scene/object

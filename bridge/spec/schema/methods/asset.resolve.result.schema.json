@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/asset.resolve.result.schema.json",
+  "title": "asset.resolve response result",
+  "description": "Result of resolving one logical asset path. A DTO copy of resolution metadata, never a reference into engine live memory.",
+  "type": "object",
+  "required": ["status", "source", "normalizedLogicalPath"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "description": "Resolution outcome. Mirrors the full AssetResolveStatus set used by the reference engine adapter.",
+      "type": "string",
+      "enum": [
+        "successCooked",
+        "successLoose",
+        "invalidRequest",
+        "invalidManifest",
+        "looseReadFailed",
+        "cookedPackageReadFailed",
+        "cookedPackageParseFailed",
+        "cookedEntryMissing",
+        "cookedEntryHashMismatch"
+      ]
+    },
+    "source": {
+      "description": "Where the resolved asset bytes came from, or none on failure.",
+      "type": "string",
+      "enum": ["none", "cooked", "loose", "debugLooseFallback"]
+    },
+    "normalizedLogicalPath": {
+      "description": "Engine-normalized logical path corresponding to the request.",
+      "type": "string"
+    },
+    "requiresExplicitLog": {
+      "description": "Whether this outcome should be surfaced explicitly in editor logs.",
+      "type": "boolean"
+    },
+    "fallbackAction": {
+      "description": "Optional engine-selected fallback action label.",
+      "type": "string"
+    },
+    "failureKind": {
+      "description": "Optional generic failure classification.",
+      "type": "string"
+    },
+    "reason": {
+      "description": "Optional human-readable reason for failure or fallback.",
+      "type": "string"
+    }
+  }
+}
