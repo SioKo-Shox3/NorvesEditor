@@ -77,7 +77,7 @@ describe('SecondaryWindowRoot routed panel', () => {
     // The Connection panel has a "Bridge port" label unique to it.
     expect(document.body.textContent).toContain('Bridge port');
     // Confirm the Settings panel is not rendered.
-    expect(document.body.textContent).not.toContain('Editor settings are not yet available');
+    expect(document.body.textContent).not.toContain('Workspace root');
   });
 
   it("renders the Settings panel for target='settings'", async () => {
@@ -86,7 +86,7 @@ describe('SecondaryWindowRoot routed panel', () => {
       await Promise.resolve();
     });
     // The Settings panel body text is unique to it (stable across layout changes).
-    expect(document.body.textContent).toContain('Editor settings are not yet available');
+    expect(document.body.textContent).toContain('Workspace root');
     // Confirm the Connection panel is not rendered.
     expect(document.body.textContent).not.toContain('Bridge port');
   });

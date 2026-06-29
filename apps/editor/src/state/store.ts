@@ -29,7 +29,7 @@ import type {
   TypeDescriptor,
   ViewportThumbnail,
 } from '@norves/bridge-ui';
-import type { ConnectionStatePayload } from '@norves/bridge-ui';
+import type { ConnectionStatePayload, WorkspacePayload } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Derived connection status (UI layer concept)
@@ -65,6 +65,8 @@ export interface BackendError {
 // -------------------------------------------------------------------------
 
 export interface BridgeState {
+  /** Editor workspace root currently opened by the backend, independent of Bridge connection state. */
+  workspace?: WorkspacePayload;
   connection: {
     status: ConnectionStatus;
     sessionId?: string;
@@ -150,6 +152,7 @@ export interface BridgeState {
 }
 
 export const INITIAL_STATE: BridgeState = {
+  workspace: undefined,
   connection: { status: 'disconnected' },
   logs: [],
   selectedObjectId: undefined,
@@ -168,6 +171,9 @@ const MAX_LOG_ENTRIES = 1000;
 export type BridgeAction =
   | { type: 'commandPending' }
   | { type: 'commandSettled' }
+  | { type: 'workspaceOpened'; payload: WorkspacePayload }
+  | { type: 'workspaceClosed' }
+  | { type: 'workspaceError'; payload: { error: BackendError } }
   | { type: 'connectionStateChanged'; payload: ConnectionStatePayload }
   | { type: 'statusUpdated'; payload: GetStatusResult }
   | { type: 'logAppended'; payload: LogMessageEvent; id: number }
@@ -303,6 +309,22 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       // commandSettled is used to roll back optimistic 'connecting' status
       // when a command returns synchronously (connection-state event takes over).
       return state;
+    }
+
+    case 'workspaceOpened': {
+      return { ...state, workspace: action.payload };
+    }
+
+    case 'workspaceClosed': {
+      return { ...state, workspace: undefined };
+    }
+
+    case 'workspaceError': {
+      // Workspace failures are editor-local (filesystem) state, independent of
+      // the Bridge connection. Surface them via lastError ONLY — never flip
+      // connection.status, or an invalid workspace path would wrongly show the
+      // engine connection as errored and enable Reconnect.
+      return { ...state, lastError: action.payload.error };
     }
 
     case 'connectionStateChanged': {

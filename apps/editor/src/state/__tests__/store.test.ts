@@ -19,6 +19,66 @@ function applyAction(action: BridgeAction, state: BridgeState = INITIAL_STATE): 
 }
 
 // -------------------------------------------------------------------------
+// workspaceOpened / workspaceClosed
+// -------------------------------------------------------------------------
+
+describe('workspaceOpened / workspaceClosed', () => {
+  it('stores the opened workspace payload', () => {
+    const workspace = {
+      rootPath: 'C:/Project',
+      assetsRoot: 'C:/Project/Assets',
+      name: 'Project',
+    };
+    const next = applyAction({ type: 'workspaceOpened', payload: workspace });
+    expect(next.workspace).toEqual(workspace);
+  });
+
+  it('clears the workspace', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      workspace: {
+        rootPath: 'C:/Project',
+        assetsRoot: 'C:/Project/Assets',
+        name: 'Project',
+      },
+    };
+    const next = applyAction({ type: 'workspaceClosed' }, state);
+    expect(next.workspace).toBeUndefined();
+  });
+
+  it('does not clear workspace on bridge disconnect', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      workspace: {
+        rootPath: 'C:/Project',
+        assetsRoot: 'C:/Project/Assets',
+        name: 'Project',
+      },
+      connection: { status: 'connected' },
+    };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: false, reason: 'closed' } },
+      state,
+    );
+    expect(next.workspace).toEqual(state.workspace);
+  });
+
+  it('workspaceError sets lastError without touching connection status', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected', sessionId: 's1' },
+    };
+    const next = applyAction(
+      { type: 'workspaceError', payload: { error: { kind: 'process', message: 'Assets missing' } } },
+      state,
+    );
+    expect(next.lastError).toEqual({ kind: 'process', message: 'Assets missing' });
+    // The Bridge connection is independent of workspace failures.
+    expect(next.connection).toEqual(state.connection);
+  });
+});
+
+// -------------------------------------------------------------------------
 // connectionStateChanged
 // -------------------------------------------------------------------------
 

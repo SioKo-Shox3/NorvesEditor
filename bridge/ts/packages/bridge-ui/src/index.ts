@@ -49,6 +49,9 @@ export type * from '@norves/bridge-types';
 // Re-export IPC name constants and derived types (P3).
 export {
   BRIDGE_COMMANDS,
+  workspaceOpen,
+  workspaceGet,
+  workspaceClose,
   type BridgeCommandName,
 } from './commands.js';
 export {
@@ -57,4 +60,4 @@ export {
 } from './events.js';
 
 // Re-export IPC contract types (P6).
-export type { ConnectionStatePayload } from './ipc-types.js';
+export type { ConnectionStatePayload, WorkspacePayload } from './ipc-types.js';

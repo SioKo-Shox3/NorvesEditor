@@ -22,10 +22,14 @@ import {
   subscribeEvent,
   BRIDGE_COMMANDS,
   BRIDGE_EVENTS,
+  workspaceOpen,
+  workspaceGet,
+  workspaceClose,
   type UnlistenFn,
 } from '@norves/bridge-ui';
 import type {
   ConnectionStatePayload,
+  WorkspacePayload,
 } from '@norves/bridge-ui';
 import type {
   EngineStatusChangedEvent,
@@ -271,6 +275,9 @@ export type ThumbnailPullResult = 'ok' | 'unsupported' | 'error';
 // -------------------------------------------------------------------------
 
 export interface BridgeActions {
+  openWorkspace: (rootPath: string) => Promise<void>;
+  getWorkspace: () => Promise<void>;
+  closeWorkspace: () => Promise<void>;
   connect: (port: number) => Promise<void>;
   disconnect: () => Promise<void>;
   reconnect: () => Promise<void>;
@@ -346,6 +353,40 @@ export interface BridgeActions {
  */
 export function useBridgeActions(): BridgeActions {
   const dispatch = useBridgeDispatch();
+
+  const openWorkspace = useCallback(async (rootPath: string): Promise<void> => {
+    try {
+      const result = await workspaceOpen(rootPath);
+      dispatch({ type: 'workspaceOpened', payload: result });
+    } catch (err: unknown) {
+      const { kind, message } = extractBackendError(err);
+      dispatch({ type: 'workspaceError', payload: { error: { kind, message } } });
+    }
+  }, [dispatch]);
+
+  const getWorkspace = useCallback(async (): Promise<void> => {
+    try {
+      const result: WorkspacePayload | null = await workspaceGet();
+      if (result === null || result === undefined) {
+        dispatch({ type: 'workspaceClosed' });
+      } else {
+        dispatch({ type: 'workspaceOpened', payload: result });
+      }
+    } catch (err: unknown) {
+      const { kind, message } = extractBackendError(err);
+      dispatch({ type: 'workspaceError', payload: { error: { kind, message } } });
+    }
+  }, [dispatch]);
+
+  const closeWorkspace = useCallback(async (): Promise<void> => {
+    try {
+      await workspaceClose();
+      dispatch({ type: 'workspaceClosed' });
+    } catch (err: unknown) {
+      const { kind, message } = extractBackendError(err);
+      dispatch({ type: 'workspaceError', payload: { error: { kind, message } } });
+    }
+  }, [dispatch]);
 
   const connect = useCallback(async (port: number): Promise<void> => {
     dispatch({ type: 'commandPending' });
@@ -656,5 +697,26 @@ export function useBridgeActions(): BridgeActions {
     dispatch({ type: 'objectSelected', id });
   }, [dispatch]);
 
-  return { connect, disconnect, reconnect, getStatus, getSceneTree, getObjectSnapshot, getSchemaSnapshot, setObjectProperty, getViewportThumbnail, play, pause, stop, focusViewport, launch, stopProcess, dismissError, selectObject };
+  return {
+    openWorkspace,
+    getWorkspace,
+    closeWorkspace,
+    connect,
+    disconnect,
+    reconnect,
+    getStatus,
+    getSceneTree,
+    getObjectSnapshot,
+    getSchemaSnapshot,
+    setObjectProperty,
+    getViewportThumbnail,
+    play,
+    pause,
+    stop,
+    focusViewport,
+    launch,
+    stopProcess,
+    dismissError,
+    selectObject,
+  };
 }

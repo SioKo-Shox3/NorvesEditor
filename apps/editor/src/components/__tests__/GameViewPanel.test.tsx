@@ -61,6 +61,9 @@ vi.mock('../../state/BridgeContext.js', () => ({
 // -------------------------------------------------------------------------
 
 const mockActions = {
+  openWorkspace:   vi.fn<BridgeActions['openWorkspace']>().mockResolvedValue(undefined),
+  getWorkspace:    vi.fn<BridgeActions['getWorkspace']>().mockResolvedValue(undefined),
+  closeWorkspace:  vi.fn<BridgeActions['closeWorkspace']>().mockResolvedValue(undefined),
   connect:        vi.fn<BridgeActions['connect']>().mockResolvedValue(undefined),
   disconnect:     vi.fn<BridgeActions['disconnect']>().mockResolvedValue(undefined),
   reconnect:      vi.fn<BridgeActions['reconnect']>().mockResolvedValue(undefined),

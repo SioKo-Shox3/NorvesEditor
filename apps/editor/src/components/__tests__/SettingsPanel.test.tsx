@@ -9,10 +9,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { SettingsPanel } from '../SettingsPanel.js';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { LAYOUT_STORAGE_KEY } from '../shell/layoutKey.js';
+import { BridgeProvider } from '../../state/BridgeContext.js';
 
 // -------------------------------------------------------------------------
 // Mock the layoutReset relay so we can assert on requestLayoutReset.
@@ -22,7 +23,12 @@ vi.mock('../../shell/layoutReset.js', () => ({
   requestLayoutReset: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}));
+
 const { requestLayoutReset } = await import('../../shell/layoutReset.js');
+const tauriCore = await import('@tauri-apps/api/core');
 
 // -------------------------------------------------------------------------
 // In-memory localStorage so we can prove the panel never touches it.
@@ -43,6 +49,12 @@ function installMemoryLocalStorage(): Map<string, string> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // SettingsPanel rehydrates on mount via workspace_get; default it to "no
+  // workspace" so layout-reset tests are unaffected by the rehydrate call.
+  (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+    if (cmd === 'workspace_get') return Promise.resolve(null);
+    return Promise.resolve(undefined);
+  });
 });
 
 afterEach(() => {
@@ -51,7 +63,11 @@ afterEach(() => {
 });
 
 function renderPanel(): void {
-  render(<SettingsPanel {...({} as IDockviewPanelProps)} />);
+  render(
+    <BridgeProvider>
+      <SettingsPanel {...({} as IDockviewPanelProps)} />
+    </BridgeProvider>,
+  );
 }
 
 describe('SettingsPanel layout reset (P6)', () => {
@@ -75,5 +91,88 @@ describe('SettingsPanel layout reset (P6)', () => {
     expect(store.get(LAYOUT_STORAGE_KEY)).toBe('{"saved":true}');
     expect(reload).not.toHaveBeenCalled();
     expect(requestLayoutReset as Mock).toHaveBeenCalledOnce();
+  });
+
+  it('opens a workspace from the path input and displays the backend payload', async () => {
+    const workspace = {
+      rootPath: 'C:/Project',
+      assetsRoot: 'C:/Project/Assets',
+      name: 'Project',
+    };
+    // Mount rehydrate sees no workspace; opening returns the backend payload.
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'workspace_get') return Promise.resolve(null);
+      if (cmd === 'workspace_open') return Promise.resolve(workspace);
+      return Promise.resolve(undefined);
+    });
+
+    renderPanel();
+    fireEvent.change(screen.getByLabelText('Workspace root'), {
+      target: { value: 'C:/Project' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Workspace' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Project')).toBeTruthy();
+    });
+    expect(tauriCore.invoke as Mock).toHaveBeenCalledWith(
+      'workspace_open',
+      { rootPath: 'C:/Project' },
+    );
+    expect(screen.getByText('C:/Project/Assets')).toBeTruthy();
+  });
+
+  it('closes the current workspace', async () => {
+    const workspace = {
+      rootPath: 'C:/Project',
+      assetsRoot: 'C:/Project/Assets',
+      name: 'Project',
+    };
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'workspace_get') return Promise.resolve(null);
+      if (cmd === 'workspace_open') return Promise.resolve(workspace);
+      return Promise.resolve(undefined);
+    });
+
+    renderPanel();
+    fireEvent.change(screen.getByLabelText('Workspace root'), {
+      target: { value: 'C:/Project' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open Workspace' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Project')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Workspace' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('None')).toBeTruthy();
+    });
+    expect(tauriCore.invoke as Mock).toHaveBeenCalledWith('workspace_close');
+  });
+
+  it('rehydrates the current workspace from the backend on mount', async () => {
+    const workspace = {
+      rootPath: 'C:/Existing',
+      assetsRoot: 'C:/Existing/Assets',
+      name: 'Existing',
+    };
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'workspace_get') return Promise.resolve(workspace);
+      return Promise.resolve(undefined);
+    });
+
+    renderPanel();
+
+    // No user interaction: the mount rehydrate alone must surface the backend
+    // workspace and enable Close.
+    await waitFor(() => {
+      expect(screen.getByText('Existing')).toBeTruthy();
+    });
+    expect(tauriCore.invoke as Mock).toHaveBeenCalledWith('workspace_get');
+    expect(
+      (screen.getByRole('button', { name: 'Close Workspace' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 });
