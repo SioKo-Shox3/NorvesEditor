@@ -1,7 +1,8 @@
 # アセット閲覧MVP + プロジェクト管理 実装計画
 
 > **ステータス**: 承認済み（2026-06-29）。
-> **進捗**: ✅ Phase A（PROJ-1 ワークスペース管理）完了・main 統合済み（commit 34c8ec8、実装=Codex / レビュー=Claude impl-reviewer + Codex review 二重 / 全ゲート緑）。次は Phase B（オフライン manifest 直読み + Asset Browser/Inspector）。Phase C/D/E は未着手。
+> **進捗**: ✅ Phase A（PROJ-1 ワークスペース管理、commit 34c8ec8）/ ✅ Phase B（オフライン manifest 直読み + Asset Browser/Inspector、commit 0efb5e9）完了・main 統合済み（いずれも実装=Codex / レビュー=Claude impl-reviewer + Codex review 二重 / 全ゲート緑）。次は Phase C（Bridge プロトコル拡張 `asset.resolve` + `asset.getManifest`）。Phase D/E は未着手。
+> **Phase B D3 確定**: ランタイム manifest は `<RuntimeRoot>/manifest.json`（source の `Assets/` とは別、`cooked_package` は RuntimeRoot 相対）。固定探索でなく明示パス `asset_read_manifest(manifest_path)` を採用。manifest 実スキーマ(snake_case): `{version:1, assets:[{logical_path, kind, source_hash, variant, format, cooked_package, entry_name, entry_type, cooked_hash, cooked_version}]}`（loose は cooked 系欠落）。
 > **由来**: ギャップ調査 → planner → plan-reviewer（verdict: approve-with-changes, blocker 0）→ 改訂 を経た最終版。
 > 報告/計画/コミットは日本語、コード/型/API/パス/コマンドは英語（CLAUDE.md 準拠）。
 
