@@ -3,7 +3,7 @@
 // scripts/check-protocol-names.mjs.
 
 import { invoke } from '@tauri-apps/api/core';
-import type { WorkspacePayload } from './ipc-types.js';
+import type { AssetManifestPayload, WorkspacePayload } from './ipc-types.js';
 
 /**
  * Tauri command name constants.
@@ -34,6 +34,7 @@ export const BRIDGE_COMMANDS = {
   workspaceOpen: 'workspace_open',
   workspaceGet: 'workspace_get',
   workspaceClose: 'workspace_close',
+  assetReadManifest: 'asset_read_manifest',
 } as const;
 
 /** Union of all valid Tauri command name strings. */
@@ -49,4 +50,8 @@ export async function workspaceGet(): Promise<WorkspacePayload | null> {
 
 export async function workspaceClose(): Promise<void> {
   await invoke<void>(BRIDGE_COMMANDS.workspaceClose);
+}
+
+export async function assetReadManifest(manifestPath: string): Promise<AssetManifestPayload> {
+  return invoke<AssetManifestPayload>(BRIDGE_COMMANDS.assetReadManifest, { manifestPath });
 }

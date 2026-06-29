@@ -6,6 +6,7 @@
 // P3: IPC name constants. Now referenced by the command fns + event relay.
 mod protocol_names;
 
+mod asset_manifest;
 mod bridge_state;
 mod dto;
 mod error;
@@ -49,6 +50,7 @@ pub fn run() {
             workspace::workspace_open,
             workspace::workspace_get,
             workspace::workspace_close,
+            asset_manifest::asset_read_manifest,
         ])
         // Build (not `run`) so we can install the app-exit hook below.
         .build(tauri::generate_context!())

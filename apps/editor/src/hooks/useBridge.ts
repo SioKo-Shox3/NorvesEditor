@@ -22,12 +22,14 @@ import {
   subscribeEvent,
   BRIDGE_COMMANDS,
   BRIDGE_EVENTS,
+  assetReadManifest,
   workspaceOpen,
   workspaceGet,
   workspaceClose,
   type UnlistenFn,
 } from '@norves/bridge-ui';
 import type {
+  AssetManifestPayload,
   ConnectionStatePayload,
   WorkspacePayload,
 } from '@norves/bridge-ui';
@@ -278,6 +280,11 @@ export interface BridgeActions {
   openWorkspace: (rootPath: string) => Promise<void>;
   getWorkspace: () => Promise<void>;
   closeWorkspace: () => Promise<void>;
+  readAssetManifest: (manifestPath: string) => Promise<void>;
+  selectAsset: (key: string) => void;
+  clearAssetManifest: () => void;
+  /** Dismiss (clear) the current asset-manifest error from the store. */
+  dismissAssetError: () => void;
   connect: (port: number) => Promise<void>;
   disconnect: () => Promise<void>;
   reconnect: () => Promise<void>;
@@ -386,6 +393,28 @@ export function useBridgeActions(): BridgeActions {
       const { kind, message } = extractBackendError(err);
       dispatch({ type: 'workspaceError', payload: { error: { kind, message } } });
     }
+  }, [dispatch]);
+
+  const readAssetManifest = useCallback(async (manifestPath: string): Promise<void> => {
+    try {
+      const result: AssetManifestPayload = await assetReadManifest(manifestPath);
+      dispatch({ type: 'assetManifestLoaded', payload: result });
+    } catch (err: unknown) {
+      const { kind, message } = extractBackendError(err);
+      dispatch({ type: 'assetManifestError', payload: { error: { kind, message } } });
+    }
+  }, [dispatch]);
+
+  const selectAsset = useCallback((key: string): void => {
+    dispatch({ type: 'assetSelected', key });
+  }, [dispatch]);
+
+  const clearAssetManifest = useCallback((): void => {
+    dispatch({ type: 'assetManifestCleared' });
+  }, [dispatch]);
+
+  const dismissAssetError = useCallback((): void => {
+    dispatch({ type: 'assetErrorDismissed' });
   }, [dispatch]);
 
   const connect = useCallback(async (port: number): Promise<void> => {
@@ -701,6 +730,10 @@ export function useBridgeActions(): BridgeActions {
     openWorkspace,
     getWorkspace,
     closeWorkspace,
+    readAssetManifest,
+    selectAsset,
+    clearAssetManifest,
+    dismissAssetError,
     connect,
     disconnect,
     reconnect,

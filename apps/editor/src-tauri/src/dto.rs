@@ -2,9 +2,8 @@
 //!
 //! Where the backend forwards a raw engine `result` / event `params`
 //! ([`serde_json::Value`]), no struct exists here on purpose — re-modeling would
-//! risk drift from the wire schema. The only synthesized payloads are the
-//! connection-state event / connect command return value and workspace payloads,
-//! both defined here in camelCase to match the TS convention.
+//! risk drift from the wire schema. The synthesized payloads defined here use
+//! camelCase to match the TS convention.
 
 use serde::Serialize;
 
@@ -41,6 +40,41 @@ pub struct WorkspacePayload {
     pub root_path: String,
     pub assets_root: String,
     pub name: String,
+}
+
+/// One asset entry returned by the offline manifest reader.
+// Phase B: mirror this shape in bridge-ui/src/ipc-types.ts.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetEntryDto {
+    pub logical_path: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cooked_package: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cooked_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cooked_version: Option<u32>,
+}
+
+/// Payload returned by `asset_read_manifest`.
+// Phase B: mirror this shape in bridge-ui/src/ipc-types.ts.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetManifestPayload {
+    pub version: u32,
+    pub manifest_path: String,
+    pub assets: Vec<AssetEntryDto>,
 }
 
 impl ConnectionStatePayload {
@@ -129,6 +163,40 @@ mod tests {
                 "rootPath": "C:/Project",
                 "assetsRoot": "C:/Project/Assets",
                 "name": "Project"
+            })
+        );
+    }
+
+    #[test]
+    fn asset_manifest_payload_serializes_camel_case_and_omits_missing_options() {
+        let payload = AssetManifestPayload {
+            version: 1,
+            manifest_path: "C:/Project/Cooked/manifest.json".to_owned(),
+            assets: vec![AssetEntryDto {
+                logical_path: "textures/hero.png".to_owned(),
+                kind: "texture".to_owned(),
+                variant: Some("default".to_owned()),
+                format: None,
+                source_hash: Some("source-hash".to_owned()),
+                cooked_package: None,
+                entry_name: None,
+                entry_type: None,
+                cooked_hash: None,
+                cooked_version: None,
+            }],
+        };
+        let json = serde_json::to_value(&payload).expect("serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "version": 1,
+                "manifestPath": "C:/Project/Cooked/manifest.json",
+                "assets": [{
+                    "logicalPath": "textures/hero.png",
+                    "kind": "texture",
+                    "variant": "default",
+                    "sourceHash": "source-hash"
+                }]
             })
         );
     }

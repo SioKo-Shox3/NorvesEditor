@@ -129,6 +129,25 @@ describe('invokeCommand contract — viewport thumbnail', () => {
   });
 });
 
+describe('invokeCommand contract — asset manifest', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('asset_read_manifest uses the manifestPath argument', async () => {
+    (tauriCore.invoke as Mock).mockResolvedValue({
+      version: 1,
+      manifestPath: 'C:/Project/manifest.json',
+      assets: [],
+    });
+    const { assetReadManifest } = await import('@norves/bridge-ui');
+    const result = await assetReadManifest('C:/Project/manifest.json');
+    expect(tauriCore.invoke).toHaveBeenCalledWith(
+      BRIDGE_COMMANDS.assetReadManifest,
+      { manifestPath: 'C:/Project/manifest.json' },
+    );
+    expect(result.assets).toEqual([]);
+  });
+});
+
 // -------------------------------------------------------------------------
 // subscribeEvent / unlisten lifecycle
 // -------------------------------------------------------------------------

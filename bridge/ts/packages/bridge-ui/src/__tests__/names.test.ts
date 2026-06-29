@@ -57,6 +57,9 @@ describe('BRIDGE_COMMANDS literal values', () => {
   it('workspaceClose = workspace_close', () => {
     expect(BRIDGE_COMMANDS.workspaceClose).toBe('workspace_close');
   });
+  it('assetReadManifest = asset_read_manifest', () => {
+    expect(BRIDGE_COMMANDS.assetReadManifest).toBe('asset_read_manifest');
+  });
 });
 
 describe('BRIDGE_EVENTS literal values', () => {

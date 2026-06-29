@@ -8,7 +8,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { bridgeReducer, INITIAL_STATE, type BridgeState, type BridgeAction } from '../store.js';
+import {
+  assetKeyForEntry,
+  bridgeReducer,
+  INITIAL_STATE,
+  type BridgeAction,
+  type BridgeState,
+} from '../store.js';
+import type { AssetManifestPayload } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Helpers
@@ -75,6 +82,152 @@ describe('workspaceOpened / workspaceClosed', () => {
     expect(next.lastError).toEqual({ kind: 'process', message: 'Assets missing' });
     // The Bridge connection is independent of workspace failures.
     expect(next.connection).toEqual(state.connection);
+  });
+});
+
+// -------------------------------------------------------------------------
+// assetManifestLoaded / assetSelected / assetManifestError
+// -------------------------------------------------------------------------
+
+describe('asset manifest state', () => {
+  const manifest: AssetManifestPayload = {
+    version: 1,
+    manifestPath: 'C:/Project/manifest.json',
+    assets: [
+      {
+        logicalPath: 'textures/hero.png',
+        kind: 'texture',
+        variant: 'default',
+        format: 'png',
+        sourceHash: 'source-1',
+        cookedPackage: 'textures.pkg',
+        entryName: 'hero',
+        entryType: 'texture2d',
+        cookedHash: 'cooked-1',
+        cookedVersion: 3,
+      },
+      {
+        logicalPath: 'materials/hero.mat',
+        kind: 'material',
+        variant: 'mobile',
+      },
+    ],
+  };
+
+  it('stores the loaded manifest payload', () => {
+    const next = applyAction({ type: 'assetManifestLoaded', payload: manifest });
+    expect(next.assetManifest).toEqual(manifest);
+  });
+
+  it('sets selectedAssetKey to the selected key', () => {
+    const key = assetKeyForEntry(manifest.assets[0]!);
+    const next = applyAction({ type: 'assetSelected', key });
+    expect(next.selectedAssetKey).toBe(key);
+  });
+
+  it('clears manifest and selection when assetManifestCleared is dispatched', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      assetManifest: manifest,
+      selectedAssetKey: assetKeyForEntry(manifest.assets[0]!),
+    };
+    const next = applyAction({ type: 'assetManifestCleared' }, state);
+    expect(next.assetManifest).toBeUndefined();
+    expect(next.selectedAssetKey).toBeUndefined();
+  });
+
+  it('preserves selection when a reloaded manifest still contains the selected asset', () => {
+    const key = assetKeyForEntry(manifest.assets[1]!);
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      selectedAssetKey: key,
+    };
+    const next = applyAction({ type: 'assetManifestLoaded', payload: manifest }, state);
+    expect(next.selectedAssetKey).toBe(key);
+  });
+
+  it('drops selection when a reloaded manifest no longer contains the selected asset', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      selectedAssetKey: assetKeyForEntry({ logicalPath: 'missing.asset', variant: undefined }),
+    };
+    const next = applyAction({ type: 'assetManifestLoaded', payload: manifest }, state);
+    expect(next.selectedAssetKey).toBeUndefined();
+  });
+
+  it('assetManifestError sets assetError, isolated from lastError and connection', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected', sessionId: 's1' },
+      lastError: { kind: 'engine', message: 'unrelated bridge error' },
+    };
+    const next = applyAction(
+      {
+        type: 'assetManifestError',
+        payload: { error: { kind: 'asset', message: 'manifest parse failed' } },
+      },
+      state,
+    );
+    expect(next.assetError).toEqual({ kind: 'asset', message: 'manifest parse failed' });
+    // Asset failures must not pollute the shared lastError or the connection.
+    expect(next.lastError).toEqual(state.lastError);
+    expect(next.connection).toEqual(state.connection);
+  });
+
+  it('assetManifestLoaded clears a prior assetError', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      assetError: { kind: 'asset', message: 'previous load failed' },
+    };
+    const next = applyAction(
+      {
+        type: 'assetManifestLoaded',
+        payload: { version: 1, manifestPath: 'C:/Project/manifest.json', assets: [] },
+      },
+      state,
+    );
+    expect(next.assetError).toBeUndefined();
+  });
+
+  it('assetErrorDismissed clears assetError', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      assetError: { kind: 'asset', message: 'manifest parse failed' },
+    };
+    const next = applyAction({ type: 'assetErrorDismissed' }, state);
+    expect(next.assetError).toBeUndefined();
+  });
+
+  it('workspace close clears asset manifest state', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      workspace: {
+        rootPath: 'C:/Project',
+        assetsRoot: 'C:/Project/Assets',
+        name: 'Project',
+      },
+      assetManifest: manifest,
+      selectedAssetKey: assetKeyForEntry(manifest.assets[0]!),
+    };
+    const next = applyAction({ type: 'workspaceClosed' }, state);
+    expect(next.workspace).toBeUndefined();
+    expect(next.assetManifest).toBeUndefined();
+    expect(next.selectedAssetKey).toBeUndefined();
+  });
+
+  it('bridge disconnect preserves offline asset manifest state', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      assetManifest: manifest,
+      selectedAssetKey: assetKeyForEntry(manifest.assets[0]!),
+    };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: false, reason: 'closed' } },
+      state,
+    );
+    expect(next.assetManifest).toEqual(manifest);
+    expect(next.selectedAssetKey).toBe(assetKeyForEntry(manifest.assets[0]!));
   });
 });
 
