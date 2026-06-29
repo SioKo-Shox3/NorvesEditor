@@ -54,3 +54,48 @@ export interface AssetManifestPayload {
   manifestPath: string;
   assets: AssetEntry[];
 }
+
+export type AssetResolveStatus =
+  | 'successCooked'
+  | 'successLoose'
+  | 'invalidRequest'
+  | 'invalidManifest'
+  | 'looseReadFailed'
+  | 'cookedPackageReadFailed'
+  | 'cookedPackageParseFailed'
+  | 'cookedEntryMissing'
+  | 'cookedEntryHashMismatch';
+
+export type AssetResolveSource =
+  | 'none'
+  | 'cooked'
+  | 'loose'
+  | 'debugLooseFallback';
+
+/**
+ * Result returned by asset_resolve / asset.resolve.
+ *
+ * Wire shape mirrors bridge/spec/schema/methods/asset.resolve.result.schema.json.
+ */
+export interface AssetResolveResult {
+  status: AssetResolveStatus;
+  source: AssetResolveSource;
+  normalizedLogicalPath: string;
+  requiresExplicitLog?: boolean;
+  fallbackAction?: string;
+  failureKind?: string;
+  reason?: string;
+}
+
+/**
+ * Result returned by asset_get_manifest / asset.getManifest.
+ *
+ * Wire shape mirrors bridge/spec/schema/methods/asset.getManifest.result.schema.json.
+ */
+export interface AssetManifestResult {
+  version: number;
+  entries: AssetEntry[];
+  totalCount: number;
+  page?: number;
+  pageSize?: number;
+}

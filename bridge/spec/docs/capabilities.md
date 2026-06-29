@@ -41,6 +41,9 @@ scene.liveUpdate    push scene.treeChanged / object.changed events without
 viewport.thumbnail  return a low-frequency still thumbnail of the external
                     viewport via viewport.getThumbnail (Phase 7b surface,
                     protocol 0.2)
+asset.read          read asset resolution health and loaded manifest snapshots
+                    via asset.resolve and asset.getManifest (asset browser live
+                    overlay surface, protocol 0.2)
 ```
 
 The `scene.query` token advertises that an engine can answer `scene.getTree`
@@ -86,6 +89,15 @@ the external-window notice). The token is independent of protocol version
 negotiation. The thumbnail path's large-payload limits (PNG, max 640x360,
 256 KiB hard cap, pull-style, <= 1 fps) are specified in
 `docs/memory-buffer-policy.md`.
+
+The `asset.read` token advertises that an engine can answer `asset.resolve`
+(single logical-path resolution / health metadata) and `asset.getManifest` (a
+snapshot of the engine's currently loaded manifest). Both methods are optional
+and read-only. An engine that does not implement live asset reads omits the token
+and answers those methods with `METHOD_NOT_SUPPORTED`; the editor can continue
+using its offline workspace manifest. Returned values are DTO snapshots only and
+must not contain references to loaded asset memory, package buffers, or engine
+manifest storage.
 
 Tokens are the unit of negotiation. A `capabilityDescriptor` wraps a token with
 optional metadata:

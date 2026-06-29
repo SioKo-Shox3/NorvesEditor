@@ -1,0 +1,13 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "response",
+  "id": "req-83",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "status": "successCooked",
+    "source": "cooked",
+    "normalizedLogicalPath": "textures/hero.png",
+    "debugPath": "C:/Project/Cooked/assets.ncp"
+  }
+}

@@ -36,6 +36,8 @@ pub mod commands {
     pub const WORKSPACE_GET: &str = "workspace_get";
     pub const WORKSPACE_CLOSE: &str = "workspace_close";
     pub const ASSET_READ_MANIFEST: &str = "asset_read_manifest";
+    pub const ASSET_RESOLVE: &str = "asset_resolve";
+    pub const ASSET_GET_MANIFEST: &str = "asset_get_manifest";
 }
 
 /// Tauri event names (backend -> frontend).
@@ -159,6 +161,16 @@ mod tests {
         assert_eq!(commands::ASSET_READ_MANIFEST, "asset_read_manifest");
     }
 
+    #[test]
+    fn command_asset_resolve() {
+        assert_eq!(commands::ASSET_RESOLVE, "asset_resolve");
+    }
+
+    #[test]
+    fn command_asset_get_manifest() {
+        assert_eq!(commands::ASSET_GET_MANIFEST, "asset_get_manifest");
+    }
+
     // -----------------------------------------------------------------------
     // Event literal assertions
     // -----------------------------------------------------------------------
@@ -253,6 +265,8 @@ mod tests {
             commands::WORKSPACE_GET,
             commands::WORKSPACE_CLOSE,
             commands::ASSET_READ_MANIFEST,
+            commands::ASSET_RESOLVE,
+            commands::ASSET_GET_MANIFEST,
         ];
         let mut sorted = all;
         sorted.sort_unstable();

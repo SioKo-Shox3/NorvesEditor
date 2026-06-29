@@ -119,6 +119,27 @@ namespace norves::bridge
             return not_supported(params);
         }
 
+        /// @brief asset.resolve。単一の論理アセットパスについて、解決結果 / 健全性メタデータの
+        ///        スナップショットを返す。result は
+        ///        { status, source, normalizedLogicalPath, requiresExplicitLog?,
+        ///        fallbackAction?, failureKind?, reason? }。アダプタはアセットのライブ
+        ///        メモリ、ファイルバッファ、パッケージ内バイト列への参照を JsonValue に
+        ///        含めてはならず、値コピーされた DTO のみを返す。
+        virtual Result<JsonValue, BridgeError> assetResolve(const JsonValue& params)
+        {
+            return not_supported(params);
+        }
+
+        /// @brief asset.getManifest。エンジンが現在ロードしている asset manifest の
+        ///        スナップショットを返す。result は
+        ///        { version, entries, totalCount, page?, pageSize? }。entries は
+        ///        assetEntry DTO の配列であり、エンジンの manifest 内部ストレージへの参照を
+        ///        運んではならない。
+        virtual Result<JsonValue, BridgeError> assetGetManifest(const JsonValue& params)
+        {
+            return not_supported(params);
+        }
+
         /// @brief viewport.getThumbnail。エンジンの外部ビューポートの静止画サムネイルを
         ///        低頻度の pull 型レスポンスとして返す。result は
         ///        { imageBase64, mimeType, width?, height? }。imageBase64 はフレーム

@@ -3,7 +3,12 @@
 // scripts/check-protocol-names.mjs.
 
 import { invoke } from '@tauri-apps/api/core';
-import type { AssetManifestPayload, WorkspacePayload } from './ipc-types.js';
+import type {
+  AssetManifestPayload,
+  AssetManifestResult,
+  AssetResolveResult,
+  WorkspacePayload,
+} from './ipc-types.js';
 
 /**
  * Tauri command name constants.
@@ -35,6 +40,8 @@ export const BRIDGE_COMMANDS = {
   workspaceGet: 'workspace_get',
   workspaceClose: 'workspace_close',
   assetReadManifest: 'asset_read_manifest',
+  assetResolve: 'asset_resolve',
+  assetGetManifest: 'asset_get_manifest',
 } as const;
 
 /** Union of all valid Tauri command name strings. */
@@ -54,4 +61,37 @@ export async function workspaceClose(): Promise<void> {
 
 export async function assetReadManifest(manifestPath: string): Promise<AssetManifestPayload> {
   return invoke<AssetManifestPayload>(BRIDGE_COMMANDS.assetReadManifest, { manifestPath });
+}
+
+export async function assetResolve(
+  logicalPath: string,
+  kind?: string,
+  variant?: string,
+): Promise<AssetResolveResult> {
+  const args: { logicalPath: string; kind?: string; variant?: string } = { logicalPath };
+  if (kind !== undefined) {
+    args.kind = kind;
+  }
+  if (variant !== undefined) {
+    args.variant = variant;
+  }
+  return invoke<AssetResolveResult>(BRIDGE_COMMANDS.assetResolve, args);
+}
+
+export async function assetGetManifest(
+  filter?: string,
+  page?: number,
+  pageSize?: number,
+): Promise<AssetManifestResult> {
+  const args: { filter?: string; page?: number; pageSize?: number } = {};
+  if (filter !== undefined) {
+    args.filter = filter;
+  }
+  if (page !== undefined) {
+    args.page = page;
+  }
+  if (pageSize !== undefined) {
+    args.pageSize = pageSize;
+  }
+  return invoke<AssetManifestResult>(BRIDGE_COMMANDS.assetGetManifest, args);
 }
