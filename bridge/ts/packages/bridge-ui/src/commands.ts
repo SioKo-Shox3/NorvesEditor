@@ -4,6 +4,11 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  SceneCreateObjectResult,
+  SceneDeleteObjectResult,
+  SceneReparentObjectResult,
+} from '@norves/bridge-types';
+import type {
   AssetManifestPayload,
   AssetManifestResult,
   AssetResolveResult,
@@ -26,6 +31,9 @@ export const BRIDGE_COMMANDS = {
   reconnect: 'bridge_reconnect',
   getStatus: 'get_status',
   sceneGetTree: 'scene_get_tree',
+  sceneCreateObject: 'scene_create_object',
+  sceneDeleteObject: 'scene_delete_object',
+  sceneReparentObject: 'scene_reparent_object',
   objectGetSnapshot: 'object_get_snapshot',
   objectSetProperty: 'object_set_property',
   schemaGetSnapshot: 'schema_get_snapshot',
@@ -47,6 +55,34 @@ export const BRIDGE_COMMANDS = {
 /** Union of all valid Tauri command name strings. */
 export type BridgeCommandName = (typeof BRIDGE_COMMANDS)[keyof typeof BRIDGE_COMMANDS];
 
+export async function sceneCreateObject(
+  parentId?: string,
+  kind?: string,
+): Promise<SceneCreateObjectResult> {
+  const args: { parentId?: string; kind?: string } = {};
+  if (parentId !== undefined) {
+    args.parentId = parentId;
+  }
+  if (kind !== undefined) {
+    args.kind = kind;
+  }
+  return invoke<SceneCreateObjectResult>(BRIDGE_COMMANDS.sceneCreateObject, args);
+}
+
+export async function sceneDeleteObject(objectId: string): Promise<SceneDeleteObjectResult> {
+  return invoke<SceneDeleteObjectResult>(BRIDGE_COMMANDS.sceneDeleteObject, { objectId });
+}
+
+export async function sceneReparentObject(
+  objectId: string,
+  newParentId?: string,
+): Promise<SceneReparentObjectResult> {
+  const args: { objectId: string; newParentId?: string } = { objectId };
+  if (newParentId !== undefined) {
+    args.newParentId = newParentId;
+  }
+  return invoke<SceneReparentObjectResult>(BRIDGE_COMMANDS.sceneReparentObject, args);
+}
 export async function workspaceOpen(rootPath: string): Promise<WorkspacePayload> {
   return invoke<WorkspacePayload>(BRIDGE_COMMANDS.workspaceOpen, { rootPath });
 }

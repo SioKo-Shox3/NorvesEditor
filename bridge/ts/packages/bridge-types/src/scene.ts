@@ -37,3 +37,23 @@ export interface SceneGetTreeResult {
   /** Root node of the snapshotted (sub)tree. */
   root: SceneNode;
 }
+
+/** Result of the `scene.createObject` method. */
+export interface SceneCreateObjectResult {
+  /** Whether the engine accepted the create request. */
+  accepted: boolean;
+  /** Optional id assigned to the newly created object. */
+  newId?: ObjectId;
+}
+
+/** Result of the `scene.deleteObject` method. */
+export interface SceneDeleteObjectResult {
+  /** Whether the engine accepted the delete request. */
+  accepted: boolean;
+}
+
+/** Result of the `scene.reparentObject` method. */
+export interface SceneReparentObjectResult {
+  /** Whether the engine accepted the reparent request. */
+  accepted: boolean;
+}

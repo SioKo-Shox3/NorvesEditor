@@ -1,0 +1,13 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "request",
+  "id": "req-91",
+  "method": "scene.createObject",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "parentId": "n-0",
+    "kind": "object",
+    "name": "Unexpected"
+  }
+}

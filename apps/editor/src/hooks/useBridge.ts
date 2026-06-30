@@ -45,6 +45,9 @@ import type {
   ObjectChangedEvent,
   GetStatusResult,
   SceneGetTreeResult,
+  SceneCreateObjectResult,
+  SceneDeleteObjectResult,
+  SceneReparentObjectResult,
   ObjectSnapshot,
   SchemaSnapshot,
   SetObjectPropertyResult,
@@ -303,6 +306,12 @@ export interface BridgeActions {
    * query) the error is reported through the store like any other command.
    */
   getSceneTree: () => Promise<void>;
+  createObject: (parentId?: string, kind?: string) => Promise<SceneCreateObjectResult>;
+  deleteObject: (objectId: string) => Promise<SceneDeleteObjectResult>;
+  reparentObject: (
+    objectId: string,
+    newParentId?: string,
+  ) => Promise<SceneReparentObjectResult>;
   /**
    * Fetch a single object's property snapshot (object.getSnapshot) for `id` and
    * store it. On METHOD_NOT_SUPPORTED (an engine without object query) this is a
@@ -568,6 +577,107 @@ export function useBridgeActions(): BridgeActions {
     }
   }, [dispatch]);
 
+  const createObject = useCallback(
+    async (parentId?: string, kind?: string): Promise<SceneCreateObjectResult> => {
+      try {
+        const args: { parentId?: string; kind?: string } = {};
+        if (parentId !== undefined) {
+          args.parentId = parentId;
+        }
+        if (kind !== undefined) {
+          args.kind = kind;
+        }
+        const result = await invokeCommand<SceneCreateObjectResult>(
+          BRIDGE_COMMANDS.sceneCreateObject,
+          args,
+        );
+        if (result.accepted) {
+          await getSceneTree();
+          if (result.newId !== undefined) {
+            dispatch({ type: 'objectSelected', id: result.newId });
+          }
+        }
+        return result;
+      } catch (err: unknown) {
+        if (isMethodNotSupported(err)) {
+          dispatch({ type: 'sceneEditUnsupported' });
+          return { accepted: false };
+        }
+        const { kind: errorKind, message } = extractBackendError(err);
+        dispatch({
+          type: 'errorReported',
+          payload: {
+            error: { code: errorKind ?? 'SCENE_CREATE_OBJECT_FAILED', message },
+          },
+        });
+        throw err;
+      }
+    },
+    [dispatch, getSceneTree],
+  );
+
+  const deleteObject = useCallback(
+    async (objectId: string): Promise<SceneDeleteObjectResult> => {
+      try {
+        const result = await invokeCommand<SceneDeleteObjectResult>(
+          BRIDGE_COMMANDS.sceneDeleteObject,
+          { objectId },
+        );
+        if (result.accepted) {
+          dispatch({ type: 'sceneObjectDeleted', accepted: true });
+          await getSceneTree();
+        }
+        return result;
+      } catch (err: unknown) {
+        if (isMethodNotSupported(err)) {
+          dispatch({ type: 'sceneEditUnsupported' });
+          return { accepted: false };
+        }
+        const { kind: errorKind, message } = extractBackendError(err);
+        dispatch({
+          type: 'errorReported',
+          payload: {
+            error: { code: errorKind ?? 'SCENE_DELETE_OBJECT_FAILED', message },
+          },
+        });
+        throw err;
+      }
+    },
+    [dispatch, getSceneTree],
+  );
+
+  const reparentObject = useCallback(
+    async (objectId: string, newParentId?: string): Promise<SceneReparentObjectResult> => {
+      try {
+        const args: { objectId: string; newParentId?: string } = { objectId };
+        if (newParentId !== undefined) {
+          args.newParentId = newParentId;
+        }
+        const result = await invokeCommand<SceneReparentObjectResult>(
+          BRIDGE_COMMANDS.sceneReparentObject,
+          args,
+        );
+        if (result.accepted) {
+          await getSceneTree();
+        }
+        return result;
+      } catch (err: unknown) {
+        if (isMethodNotSupported(err)) {
+          dispatch({ type: 'sceneEditUnsupported' });
+          return { accepted: false };
+        }
+        const { kind: errorKind, message } = extractBackendError(err);
+        dispatch({
+          type: 'errorReported',
+          payload: {
+            error: { code: errorKind ?? 'SCENE_REPARENT_OBJECT_FAILED', message },
+          },
+        });
+        throw err;
+      }
+    },
+    [dispatch, getSceneTree],
+  );
   const getObjectSnapshot = useCallback(async (id: string): Promise<void> => {
     try {
       const result = await invokeCommand<ObjectSnapshot>(
@@ -797,6 +907,9 @@ export function useBridgeActions(): BridgeActions {
     reconnect,
     getStatus,
     getSceneTree,
+    createObject,
+    deleteObject,
+    reparentObject,
     getObjectSnapshot,
     getSchemaSnapshot,
     setObjectProperty,

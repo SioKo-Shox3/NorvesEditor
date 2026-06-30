@@ -612,6 +612,73 @@ pub async fn scene_get_tree(state: State<'_, BridgeState>) -> Result<Value, Back
     Ok(value)
 }
 
+/// `scene_create_object`: `scene.createObject` with optional `parentId` / `kind`.
+/// Returns the raw wire-shaped `result` Value (UI types it as
+/// `SceneCreateObjectResult`).
+#[tauri::command]
+pub async fn scene_create_object(
+    state: State<'_, BridgeState>,
+    parent_id: Option<String>,
+    kind: Option<String>,
+) -> Result<Value, BackendError> {
+    let mut params = serde_json::Map::new();
+    if let Some(parent_id) = parent_id {
+        params.insert("parentId".to_owned(), Value::String(parent_id));
+    }
+    if let Some(kind) = kind {
+        params.insert("kind".to_owned(), Value::String(kind));
+    }
+
+    let value = send_method(state.inner(), "scene.createObject", Some(params)).await?;
+    norves_bridge_editor_client::parse_create_object_result(&value).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed scene.createObject result: {err}"),
+        }
+    })?;
+    Ok(value)
+}
+
+/// `scene_delete_object`: `scene.deleteObject` for `object_id`.
+#[tauri::command]
+pub async fn scene_delete_object(
+    state: State<'_, BridgeState>,
+    object_id: String,
+) -> Result<Value, BackendError> {
+    let mut params = serde_json::Map::new();
+    params.insert("objectId".to_owned(), Value::String(object_id));
+
+    let value = send_method(state.inner(), "scene.deleteObject", Some(params)).await?;
+    norves_bridge_editor_client::parse_delete_object_result(&value).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed scene.deleteObject result: {err}"),
+        }
+    })?;
+    Ok(value)
+}
+
+/// `scene_reparent_object`: `scene.reparentObject` for `object_id` and optional
+/// `new_parent_id`. Omitting `new_parent_id` moves the object to the scene root.
+#[tauri::command]
+pub async fn scene_reparent_object(
+    state: State<'_, BridgeState>,
+    object_id: String,
+    new_parent_id: Option<String>,
+) -> Result<Value, BackendError> {
+    let mut params = serde_json::Map::new();
+    params.insert("objectId".to_owned(), Value::String(object_id));
+    if let Some(new_parent_id) = new_parent_id {
+        params.insert("newParentId".to_owned(), Value::String(new_parent_id));
+    }
+
+    let value = send_method(state.inner(), "scene.reparentObject", Some(params)).await?;
+    norves_bridge_editor_client::parse_reparent_object_result(&value).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed scene.reparentObject result: {err}"),
+        }
+    })?;
+    Ok(value)
+}
+
 /// `object_get_snapshot`: `object.getSnapshot` for `object_id`. Returns the raw
 /// wire-shaped `result` Value (UI types it as `ObjectSnapshot`).
 ///
@@ -1007,6 +1074,50 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn scene_edit_methods_when_disconnected_are_not_connected() {
+        let state = BridgeState::default();
+
+        let mut create_params = serde_json::Map::new();
+        create_params.insert("parentId".to_owned(), Value::String("n-0".to_owned()));
+        let create_result = send_method(&state, "scene.createObject", Some(create_params)).await;
+        assert!(matches!(create_result, Err(BackendError::NotConnected)));
+
+        let mut delete_params = serde_json::Map::new();
+        delete_params.insert("objectId".to_owned(), Value::String("n-1".to_owned()));
+        let delete_result = send_method(&state, "scene.deleteObject", Some(delete_params)).await;
+        assert!(matches!(delete_result, Err(BackendError::NotConnected)));
+
+        let mut reparent_params = serde_json::Map::new();
+        reparent_params.insert("objectId".to_owned(), Value::String("n-1".to_owned()));
+        let reparent_result =
+            send_method(&state, "scene.reparentObject", Some(reparent_params)).await;
+        assert!(matches!(reparent_result, Err(BackendError::NotConnected)));
+    }
+
+    #[test]
+    fn scene_reparent_shapes_root_move_without_new_parent_id() {
+        let mut params = serde_json::Map::new();
+        params.insert("objectId".to_owned(), Value::String("n-1".to_owned()));
+        let env = build_request(
+            CorrelationId::try_from("req-1".to_owned()).expect("valid id"),
+            "scene.reparentObject",
+            Some(params),
+        )
+        .expect("builds");
+        match env {
+            ValidatedEnvelope::Request {
+                method,
+                params: Some(map),
+                ..
+            } => {
+                assert_eq!(method.as_str(), "scene.reparentObject");
+                assert_eq!(map.get("objectId"), Some(&Value::String("n-1".to_owned())));
+                assert_eq!(map.get("newParentId"), None);
+            }
+            _ => panic!("expected a request envelope with params"),
+        }
+    }
     /// The thumbnail command (`viewport.getThumbnail`, via `send_method`) must
     /// also fail with `NotConnected` when no live connection exists, never
     /// panicking or hanging. This is the disconnected-path drift guard for the new
