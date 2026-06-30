@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/scene.reparentObject.result.schema.json",
+  "title": "scene.reparentObject response result",
+  "description": "Graceful acknowledgement of a scene.reparentObject request. accepted reports whether the engine performed the reparent. A graceful accepted:false (e.g. the move was rejected) is distinct from an error Result.",
+  "type": "object",
+  "required": ["accepted"],
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "description": "Whether the engine accepted and performed the object reparent.",
+      "type": "boolean"
+    }
+  }
+}

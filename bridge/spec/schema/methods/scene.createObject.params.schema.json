@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/scene.createObject.params.schema.json",
+  "title": "scene.createObject request params",
+  "description": "Request to create a new scene object. parentId, when present, is the parent under which to create the object; absent means create at the scene root. kind is an optional generic, free-form node classification. No engine live-memory references appear in the request.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "parentId": {
+      "description": "Optional parent object to create the new object under; absent means the scene root.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    },
+    "kind": {
+      "description": "Optional generic, free-form node classification for the new object.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

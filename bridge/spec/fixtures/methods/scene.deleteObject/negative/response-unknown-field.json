@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "response",
+  "id": "req-97",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "accepted": true,
+    "removedCount": 1
+  }
+}

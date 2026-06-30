@@ -162,6 +162,12 @@ export interface BridgeState {
    */
   sceneUnsupported?: boolean;
   /**
+   * True when the connected engine answered scene edit methods with
+   * METHOD_NOT_SUPPORTED. Connection-scoped degradation signal for create,
+   * delete, and reparent controls.
+   */
+  sceneEditUnsupported?: boolean;
+  /**
    * Set by a scene.treeChanged live event carrying fullRefreshRequired:true:
    * the incremental changedNodes are insufficient and the Outliner should
    * re-fetch the whole tree via scene.getTree. The Outliner has a consume effect
@@ -283,6 +289,10 @@ export type BridgeAction =
    * answered METHOD_NOT_SUPPORTED). Engine-agnostic degradation signal.
    */
   | { type: 'sceneTreeUnsupported' }
+  /** Mark scene edit methods as unsupported by the connected engine. */
+  | { type: 'sceneEditUnsupported' }
+  /** Clear selected object state after an accepted scene.deleteObject result. */
+  | { type: 'sceneObjectDeleted'; accepted: boolean }
   /**
    * Store a freshly fetched object.getSnapshot for the selected object.
    * Engine-agnostic: a generic property bag, not mock-specific.
@@ -539,6 +549,7 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         sceneTree: p.connected ? state.sceneTree : undefined,
         selectedObjectId: p.connected ? state.selectedObjectId : undefined,
         sceneUnsupported: p.connected ? false : state.sceneUnsupported,
+        sceneEditUnsupported: p.connected ? false : state.sceneEditUnsupported,
         // A pending live-refresh request is meaningless across a (dis)connect.
         sceneRefreshRequired: p.connected ? state.sceneRefreshRequired : undefined,
         // Inspector data is per-object / per-engine: a fresh connection re-probes
@@ -613,6 +624,7 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         sceneTree: undefined,
         selectedObjectId: undefined,
         sceneUnsupported: undefined,
+        sceneEditUnsupported: undefined,
         sceneRefreshRequired: undefined,
         // The Inspector data is likewise invalid once the engine dies.
         objectSnapshot: undefined,
@@ -719,6 +731,17 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         sceneUnsupported: true,
         sceneRefreshRequired: false,
       };
+    }
+
+    case 'sceneEditUnsupported': {
+      return { ...state, sceneEditUnsupported: true };
+    }
+
+    case 'sceneObjectDeleted': {
+      if (!action.accepted) {
+        return state;
+      }
+      return { ...state, selectedObjectId: undefined, objectSnapshot: undefined };
     }
 
     case 'objectSnapshotLoaded': {

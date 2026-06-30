@@ -39,6 +39,24 @@ pub struct SceneNode {
     /// Child nodes; empty when this is a leaf.
     pub children: Vec<SceneNode>,
 }
+/// Acknowledgement extracted from a `scene.createObject` result.
+///
+/// Wire shape is `{ accepted, newId? }`. `new_id` is optional even when
+/// `accepted` is true so the parser stays aligned with the additive schema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneCreateObjectResult {
+    /// Whether the engine accepted the create request.
+    pub accepted: bool,
+    /// Optional id assigned to the newly created object.
+    pub new_id: Option<String>,
+}
+
+/// Acknowledgement extracted from a scene edit result with `{ accepted }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneEditResult {
+    /// Whether the engine accepted the edit request.
+    pub accepted: bool,
+}
 
 /// Failure while extracting a [`SceneTree`] from a result value.
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +74,36 @@ pub enum SceneError {
     UnexpectedShape(String),
 }
 
+/// Extracts a [`SceneCreateObjectResult`] from a `scene.createObject` result.
+pub fn parse_create_object_result(result: &Value) -> Result<SceneCreateObjectResult, SceneError> {
+    let obj = result.as_object().ok_or_else(|| {
+        SceneError::UnexpectedShape("scene.createObject result is not an object".to_owned())
+    })?;
+
+    let accepted = required_bool(obj, "accepted", "result")?;
+    let new_id = optional_str(obj, "newId", "result")?.map(str::to_owned);
+
+    Ok(SceneCreateObjectResult { accepted, new_id })
+}
+
+/// Extracts a `{ accepted }` acknowledgement from a `scene.deleteObject` result.
+pub fn parse_delete_object_result(result: &Value) -> Result<SceneEditResult, SceneError> {
+    parse_scene_edit_result(result, "scene.deleteObject")
+}
+
+/// Extracts a `{ accepted }` acknowledgement from a `scene.reparentObject` result.
+pub fn parse_reparent_object_result(result: &Value) -> Result<SceneEditResult, SceneError> {
+    parse_scene_edit_result(result, "scene.reparentObject")
+}
+
+fn parse_scene_edit_result(result: &Value, method: &str) -> Result<SceneEditResult, SceneError> {
+    let obj = result
+        .as_object()
+        .ok_or_else(|| SceneError::UnexpectedShape(format!("{method} result is not an object")))?;
+    Ok(SceneEditResult {
+        accepted: required_bool(obj, "accepted", "result")?,
+    })
+}
 /// Extracts a [`SceneTree`] from a `scene.getTree` `result` value.
 ///
 /// Required: `root`, itself a valid `sceneNode`. Validates the whole tree
@@ -111,6 +159,15 @@ fn parse_children(obj: &Map<String, Value>, path: &str) -> Result<Vec<SceneNode>
     }
 }
 
+/// Returns the required bool at `key`, erroring if absent or not a bool.
+fn required_bool(obj: &Map<String, Value>, key: &str, path: &str) -> Result<bool, SceneError> {
+    let value = obj
+        .get(key)
+        .ok_or_else(|| SceneError::MissingField(format!("{path}.{key}")))?;
+    value
+        .as_bool()
+        .ok_or_else(|| SceneError::InvalidField(format!("{path}.{key}")))
+}
 /// Returns the required string at `key`, erroring if absent or not a string.
 fn required_str<'a>(
     obj: &'a Map<String, Value>,
@@ -247,6 +304,62 @@ mod tests {
         assert!(matches!(
             parse_scene_tree_result(&value),
             Err(SceneError::UnexpectedShape(_))
+        ));
+    }
+    #[test]
+    fn parse_create_object_result_extracts_optional_new_id() {
+        let value = serde_json::json!({ "accepted": true, "newId": "n-new" });
+        let result = parse_create_object_result(&value).expect("parses");
+        assert!(result.accepted);
+        assert_eq!(result.new_id.as_deref(), Some("n-new"));
+    }
+
+    #[test]
+    fn parse_create_object_result_accepts_missing_new_id() {
+        let value = serde_json::json!({ "accepted": true });
+        let result = parse_create_object_result(&value).expect("parses");
+        assert!(result.accepted);
+        assert_eq!(result.new_id, None);
+    }
+
+    #[test]
+    fn parse_create_object_result_rejects_bad_new_id_type() {
+        let value = serde_json::json!({ "accepted": true, "newId": 42 });
+        assert!(matches!(
+            parse_create_object_result(&value),
+            Err(SceneError::InvalidField(f)) if f == "result.newId"
+        ));
+    }
+
+    #[test]
+    fn parse_delete_object_result_extracts_accepted() {
+        let value = serde_json::json!({ "accepted": true });
+        let result = parse_delete_object_result(&value).expect("parses");
+        assert!(result.accepted);
+    }
+
+    #[test]
+    fn parse_reparent_object_result_extracts_accepted() {
+        let value = serde_json::json!({ "accepted": false });
+        let result = parse_reparent_object_result(&value).expect("parses");
+        assert!(!result.accepted);
+    }
+
+    #[test]
+    fn parse_scene_edit_result_rejects_missing_accepted() {
+        let value = serde_json::json!({});
+        assert!(matches!(
+            parse_delete_object_result(&value),
+            Err(SceneError::MissingField(f)) if f == "result.accepted"
+        ));
+    }
+
+    #[test]
+    fn parse_scene_edit_result_rejects_non_bool_accepted() {
+        let value = serde_json::json!({ "accepted": "yes" });
+        assert!(matches!(
+            parse_reparent_object_result(&value),
+            Err(SceneError::InvalidField(f)) if f == "result.accepted"
         ));
     }
 }

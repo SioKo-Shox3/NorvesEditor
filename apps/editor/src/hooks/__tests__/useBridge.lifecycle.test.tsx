@@ -324,6 +324,130 @@ describe('useBridgeActions — stopProcess', () => {
 });
 
 // -------------------------------------------------------------------------
+// scene edit actions — invoke + refresh + degradation
+// -------------------------------------------------------------------------
+
+describe('useBridgeActions — scene edit actions', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('createObject invokes scene_create_object, refreshes the tree, and selects newId', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_create_object') return Promise.resolve({ accepted: true, newId: 'n-new' });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root', children: [{ id: 'n-new' }] } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.actions.createObject('root', 'object')).resolves.toEqual({
+        accepted: true,
+        newId: 'n-new',
+      });
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('scene_create_object', {
+      parentId: 'root',
+      kind: 'object',
+    });
+    expect(tauriCore.invoke).toHaveBeenCalledWith('scene_get_tree', undefined);
+    expect(result.current.state.selectedObjectId).toBe('n-new');
+    expect(result.current.state.sceneTree?.id).toBe('root');
+  });
+
+  it('deleteObject clears selection/snapshot only when accepted', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_delete_object') return Promise.resolve({ accepted: true });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({ type: 'objectSelected', id: 'n-1' });
+      result.current.dispatch({
+        type: 'objectSnapshotLoaded',
+        snapshot: { objectId: 'n-1', properties: [{ name: 'label', value: 'x' }] },
+      });
+    });
+
+    await act(async () => {
+      await expect(result.current.actions.deleteObject('n-1')).resolves.toEqual({ accepted: true });
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('scene_delete_object', { objectId: 'n-1' });
+    expect(result.current.state.selectedObjectId).toBeUndefined();
+    expect(result.current.state.objectSnapshot).toBeUndefined();
+  });
+
+  it('reparentObject omits newParentId for root moves and keeps selection', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_reparent_object') return Promise.resolve({ accepted: true });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root', children: [{ id: 'n-1' }] } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({ type: 'objectSelected', id: 'n-1' });
+    });
+
+    await act(async () => {
+      await expect(result.current.actions.reparentObject('n-1')).resolves.toEqual({ accepted: true });
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('scene_reparent_object', { objectId: 'n-1' });
+    expect(result.current.state.selectedObjectId).toBe('n-1');
+  });
+
+  it('METHOD_NOT_SUPPORTED marks sceneEditUnsupported without changing lastError or connection status', async () => {
+    const engineErr = { kind: 'engine', code: 'METHOD_NOT_SUPPORTED', message: 'no scene edit' };
+    (tauriCore.invoke as Mock).mockRejectedValue(engineErr);
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({ type: 'connectionStateChanged', payload: { connected: true, sessionId: 's' } });
+    });
+
+    await act(async () => {
+      await expect(result.current.actions.createObject()).resolves.toEqual({ accepted: false });
+    });
+
+    expect(result.current.state.sceneEditUnsupported).toBe(true);
+    expect(result.current.state.connection.status).toBe('connected');
+    expect(result.current.state.lastError).toBeUndefined();
+  });
+});
+// -------------------------------------------------------------------------
 // (f) getObjectSnapshot / getSchemaSnapshot — invoke + dispatch + degradation
 // -------------------------------------------------------------------------
 
