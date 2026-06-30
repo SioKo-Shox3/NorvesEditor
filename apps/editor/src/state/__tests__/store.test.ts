@@ -794,6 +794,56 @@ describe('scene snapshot is cleared on disconnect', () => {
   });
 });
 
+
+describe('scene edit capability and delete state', () => {
+  it('sceneEditUnsupported marks scene edit as unavailable without changing connection error state', () => {
+    const state: BridgeState = { ...INITIAL_STATE, connection: { status: 'connected' } };
+    const next = applyAction({ type: 'sceneEditUnsupported' }, state);
+    expect(next.sceneEditUnsupported).toBe(true);
+    expect(next.connection.status).toBe('connected');
+    expect(next.lastError).toBeUndefined();
+  });
+
+  it('connectionStateChanged(connected:true) clears a stale scene edit unsupported marker', () => {
+    const state: BridgeState = { ...INITIAL_STATE, sceneEditUnsupported: true };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: true, sessionId: 's' } },
+      state,
+    );
+    expect(next.sceneEditUnsupported).toBe(false);
+  });
+
+  it('engineProcessExited clears scene edit unsupported marker', () => {
+    const state: BridgeState = { ...INITIAL_STATE, sceneEditUnsupported: true };
+    const next = applyAction(
+      { type: 'engineProcessExited', payload: { exitCode: 0 } },
+      state,
+    );
+    expect(next.sceneEditUnsupported).toBeUndefined();
+  });
+
+  it('sceneObjectDeleted clears selection and snapshot only for accepted deletes', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      selectedObjectId: 'n-1',
+      objectSnapshot: { objectId: 'n-1', properties: [{ name: 'label', value: 'x' }] },
+    };
+    const next = applyAction({ type: 'sceneObjectDeleted', accepted: true }, state);
+    expect(next.selectedObjectId).toBeUndefined();
+    expect(next.objectSnapshot).toBeUndefined();
+  });
+
+  it('sceneObjectDeleted keeps selection and snapshot when accepted is false', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      selectedObjectId: 'n-1',
+      objectSnapshot: { objectId: 'n-1', properties: [{ name: 'label', value: 'x' }] },
+    };
+    const next = applyAction({ type: 'sceneObjectDeleted', accepted: false }, state);
+    expect(next.selectedObjectId).toBe('n-1');
+    expect(next.objectSnapshot?.objectId).toBe('n-1');
+  });
+});
 // -------------------------------------------------------------------------
 // objectSnapshotLoaded / schemaSnapshotLoaded / objectSnapshotUnsupported
 // -------------------------------------------------------------------------

@@ -206,6 +206,65 @@ reference into engine live memory (see
 | --- | --- | --- | --- |
 | `root` | `sceneNode` | yes | root of the snapshotted (sub)tree; `children` recurses via `sceneNode`. |
 
+### scene.createObject
+
+Create one generic scene object. The request/result are DTO values only; returned
+ids are opaque handles, not references into engine live memory. Schemas:
+[params](../schema/methods/scene.createObject.params.schema.json),
+[result](../schema/methods/scene.createObject.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `parentId` | `objectId` | no | parent object; absent means create at the scene root. |
+| `kind` | string | no | optional generic object kind/classification. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `accepted` | boolean | yes | whether the engine accepted the create request. |
+| `newId` | `objectId` | no | id assigned to the created object when the engine reports it. |
+
+### scene.deleteObject
+
+Delete one generic scene object by opaque id. Schemas:
+[params](../schema/methods/scene.deleteObject.params.schema.json),
+[result](../schema/methods/scene.deleteObject.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `objectId` | `objectId` | yes | object to delete. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `accepted` | boolean | yes | whether the engine accepted the delete request. |
+
+### scene.reparentObject
+
+Move one generic scene object under a new parent, or to the scene root when
+`newParentId` is omitted. `null` is not used on the wire for root moves. Schemas:
+[params](../schema/methods/scene.reparentObject.params.schema.json),
+[result](../schema/methods/scene.reparentObject.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `objectId` | `objectId` | yes | object to move. |
+| `newParentId` | `objectId` | no | new parent object; absent means move to the scene root. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `accepted` | boolean | yes | whether the engine accepted the reparent request. |
+
 ### object.getSnapshot
 
 Serialized property snapshot of one scene object. The result is a DTO copy of

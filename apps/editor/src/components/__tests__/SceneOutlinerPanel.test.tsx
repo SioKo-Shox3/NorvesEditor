@@ -39,9 +39,12 @@ vi.mock('../../state/BridgeContext.js', () => ({
 
 const selectObject = vi.fn();
 const getSceneTree = vi.fn();
+const createObject = vi.fn();
+const deleteObject = vi.fn();
+const reparentObject = vi.fn();
 
 vi.mock('../../hooks/useBridge.js', () => ({
-  useBridgeActions: () => ({ selectObject, getSceneTree }),
+  useBridgeActions: () => ({ selectObject, getSceneTree, createObject, deleteObject, reparentObject }),
 }));
 
 import { SceneOutlinerPanel } from '../SceneOutlinerPanel.js';
@@ -51,6 +54,9 @@ beforeEach(() => {
   mockState = { ...INITIAL_STATE };
   selectObject.mockClear();
   getSceneTree.mockClear();
+  createObject.mockClear();
+  deleteObject.mockClear();
+  reparentObject.mockClear();
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -291,5 +297,96 @@ describe('SceneOutlinerPanel — live-refresh consume', () => {
     };
     render(<SceneOutlinerPanel {...makeDockviewProps()} />);
     expect(getSceneTree).not.toHaveBeenCalled();
+  });
+});
+
+// -------------------------------------------------------------------------
+// Scene edit toolbar
+// -------------------------------------------------------------------------
+
+describe('SceneOutlinerPanel — scene edit toolbar', () => {
+  it('creates under the selected object when available', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      selectedObjectId: 'n-2',
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    getSceneTree.mockClear();
+
+    fireEvent.click(screen.getByText('追加'));
+
+    expect(createObject).toHaveBeenCalledWith('n-2', undefined);
+    expect(selectObject).not.toHaveBeenCalledWith(undefined);
+  });
+
+  it('creates at root when nothing is selected', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    fireEvent.click(screen.getByText('追加'));
+
+    expect(createObject).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  it('deletes the selected object', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      selectedObjectId: 'n-1',
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    fireEvent.click(screen.getByText('削除'));
+
+    expect(deleteObject).toHaveBeenCalledWith('n-1');
+  });
+
+  it('moves the selected object to root by omitting newParentId', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      selectedObjectId: 'n-1',
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    fireEvent.click(screen.getByText('rootへ移動'));
+
+    expect(reparentObject).toHaveBeenCalledWith('n-1', undefined);
+  });
+
+  it('disables edit controls when scene edit is unsupported', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      selectedObjectId: 'n-1',
+      sceneEditUnsupported: true,
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    expect((screen.getByText('追加').closest('button') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText('削除').closest('button') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText('rootへ移動').closest('button') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('disables delete and root move when nothing is selected', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    expect((screen.getByText('追加').closest('button') as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByText('削除').closest('button') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText('rootへ移動').closest('button') as HTMLButtonElement).disabled).toBe(true);
   });
 });

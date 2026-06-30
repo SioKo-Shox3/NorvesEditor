@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/scene.deleteObject.result.schema.json",
+  "title": "scene.deleteObject response result",
+  "description": "Graceful acknowledgement of a scene.deleteObject request. accepted reports whether the engine performed the deletion. A graceful accepted:false (e.g. the object did not exist) is distinct from an error Result.",
+  "type": "object",
+  "required": ["accepted"],
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "description": "Whether the engine accepted and performed the object deletion.",
+      "type": "boolean"
+    }
+  }
+}

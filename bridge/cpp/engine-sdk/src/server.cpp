@@ -226,6 +226,18 @@ namespace norves::bridge
             {
                 return finish(id, m_Adapter.sceneGetTree(params));
             }
+            if (method == "scene.createObject")
+            {
+                return finish(id, m_Adapter.sceneCreateObject(params));
+            }
+            if (method == "scene.deleteObject")
+            {
+                return finish(id, m_Adapter.sceneDeleteObject(params));
+            }
+            if (method == "scene.reparentObject")
+            {
+                return finish(id, m_Adapter.sceneReparentObject(params));
+            }
             if (method == "object.getSnapshot")
             {
                 return finish(id, m_Adapter.objectGetSnapshot(params));

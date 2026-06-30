@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "request",
+  "id": "req-99",
+  "method": "scene.reparentObject",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "newParentId": "n-2"
+  }
+}
