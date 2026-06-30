@@ -37,6 +37,8 @@ import * as tauriCore from '@tauri-apps/api/core';
 import * as tauriEvent from '@tauri-apps/api/event';
 import { useBridgeSubscriptions, useBridgeActions } from '../useBridge.js';
 import { BridgeProvider, useBridgeDispatch, useBridgeState } from '../../state/BridgeContext.js';
+import { assetKeyForEntry } from '../../state/store.js';
+import type { AssetResolveResult } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Helpers
@@ -62,6 +64,32 @@ function setupListenMock(): Mock[] {
 /** Wrapper that provides real BridgeProvider so the hook has its context. */
 function wrapper({ children }: { children: React.ReactNode }): React.JSX.Element {
   return React.createElement(BridgeProvider, null, children);
+}
+
+function resolveResult(
+  status: AssetResolveResult['status'],
+  logicalPath = 'textures/hero.png',
+): AssetResolveResult {
+  return {
+    status,
+    source: status === 'successCooked' ? 'cooked' : 'none',
+    normalizedLogicalPath: logicalPath,
+    reason: status === 'cookedEntryHashMismatch' ? 'hash mismatch' : undefined,
+  };
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 // -------------------------------------------------------------------------
@@ -639,5 +667,217 @@ describe('useBridgeActions — asset manifest helpers', () => {
     });
     expect(result.current.state.selectedAssetKey).toBeUndefined();
     expect(result.current.state.assetManifest).toBeUndefined();
+  });
+});
+
+// -------------------------------------------------------------------------
+// (i) asset resolve helper — live health overlay + degradation + race guard
+// -------------------------------------------------------------------------
+
+describe('useBridgeActions — resolveAsset', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('invokes asset_resolve and stores the selected asset result by Phase B key', async () => {
+    const resultPayload = resolveResult('successCooked');
+    (tauriCore.invoke as Mock).mockResolvedValue(resultPayload);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const dispatch = useBridgeDispatch();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    const key = assetKeyForEntry({ logicalPath: 'textures/hero.png', variant: 'default' });
+    act(() => {
+      result.current.dispatch({ type: 'assetSelected', key });
+    });
+
+    await act(async () => {
+      await expect(
+        result.current.actions.resolveAsset('textures/hero.png', 'texture', 'default'),
+      ).resolves.toBeUndefined();
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('asset_resolve', {
+      logicalPath: 'textures/hero.png',
+      kind: 'texture',
+      variant: 'default',
+    });
+    expect(result.current.state.assetResolveByKey?.[key]).toEqual(resultPayload);
+    expect(result.current.state.assetCapabilitySupported).toBe(true);
+  });
+
+  it('maps METHOD_NOT_SUPPORTED to unsupported capability without a connection error', async () => {
+    const engineErr = { kind: 'engine', code: 'METHOD_NOT_SUPPORTED', message: 'no asset query' };
+    (tauriCore.invoke as Mock).mockRejectedValue(engineErr);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(
+        result.current.actions.resolveAsset('textures/hero.png', 'texture', 'default'),
+      ).resolves.toBeUndefined();
+    });
+
+    expect(result.current.state.assetCapabilitySupported).toBe(false);
+    expect(result.current.state.assetResolveByKey).toBeUndefined();
+    expect(result.current.state.connection.status).not.toBe('error');
+    expect(result.current.state.lastError).toBeUndefined();
+  });
+
+  it('maps a selected asset resolve error to per-key assetResolveError, not the manifest banner', async () => {
+    const fakeErr = { kind: 'request', message: 'timeout' };
+    (tauriCore.invoke as Mock).mockRejectedValue(fakeErr);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const dispatch = useBridgeDispatch();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    const key = assetKeyForEntry({ logicalPath: 'textures/hero.png', variant: 'default' });
+    act(() => {
+      result.current.dispatch({ type: 'connectionStateChanged', payload: { connected: true } });
+      result.current.dispatch({ type: 'assetSelected', key });
+    });
+
+    await act(async () => {
+      await expect(
+        result.current.actions.resolveAsset('textures/hero.png', 'texture', 'default'),
+      ).resolves.toBeUndefined();
+    });
+
+    // The per-asset health failure is recorded by key...
+    expect(result.current.state.assetResolveErrorByKey?.[key]).toMatchObject(fakeErr);
+    // ...and must NOT raise the manifest-level banner, lastError, or flip the connection.
+    expect(result.current.state.assetError).toBeUndefined();
+    expect(result.current.state.lastError).toBeUndefined();
+    expect(result.current.state.connection.status).toBe('connected');
+  });
+
+  it('discards a stale success when selection changes before asset_resolve returns', async () => {
+    const deferred = createDeferred<AssetResolveResult>();
+    (tauriCore.invoke as Mock).mockReturnValue(deferred.promise);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const dispatch = useBridgeDispatch();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    const keyA = assetKeyForEntry({ logicalPath: 'textures/a.png', variant: 'default' });
+    const keyB = assetKeyForEntry({ logicalPath: 'textures/b.png', variant: 'default' });
+
+    act(() => {
+      result.current.dispatch({ type: 'assetSelected', key: keyA });
+    });
+    const request = result.current.actions.resolveAsset('textures/a.png', 'texture', 'default');
+
+    act(() => {
+      result.current.dispatch({ type: 'assetSelected', key: keyB });
+    });
+
+    await act(async () => {
+      deferred.resolve(resolveResult('successCooked', 'textures/a.png'));
+      await request;
+    });
+
+    expect(result.current.state.selectedAssetKey).toBe(keyB);
+    expect(result.current.state.assetResolveByKey?.[keyA]).toBeUndefined();
+    expect(result.current.state.assetResolveByKey?.[keyB]).toBeUndefined();
+  });
+
+  it('discards a stale non-supported error when selection changes before asset_resolve fails', async () => {
+    const deferred = createDeferred<AssetResolveResult>();
+    (tauriCore.invoke as Mock).mockReturnValue(deferred.promise);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const dispatch = useBridgeDispatch();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    const keyA = assetKeyForEntry({ logicalPath: 'textures/a.png', variant: 'default' });
+    const keyB = assetKeyForEntry({ logicalPath: 'textures/b.png', variant: 'default' });
+
+    act(() => {
+      result.current.dispatch({ type: 'assetSelected', key: keyA });
+    });
+    const request = result.current.actions.resolveAsset('textures/a.png', 'texture', 'default');
+
+    act(() => {
+      result.current.dispatch({ type: 'assetSelected', key: keyB });
+    });
+
+    await act(async () => {
+      deferred.reject({ kind: 'request', message: 'timeout' });
+      await request;
+    });
+
+    expect(result.current.state.selectedAssetKey).toBe(keyB);
+    expect(result.current.state.assetError).toBeUndefined();
+  });
+
+  it('discards a stale result when the connection generation changes mid-flight', async () => {
+    const deferred = createDeferred<AssetResolveResult>();
+    (tauriCore.invoke as Mock).mockReturnValue(deferred.promise);
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const dispatch = useBridgeDispatch();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    const key = assetKeyForEntry({ logicalPath: 'textures/a.png', variant: 'default' });
+
+    // Connection generation 1, asset selected, resolve started on this connection.
+    act(() => {
+      result.current.dispatch({ type: 'connectionStateChanged', payload: { connected: true, sessionId: 's1' } });
+      result.current.dispatch({ type: 'assetSelected', key });
+    });
+    const request = result.current.actions.resolveAsset('textures/a.png', 'texture', 'default');
+
+    // Reconnect (new session) while the same asset stays selected.
+    act(() => {
+      result.current.dispatch({ type: 'connectionStateChanged', payload: { connected: true, sessionId: 's2' } });
+    });
+
+    await act(async () => {
+      deferred.resolve(resolveResult('successCooked', 'textures/a.png'));
+      await request;
+    });
+
+    // The old connection's result must NOT leak into the new connection.
+    expect(result.current.state.selectedAssetKey).toBe(key);
+    expect(result.current.state.assetResolveByKey?.[key]).toBeUndefined();
+    expect(result.current.state.assetCapabilitySupported).toBeUndefined();
   });
 });

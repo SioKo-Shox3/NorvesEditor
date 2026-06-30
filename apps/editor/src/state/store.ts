@@ -32,6 +32,7 @@ import type {
 import type {
   AssetEntry,
   AssetManifestPayload,
+  AssetResolveResult,
   ConnectionStatePayload,
   WorkspacePayload,
 } from '@norves/bridge-ui';
@@ -106,6 +107,24 @@ export interface BridgeState {
    * Bridge connection state.
    */
   assetError?: BackendError;
+  /**
+   * Live asset.resolve health results keyed by assetKeyForEntry(logicalPath,
+   * variant). This is per Bridge connection and overlays the offline manifest
+   * rows; it is never the source of the row set.
+   */
+  assetResolveByKey?: Record<string, AssetResolveResult>;
+  /**
+   * Per-connection asset.resolve FAILURES keyed by assetKeyForEntry. A single
+   * asset's live health probe failing (e.g. timeout) belongs HERE — surfaced as
+   * that row's "未確定" health only — and must NOT touch the shared `assetError`
+   * manifest banner, which is reserved for manifest load/reload failures.
+   */
+  assetResolveErrorByKey?: Record<string, BackendError>;
+  /**
+   * Per-connection asset.resolve capability verdict:
+   *   undefined = not probed yet, false = METHOD_NOT_SUPPORTED, true = supported.
+   */
+  assetCapabilitySupported?: boolean;
   connection: {
     status: ConnectionStatus;
     sessionId?: string;
@@ -197,6 +216,9 @@ export const INITIAL_STATE: BridgeState = {
   logs: [],
   selectedObjectId: undefined,
   selectedAssetKey: undefined,
+  assetResolveByKey: undefined,
+  assetResolveErrorByKey: undefined,
+  assetCapabilitySupported: undefined,
 };
 
 // -------------------------------------------------------------------------
@@ -220,6 +242,10 @@ export type BridgeAction =
   | { type: 'assetSelected'; key: string | undefined }
   | { type: 'assetManifestError'; payload: { error: BackendError } }
   | { type: 'assetErrorDismissed' }
+  | { type: 'assetResolveLoaded'; key: string; result: AssetResolveResult }
+  | { type: 'assetResolveError'; key: string; payload: { error: BackendError } }
+  | { type: 'assetResolveUnsupported' }
+  | { type: 'assetResolveCleared' }
   | { type: 'connectionStateChanged'; payload: ConnectionStatePayload }
   | { type: 'statusUpdated'; payload: GetStatusResult }
   | { type: 'logAppended'; payload: LogMessageEvent; id: number }
@@ -364,6 +390,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         workspace: action.payload,
         assetManifest: workspaceChanged ? undefined : state.assetManifest,
         selectedAssetKey: workspaceChanged ? undefined : state.selectedAssetKey,
+        assetResolveByKey: workspaceChanged ? undefined : state.assetResolveByKey,
+        assetResolveErrorByKey: workspaceChanged ? undefined : state.assetResolveErrorByKey,
+        assetCapabilitySupported: workspaceChanged ? undefined : state.assetCapabilitySupported,
       };
     }
 
@@ -373,6 +402,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         workspace: undefined,
         assetManifest: undefined,
         selectedAssetKey: undefined,
+        assetResolveByKey: undefined,
+        assetResolveErrorByKey: undefined,
+        assetCapabilitySupported: undefined,
       };
     }
 
@@ -391,6 +423,8 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         ...state,
         assetManifest: action.payload,
         selectedAssetKey: selectedStillExists ? state.selectedAssetKey : undefined,
+        assetResolveByKey: undefined,
+        assetResolveErrorByKey: undefined,
         // A successful load clears any prior asset error.
         assetError: undefined,
       };
@@ -402,6 +436,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         assetManifest: undefined,
         selectedAssetKey: undefined,
         assetError: undefined,
+        assetResolveByKey: undefined,
+        assetResolveErrorByKey: undefined,
+        assetCapabilitySupported: undefined,
       };
     }
 
@@ -421,9 +458,61 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       return { ...state, assetError: undefined };
     }
 
+    case 'assetResolveLoaded': {
+      const nextErrors = { ...(state.assetResolveErrorByKey ?? {}) };
+      delete nextErrors[action.key];
+      return {
+        ...state,
+        assetResolveByKey: {
+          ...(state.assetResolveByKey ?? {}),
+          [action.key]: action.result,
+        },
+        assetResolveErrorByKey:
+          Object.keys(nextErrors).length > 0 ? nextErrors : undefined,
+        assetCapabilitySupported: true,
+      };
+    }
+
+    case 'assetResolveError': {
+      // A single asset's live health probe failed. Record it per-key so the row
+      // shows "未確定"; do NOT touch assetError (the manifest banner) or the
+      // connection. Drop any stale success for this key.
+      const nextResolved = { ...(state.assetResolveByKey ?? {}) };
+      delete nextResolved[action.key];
+      return {
+        ...state,
+        assetResolveByKey:
+          Object.keys(nextResolved).length > 0 ? nextResolved : undefined,
+        assetResolveErrorByKey: {
+          ...(state.assetResolveErrorByKey ?? {}),
+          [action.key]: action.payload.error,
+        },
+      };
+    }
+
+    case 'assetResolveUnsupported': {
+      return {
+        ...state,
+        assetResolveByKey: undefined,
+        assetResolveErrorByKey: undefined,
+        assetCapabilitySupported: false,
+      };
+    }
+
+    case 'assetResolveCleared': {
+      return {
+        ...state,
+        assetResolveByKey: undefined,
+        assetResolveErrorByKey: undefined,
+        assetCapabilitySupported: undefined,
+      };
+    }
+
     case 'connectionStateChanged': {
       const p = action.payload;
       const status: ConnectionStatus = p.connected ? 'connected' : 'disconnected';
+      const connectionChanged =
+        state.connection.status !== status || state.connection.sessionId !== p.sessionId;
       return {
         ...state,
         connection: {
@@ -435,6 +524,14 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         },
         // Clear lastError on successful connection
         lastError: p.connected ? undefined : state.lastError,
+        // Live asset.resolve health is scoped to a Bridge connection. A fresh
+        // connection re-probes support; disconnect drops the overlay while the
+        // offline manifest and selection remain in place.
+        assetResolveByKey: p.connected && !connectionChanged ? state.assetResolveByKey : undefined,
+        assetResolveErrorByKey:
+          p.connected && !connectionChanged ? state.assetResolveErrorByKey : undefined,
+        assetCapabilitySupported:
+          p.connected && !connectionChanged ? state.assetCapabilitySupported : undefined,
         // Drop the scene snapshot + selection on disconnect so the Outliner
         // degrades to its disconnected empty state and stale ids cannot linger.
         // A fresh connection also clears any prior "unsupported" marker so the
@@ -524,6 +621,11 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         // The viewport thumbnail (and its verdict) is invalid once the engine dies.
         viewportThumbnail: undefined,
         viewportThumbnailUnsupported: undefined,
+        // Live asset.resolve health is invalid once the engine dies; offline
+        // manifest and selectedAssetKey stay editor-local and are preserved.
+        assetResolveByKey: undefined,
+        assetResolveErrorByKey: undefined,
+        assetCapabilitySupported: undefined,
       };
     }
 

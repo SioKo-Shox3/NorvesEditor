@@ -15,7 +15,7 @@ import {
   type BridgeAction,
   type BridgeState,
 } from '../store.js';
-import type { AssetManifestPayload } from '@norves/bridge-ui';
+import type { AssetManifestPayload, AssetResolveResult } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Helpers
@@ -23,6 +23,14 @@ import type { AssetManifestPayload } from '@norves/bridge-ui';
 
 function applyAction(action: BridgeAction, state: BridgeState = INITIAL_STATE): BridgeState {
   return bridgeReducer(state, action);
+}
+
+function resolveResult(status: AssetResolveResult['status']): AssetResolveResult {
+  return {
+    status,
+    source: status === 'successCooked' ? 'cooked' : 'none',
+    normalizedLogicalPath: 'textures/hero.png',
+  };
 }
 
 // -------------------------------------------------------------------------
@@ -126,14 +134,21 @@ describe('asset manifest state', () => {
   });
 
   it('clears manifest and selection when assetManifestCleared is dispatched', () => {
+    const key = assetKeyForEntry(manifest.assets[0]!);
     const state: BridgeState = {
       ...INITIAL_STATE,
       assetManifest: manifest,
-      selectedAssetKey: assetKeyForEntry(manifest.assets[0]!),
+      selectedAssetKey: key,
+      assetResolveByKey: {
+        [key]: resolveResult('successCooked'),
+      },
+      assetCapabilitySupported: true,
     };
     const next = applyAction({ type: 'assetManifestCleared' }, state);
     expect(next.assetManifest).toBeUndefined();
     expect(next.selectedAssetKey).toBeUndefined();
+    expect(next.assetResolveByKey).toBeUndefined();
+    expect(next.assetCapabilitySupported).toBeUndefined();
   });
 
   it('preserves selection when a reloaded manifest still contains the selected asset', () => {
@@ -189,6 +204,21 @@ describe('asset manifest state', () => {
     expect(next.assetError).toBeUndefined();
   });
 
+  it('assetManifestLoaded clears stale live health while keeping capability verdict', () => {
+    const key = assetKeyForEntry(manifest.assets[0]!);
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      selectedAssetKey: key,
+      assetResolveByKey: {
+        [key]: resolveResult('successCooked'),
+      },
+      assetCapabilitySupported: true,
+    };
+    const next = applyAction({ type: 'assetManifestLoaded', payload: manifest }, state);
+    expect(next.assetResolveByKey).toBeUndefined();
+    expect(next.assetCapabilitySupported).toBe(true);
+  });
+
   it('assetErrorDismissed clears assetError', () => {
     const state: BridgeState = {
       ...INITIAL_STATE,
@@ -199,6 +229,7 @@ describe('asset manifest state', () => {
   });
 
   it('workspace close clears asset manifest state', () => {
+    const key = assetKeyForEntry(manifest.assets[0]!);
     const state: BridgeState = {
       ...INITIAL_STATE,
       workspace: {
@@ -207,27 +238,161 @@ describe('asset manifest state', () => {
         name: 'Project',
       },
       assetManifest: manifest,
-      selectedAssetKey: assetKeyForEntry(manifest.assets[0]!),
+      selectedAssetKey: key,
+      assetResolveByKey: {
+        [key]: resolveResult('successCooked'),
+      },
+      assetCapabilitySupported: true,
     };
     const next = applyAction({ type: 'workspaceClosed' }, state);
     expect(next.workspace).toBeUndefined();
     expect(next.assetManifest).toBeUndefined();
     expect(next.selectedAssetKey).toBeUndefined();
+    expect(next.assetResolveByKey).toBeUndefined();
+    expect(next.assetCapabilitySupported).toBeUndefined();
+  });
+
+  it('workspace change clears stale asset health', () => {
+    const key = assetKeyForEntry(manifest.assets[0]!);
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      workspace: {
+        rootPath: 'C:/OldProject',
+        assetsRoot: 'C:/OldProject/Assets',
+        name: 'OldProject',
+      },
+      assetManifest: manifest,
+      selectedAssetKey: key,
+      assetResolveByKey: {
+        [key]: resolveResult('successCooked'),
+      },
+      assetCapabilitySupported: true,
+    };
+    const next = applyAction(
+      {
+        type: 'workspaceOpened',
+        payload: {
+          rootPath: 'C:/Project',
+          assetsRoot: 'C:/Project/Assets',
+          name: 'Project',
+        },
+      },
+      state,
+    );
+    expect(next.assetManifest).toBeUndefined();
+    expect(next.selectedAssetKey).toBeUndefined();
+    expect(next.assetResolveByKey).toBeUndefined();
+    expect(next.assetCapabilitySupported).toBeUndefined();
   });
 
   it('bridge disconnect preserves offline asset manifest state', () => {
+    const key = assetKeyForEntry(manifest.assets[0]!);
     const state: BridgeState = {
       ...INITIAL_STATE,
       connection: { status: 'connected' },
       assetManifest: manifest,
-      selectedAssetKey: assetKeyForEntry(manifest.assets[0]!),
+      selectedAssetKey: key,
+      assetResolveByKey: {
+        [key]: resolveResult('successCooked'),
+      },
+      assetResolveErrorByKey: { [key]: { kind: 'request', message: 'timeout' } },
+      assetCapabilitySupported: true,
     };
     const next = applyAction(
       { type: 'connectionStateChanged', payload: { connected: false, reason: 'closed' } },
       state,
     );
     expect(next.assetManifest).toEqual(manifest);
-    expect(next.selectedAssetKey).toBe(assetKeyForEntry(manifest.assets[0]!));
+    expect(next.selectedAssetKey).toBe(key);
+    expect(next.assetResolveByKey).toBeUndefined();
+    expect(next.assetResolveErrorByKey).toBeUndefined();
+    expect(next.assetCapabilitySupported).toBeUndefined();
+  });
+
+  it('assetResolveError records per-key failure, isolated from assetError/connection', () => {
+    const key = assetKeyForEntry(manifest.assets[0]!);
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected', sessionId: 's1' },
+      assetManifest: manifest,
+      selectedAssetKey: key,
+      // A stale success exists for this key; the error must supersede it.
+      assetResolveByKey: { [key]: resolveResult('successCooked') },
+    };
+    const next = applyAction(
+      { type: 'assetResolveError', key, payload: { error: { kind: 'request', message: 'timeout' } } },
+      state,
+    );
+    expect(next.assetResolveErrorByKey?.[key]).toEqual({ kind: 'request', message: 'timeout' });
+    expect(next.assetResolveByKey).toBeUndefined();
+    // Per-asset live failure must not raise the manifest banner or touch the connection.
+    expect(next.assetError).toBeUndefined();
+    expect(next.connection).toEqual(state.connection);
+  });
+
+  it('assetResolveLoaded clears a prior per-key resolve error', () => {
+    const key = assetKeyForEntry(manifest.assets[0]!);
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      assetResolveErrorByKey: { [key]: { kind: 'request', message: 'timeout' } },
+    };
+    const next = applyAction(
+      { type: 'assetResolveLoaded', key, result: resolveResult('successCooked') },
+      state,
+    );
+    expect(next.assetResolveByKey?.[key]).toEqual(resolveResult('successCooked'));
+    expect(next.assetResolveErrorByKey).toBeUndefined();
+  });
+});
+
+describe('asset resolve live health state', () => {
+  it('assetResolveLoaded stores result by asset key and marks capability supported', () => {
+    const key = assetKeyForEntry({ logicalPath: 'textures/hero.png', variant: 'default' });
+    const result = resolveResult('successCooked');
+    const next = applyAction({ type: 'assetResolveLoaded', key, result });
+    expect(next.assetResolveByKey?.[key]).toEqual(result);
+    expect(next.assetCapabilitySupported).toBe(true);
+  });
+
+  it('assetResolveUnsupported marks capability unsupported and clears stale health', () => {
+    const key = assetKeyForEntry({ logicalPath: 'textures/hero.png', variant: 'default' });
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      assetResolveByKey: {
+        [key]: resolveResult('successCooked'),
+      },
+      assetCapabilitySupported: true,
+    };
+    const next = applyAction({ type: 'assetResolveUnsupported' }, state);
+    expect(next.assetCapabilitySupported).toBe(false);
+    expect(next.assetResolveByKey).toBeUndefined();
+  });
+
+  it('assetResolveCleared clears health and capability verdict', () => {
+    const key = assetKeyForEntry({ logicalPath: 'textures/hero.png', variant: 'default' });
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      assetResolveByKey: {
+        [key]: resolveResult('successCooked'),
+      },
+      assetCapabilitySupported: true,
+    };
+    const next = applyAction({ type: 'assetResolveCleared' }, state);
+    expect(next.assetResolveByKey).toBeUndefined();
+    expect(next.assetCapabilitySupported).toBeUndefined();
+  });
+
+  it('connectionStateChanged(connected:true) resets capability to unknown', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      assetCapabilitySupported: false,
+    };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: true, sessionId: 's1' } },
+      state,
+    );
+    expect(next.assetCapabilitySupported).toBeUndefined();
   });
 });
 
@@ -448,6 +613,33 @@ describe('engineProcessExited', () => {
     expect(next.engineState).toBeUndefined();
     expect(next.runtimeState).toBeUndefined();
     expect(next.connection.status).toBe('disconnected');
+  });
+
+  it('clears live asset health but keeps offline manifest and selection', () => {
+    const manifest: AssetManifestPayload = {
+      version: 1,
+      manifestPath: 'C:/Project/manifest.json',
+      assets: [{ logicalPath: 'textures/hero.png', kind: 'texture', variant: 'default' }],
+    };
+    const key = assetKeyForEntry(manifest.assets[0]!);
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      assetManifest: manifest,
+      selectedAssetKey: key,
+      assetResolveByKey: {
+        [key]: resolveResult('successCooked'),
+      },
+      assetCapabilitySupported: true,
+    };
+    const next = applyAction(
+      { type: 'engineProcessExited', payload: { exitCode: 0 } },
+      state,
+    );
+    expect(next.assetManifest).toEqual(manifest);
+    expect(next.selectedAssetKey).toBe(key);
+    expect(next.assetResolveByKey).toBeUndefined();
+    expect(next.assetCapabilitySupported).toBeUndefined();
   });
 });
 
