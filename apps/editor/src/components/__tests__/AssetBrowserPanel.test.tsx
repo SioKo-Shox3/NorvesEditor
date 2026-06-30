@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
-import type { AssetManifestPayload } from '@norves/bridge-ui';
+import type { AssetManifestPayload, AssetResolveResult } from '@norves/bridge-ui';
 import type { BridgeState } from '../../state/store.js';
 import { assetKeyForEntry, INITIAL_STATE } from '../../state/store.js';
 
@@ -70,6 +70,15 @@ const DEMO_MANIFEST: AssetManifestPayload = {
     },
   ],
 };
+
+function resolveResult(status: AssetResolveResult['status']): AssetResolveResult {
+  return {
+    status,
+    source: status === 'successCooked' ? 'cooked' : 'none',
+    normalizedLogicalPath: 'textures/hero.png',
+    reason: status === 'cookedEntryHashMismatch' ? 'cooked hash does not match' : undefined,
+  };
+}
 
 describe('AssetBrowserPanel — manifest path and loading', () => {
   it('defaults the manifest path to <rootPath>/manifest.json when workspace exists', () => {
@@ -153,7 +162,7 @@ describe('AssetBrowserPanel — degradation states', () => {
 });
 
 describe('AssetBrowserPanel — grouped list and selection', () => {
-  it('renders assets grouped by kind with logicalPath, variant, and unknown health', () => {
+  it('renders assets grouped by kind with logicalPath, variant, and disconnected health', () => {
     mockState = {
       ...INITIAL_STATE,
       assetManifest: DEMO_MANIFEST,
@@ -165,7 +174,7 @@ describe('AssetBrowserPanel — grouped list and selection', () => {
     expect(screen.getByText('materials/hero.mat')).toBeTruthy();
     expect(screen.getByText('default')).toBeTruthy();
     expect(screen.getByText('mobile')).toBeTruthy();
-    expect(screen.getAllByText('未検証')).toHaveLength(2);
+    expect(screen.getAllByText('未検証(未接続)')).toHaveLength(2);
   });
 
   it('selects the clicked asset key', () => {
@@ -216,5 +225,104 @@ describe('AssetBrowserPanel — grouped list and selection', () => {
     render(<AssetBrowserPanel {...makeDockviewProps()} />);
     const selectedRow = screen.getByText('materials/hero.mat').closest('button');
     expect(selectedRow?.className).toContain('scene-node__row--selected');
+  });
+});
+
+describe('AssetBrowserPanel — live health column', () => {
+  it('shows 未対応 for all rows when the engine does not support asset.resolve', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      assetManifest: DEMO_MANIFEST,
+      connection: { status: 'connected' },
+      assetCapabilitySupported: false,
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+    expect(screen.getAllByText('未対応')).toHaveLength(2);
+  });
+
+  it('shows selected cooked success while non-selected rows remain 未検証', () => {
+    const selectedKey = assetKeyForEntry(DEMO_MANIFEST.assets[0]!);
+    mockState = {
+      ...INITIAL_STATE,
+      assetManifest: DEMO_MANIFEST,
+      selectedAssetKey: selectedKey,
+      connection: { status: 'connected' },
+      assetResolveByKey: {
+        [selectedKey]: resolveResult('successCooked'),
+      },
+      assetCapabilitySupported: true,
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+    expect(screen.getByText('cooked OK')).toBeTruthy();
+    expect(screen.getAllByText('未検証')).toHaveLength(1);
+  });
+
+  it('shows selected hash mismatch while non-selected rows remain 未検証', () => {
+    const selectedKey = assetKeyForEntry(DEMO_MANIFEST.assets[0]!);
+    mockState = {
+      ...INITIAL_STATE,
+      assetManifest: DEMO_MANIFEST,
+      selectedAssetKey: selectedKey,
+      connection: { status: 'connected' },
+      assetResolveByKey: {
+        [selectedKey]: resolveResult('cookedEntryHashMismatch'),
+      },
+      assetCapabilitySupported: true,
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+    expect(screen.getByText('hash mismatch')).toBeTruthy();
+    expect(screen.getAllByText('未検証')).toHaveLength(1);
+  });
+
+  it('shows 確認中 for the selected connected row before a result arrives', () => {
+    const selectedKey = assetKeyForEntry(DEMO_MANIFEST.assets[1]!);
+    mockState = {
+      ...INITIAL_STATE,
+      assetManifest: DEMO_MANIFEST,
+      selectedAssetKey: selectedKey,
+      connection: { status: 'connected' },
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+    expect(screen.getByText('確認中')).toBeTruthy();
+    expect(screen.getAllByText('未検証')).toHaveLength(1);
+  });
+
+  it('shows a selected asset resolve failure as 未確定 without a manifest banner', () => {
+    const selectedKey = assetKeyForEntry(DEMO_MANIFEST.assets[0]!);
+    mockState = {
+      ...INITIAL_STATE,
+      assetManifest: DEMO_MANIFEST,
+      selectedAssetKey: selectedKey,
+      connection: { status: 'connected' },
+      assetResolveErrorByKey: { [selectedKey]: { kind: 'request', message: 'timeout' } },
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+    expect(screen.getByText('未確定')).toBeTruthy();
+    expect(screen.getAllByText('未検証')).toHaveLength(1);
+    // A per-asset resolve failure must NOT raise the manifest-level error banner.
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('keeps rows stable across connect and disconnect while health changes', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      assetManifest: DEMO_MANIFEST,
+      connection: { status: 'connected' },
+    };
+    const { rerender } = render(<AssetBrowserPanel {...makeDockviewProps()} />);
+    expect(screen.getByText('textures/hero.png')).toBeTruthy();
+    expect(screen.getByText('materials/hero.mat')).toBeTruthy();
+    expect(screen.getAllByText('未検証')).toHaveLength(2);
+
+    mockState = {
+      ...mockState,
+      connection: { status: 'disconnected' },
+      assetResolveByKey: undefined,
+      assetCapabilitySupported: undefined,
+    };
+    rerender(<AssetBrowserPanel {...makeDockviewProps()} />);
+    expect(screen.getByText('textures/hero.png')).toBeTruthy();
+    expect(screen.getByText('materials/hero.mat')).toBeTruthy();
+    expect(screen.getAllByText('未検証(未接続)')).toHaveLength(2);
   });
 });

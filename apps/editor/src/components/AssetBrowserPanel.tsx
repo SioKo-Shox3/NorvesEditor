@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
-import type { AssetEntry } from '@norves/bridge-ui';
+import type { AssetEntry, AssetResolveResult } from '@norves/bridge-ui';
 import { useBridgeState } from '../state/BridgeContext.js';
 import { useBridgeActions } from '../hooks/useBridge.js';
 import { assetKeyForEntry } from '../state/store.js';
@@ -38,6 +38,7 @@ export function AssetBrowserPanel(_props: IDockviewPanelProps): React.JSX.Elemen
   const groupedAssets = useMemo(() => groupAssetsByKind(assets), [assets]);
   const selectedAssetKey = state.selectedAssetKey;
   const hasManifest = state.assetManifest !== undefined;
+  const isConnected = state.connection.status === 'connected';
   // Show asset errors whether or not a manifest is already loaded, so a failed
   // *reload* is visible instead of silently keeping the stale list. Uses the
   // dedicated assetError field, never the shared lastError.
@@ -121,6 +122,7 @@ export function AssetBrowserPanel(_props: IDockviewPanelProps): React.JSX.Elemen
                   {entries.map((entry) => {
                     const key = assetKeyForEntry(entry);
                     const selected = key === selectedAssetKey;
+                    const resolve = selected ? state.assetResolveByKey?.[key] : undefined;
                     return (
                       <li className="scene-node" key={key}>
                         <button
@@ -131,7 +133,17 @@ export function AssetBrowserPanel(_props: IDockviewPanelProps): React.JSX.Elemen
                         >
                           <span className="scene-node__name">{entry.logicalPath}</span>
                           <span className="scene-node__kind">{entry.variant ?? 'default'}</span>
-                          <span className="scene-node__kind">未検証</span>
+                          <span className="scene-node__kind">
+                            {healthLabel({
+                              isConnected,
+                              capabilitySupported: state.assetCapabilitySupported,
+                              selected,
+                              resolve,
+                              resolveErrorMessage: selected
+                                ? state.assetResolveErrorByKey?.[key]?.message
+                                : undefined,
+                            })}
+                          </span>
                         </button>
                       </li>
                     );
@@ -164,4 +176,59 @@ function groupAssetsByKind(assets: AssetEntry[]): Array<[string, AssetEntry[]]> 
     }
   }
   return Array.from(groups.entries()).sort(([left], [right]) => left.localeCompare(right));
+}
+
+interface HealthLabelInput {
+  isConnected: boolean;
+  capabilitySupported: boolean | undefined;
+  selected: boolean;
+  resolve: AssetResolveResult | undefined;
+  /** Per-key live resolve failure for this row (not the manifest banner). */
+  resolveErrorMessage: string | undefined;
+}
+
+function healthLabel(input: HealthLabelInput): string {
+  if (!input.isConnected) {
+    return '未検証(未接続)';
+  }
+  if (input.capabilitySupported === false) {
+    return '未対応';
+  }
+  if (!input.selected) {
+    return '未検証';
+  }
+  if (input.resolve !== undefined) {
+    return statusLabel(input.resolve.status);
+  }
+  if (input.resolveErrorMessage !== undefined) {
+    return '未確定';
+  }
+  return '確認中';
+}
+
+function statusLabel(status: AssetResolveResult['status']): string {
+  switch (status) {
+    case 'successCooked':
+      return 'cooked OK';
+    case 'successLoose':
+      return 'loose';
+    case 'cookedEntryHashMismatch':
+      return 'hash mismatch';
+    case 'invalidRequest':
+      return 'invalid request';
+    case 'invalidManifest':
+      return 'invalid manifest';
+    case 'looseReadFailed':
+      return 'loose read failed';
+    case 'cookedPackageReadFailed':
+      return 'package read failed';
+    case 'cookedPackageParseFailed':
+      return 'package parse failed';
+    case 'cookedEntryMissing':
+      return 'entry missing';
+    default: {
+      const _exhaustive: never = status;
+      return _exhaustive;
+    }
+  }
 }

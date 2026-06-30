@@ -23,6 +23,7 @@ import {
   BRIDGE_COMMANDS,
   BRIDGE_EVENTS,
   assetReadManifest,
+  assetResolve,
   workspaceOpen,
   workspaceGet,
   workspaceClose,
@@ -49,7 +50,8 @@ import type {
   SetObjectPropertyResult,
   ViewportThumbnail,
 } from '@norves/bridge-ui';
-import { useBridgeDispatch } from '../state/BridgeContext.js';
+import { useBridgeDispatch, useBridgeState } from '../state/BridgeContext.js';
+import { assetKeyForEntry } from '../state/store.js';
 
 // -------------------------------------------------------------------------
 // Monotonic log-entry id (simple counter, avoids Date.now/Math.random churn)
@@ -281,6 +283,12 @@ export interface BridgeActions {
   getWorkspace: () => Promise<void>;
   closeWorkspace: () => Promise<void>;
   readAssetManifest: (manifestPath: string) => Promise<void>;
+  /**
+   * Resolve the currently selected asset through asset.resolve and overlay its
+   * live health in the store. Late results for no-longer-selected assets are
+   * discarded by comparing the request key with the latest selectedAssetKey.
+   */
+  resolveAsset: (logicalPath: string, kind?: string, variant?: string) => Promise<void>;
   selectAsset: (key: string) => void;
   clearAssetManifest: () => void;
   /** Dismiss (clear) the current asset-manifest error from the store. */
@@ -360,6 +368,14 @@ export interface BridgeActions {
  */
 export function useBridgeActions(): BridgeActions {
   const dispatch = useBridgeDispatch();
+  const state = useBridgeState();
+  const selectedAssetKeyRef = useRef(state.selectedAssetKey);
+  selectedAssetKeyRef.current = state.selectedAssetKey;
+  // Connection generation guard: a live asset.resolve started on one connection
+  // must not apply its result (health or capability) to a different connection
+  // after a disconnect/reconnect, even if the same asset stays selected.
+  const connectionSessionIdRef = useRef(state.connection.sessionId);
+  connectionSessionIdRef.current = state.connection.sessionId;
 
   const openWorkspace = useCallback(async (rootPath: string): Promise<void> => {
     try {
@@ -404,6 +420,47 @@ export function useBridgeActions(): BridgeActions {
       dispatch({ type: 'assetManifestError', payload: { error: { kind, message } } });
     }
   }, [dispatch]);
+
+  const resolveAsset = useCallback(
+    async (logicalPath: string, kind?: string, variant?: string): Promise<void> => {
+      const key = assetKeyForEntry({ logicalPath, variant });
+      const startSessionId = connectionSessionIdRef.current;
+      // True only if the Bridge connection generation is unchanged since this
+      // probe started (a reconnect changes sessionId).
+      const sameConnection = (): boolean =>
+        connectionSessionIdRef.current === startSessionId;
+      try {
+        const result = await assetResolve(logicalPath, kind, variant);
+        // Discard if the selection OR the connection changed while in flight.
+        if (selectedAssetKeyRef.current !== key || !sameConnection()) {
+          return;
+        }
+        dispatch({ type: 'assetResolveLoaded', key, result });
+      } catch (err: unknown) {
+        // METHOD_NOT_SUPPORTED is a connection-wide capability verdict, valid
+        // even if the selection changed — but only for THIS connection
+        // generation, so drop it if a reconnect happened mid-flight.
+        if (isMethodNotSupported(err)) {
+          if (sameConnection()) {
+            dispatch({ type: 'assetResolveUnsupported' });
+          }
+          return;
+        }
+        if (selectedAssetKeyRef.current !== key || !sameConnection()) {
+          return;
+        }
+        const { kind: errorKind, message } = extractBackendError(err);
+        // A single asset's live probe failed: record it per-key (shows "未確定"
+        // on that row) WITHOUT raising the manifest-level assetError banner.
+        dispatch({
+          type: 'assetResolveError',
+          key,
+          payload: { error: { kind: errorKind, message } },
+        });
+      }
+    },
+    [dispatch],
+  );
 
   const selectAsset = useCallback((key: string): void => {
     dispatch({ type: 'assetSelected', key });
@@ -731,6 +788,7 @@ export function useBridgeActions(): BridgeActions {
     getWorkspace,
     closeWorkspace,
     readAssetManifest,
+    resolveAsset,
     selectAsset,
     clearAssetManifest,
     dismissAssetError,
