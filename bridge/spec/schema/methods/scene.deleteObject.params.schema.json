@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/scene.deleteObject.params.schema.json",
+  "title": "scene.deleteObject request params",
+  "description": "Request to delete one scene object. objectId is the object to remove. No engine live-memory references appear in the request.",
+  "type": "object",
+  "required": ["objectId"],
+  "additionalProperties": false,
+  "properties": {
+    "objectId": {
+      "description": "Object to delete.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/scene.reparentObject.params.schema.json",
+  "title": "scene.reparentObject request params",
+  "description": "Request to move one scene object under a new parent. objectId is the object to move. newParentId, when present, is the new parent; absent means move the object to the scene root. No engine live-memory references appear in the request.",
+  "type": "object",
+  "required": ["objectId"],
+  "additionalProperties": false,
+  "properties": {
+    "objectId": {
+      "description": "Object to reparent.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    },
+    "newParentId": {
+      "description": "Optional new parent object; absent means move the object to the scene root.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    }
+  }
+}

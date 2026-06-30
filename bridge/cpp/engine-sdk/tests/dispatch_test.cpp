@@ -134,6 +134,22 @@ namespace
             return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"objectId":"n-1"})"));
         }
 
+        Result<JsonValue, BridgeError> sceneCreateObject(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(
+                ParseOrFail(R"({"accepted":true,"newId":"n-new"})"));
+        }
+
+        Result<JsonValue, BridgeError> sceneDeleteObject(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"accepted":true})"));
+        }
+
+        Result<JsonValue, BridgeError> sceneReparentObject(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"accepted":true})"));
+        }
+
         Result<JsonValue, BridgeError> viewportGetThumbnail(const JsonValue& /*params*/) override
         {
             return Result<JsonValue, BridgeError>::ok(
@@ -305,7 +321,8 @@ namespace
         FakeAdapter adapter;  // オプショナルメソッドをオーバーライドしない
         BridgeEngineServer server(adapter);
 
-        const std::string methods[] = {"scene.getTree", "asset.resolve", "asset.getManifest"};
+        const std::string methods[] = {"scene.getTree",      "scene.createObject", "scene.deleteObject",
+                                       "scene.reparentObject", "asset.resolve",      "asset.getManifest"};
         for (std::string_view method : methods)
         {
             const std::string frame = RequestFrame("o-1", method, "");
@@ -327,7 +344,7 @@ namespace
 
     void TestOptionalMethodPassesAdapterResult()
     {
-        OptionalMethodAdapter adapter;  // scene.getTree / object.getSnapshot をオーバーライドする
+        OptionalMethodAdapter adapter;  // scene/object optional methods をオーバーライドする
         BridgeEngineServer server(adapter);
 
         {
@@ -354,6 +371,48 @@ namespace
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"ob-1"});
                 NORVES_CHECK(!env.error.has_value());
                 const JsonValue expected = ParseOrFail(R"({"objectId":"n-1"})");
+                NORVES_CHECK(env.result.has_value() && *env.result == expected);
+            }
+        }
+
+        {
+            const std::string frame = RequestFrame("cr-1", "scene.createObject", R"({"parentId":"n-0"})");
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (response.has_value())
+            {
+                const Envelope env = DecodeOrFail(*response);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"cr-1"});
+                NORVES_CHECK(!env.error.has_value());
+                const JsonValue expected = ParseOrFail(R"({"accepted":true,"newId":"n-new"})");
+                NORVES_CHECK(env.result.has_value() && *env.result == expected);
+            }
+        }
+
+        {
+            const std::string frame = RequestFrame("del-1", "scene.deleteObject", R"({"objectId":"n-1"})");
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (response.has_value())
+            {
+                const Envelope env = DecodeOrFail(*response);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"del-1"});
+                NORVES_CHECK(!env.error.has_value());
+                const JsonValue expected = ParseOrFail(R"({"accepted":true})");
+                NORVES_CHECK(env.result.has_value() && *env.result == expected);
+            }
+        }
+
+        {
+            const std::string frame = RequestFrame("rp-1", "scene.reparentObject", R"({"objectId":"n-1"})");
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (response.has_value())
+            {
+                const Envelope env = DecodeOrFail(*response);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"rp-1"});
+                NORVES_CHECK(!env.error.has_value());
+                const JsonValue expected = ParseOrFail(R"({"accepted":true})");
                 NORVES_CHECK(env.result.has_value() && *env.result == expected);
             }
         }

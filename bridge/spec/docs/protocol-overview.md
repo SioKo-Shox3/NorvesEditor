@@ -73,6 +73,9 @@ runtime.focusViewport
 log.subscribe
 log.unsubscribe
 scene.getTree
+scene.createObject
+scene.deleteObject
+scene.reparentObject
 object.getSnapshot
 object.setProperty
 schema.getSnapshot
@@ -95,8 +98,10 @@ scene.treeChanged
 object.changed
 ```
 
-Scene, object, and schema methods (`scene.getTree`, `object.getSnapshot`,
-`object.setProperty`, `schema.getSnapshot`) are added in phase C4. They carry
+Scene, object, and schema methods (`scene.getTree`, `scene.createObject`,
+`scene.deleteObject`, `scene.reparentObject`, `object.getSnapshot`,
+`object.setProperty`, `schema.getSnapshot`) are additive scene/object/schema
+surface. They carry
 serialized snapshots/DTOs only — never references into engine live memory (see
 [`docs/memory-buffer-policy.md`](../../../docs/memory-buffer-policy.md)).
 

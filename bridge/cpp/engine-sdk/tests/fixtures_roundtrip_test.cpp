@@ -189,10 +189,10 @@ int main()
 
     // 網羅的カウント: Rust リファレンス（D2 合計）と同一。フィクスチャコーパスに
     // 乖離があれば最初にここで検出され、差分を指摘する。
-    NORVES_CHECK_EQ(positive, static_cast<std::size_t>(65));
+    NORVES_CHECK_EQ(positive, static_cast<std::size_t>(71));
     NORVES_CHECK_EQ(envelopeRejectable, static_cast<std::size_t>(14));
-    NORVES_CHECK_EQ(payloadOnly, static_cast<std::size_t>(53));
-    NORVES_CHECK_EQ(positive + envelopeRejectable + payloadOnly, static_cast<std::size_t>(132));
+    NORVES_CHECK_EQ(payloadOnly, static_cast<std::size_t>(62));
+    NORVES_CHECK_EQ(positive + envelopeRejectable + payloadOnly, static_cast<std::size_t>(147));
     NORVES_CHECK_EQ(ignored, static_cast<std::size_t>(0));
 
     std::fprintf(stderr,

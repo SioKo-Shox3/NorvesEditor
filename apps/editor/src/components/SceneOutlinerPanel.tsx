@@ -38,6 +38,7 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
   const isConnected = state.connection.status === 'connected';
   const sceneTree = state.sceneTree;
   const sceneUnsupported = state.sceneUnsupported === true;
+  const sceneEditUnsupported = state.sceneEditUnsupported === true;
   const selectedObjectId = state.selectedObjectId;
   const sceneRefreshRequired = state.sceneRefreshRequired === true;
 
@@ -78,6 +79,22 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
     void actions.getSceneTree();
   };
 
+  const handleCreate = (): void => {
+    void actions.createObject(selectedObjectId, undefined);
+  };
+
+  const handleDelete = (): void => {
+    if (selectedObjectId !== undefined) {
+      void actions.deleteObject(selectedObjectId);
+    }
+  };
+
+  const handleReparentToRoot = (): void => {
+    if (selectedObjectId !== undefined) {
+      void actions.reparentObject(selectedObjectId, undefined);
+    }
+  };
+
   // Clicking a node toggles selection: re-clicking the selected node deselects.
   const handleSelect = (id: string): void => {
     actions.selectObject(id === selectedObjectId ? undefined : id);
@@ -91,6 +108,8 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
   };
 
   const hasTree = sceneTree !== undefined;
+  const editDisabled = !isConnected || sceneEditUnsupported;
+  const selectionRequiredDisabled = editDisabled || selectedObjectId === undefined;
   // "Empty scene" = a root with no children (root itself is still selectable).
   const isEmptyScene = hasTree && (sceneTree.children?.length ?? 0) === 0;
 
@@ -98,17 +117,49 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
     <div className="panel">
       <div className="panel__header">
         <span>Scene Outliner</span>
-        {isConnected && (
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
           <button
             className="btn"
             type="button"
-            onClick={handleRefresh}
-            title="Re-fetch the scene tree (scene.getTree)"
-            style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }}
+            onClick={handleCreate}
+            disabled={editDisabled}
+            title="Create a scene object"
+            style={{ padding: '2px 8px', fontSize: 11 }}
           >
-            更新
+            追加
           </button>
-        )}
+          <button
+            className="btn"
+            type="button"
+            onClick={handleDelete}
+            disabled={selectionRequiredDisabled}
+            title="Delete the selected scene object"
+            style={{ padding: '2px 8px', fontSize: 11 }}
+          >
+            削除
+          </button>
+          <button
+            className="btn"
+            type="button"
+            onClick={handleReparentToRoot}
+            disabled={selectionRequiredDisabled}
+            title="Move the selected scene object to root"
+            style={{ padding: '2px 8px', fontSize: 11 }}
+          >
+            rootへ移動
+          </button>
+          {isConnected && (
+            <button
+              className="btn"
+              type="button"
+              onClick={handleRefresh}
+              title="Re-fetch the scene tree (scene.getTree)"
+              style={{ padding: '2px 8px', fontSize: 11 }}
+            >
+              更新
+            </button>
+          )}
+        </div>
       </div>
 
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
