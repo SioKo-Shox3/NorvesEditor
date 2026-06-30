@@ -1,7 +1,8 @@
 # アセット閲覧MVP + プロジェクト管理 実装計画
 
 > **ステータス**: 承認済み（2026-06-29）。
-> **進捗**: ✅ Phase A（ワークスペース管理、34c8ec8）/ ✅ Phase B（オフライン Asset Browser/Inspector、0efb5e9）/ ✅ Phase C（Bridge プロトコル拡張 `asset.resolve` + `asset.getManifest`、cdc6750、fixtures 124→132）完了・main 統合済み（いずれも実装=Codex / レビュー=Claude impl-reviewer + Codex review 二重 / 全ゲート緑、C++ ctest 含む）。次は Phase D（Bridge live 経路の UI 統合: 健全性オーバーレイ）。Phase E（別リポ NorvesLib）は未着手。
+> **進捗**: ✅ Phase A（ワークスペース管理、34c8ec8）/ ✅ Phase B（オフライン Asset Browser/Inspector、0efb5e9）/ ✅ Phase C（Bridge プロトコル拡張 `asset.resolve` + `asset.getManifest`、cdc6750、fixtures 124→132）/ ✅ Phase D（Bridge live 健全性オーバーレイ、cf783fb）完了・main 統合済み（いずれも実装=Codex / レビュー=Claude impl-reviewer + Codex review 二重 / 全ゲート緑、C++ ctest 含む）。**残るは Phase E（別リポ `../NorvesLib`：列挙API露出 + アダプタ override + `asset.read` token）のみ。** これでエディタ内(NorvesEditor)のアセット閲覧MVPは完結。
+> **Phase D 確定事項**: resolve の一時失敗は専用 `assetResolveErrorByKey`(per-key「未確定」)に閉じ manifest バナー(`assetError`)を汚さない。レースガードは選択キー + 接続世代(sessionId)の両方。live `asset.getManifest` の UI 配線は補助用途のためスコープ外(`asset.resolve` 健全性が主)。実 cooked/loose 健全性の実機確認は Phase E 後。
 > **Phase C 確定事項**: wire の `version`/`cookedVersion` は **integer**（実 NorvesLib uint32・Phase B offline と一致、Phase D で AssetEntry を offline/live 共用するため）。asset 系 IPC 型は Phase B 先例どおり `bridge-ui/ipc-types.ts` に集約（`bridge-types/asset.ts` は作らない）。mock/conformance 不変、`asset.read` token は docs 記載のみ（実広告は Phase E）。
 > **Phase B D3 確定**: ランタイム manifest は `<RuntimeRoot>/manifest.json`（source の `Assets/` とは別、`cooked_package` は RuntimeRoot 相対）。固定探索でなく明示パス `asset_read_manifest(manifest_path)` を採用。manifest 実スキーマ(snake_case): `{version:1, assets:[{logical_path, kind, source_hash, variant, format, cooked_package, entry_name, entry_type, cooked_hash, cooked_version}]}`（loose は cooked 系欠落）。
 > **由来**: ギャップ調査 → planner → plan-reviewer（verdict: approve-with-changes, blocker 0）→ 改訂 を経た最終版。
