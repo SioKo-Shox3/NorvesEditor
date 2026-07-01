@@ -48,6 +48,7 @@ import type {
   SceneCreateObjectResult,
   SceneDeleteObjectResult,
   SceneReparentObjectResult,
+  SceneDuplicateObjectResult,
   ObjectSnapshot,
   SchemaSnapshot,
   SetObjectPropertyResult,
@@ -312,6 +313,10 @@ export interface BridgeActions {
     objectId: string,
     newParentId?: string,
   ) => Promise<SceneReparentObjectResult>;
+  duplicateObject: (
+    objectId: string,
+    newParentId?: string,
+  ) => Promise<SceneDuplicateObjectResult>;
   /**
    * Fetch a single object's property snapshot (object.getSnapshot) for `id` and
    * store it. On METHOD_NOT_SUPPORTED (an engine without object query) this is a
@@ -678,6 +683,42 @@ export function useBridgeActions(): BridgeActions {
     },
     [dispatch, getSceneTree],
   );
+
+  const duplicateObject = useCallback(
+    async (objectId: string, newParentId?: string): Promise<SceneDuplicateObjectResult> => {
+      try {
+        const args: { objectId: string; newParentId?: string } = { objectId };
+        if (newParentId !== undefined) {
+          args.newParentId = newParentId;
+        }
+        const result = await invokeCommand<SceneDuplicateObjectResult>(
+          BRIDGE_COMMANDS.sceneDuplicateObject,
+          args,
+        );
+        if (result.accepted) {
+          await getSceneTree();
+          if (result.newId !== undefined) {
+            dispatch({ type: 'objectSelected', id: result.newId });
+          }
+        }
+        return result;
+      } catch (err: unknown) {
+        if (isMethodNotSupported(err)) {
+          dispatch({ type: 'sceneEditUnsupported' });
+          return { accepted: false };
+        }
+        const { kind: errorKind, message } = extractBackendError(err);
+        dispatch({
+          type: 'errorReported',
+          payload: {
+            error: { code: errorKind ?? 'SCENE_DUPLICATE_OBJECT_FAILED', message },
+          },
+        });
+        throw err;
+      }
+    },
+    [dispatch, getSceneTree],
+  );
   const getObjectSnapshot = useCallback(async (id: string): Promise<void> => {
     try {
       const result = await invokeCommand<ObjectSnapshot>(
@@ -910,6 +951,7 @@ export function useBridgeActions(): BridgeActions {
     createObject,
     deleteObject,
     reparentObject,
+    duplicateObject,
     getObjectSnapshot,
     getSchemaSnapshot,
     setObjectProperty,

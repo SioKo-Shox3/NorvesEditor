@@ -119,6 +119,12 @@ namespace norves::bridge
             return not_supported(params);
         }
 
+        /// @brief scene.duplicateObject。
+        virtual Result<JsonValue, BridgeError> sceneDuplicateObject(const JsonValue& params)
+        {
+            return not_supported(params);
+        }
+
         /// @brief object.getSnapshot。
         virtual Result<JsonValue, BridgeError> objectGetSnapshot(const JsonValue& params)
         {

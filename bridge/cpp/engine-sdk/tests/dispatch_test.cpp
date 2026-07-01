@@ -150,6 +150,12 @@ namespace
             return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"accepted":true})"));
         }
 
+        Result<JsonValue, BridgeError> sceneDuplicateObject(const JsonValue& /*params*/) override
+        {
+            return Result<JsonValue, BridgeError>::ok(
+                ParseOrFail(R"({"accepted":true,"newId":"n-new"})"));
+        }
+
         Result<JsonValue, BridgeError> viewportGetThumbnail(const JsonValue& /*params*/) override
         {
             return Result<JsonValue, BridgeError>::ok(
@@ -321,8 +327,10 @@ namespace
         FakeAdapter adapter;  // オプショナルメソッドをオーバーライドしない
         BridgeEngineServer server(adapter);
 
-        const std::string methods[] = {"scene.getTree",      "scene.createObject", "scene.deleteObject",
-                                       "scene.reparentObject", "asset.resolve",      "asset.getManifest"};
+        const std::string methods[] = {"scene.getTree",         "scene.createObject",
+                                       "scene.deleteObject",    "scene.reparentObject",
+                                       "scene.duplicateObject", "asset.resolve",
+                                       "asset.getManifest"};
         for (std::string_view method : methods)
         {
             const std::string frame = RequestFrame("o-1", method, "");
@@ -413,6 +421,20 @@ namespace
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"rp-1"});
                 NORVES_CHECK(!env.error.has_value());
                 const JsonValue expected = ParseOrFail(R"({"accepted":true})");
+                NORVES_CHECK(env.result.has_value() && *env.result == expected);
+            }
+        }
+
+        {
+            const std::string frame = RequestFrame("dp-1", "scene.duplicateObject", R"({"objectId":"n-1"})");
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (response.has_value())
+            {
+                const Envelope env = DecodeOrFail(*response);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"dp-1"});
+                NORVES_CHECK(!env.error.has_value());
+                const JsonValue expected = ParseOrFail(R"({"accepted":true,"newId":"n-new"})");
                 NORVES_CHECK(env.result.has_value() && *env.result == expected);
             }
         }

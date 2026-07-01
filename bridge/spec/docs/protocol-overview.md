@@ -76,6 +76,7 @@ scene.getTree
 scene.createObject
 scene.deleteObject
 scene.reparentObject
+scene.duplicateObject
 object.getSnapshot
 object.setProperty
 schema.getSnapshot
@@ -99,9 +100,9 @@ object.changed
 ```
 
 Scene, object, and schema methods (`scene.getTree`, `scene.createObject`,
-`scene.deleteObject`, `scene.reparentObject`, `object.getSnapshot`,
-`object.setProperty`, `schema.getSnapshot`) are additive scene/object/schema
-surface. They carry
+`scene.deleteObject`, `scene.reparentObject`, `scene.duplicateObject`,
+`object.getSnapshot`, `object.setProperty`, `schema.getSnapshot`) are additive
+scene/object/schema surface. They carry
 serialized snapshots/DTOs only — never references into engine live memory (see
 [`docs/memory-buffer-policy.md`](../../../docs/memory-buffer-policy.md)).
 

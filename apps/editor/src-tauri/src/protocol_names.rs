@@ -25,6 +25,7 @@ pub mod commands {
     pub const SCENE_CREATE_OBJECT: &str = "scene_create_object";
     pub const SCENE_DELETE_OBJECT: &str = "scene_delete_object";
     pub const SCENE_REPARENT_OBJECT: &str = "scene_reparent_object";
+    pub const SCENE_DUPLICATE_OBJECT: &str = "scene_duplicate_object";
     pub const OBJECT_GET_SNAPSHOT: &str = "object_get_snapshot";
     pub const OBJECT_SET_PROPERTY: &str = "object_set_property";
     pub const SCHEMA_GET_SNAPSHOT: &str = "schema_get_snapshot";
@@ -107,6 +108,11 @@ mod tests {
     #[test]
     fn command_scene_reparent_object() {
         assert_eq!(commands::SCENE_REPARENT_OBJECT, "scene_reparent_object");
+    }
+
+    #[test]
+    fn command_scene_duplicate_object() {
+        assert_eq!(commands::SCENE_DUPLICATE_OBJECT, "scene_duplicate_object");
     }
 
     #[test]
@@ -272,6 +278,7 @@ mod tests {
             commands::SCENE_CREATE_OBJECT,
             commands::SCENE_DELETE_OBJECT,
             commands::SCENE_REPARENT_OBJECT,
+            commands::SCENE_DUPLICATE_OBJECT,
             commands::OBJECT_GET_SNAPSHOT,
             commands::OBJECT_SET_PROPERTY,
             commands::SCHEMA_GET_SNAPSHOT,

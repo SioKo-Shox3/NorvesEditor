@@ -42,9 +42,17 @@ const getSceneTree = vi.fn();
 const createObject = vi.fn();
 const deleteObject = vi.fn();
 const reparentObject = vi.fn();
+const duplicateObject = vi.fn();
 
 vi.mock('../../hooks/useBridge.js', () => ({
-  useBridgeActions: () => ({ selectObject, getSceneTree, createObject, deleteObject, reparentObject }),
+  useBridgeActions: () => ({
+    selectObject,
+    getSceneTree,
+    createObject,
+    deleteObject,
+    reparentObject,
+    duplicateObject,
+  }),
 }));
 
 import { SceneOutlinerPanel } from '../SceneOutlinerPanel.js';
@@ -57,6 +65,7 @@ beforeEach(() => {
   createObject.mockClear();
   deleteObject.mockClear();
   reparentObject.mockClear();
+  duplicateObject.mockClear();
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -362,6 +371,20 @@ describe('SceneOutlinerPanel — scene edit toolbar', () => {
     expect(reparentObject).toHaveBeenCalledWith('n-1', undefined);
   });
 
+  it('duplicates the selected object by omitting newParentId', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      selectedObjectId: 'n-1',
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    fireEvent.click(screen.getByText('複製'));
+
+    expect(duplicateObject).toHaveBeenCalledWith('n-1', undefined);
+  });
+
   it('disables edit controls when scene edit is unsupported', () => {
     mockState = {
       ...INITIAL_STATE,
@@ -375,9 +398,10 @@ describe('SceneOutlinerPanel — scene edit toolbar', () => {
     expect((screen.getByText('追加').closest('button') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByText('削除').closest('button') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByText('rootへ移動').closest('button') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText('複製').closest('button') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('disables delete and root move when nothing is selected', () => {
+  it('disables delete, root move, and duplicate when nothing is selected', () => {
     mockState = {
       ...INITIAL_STATE,
       connection: { status: 'connected' },
@@ -388,5 +412,6 @@ describe('SceneOutlinerPanel — scene edit toolbar', () => {
     expect((screen.getByText('追加').closest('button') as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByText('削除').closest('button') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByText('rootへ移動').closest('button') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText('複製').closest('button') as HTMLButtonElement).disabled).toBe(true);
   });
 });

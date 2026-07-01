@@ -57,3 +57,11 @@ export interface SceneReparentObjectResult {
   /** Whether the engine accepted the reparent request. */
   accepted: boolean;
 }
+
+/** Result of the `scene.duplicateObject` method. */
+export interface SceneDuplicateObjectResult {
+  /** Whether the engine accepted the duplicate request. */
+  accepted: boolean;
+  /** Optional id assigned to the duplicated object. */
+  newId?: ObjectId;
+}
