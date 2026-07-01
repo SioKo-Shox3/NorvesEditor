@@ -1,11 +1,18 @@
 # シーン構造編集 実装計画 — NorvesLib 結線 + rename / duplicate / Undo-Redo
 
-> 状態: **A2 完了**。次は B spike。
+> 状態: **A / A2 / B 完了**。次は C(duplicate) spike または Undo/Redo。
 > - Phase A（プロトコル + 汎用 SDK not_supported フック + エディタ UI）: NorvesEditor
 >   `main` にマージ済み（`3bb092b` / merge）。
 > - Phase A2（NorvesLib アダプタ結線）: NorvesLib `develop` にマージ済み
 >   （`2fe4e802` / merge `22a9ce8b`）。impl-reviewer **APPROVE**、ビルド(Game)/
 >   ctest(EntityTreeTest 1/1)/EOL flip 検査すべて緑。
+> - Phase B（rename: Entity Name + AppendEntityNode 露出、object.setProperty 再利用）:
+>   NorvesLib `develop` にマージ済み（`93b4491d` / merge `ba71dd15`）。impl-reviewer
+>   **APPROVE**、Game ビルド / EntitySubtreeSnapshotTest 1/1 / fixtures 147 /
+>   cargo scene:: 15 passed / EOL flip 検査すべて緑。spike は GO（serialize は name 由来
+>   StableId キーで back-compat 安全、Container::String は全経路対応）。
+>   既知の後続: rename 後の Outliner ラベル即時更新（object.setProperty は
+>   scene.treeChanged 非 emit、Inspector は即時反映）。
 >
 > 本計画は planner + plan-reviewer（別エージェント）を経たレビュー済み計画で、
 > plan-reviewer 評定は **APPROVE-WITH-FIXES**（BLOCKER なし）。下記は SHOULD-FIX /
