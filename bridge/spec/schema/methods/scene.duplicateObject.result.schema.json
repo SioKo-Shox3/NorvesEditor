@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/scene.duplicateObject.result.schema.json",
+  "title": "scene.duplicateObject response result",
+  "description": "Graceful acknowledgement of a scene.duplicateObject request. accepted reports whether the engine performed the duplication. newId, when present, is the opaque id the engine assigned to the copied object; it is a generic string handle, never a live-memory reference or engine pointer.",
+  "type": "object",
+  "required": ["accepted"],
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "description": "Whether the engine accepted and performed the object duplication.",
+      "type": "boolean"
+    },
+    "newId": {
+      "description": "Optional opaque id the engine assigned to the duplicated object.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    }
+  }
+}

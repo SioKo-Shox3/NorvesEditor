@@ -55,6 +55,7 @@ export {
   sceneCreateObject,
   sceneDeleteObject,
   sceneReparentObject,
+  sceneDuplicateObject,
   assetReadManifest,
   assetResolve,
   assetGetManifest,

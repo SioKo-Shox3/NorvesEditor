@@ -422,6 +422,60 @@ describe('useBridgeActions — scene edit actions', () => {
     expect(result.current.state.selectedObjectId).toBe('n-1');
   });
 
+  it('duplicateObject invokes scene_duplicate_object, refreshes the tree, and selects newId', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_duplicate_object') return Promise.resolve({ accepted: true, newId: 'n-copy' });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root', children: [{ id: 'n-1' }, { id: 'n-copy' }] } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await expect(result.current.actions.duplicateObject('n-1')).resolves.toEqual({
+        accepted: true,
+        newId: 'n-copy',
+      });
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('scene_duplicate_object', { objectId: 'n-1' });
+    expect(tauriCore.invoke).toHaveBeenCalledWith('scene_get_tree', undefined);
+    expect(result.current.state.selectedObjectId).toBe('n-copy');
+    expect(result.current.state.sceneTree?.id).toBe('root');
+  });
+
+  it('duplicateObject on METHOD_NOT_SUPPORTED marks sceneEditUnsupported and returns { accepted: false }', async () => {
+    const engineErr = { kind: 'engine', code: 'METHOD_NOT_SUPPORTED', message: 'no scene edit' };
+    (tauriCore.invoke as Mock).mockRejectedValue(engineErr);
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({ type: 'connectionStateChanged', payload: { connected: true, sessionId: 's' } });
+    });
+
+    await act(async () => {
+      await expect(result.current.actions.duplicateObject('n-1')).resolves.toEqual({ accepted: false });
+    });
+
+    expect(result.current.state.sceneEditUnsupported).toBe(true);
+    expect(result.current.state.connection.status).toBe('connected');
+    expect(result.current.state.lastError).toBeUndefined();
+  });
+
   it('METHOD_NOT_SUPPORTED marks sceneEditUnsupported without changing lastError or connection status', async () => {
     const engineErr = { kind: 'engine', code: 'METHOD_NOT_SUPPORTED', message: 'no scene edit' };
     (tauriCore.invoke as Mock).mockRejectedValue(engineErr);

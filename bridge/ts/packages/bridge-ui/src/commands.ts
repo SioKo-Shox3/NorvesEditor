@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   SceneCreateObjectResult,
   SceneDeleteObjectResult,
+  SceneDuplicateObjectResult,
   SceneReparentObjectResult,
 } from '@norves/bridge-types';
 import type {
@@ -34,6 +35,7 @@ export const BRIDGE_COMMANDS = {
   sceneCreateObject: 'scene_create_object',
   sceneDeleteObject: 'scene_delete_object',
   sceneReparentObject: 'scene_reparent_object',
+  sceneDuplicateObject: 'scene_duplicate_object',
   objectGetSnapshot: 'object_get_snapshot',
   objectSetProperty: 'object_set_property',
   schemaGetSnapshot: 'schema_get_snapshot',
@@ -82,6 +84,17 @@ export async function sceneReparentObject(
     args.newParentId = newParentId;
   }
   return invoke<SceneReparentObjectResult>(BRIDGE_COMMANDS.sceneReparentObject, args);
+}
+
+export async function sceneDuplicateObject(
+  objectId: string,
+  newParentId?: string,
+): Promise<SceneDuplicateObjectResult> {
+  const args: { objectId: string; newParentId?: string } = { objectId };
+  if (newParentId !== undefined) {
+    args.newParentId = newParentId;
+  }
+  return invoke<SceneDuplicateObjectResult>(BRIDGE_COMMANDS.sceneDuplicateObject, args);
 }
 export async function workspaceOpen(rootPath: string): Promise<WorkspacePayload> {
   return invoke<WorkspacePayload>(BRIDGE_COMMANDS.workspaceOpen, { rootPath });

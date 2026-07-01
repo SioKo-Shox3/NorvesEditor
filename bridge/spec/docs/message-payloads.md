@@ -265,6 +265,29 @@ Move one generic scene object under a new parent, or to the scene root when
 | --- | --- | --- | --- |
 | `accepted` | boolean | yes | whether the engine accepted the reparent request. |
 
+### scene.duplicateObject
+
+Duplicate one generic scene object by opaque id, placing the copy under
+`newParentId`, or alongside the original when `newParentId` is omitted. The
+request/result are DTO values only; returned ids are opaque handles, not
+references into engine live memory. Schemas:
+[params](../schema/methods/scene.duplicateObject.params.schema.json),
+[result](../schema/methods/scene.duplicateObject.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `objectId` | `objectId` | yes | object to duplicate. |
+| `newParentId` | `objectId` | no | parent object for the copy; absent means place it alongside the original. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `accepted` | boolean | yes | whether the engine accepted the duplicate request. |
+| `newId` | `objectId` | no | id assigned to the duplicated object when the engine reports it. |
+
 ### object.getSnapshot
 
 Serialized property snapshot of one scene object. The result is a DTO copy of

@@ -73,9 +73,10 @@ gracefully (a read-only Inspector). The token is independent of protocol version
 negotiation.
 
 The `scene.edit` token advertises that an engine can edit scene structure. In
-this protocol slice it covers `scene.createObject`, `scene.deleteObject`, and
-`scene.reparentObject`; future additive methods such as rename and duplicate are
-intended to live behind the same token. It is optional and engine-agnostic: an
+this protocol slice it covers `scene.createObject`, `scene.deleteObject`,
+`scene.reparentObject`, and `scene.duplicateObject`; future additive methods such
+as rename are intended to live behind the same token. It is optional and
+engine-agnostic: an
 engine that does not implement scene structure editing omits the token and
 answers these methods with `METHOD_NOT_SUPPORTED`, which the editor degrades on
 gracefully. Actual advertisement by NorvesLib is tracked separately.

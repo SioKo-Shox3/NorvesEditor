@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/scene.duplicateObject.params.schema.json",
+  "title": "scene.duplicateObject request params",
+  "description": "Request to duplicate one scene object. objectId is the object to duplicate. newParentId, when present, is the parent under which to place the copy; absent means place the copy alongside the original. No engine live-memory references appear in the request.",
+  "type": "object",
+  "required": ["objectId"],
+  "additionalProperties": false,
+  "properties": {
+    "objectId": {
+      "description": "Object to duplicate.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    },
+    "newParentId": {
+      "description": "Optional parent object for the copy; absent means place the copy alongside the original.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    }
+  }
+}
