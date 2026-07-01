@@ -44,9 +44,9 @@ pub use object::{
 };
 pub use reconnect::{connect_with_retry, ConnectError, ReconnectManager, RetryConfig};
 pub use scene::{
-    parse_create_object_result, parse_delete_object_result, parse_reparent_object_result,
-    parse_scene_tree_result, SceneCreateObjectResult, SceneEditResult, SceneError, SceneNode,
-    SceneTree,
+    parse_create_object_result, parse_delete_object_result, parse_duplicate_object_result,
+    parse_reparent_object_result, parse_scene_tree_result, SceneCreateObjectResult,
+    SceneEditResult, SceneError, SceneNode, SceneTree,
 };
 pub use seq::observe_event_seq;
 pub use status::{parse_status_result, StatusError, StatusSnapshot};

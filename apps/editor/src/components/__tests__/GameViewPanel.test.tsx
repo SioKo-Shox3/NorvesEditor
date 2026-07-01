@@ -77,6 +77,7 @@ const mockActions = {
   createObject:   vi.fn<BridgeActions['createObject']>().mockResolvedValue({ accepted: true }),
   deleteObject:   vi.fn<BridgeActions['deleteObject']>().mockResolvedValue({ accepted: true }),
   reparentObject: vi.fn<BridgeActions['reparentObject']>().mockResolvedValue({ accepted: true }),
+  duplicateObject: vi.fn<BridgeActions['duplicateObject']>().mockResolvedValue({ accepted: true }),
   getObjectSnapshot: vi.fn<BridgeActions['getObjectSnapshot']>().mockResolvedValue(undefined),
   getSchemaSnapshot: vi.fn<BridgeActions['getSchemaSnapshot']>().mockResolvedValue(undefined),
   setObjectProperty: vi.fn<BridgeActions['setObjectProperty']>().mockResolvedValue({ accepted: true }),
