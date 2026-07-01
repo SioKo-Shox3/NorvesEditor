@@ -1452,3 +1452,312 @@ describe('useBridgeActions — undo/redo execution (S6, id-instability)', () => 
     expect(result.current.state.undoStack).toEqual([{ kind: 'create', createdId: 'a' }]);
   });
 });
+
+// -------------------------------------------------------------------------
+// (k) setObjectProperty undo/redo recording (Phase U2)
+// -------------------------------------------------------------------------
+
+/** Combined hook exposing dispatch + actions + state for U2 property tests. */
+function usePropHook() {
+  const dispatch = useBridgeDispatch();
+  const actions = useBridgeActions();
+  const state = useBridgeState();
+  return { actions, dispatch, state };
+}
+
+/** Seeds a connected store with a selected object snapshot holding one property. */
+function seedSnapshot(
+  dispatch: ReturnType<typeof useBridgeDispatch>,
+  objectId: string,
+  property: string,
+  value: unknown,
+): void {
+  connect(dispatch);
+  dispatch({ type: 'objectSelected', id: objectId });
+  dispatch({
+    type: 'objectSnapshotLoaded',
+    snapshot: {
+      objectId,
+      properties: [{ name: property, value: value as never }],
+    },
+  });
+}
+
+describe('useBridgeActions — setObjectProperty recording (Phase U2)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('records a setProperty undo entry with the captured old value and engine-applied new value', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'object_set_property') return Promise.resolve({ accepted: true, appliedValue: 'New' });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const { result } = renderHook(() => usePropHook(), { wrapper });
+    await act(async () => { seedSnapshot(result.current.dispatch, 'n-1', 'Name', 'Old'); });
+
+    await act(async () => {
+      await result.current.actions.setObjectProperty('n-1', 'Name', 'New');
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('object_set_property', {
+      objectId: 'n-1',
+      property: 'Name',
+      value: 'New',
+    });
+    expect(result.current.state.undoStack).toEqual([
+      { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+    ]);
+    // The snapshot reflects the engine-applied value.
+    expect(result.current.state.objectSnapshot?.properties[0]?.value).toBe('New');
+  });
+
+  it('captures the old value SYNCHRONOUSLY, defeating an object.changed live-race (B1-analog)', async () => {
+    // Use a deferred set-property promise so a live object.changed event can land
+    // BETWEEN the synchronous old-value capture and the resolve. If capture were
+    // deferred (reading the reducer post-await), the recorded oldValue would be
+    // corrupted to the live event's value ('Live'). It must remain 'Old'.
+    const deferred = createDeferred<{ accepted: boolean; appliedValue?: unknown }>();
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'object_set_property') return deferred.promise;
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const { result } = renderHook(() => usePropHook(), { wrapper });
+    await act(async () => { seedSnapshot(result.current.dispatch, 'n-1', 'Name', 'Old'); });
+
+    // Start the write (synchronous capture happens here, reading 'Old').
+    let request!: Promise<unknown>;
+    act(() => {
+      request = result.current.actions.setObjectProperty('n-1', 'Name', 'New');
+    });
+
+    // A live event overwrites the snapshot's property wholesale to 'Live' BEFORE
+    // the write resolves — this is the race the synchronous capture defeats.
+    act(() => {
+      result.current.dispatch({
+        type: 'objectChangedLive',
+        payload: { objectId: 'n-1', properties: [{ name: 'Name', value: 'Live' as never }] },
+      });
+    });
+    // Sanity: the store snapshot really did change under us mid-flight.
+    expect(result.current.state.objectSnapshot?.properties[0]?.value).toBe('Live');
+
+    await act(async () => {
+      deferred.resolve({ accepted: true, appliedValue: 'New' });
+      await request;
+    });
+
+    // The recorded oldValue is the pre-live 'Old', NOT the racing 'Live' value.
+    expect(result.current.state.undoStack).toEqual([
+      { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+    ]);
+  });
+
+  it('records NOTHING when the applied value equals the old value (no-op skip)', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'object_set_property') return Promise.resolve({ accepted: true, appliedValue: 'Same' });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const { result } = renderHook(() => usePropHook(), { wrapper });
+    await act(async () => { seedSnapshot(result.current.dispatch, 'n-1', 'Name', 'Same'); });
+
+    await act(async () => {
+      await result.current.actions.setObjectProperty('n-1', 'Name', 'Same');
+    });
+
+    expect(result.current.state.undoStack).toEqual([]);
+  });
+
+  it('records NOTHING when no old value is available, but still performs the write', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'object_set_property') return Promise.resolve({ accepted: true, appliedValue: 'New' });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const { result } = renderHook(() => usePropHook(), { wrapper });
+    // Connected, but a DIFFERENT object is selected/snapshotted, so no old value
+    // exists for n-1.
+    await act(async () => { seedSnapshot(result.current.dispatch, 'other', 'Name', 'X'); });
+
+    await act(async () => {
+      await result.current.actions.setObjectProperty('n-1', 'Name', 'New');
+    });
+
+    // The write still proceeded...
+    expect(tauriCore.invoke).toHaveBeenCalledWith('object_set_property', {
+      objectId: 'n-1',
+      property: 'Name',
+      value: 'New',
+    });
+    // ...but nothing was recorded (no old value to invert to).
+    expect(result.current.state.undoStack).toEqual([]);
+  });
+});
+
+describe('useBridgeActions — setProperty undo/redo execution (Phase U2)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('undo of a setProperty re-sets the property to oldValue and commits', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = [];
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string, args: unknown) => {
+      calls.push({ cmd, args });
+      if (cmd === 'object_set_property') return Promise.resolve({ accepted: true, appliedValue: (args as { value: unknown }).value });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const { result } = renderHook(() => usePropHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      result.current.dispatch({
+        type: 'recordSceneEdit',
+        command: { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+      });
+    });
+
+    await act(async () => { await result.current.actions.undo(); });
+
+    // Undo issued object_set_property with the OLD value.
+    expect(calls.some((c) => c.cmd === 'object_set_property' && (c.args as { value: unknown }).value === 'Old')).toBe(true);
+    // Entry moved to the redo stack (undoCommitted).
+    expect(result.current.state.undoStack).toEqual([]);
+    expect(result.current.state.redoStack).toEqual([
+      { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+    ]);
+  });
+
+  it('redo of a setProperty re-sets the property to newValue with NO newId (id-stable)', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = [];
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string, args: unknown) => {
+      calls.push({ cmd, args });
+      if (cmd === 'object_set_property') return Promise.resolve({ accepted: true, appliedValue: (args as { value: unknown }).value });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const { result } = renderHook(() => usePropHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      result.current.dispatch({
+        type: 'recordSceneEdit',
+        command: { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+      });
+      result.current.dispatch({ type: 'undoCommitted' }); // move to redo stack
+    });
+    expect(result.current.state.redoStack).toHaveLength(1);
+
+    await act(async () => { await result.current.actions.redo(); });
+
+    // Redo issued object_set_property with the NEW value.
+    expect(calls.some((c) => c.cmd === 'object_set_property' && (c.args as { value: unknown }).value === 'New')).toBe(true);
+    // The entry returned to the undo stack UNCHANGED (id-stable, no newId).
+    expect(result.current.state.undoStack).toEqual([
+      { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+    ]);
+    expect(result.current.state.redoStack).toEqual([]);
+  });
+
+  it('redo-then-undo cycle stays stable and targets the correct value at each step (B-1)', async () => {
+    const propValues: unknown[] = [];
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string, args: unknown) => {
+      if (cmd === 'object_set_property') {
+        propValues.push((args as { value: unknown }).value);
+        return Promise.resolve({ accepted: true, appliedValue: (args as { value: unknown }).value });
+      }
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const { result } = renderHook(() => usePropHook(), { wrapper });
+    await act(async () => { seedSnapshot(result.current.dispatch, 'n-1', 'x', 1); });
+
+    // Forward edit: 1 → 2.
+    await act(async () => { await result.current.actions.setObjectProperty('n-1', 'x', 2); });
+    expect(result.current.state.undoStack).toEqual([
+      { kind: 'setProperty', objectId: 'n-1', property: 'x', oldValue: 1, newValue: 2 },
+    ]);
+
+    await act(async () => { await result.current.actions.undo(); }); // re-set to 1
+    await act(async () => { await result.current.actions.redo(); }); // re-set to 2
+    await act(async () => { await result.current.actions.undo(); }); // re-set to 1
+
+    // The forward write recorded value=2; then undo(1), redo(2), undo(1).
+    expect(propValues).toEqual([2, 1, 2, 1]);
+    // After the final undo the entry sits on the redo stack, unchanged.
+    expect(result.current.state.undoStack).toEqual([]);
+    expect(result.current.state.redoStack).toEqual([
+      { kind: 'setProperty', objectId: 'n-1', property: 'x', oldValue: 1, newValue: 2 },
+    ]);
+  });
+
+  it('undo of a setProperty with accepted:false drops the entry and sets lastError', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'object_set_property') return Promise.resolve({ accepted: false });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const { result } = renderHook(() => usePropHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      result.current.dispatch({
+        type: 'recordSceneEdit',
+        command: { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+      });
+    });
+
+    await act(async () => { await result.current.actions.undo(); });
+
+    expect(result.current.state.undoStack).toEqual([]);
+    expect(result.current.state.lastError?.message).toBeTruthy();
+  });
+
+  it('redo of a setProperty with accepted:false drops the entry and sets lastError', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'object_set_property') return Promise.resolve({ accepted: false });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const { result } = renderHook(() => usePropHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      result.current.dispatch({
+        type: 'recordSceneEdit',
+        command: { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+      });
+      result.current.dispatch({ type: 'undoCommitted' }); // move to redo stack
+    });
+
+    await act(async () => { await result.current.actions.redo(); });
+
+    expect(result.current.state.redoStack).toEqual([]);
+    expect(result.current.state.lastError?.message).toBeTruthy();
+  });
+
+  it('delete purges a pending setProperty undo entry', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_delete_object') return Promise.resolve({ accepted: true });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const { result } = renderHook(() => usePropHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      result.current.dispatch({
+        type: 'recordSceneEdit',
+        command: { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+      });
+    });
+    expect(result.current.state.undoStack).toHaveLength(1);
+
+    await act(async () => { await result.current.actions.deleteObject('n-1'); });
+
+    expect(result.current.state.undoStack).toEqual([]);
+    expect(result.current.state.redoStack).toEqual([]);
+  });
+});
