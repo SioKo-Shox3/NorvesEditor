@@ -55,7 +55,7 @@ import type {
   ViewportThumbnail,
 } from '@norves/bridge-ui';
 import { useBridgeDispatch, useBridgeState } from '../state/BridgeContext.js';
-import { assetKeyForEntry, normalizeOldParentId } from '../state/store.js';
+import { assetKeyForEntry, normalizeOldParentId, propertyValuesEqual } from '../state/store.js';
 
 // -------------------------------------------------------------------------
 // Monotonic log-entry id (simple counter, avoids Date.now/Math.random churn)
@@ -373,18 +373,21 @@ export interface BridgeActions {
    */
   selectObject: (id: string | undefined) => void;
   /**
-   * Undo the most recent recorded scene-structure edit (Phase U1). No-op when
-   * the undo stack is empty, the engine is disconnected, scene edit is
-   * unsupported, or an undo/redo is already in flight. Issues the inverse scene
-   * command DIRECTLY (side-effect-free — does not go through the public wrappers
-   * and never records history), refreshes the tree, then commits the stack move.
+   * Undo the most recent recorded scene-structure edit (Phase U1; U2 adds
+   * setProperty). No-op when the undo stack is empty, the engine is disconnected,
+   * scene edit is unsupported, or an undo/redo is already in flight. Issues the
+   * inverse scene/object command DIRECTLY (side-effect-free — does not go through
+   * the public wrappers and never records history), refreshes the tree, then
+   * commits the stack move. For setProperty the inverse re-sets the property to
+   * the captured oldValue.
    */
   undo: () => Promise<void>;
   /**
-   * Redo the most recently undone scene-structure edit (Phase U1). No-op under
-   * the same guards as undo. Re-issues the FORWARD scene command directly and
-   * commits the stack move; for create/duplicate the re-created object's new id
-   * replaces the stored createdId (id-instability fix).
+   * Redo the most recently undone scene-structure edit (Phase U1; U2 adds
+   * setProperty). No-op under the same guards as undo. Re-issues the FORWARD
+   * scene/object command directly and commits the stack move; for create/duplicate
+   * the re-created object's new id replaces the stored createdId (id-instability
+   * fix). For reparent/setProperty (id-stable) no newId is passed.
    */
   redo: () => Promise<void>;
 }
@@ -841,6 +844,17 @@ export function useBridgeActions(): BridgeActions {
       property: string,
       value: unknown,
     ): Promise<SetObjectPropertyResult> => {
+      // U2: capture the property's CURRENT value SYNCHRONOUSLY, before issuing the
+      // command, from the freshest snapshot (stateRef) — never from the reducer
+      // later, which is racy against live object.changed events that overwrite
+      // objectSnapshot.properties wholesale. Mirrors reparent's B1 oldParent
+      // capture. Only used to record an undoable edit; the write itself proceeds
+      // regardless of whether an old value is available.
+      const priorSnapshot = stateRef.current.objectSnapshot;
+      const oldEntry =
+        priorSnapshot !== undefined && priorSnapshot.objectId === objectId
+          ? priorSnapshot.properties.find((e) => e.name === property)
+          : undefined;
       try {
         const result = await invokeCommand<SetObjectPropertyResult>(
           BRIDGE_COMMANDS.objectSetProperty,
@@ -855,12 +869,32 @@ export function useBridgeActions(): BridgeActions {
             result.appliedValue !== undefined
               ? result.appliedValue
               : (value as SetObjectPropertyResult['appliedValue']);
+          const appliedValue = applied ?? null;
           dispatch({
             type: 'objectPropertyApplied',
             objectId,
             property,
-            appliedValue: applied ?? null,
+            appliedValue,
           });
+          // Record an undoable property edit (U2) only when the old value was
+          // known AND the applied value actually differs (skip no-op writes so
+          // undo/redo history stays meaningful). newValue is the ENGINE-echoed
+          // value, matching what objectPropertyApplied stored above.
+          if (
+            oldEntry !== undefined &&
+            !propertyValuesEqual(oldEntry.value, appliedValue)
+          ) {
+            dispatch({
+              type: 'recordSceneEdit',
+              command: {
+                kind: 'setProperty',
+                objectId,
+                property,
+                oldValue: oldEntry.value,
+                newValue: appliedValue,
+              },
+            });
+          }
         }
         return result;
       } catch (err: unknown) {
@@ -1046,7 +1080,7 @@ export function useBridgeActions(): BridgeActions {
           { objectId: top.createdId },
         );
         accepted = result.accepted;
-      } else {
+      } else if (top.kind === 'reparent') {
         // Inverse of a reparent is a reparent back to the captured oldParentId
         // (undefined => omit newParentId => the engine's nullptr=root path).
         const args: { objectId: string; newParentId?: string } = {
@@ -1060,8 +1094,29 @@ export function useBridgeActions(): BridgeActions {
           args,
         );
         accepted = result.accepted;
+      } else {
+        // top.kind === 'setProperty' (U2; TS narrows here). Inverse is a re-set of
+        // the property to the captured oldValue. Issue the raw command directly
+        // (S6); on accept, reflect the applied value in the snapshot so the
+        // Inspector shows what the engine stored.
+        const result = await invokeCommand<SetObjectPropertyResult>(
+          BRIDGE_COMMANDS.objectSetProperty,
+          { objectId: top.objectId, property: top.property, value: top.oldValue },
+        );
+        accepted = result.accepted;
+        if (accepted) {
+          dispatch({
+            type: 'objectPropertyApplied',
+            objectId: top.objectId,
+            property: top.property,
+            appliedValue: result.appliedValue ?? top.oldValue,
+          });
+        }
       }
       if (accepted) {
+        // Unlike the forward setProperty edit (which does not refresh the tree),
+        // undo/redo here call getSceneTree() via this shared U1 tail; this is
+        // harmless and consistent with how create/reparent undo already behaves.
         await getSceneTree();
         dispatch({ type: 'undoCommitted' });
       } else {
@@ -1134,7 +1189,7 @@ export function useBridgeActions(): BridgeActions {
             message: 'Redo was rejected by the engine.',
           });
         }
-      } else {
+      } else if (top.kind === 'reparent') {
         // reparent: re-apply the forward move. The id is stable, so no newId.
         const args: { objectId: string; newParentId?: string } = {
           objectId: top.objectId,
@@ -1147,6 +1202,31 @@ export function useBridgeActions(): BridgeActions {
           args,
         );
         if (result.accepted) {
+          await getSceneTree();
+          dispatch({ type: 'redoCommitted' });
+        } else {
+          dispatch({
+            type: 'redoFailed',
+            message: 'Redo was rejected by the engine.',
+          });
+        }
+      } else {
+        // top.kind === 'setProperty' (U2; TS narrows here). Re-apply the forward
+        // edit: re-set the property to the captured newValue. The id is stable, so
+        // no newId is passed to redoCommitted (the entry is pushed back unchanged).
+        const result = await invokeCommand<SetObjectPropertyResult>(
+          BRIDGE_COMMANDS.objectSetProperty,
+          { objectId: top.objectId, property: top.property, value: top.newValue },
+        );
+        if (result.accepted) {
+          dispatch({
+            type: 'objectPropertyApplied',
+            objectId: top.objectId,
+            property: top.property,
+            appliedValue: result.appliedValue ?? top.newValue,
+          });
+          // Shared U1 tail: refresh the tree (harmless for setProperty) then
+          // commit the stack move with NO newId (id-stable).
           await getSceneTree();
           dispatch({ type: 'redoCommitted' });
         } else {

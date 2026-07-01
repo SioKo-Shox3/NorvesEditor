@@ -13,6 +13,7 @@ import {
   bridgeReducer,
   findParentId,
   normalizeOldParentId,
+  propertyValuesEqual,
   INITIAL_STATE,
   type BridgeAction,
   type BridgeState,
@@ -1339,6 +1340,40 @@ describe('findParentId / normalizeOldParentId', () => {
   });
 });
 
+describe('propertyValuesEqual (U2)', () => {
+  it('compares primitives (equal)', () => {
+    expect(propertyValuesEqual('a', 'a')).toBe(true);
+    expect(propertyValuesEqual(42, 42)).toBe(true);
+    expect(propertyValuesEqual(true, true)).toBe(true);
+  });
+
+  it('compares primitives (unequal)', () => {
+    expect(propertyValuesEqual('a', 'b')).toBe(false);
+    expect(propertyValuesEqual(42, 43)).toBe(false);
+    expect(propertyValuesEqual(true, false)).toBe(false);
+    // Different primitive types serialize differently.
+    expect(propertyValuesEqual(1, '1')).toBe(false);
+  });
+
+  it('deep-compares arrays', () => {
+    expect(propertyValuesEqual([0, 0, 0], [0, 0, 0])).toBe(true);
+    expect(propertyValuesEqual([1, 2, 3], [1, 2, 4])).toBe(false);
+    expect(propertyValuesEqual([1, 2], [1, 2, 3])).toBe(false);
+  });
+
+  it('deep-compares objects (same key order)', () => {
+    expect(propertyValuesEqual({ x: 1, y: 2 }, { x: 1, y: 2 })).toBe(true);
+    expect(propertyValuesEqual({ x: 1, y: 2 }, { x: 1, y: 3 })).toBe(false);
+    expect(propertyValuesEqual({ nested: { a: [1, 2] } }, { nested: { a: [1, 2] } })).toBe(true);
+  });
+
+  it('handles null', () => {
+    expect(propertyValuesEqual(null, null)).toBe(true);
+    expect(propertyValuesEqual(null, 0)).toBe(false);
+    expect(propertyValuesEqual(null, 'null')).toBe(false);
+  });
+});
+
 describe('recordSceneEdit', () => {
   const createCmd: SceneEditCommand = { kind: 'create', createdId: 'n-new', parentId: 'root' };
 
@@ -1356,6 +1391,23 @@ describe('recordSceneEdit', () => {
     const next = applyAction({ type: 'recordSceneEdit', command: createCmd }, state);
     expect(next.undoStack).toHaveLength(2);
     expect(next.undoStack[1]).toEqual(createCmd);
+    expect(next.redoStack).toEqual([]);
+  });
+
+  it('records a setProperty command: pushes to undoStack and clears redoStack (U2)', () => {
+    const setPropCmd: SceneEditCommand = {
+      kind: 'setProperty',
+      objectId: 'n-1',
+      property: 'Name',
+      oldValue: 'Old',
+      newValue: 'New',
+    };
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      redoStack: [{ kind: 'create', createdId: 'n-old' }],
+    };
+    const next = applyAction({ type: 'recordSceneEdit', command: setPropCmd }, state);
+    expect(next.undoStack).toEqual([setPropCmd]);
     expect(next.redoStack).toEqual([]);
   });
 });
@@ -1418,6 +1470,50 @@ describe('undoCommitted / redoCommitted', () => {
     expect(next.undoStack).toEqual([]);
     expect(next.redoStack).toEqual([]);
   });
+
+  it('redoCommitted returns a setProperty entry unchanged when no newId is passed (U2)', () => {
+    // Highest-risk reducer path: a setProperty entry must be pushed back to the
+    // undo stack with every field intact (no accidental field corruption / crash).
+    const setPropCmd: SceneEditCommand = {
+      kind: 'setProperty',
+      objectId: 'n-1',
+      property: 'Name',
+      oldValue: 'Old',
+      newValue: 'New',
+    };
+    const undone = applyAction(
+      { type: 'undoCommitted' },
+      { ...INITIAL_STATE, undoStack: [setPropCmd], redoStack: [] },
+    );
+    expect(undone.undoStack).toEqual([]);
+    expect(undone.redoStack).toEqual([setPropCmd]);
+
+    const redone = applyAction({ type: 'redoCommitted' }, undone);
+    expect(redone.redoStack).toEqual([]);
+    // Pushed back with objectId/property/oldValue/newValue UNCHANGED.
+    expect(redone.undoStack).toEqual([setPropCmd]);
+  });
+
+  it('undoCommitted preserves LIFO order across mixed kinds (create/setProperty/reparent)', () => {
+    const create: SceneEditCommand = { kind: 'create', createdId: 'a' };
+    const setProp: SceneEditCommand = {
+      kind: 'setProperty',
+      objectId: 'n-1',
+      property: 'x',
+      oldValue: 1,
+      newValue: 2,
+    };
+    const reparent: SceneEditCommand = { kind: 'reparent', objectId: 'n-1', newParentId: 'n-2' };
+    let s: BridgeState = { ...INITIAL_STATE, undoStack: [create, setProp, reparent], redoStack: [] };
+
+    s = applyAction({ type: 'undoCommitted' }, s); // pop reparent
+    s = applyAction({ type: 'undoCommitted' }, s); // pop setProp
+    s = applyAction({ type: 'undoCommitted' }, s); // pop create
+
+    expect(s.undoStack).toEqual([]);
+    // Redo stack is filled in reverse pop order → LIFO across kinds.
+    expect(s.redoStack).toEqual([reparent, setProp, create]);
+  });
 });
 
 describe('undoFailed / redoFailed', () => {
@@ -1445,6 +1541,21 @@ describe('sceneEditHistoryCleared', () => {
       ...INITIAL_STATE,
       undoStack: [{ kind: 'create', createdId: 'a' }],
       redoStack: [{ kind: 'create', createdId: 'b' }],
+    };
+    const next = applyAction({ type: 'sceneEditHistoryCleared' }, state);
+    expect(next.undoStack).toEqual([]);
+    expect(next.redoStack).toEqual([]);
+  });
+
+  it('purges a stack containing a setProperty entry (U2)', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      undoStack: [
+        { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+      ],
+      redoStack: [
+        { kind: 'setProperty', objectId: 'n-2', property: 'x', oldValue: 1, newValue: 2 },
+      ],
     };
     const next = applyAction({ type: 'sceneEditHistoryCleared' }, state);
     expect(next.undoStack).toEqual([]);
@@ -1492,6 +1603,41 @@ describe('undo/redo history lifecycle (disconnect / process exit / workspace)', 
     const next = applyAction({ type: 'workspaceClosed' }, state);
     expect(next.undoStack).toEqual(state.undoStack);
     expect(next.redoStack).toEqual(state.redoStack);
+  });
+
+  it('disconnect clears a stack containing a setProperty entry (U2)', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      undoStack: [
+        { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+      ],
+      redoStack: [
+        { kind: 'setProperty', objectId: 'n-2', property: 'x', oldValue: 1, newValue: 2 },
+      ],
+    };
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: false, reason: 'closed' } },
+      state,
+    );
+    expect(next.undoStack).toEqual([]);
+    expect(next.redoStack).toEqual([]);
+  });
+
+  it('engineProcessExited clears a stack containing a setProperty entry (U2)', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      undoStack: [
+        { kind: 'setProperty', objectId: 'n-1', property: 'Name', oldValue: 'Old', newValue: 'New' },
+      ],
+      redoStack: [
+        { kind: 'setProperty', objectId: 'n-2', property: 'x', oldValue: 1, newValue: 2 },
+      ],
+    };
+    const next = applyAction({ type: 'engineProcessExited', payload: { exitCode: 0 } }, state);
+    expect(next.undoStack).toEqual([]);
+    expect(next.redoStack).toEqual([]);
   });
 });
 

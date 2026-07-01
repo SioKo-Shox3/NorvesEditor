@@ -91,19 +91,46 @@ export function findAssetEntryByKey(
 
 /**
  * A recorded, undoable scene-structure edit. Each variant carries exactly the
- * VALUES (ids/strings) needed to compute an inverse and a redo — never a live
- * engine pointer or a subtree snapshot. Undo is composed from the existing
- * scene commands (createObject/duplicateObject/reparentObject/deleteObject).
+ * VALUES (ids/strings/property values) needed to compute an inverse and a redo —
+ * never a live engine pointer or a subtree snapshot. Undo is composed from the
+ * existing scene/object commands (createObject/duplicateObject/reparentObject/
+ * deleteObject/setProperty).
  *
- * Scope (U1): create, duplicate, reparent. Property-edit/rename is out of scope
- * (U2). A delete is NOT undoable and instead clears both stacks.
+ * Scope (U1): create, duplicate, reparent. A delete is NOT undoable and instead
+ * clears both stacks.
  *
- * Engine-agnostic: all fields are opaque tokens.
+ * Added in U2: setProperty (covers rename via the Entity `Name` property and any
+ * Property Inspector scalar/array/object edit). It carries only the property's
+ * VALUES (oldValue/newValue) as snapshot copies — never a live reference; its
+ * inverse re-sets the property to oldValue and its redo re-sets it to newValue
+ * (the id is stable across both).
+ *
+ * Engine-agnostic: all fields are opaque tokens / plain JSON property values.
  */
 export type SceneEditCommand =
   | { kind: 'create'; createdId: string; parentId?: string; objectKind?: string }
   | { kind: 'duplicate'; createdId: string; sourceId: string; parentId?: string }
-  | { kind: 'reparent'; objectId: string; oldParentId?: string; newParentId?: string };
+  | { kind: 'reparent'; objectId: string; oldParentId?: string; newParentId?: string }
+  | {
+      kind: 'setProperty';
+      objectId: string;
+      property: string;
+      oldValue: PropertyValue;
+      newValue: PropertyValue;
+    };
+
+/**
+ * Structural equality for PropertyValue (JSON-ish: scalar/array/object).
+ * Mirrors PropertyInspectorPanel's local `stableValueKey` semantics (JSON.stringify
+ * comparison) but is a separate implementation — used to skip recording a
+ * no-op property edit (old === new). Deliberately not shared with the panel's
+ * local helper to avoid a cross-module dependency for a one-line comparison;
+ * same JSON.stringify semantics (key-order sensitive, adequate here since both
+ * values originate from the same snapshot/engine-echo source).
+ */
+export function propertyValuesEqual(a: PropertyValue, b: PropertyValue): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 /**
  * Finds the id of the parent of `id` within `root`, or undefined when `id` is a
@@ -242,12 +269,13 @@ export interface BridgeState {
    */
   sceneEditUnsupported?: boolean;
   /**
-   * Editor-side undo history for scene-structure edits (Phase U1). Each entry is
-   * a recorded SceneEditCommand (create/duplicate/reparent) whose inverse is
-   * composed from the existing scene commands. The top of the stack is the most
-   * recent edit. Cleared on disconnect / process exit (the ids belong to a dead
-   * engine) and by a non-undoable delete. Preserved across workspaceClosed (the
-   * Bridge connection persists).
+   * Editor-side undo history for scene-structure edits (Phase U1; U2 adds
+   * setProperty). Each entry is a recorded SceneEditCommand (create/duplicate/
+   * reparent/setProperty) whose inverse is composed from the existing scene/
+   * object commands. The top of the stack is the most recent edit. Cleared on
+   * disconnect / process exit (the ids belong to a dead engine) and by a
+   * non-undoable delete. Preserved across workspaceClosed (the Bridge connection
+   * persists).
    */
   undoStack: SceneEditCommand[];
   /**
@@ -440,7 +468,8 @@ export type BridgeAction =
    * Commit a successful redo: pop the redoStack top and push it onto undoStack.
    * For a create/duplicate whose re-created object got a NEW id, `newId` replaces
    * the entry's createdId so a subsequent undo deletes the new id (id-instability
-   * fix). For a reparent (id stable) `newId` is omitted.
+   * fix). For a reparent or setProperty (both id-stable) `newId` is omitted and
+   * the entry is pushed back unchanged.
    */
   | { type: 'redoCommitted'; newId?: string }
   /**
@@ -965,7 +994,8 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       // Move the most recent undone edit back onto the undo stack. For a
       // create/duplicate the re-created object has a NEW id, so replace createdId
       // with action.newId before pushing — a subsequent undo then deletes the new
-      // id, not the stale one (id-instability fix).
+      // id, not the stale one (id-instability fix). A reparent or setProperty is
+      // id-stable, so it falls through the guard below and is pushed unchanged.
       if (state.redoStack.length === 0) {
         return state;
       }
