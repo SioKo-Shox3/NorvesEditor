@@ -1,6 +1,6 @@
 # シーン構造編集 実装計画 — NorvesLib 結線 + rename / duplicate / Undo-Redo
 
-> 状態: **A / A2 / B 完了**。次は C(duplicate) spike または Undo/Redo。
+> 状態: **A / A2 / B / C 完了 = シーン構造編集(create/delete/reparent/rename/duplicate)完成**。次は Undo/Redo または名前空間リファクタ。
 > - Phase A（プロトコル + 汎用 SDK not_supported フック + エディタ UI）: NorvesEditor
 >   `main` にマージ済み（`3bb092b` / merge）。
 > - Phase A2（NorvesLib アダプタ結線）: NorvesLib `develop` にマージ済み
@@ -13,6 +13,14 @@
 >   StableId キーで back-compat 安全、Container::String は全経路対応）。
 >   既知の後続: rename 後の Outliner ラベル即時更新（object.setProperty は
 >   scene.treeChanged 非 emit、Inspector は即時反映）。
+>
+> - Phase C1（duplicate scaffolding: protocol/SDK/Rust/UI、mock not_supported）:
+>   NorvesEditor `main` にマージ済み（`76fd9e1` / merge `bd5aa77`）。fixtures 147→153。
+>   impl-reviewer **APPROVE**、全ゲート緑（fixtures 153 / commands 25 / cargo 両 workspace /
+>   typecheck / vitest 380 / ctest 7/7）。
+> - Phase C2（duplicate 実エンジン結線: prefab round-trip、sibling via GetParentEntity）:
+>   NorvesLib `develop` にマージ済み（`6e1e3a47` / merge `61b11dcf`）。impl-reviewer
+>   **APPROVE**、Game ビルド / EntityTreeTest 1/1 / EOL flip 検査すべて緑。
 >
 > 本計画は planner + plan-reviewer（別エージェント）を経たレビュー済み計画で、
 > plan-reviewer 評定は **APPROVE-WITH-FIXES**（BLOCKER なし）。下記は SHOULD-FIX /
