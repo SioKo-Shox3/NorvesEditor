@@ -95,6 +95,12 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
     }
   };
 
+  const handleDuplicate = (): void => {
+    if (selectedObjectId !== undefined) {
+      void actions.duplicateObject(selectedObjectId, undefined);
+    }
+  };
+
   // Clicking a node toggles selection: re-clicking the selected node deselects.
   const handleSelect = (id: string): void => {
     actions.selectObject(id === selectedObjectId ? undefined : id);
@@ -147,6 +153,16 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
             style={{ padding: '2px 8px', fontSize: 11 }}
           >
             rootへ移動
+          </button>
+          <button
+            className="btn"
+            type="button"
+            onClick={handleDuplicate}
+            disabled={selectionRequiredDisabled}
+            title="Duplicate the selected scene object"
+            style={{ padding: '2px 8px', fontSize: 11 }}
+          >
+            複製
           </button>
           {isConnected && (
             <button

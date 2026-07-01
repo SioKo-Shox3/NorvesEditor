@@ -679,6 +679,31 @@ pub async fn scene_reparent_object(
     Ok(value)
 }
 
+/// `scene_duplicate_object`: `scene.duplicateObject` for `object_id` and optional
+/// `new_parent_id`. Omitting `new_parent_id` places the copy alongside the
+/// original. Returns the raw wire-shaped `result` Value (UI types it as
+/// `SceneDuplicateObjectResult`).
+#[tauri::command]
+pub async fn scene_duplicate_object(
+    state: State<'_, BridgeState>,
+    object_id: String,
+    new_parent_id: Option<String>,
+) -> Result<Value, BackendError> {
+    let mut params = serde_json::Map::new();
+    params.insert("objectId".to_owned(), Value::String(object_id));
+    if let Some(new_parent_id) = new_parent_id {
+        params.insert("newParentId".to_owned(), Value::String(new_parent_id));
+    }
+
+    let value = send_method(state.inner(), "scene.duplicateObject", Some(params)).await?;
+    norves_bridge_editor_client::parse_duplicate_object_result(&value).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed scene.duplicateObject result: {err}"),
+        }
+    })?;
+    Ok(value)
+}
+
 /// `object_get_snapshot`: `object.getSnapshot` for `object_id`. Returns the raw
 /// wire-shaped `result` Value (UI types it as `ObjectSnapshot`).
 ///
@@ -1093,6 +1118,12 @@ mod tests {
         let reparent_result =
             send_method(&state, "scene.reparentObject", Some(reparent_params)).await;
         assert!(matches!(reparent_result, Err(BackendError::NotConnected)));
+
+        let mut duplicate_params = serde_json::Map::new();
+        duplicate_params.insert("objectId".to_owned(), Value::String("n-1".to_owned()));
+        let duplicate_result =
+            send_method(&state, "scene.duplicateObject", Some(duplicate_params)).await;
+        assert!(matches!(duplicate_result, Err(BackendError::NotConnected)));
     }
 
     #[test]
@@ -1112,6 +1143,33 @@ mod tests {
                 ..
             } => {
                 assert_eq!(method.as_str(), "scene.reparentObject");
+                assert_eq!(map.get("objectId"), Some(&Value::String("n-1".to_owned())));
+                assert_eq!(map.get("newParentId"), None);
+            }
+            _ => panic!("expected a request envelope with params"),
+        }
+    }
+
+    #[test]
+    fn scene_duplicate_shapes_sibling_without_new_parent_id() {
+        // Mirrors the reparent shape guard: omitting new_parent_id must leave
+        // `newParentId` absent from the wire params (engine duplicates as a
+        // sibling under the source's parent), while `objectId` is always present.
+        let mut params = serde_json::Map::new();
+        params.insert("objectId".to_owned(), Value::String("n-1".to_owned()));
+        let env = build_request(
+            CorrelationId::try_from("req-1".to_owned()).expect("valid id"),
+            "scene.duplicateObject",
+            Some(params),
+        )
+        .expect("builds");
+        match env {
+            ValidatedEnvelope::Request {
+                method,
+                params: Some(map),
+                ..
+            } => {
+                assert_eq!(method.as_str(), "scene.duplicateObject");
                 assert_eq!(map.get("objectId"), Some(&Value::String("n-1".to_owned())));
                 assert_eq!(map.get("newParentId"), None);
             }

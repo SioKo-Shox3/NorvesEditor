@@ -238,6 +238,10 @@ namespace norves::bridge
             {
                 return finish(id, m_Adapter.sceneReparentObject(params));
             }
+            if (method == "scene.duplicateObject")
+            {
+                return finish(id, m_Adapter.sceneDuplicateObject(params));
+            }
             if (method == "object.getSnapshot")
             {
                 return finish(id, m_Adapter.objectGetSnapshot(params));

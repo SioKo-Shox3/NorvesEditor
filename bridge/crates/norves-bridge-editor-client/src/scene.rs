@@ -96,6 +96,17 @@ pub fn parse_reparent_object_result(result: &Value) -> Result<SceneEditResult, S
     parse_scene_edit_result(result, "scene.reparentObject")
 }
 
+/// Extracts a [`SceneCreateObjectResult`] from a `scene.duplicateObject` result.
+///
+/// The `scene.duplicateObject` result shape (`{ accepted, newId? }`) is identical
+/// to `scene.createObject`, so this delegates to [`parse_create_object_result`]
+/// and reuses [`SceneCreateObjectResult`].
+pub fn parse_duplicate_object_result(
+    result: &Value,
+) -> Result<SceneCreateObjectResult, SceneError> {
+    parse_create_object_result(result)
+}
+
 fn parse_scene_edit_result(result: &Value, method: &str) -> Result<SceneEditResult, SceneError> {
     let obj = result
         .as_object()
@@ -329,6 +340,22 @@ mod tests {
             parse_create_object_result(&value),
             Err(SceneError::InvalidField(f)) if f == "result.newId"
         ));
+    }
+
+    #[test]
+    fn parse_duplicate_object_result_extracts_optional_new_id() {
+        let value = serde_json::json!({ "accepted": true, "newId": "n-new" });
+        let result = parse_duplicate_object_result(&value).expect("parses");
+        assert!(result.accepted);
+        assert_eq!(result.new_id.as_deref(), Some("n-new"));
+    }
+
+    #[test]
+    fn parse_duplicate_object_result_accepts_missing_new_id() {
+        let value = serde_json::json!({ "accepted": true });
+        let result = parse_duplicate_object_result(&value).expect("parses");
+        assert!(result.accepted);
+        assert_eq!(result.new_id, None);
     }
 
     #[test]

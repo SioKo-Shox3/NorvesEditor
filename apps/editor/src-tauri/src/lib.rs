@@ -40,6 +40,7 @@ pub fn run() {
             bridge_state::scene_create_object,
             bridge_state::scene_delete_object,
             bridge_state::scene_reparent_object,
+            bridge_state::scene_duplicate_object,
             bridge_state::object_get_snapshot,
             bridge_state::object_set_property,
             bridge_state::schema_get_snapshot,
