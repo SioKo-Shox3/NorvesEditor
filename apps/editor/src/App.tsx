@@ -7,6 +7,7 @@ import { Toolbar }                from './components/shell/Toolbar.js';
 import { ToolbarActions }         from './components/shell/ToolbarActions.js';
 import { BridgeProvider }         from './state/BridgeContext.js';
 import { useBridgeSubscriptions } from './hooks/useBridge.js';
+import { useUndoRedoKeybindings } from './hooks/useUndoRedoKeybindings.js';
 import { SecondaryWindowRoot }    from './shell/SecondaryWindowRoot.js';
 import { openSecondaryWindow }    from './shell/windowManager.js';
 import { resolveWindowRoute }     from './shell/windowRoute.js';
@@ -52,6 +53,11 @@ import {
 function BridgeRoot(): React.JSX.Element {
   // Register the event subscriptions once at the application root.
   useBridgeSubscriptions();
+
+  // Global Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z) scene-edit undo/redo shortcuts,
+  // mounted once and only in the main window (secondary windows do not host the
+  // scene editor). Phase U1.
+  useUndoRedoKeybindings();
 
   // Listen (in the main window only) for layout-reset requests emitted by the
   // Settings window, and clear + reload here. The async listen registration is
