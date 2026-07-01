@@ -86,6 +86,80 @@ export function findAssetEntryByKey(
 }
 
 // -------------------------------------------------------------------------
+// Scene-edit undo/redo history (Phase U1)
+// -------------------------------------------------------------------------
+
+/**
+ * A recorded, undoable scene-structure edit. Each variant carries exactly the
+ * VALUES (ids/strings) needed to compute an inverse and a redo — never a live
+ * engine pointer or a subtree snapshot. Undo is composed from the existing
+ * scene commands (createObject/duplicateObject/reparentObject/deleteObject).
+ *
+ * Scope (U1): create, duplicate, reparent. Property-edit/rename is out of scope
+ * (U2). A delete is NOT undoable and instead clears both stacks.
+ *
+ * Engine-agnostic: all fields are opaque tokens.
+ */
+export type SceneEditCommand =
+  | { kind: 'create'; createdId: string; parentId?: string; objectKind?: string }
+  | { kind: 'duplicate'; createdId: string; sourceId: string; parentId?: string }
+  | { kind: 'reparent'; objectId: string; oldParentId?: string; newParentId?: string };
+
+/**
+ * Finds the id of the parent of `id` within `root`, or undefined when `id` is a
+ * direct child of the root (its parent IS the root) / not present at all.
+ *
+ * The root SceneNode is `state.sceneTree` itself; by convention its direct
+ * children are treated as parent = undefined so that an undo of a root-level
+ * reparent issues reparentObject(objectId, undefined) — the engine's
+ * nullptr=root path — rather than passing the root node's id as a parent (B2).
+ *
+ * Recursive, same style as mergeChangedNodes. Pure — reads only ids/children.
+ */
+export function findParentId(root: SceneNode, id: string): string | undefined {
+  const children = root.children;
+  if (children === undefined) {
+    return undefined;
+  }
+  for (const child of children) {
+    if (child.id === id) {
+      // Direct child of `root`: only return `root.id` when `root` is a non-root
+      // node. At the top level the caller passes the scene root, so a direct
+      // child of the scene root yields undefined (B2). We cannot distinguish the
+      // scene root from an interior node here, so callers must pass the whole
+      // tree and treat the top-level root specially; see normalizeOldParentId.
+      return root.id;
+    }
+    const found = findParentId(child, id);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Computes the captured oldParentId for an undoable reparent (B1/B2):
+ * the current parent's id, or undefined when the object is a direct child of the
+ * scene root (undefined == the engine's nullptr=root path) or is not found.
+ *
+ * `root` is the scene root (state.sceneTree). A direct child of the scene root
+ * gets normalized to undefined; any deeper node keeps its interior parent's id.
+ */
+export function normalizeOldParentId(
+  root: SceneNode,
+  objectId: string,
+): string | undefined {
+  const parentId = findParentId(root, objectId);
+  // findParentId returns root.id for a direct child of the scene root; normalize
+  // that to undefined so undo uses the nullptr=root path rather than the root id.
+  if (parentId === root.id) {
+    return undefined;
+  }
+  return parentId;
+}
+
+// -------------------------------------------------------------------------
 // Store state
 // -------------------------------------------------------------------------
 
@@ -168,6 +242,22 @@ export interface BridgeState {
    */
   sceneEditUnsupported?: boolean;
   /**
+   * Editor-side undo history for scene-structure edits (Phase U1). Each entry is
+   * a recorded SceneEditCommand (create/duplicate/reparent) whose inverse is
+   * composed from the existing scene commands. The top of the stack is the most
+   * recent edit. Cleared on disconnect / process exit (the ids belong to a dead
+   * engine) and by a non-undoable delete. Preserved across workspaceClosed (the
+   * Bridge connection persists).
+   */
+  undoStack: SceneEditCommand[];
+  /**
+   * Redo history for scene-structure edits (Phase U1). Populated by undo (a
+   * popped undoStack entry moves here) and drained by redo. A fresh recorded
+   * edit clears it (the classic "new edit invalidates the redo branch" rule).
+   * Cleared on the same events as undoStack.
+   */
+  redoStack: SceneEditCommand[];
+  /**
    * Set by a scene.treeChanged live event carrying fullRefreshRequired:true:
    * the incremental changedNodes are insufficient and the Outliner should
    * re-fetch the whole tree via scene.getTree. The Outliner has a consume effect
@@ -225,6 +315,8 @@ export const INITIAL_STATE: BridgeState = {
   assetResolveByKey: undefined,
   assetResolveErrorByKey: undefined,
   assetCapabilitySupported: undefined,
+  undoStack: [],
+  redoStack: [],
 };
 
 // -------------------------------------------------------------------------
@@ -331,7 +423,41 @@ export type BridgeAction =
    * (viewport.getThumbnail answered METHOD_NOT_SUPPORTED). Engine-agnostic
    * degradation signal: the GameView falls back to the external-window notice.
    */
-  | { type: 'viewportThumbnailUnsupported' };
+  | { type: 'viewportThumbnailUnsupported' }
+  // --- Scene-edit undo/redo history (Phase U1) ---
+  /**
+   * Record a freshly accepted scene edit onto the undo stack and CLEAR the redo
+   * stack (a new edit invalidates the redo branch). Dispatched by the public
+   * scene-edit wrappers on accepted:true only.
+   */
+  | { type: 'recordSceneEdit'; command: SceneEditCommand }
+  /**
+   * Commit a successful undo: pop the undoStack top and push it onto redoStack.
+   * The entry is moved unchanged (reparent ids are stable across undo).
+   */
+  | { type: 'undoCommitted' }
+  /**
+   * Commit a successful redo: pop the redoStack top and push it onto undoStack.
+   * For a create/duplicate whose re-created object got a NEW id, `newId` replaces
+   * the entry's createdId so a subsequent undo deletes the new id (id-instability
+   * fix). For a reparent (id stable) `newId` is omitted.
+   */
+  | { type: 'redoCommitted'; newId?: string }
+  /**
+   * A failed undo (engine returned accepted:false or an error): drop the
+   * undoStack top and surface `message` via lastError. The entry is dropped
+   * because its inverse could not be applied (e.g. a stale id, out of U1 scope).
+   */
+  | { type: 'undoFailed'; message: string }
+  /**
+   * A failed redo: drop the redoStack top and surface `message` via lastError.
+   */
+  | { type: 'redoFailed'; message: string }
+  /**
+   * Clear BOTH undo and redo stacks. Dispatched by a non-undoable delete (delete
+   * is not undoable in U1, so any recorded history becomes unreconstructable).
+   */
+  | { type: 'sceneEditHistoryCleared' };
 
 // -------------------------------------------------------------------------
 // Scene-tree merge helper (for scene.treeChanged live events)
@@ -550,6 +676,13 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         selectedObjectId: p.connected ? state.selectedObjectId : undefined,
         sceneUnsupported: p.connected ? false : state.sceneUnsupported,
         sceneEditUnsupported: p.connected ? false : state.sceneEditUnsupported,
+        // The undo/redo history references object ids owned by the connected
+        // engine. A disconnect makes those ids meaningless, so drop both stacks;
+        // a fresh connection also starts with an empty history. (A reconnect to
+        // the same session keeps the tree above, but scene ids are not guaranteed
+        // stable across the transport drop, so we clear conservatively.)
+        undoStack: p.connected ? state.undoStack : [],
+        redoStack: p.connected ? state.redoStack : [],
         // A pending live-refresh request is meaningless across a (dis)connect.
         sceneRefreshRequired: p.connected ? state.sceneRefreshRequired : undefined,
         // Inspector data is per-object / per-engine: a fresh connection re-probes
@@ -626,6 +759,10 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         sceneUnsupported: undefined,
         sceneEditUnsupported: undefined,
         sceneRefreshRequired: undefined,
+        // The engine is gone: its scene ids (and thus the undo/redo history) are
+        // no longer valid, so drop both stacks.
+        undoStack: [],
+        redoStack: [],
         // The Inspector data is likewise invalid once the engine dies.
         objectSnapshot: undefined,
         schemaTypes: undefined,
@@ -798,6 +935,75 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         viewportThumbnail: undefined,
         viewportThumbnailUnsupported: true,
       };
+    }
+
+    case 'recordSceneEdit': {
+      // A fresh accepted edit goes on top of the undo stack and clears the redo
+      // branch (the classic "new edit invalidates redo" rule).
+      return {
+        ...state,
+        undoStack: [...state.undoStack, action.command],
+        redoStack: [],
+      };
+    }
+
+    case 'undoCommitted': {
+      // Move the most recent edit from the undo stack to the redo stack. Guard an
+      // empty stack (a no-op undo should never dispatch this, but stay pure).
+      if (state.undoStack.length === 0) {
+        return state;
+      }
+      const top = state.undoStack[state.undoStack.length - 1]!;
+      return {
+        ...state,
+        undoStack: state.undoStack.slice(0, -1),
+        redoStack: [...state.redoStack, top],
+      };
+    }
+
+    case 'redoCommitted': {
+      // Move the most recent undone edit back onto the undo stack. For a
+      // create/duplicate the re-created object has a NEW id, so replace createdId
+      // with action.newId before pushing — a subsequent undo then deletes the new
+      // id, not the stale one (id-instability fix).
+      if (state.redoStack.length === 0) {
+        return state;
+      }
+      const top = state.redoStack[state.redoStack.length - 1]!;
+      let restored: SceneEditCommand = top;
+      if (
+        action.newId !== undefined &&
+        (top.kind === 'create' || top.kind === 'duplicate')
+      ) {
+        restored = { ...top, createdId: action.newId };
+      }
+      return {
+        ...state,
+        redoStack: state.redoStack.slice(0, -1),
+        undoStack: [...state.undoStack, restored],
+      };
+    }
+
+    case 'undoFailed': {
+      // The inverse could not be applied (stale id / engine rejection). Drop the
+      // offending entry and surface the reason via the shared lastError.
+      return {
+        ...state,
+        undoStack: state.undoStack.slice(0, -1),
+        lastError: { message: action.message },
+      };
+    }
+
+    case 'redoFailed': {
+      return {
+        ...state,
+        redoStack: state.redoStack.slice(0, -1),
+        lastError: { message: action.message },
+      };
+    }
+
+    case 'sceneEditHistoryCleared': {
+      return { ...state, undoStack: [], redoStack: [] };
     }
 
     default: {

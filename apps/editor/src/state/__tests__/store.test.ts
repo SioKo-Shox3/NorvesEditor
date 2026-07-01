@@ -11,11 +11,14 @@ import { describe, it, expect } from 'vitest';
 import {
   assetKeyForEntry,
   bridgeReducer,
+  findParentId,
+  normalizeOldParentId,
   INITIAL_STATE,
   type BridgeAction,
   type BridgeState,
+  type SceneEditCommand,
 } from '../store.js';
-import type { AssetManifestPayload, AssetResolveResult } from '@norves/bridge-ui';
+import type { AssetManifestPayload, AssetResolveResult, SceneNode } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Helpers
@@ -1284,5 +1287,249 @@ describe('objectChangedLive', () => {
       INITIAL_STATE,
     );
     expect(next).toBe(INITIAL_STATE);
+  });
+});
+
+// -------------------------------------------------------------------------
+// Scene-edit undo/redo history (Phase U1)
+// -------------------------------------------------------------------------
+
+describe('findParentId / normalizeOldParentId', () => {
+  const tree: SceneNode = {
+    id: 'root',
+    name: 'Root',
+    children: [
+      { id: 'n-1', name: 'A' },
+      {
+        id: 'n-2',
+        name: 'Group',
+        children: [{ id: 'n-3', name: 'B', children: [{ id: 'n-4', name: 'C' }] }],
+      },
+    ],
+  };
+
+  it('returns the root id for a direct child of the root', () => {
+    expect(findParentId(tree, 'n-1')).toBe('root');
+    expect(findParentId(tree, 'n-2')).toBe('root');
+  });
+
+  it('returns the interior parent id for a nested node', () => {
+    expect(findParentId(tree, 'n-3')).toBe('n-2');
+    expect(findParentId(tree, 'n-4')).toBe('n-3');
+  });
+
+  it('returns undefined for a missing id', () => {
+    expect(findParentId(tree, 'does-not-exist')).toBeUndefined();
+  });
+
+  it('normalizeOldParentId maps a direct child of the scene root to undefined', () => {
+    // A root-level object has parent = the scene root, which normalizes to
+    // undefined so undo uses the nullptr=root path (B2).
+    expect(normalizeOldParentId(tree, 'n-1')).toBeUndefined();
+    expect(normalizeOldParentId(tree, 'n-2')).toBeUndefined();
+  });
+
+  it('normalizeOldParentId keeps an interior parent id', () => {
+    expect(normalizeOldParentId(tree, 'n-3')).toBe('n-2');
+    expect(normalizeOldParentId(tree, 'n-4')).toBe('n-3');
+  });
+
+  it('normalizeOldParentId returns undefined for a missing id', () => {
+    expect(normalizeOldParentId(tree, 'missing')).toBeUndefined();
+  });
+});
+
+describe('recordSceneEdit', () => {
+  const createCmd: SceneEditCommand = { kind: 'create', createdId: 'n-new', parentId: 'root' };
+
+  it('pushes the command onto the undo stack', () => {
+    const next = applyAction({ type: 'recordSceneEdit', command: createCmd });
+    expect(next.undoStack).toEqual([createCmd]);
+  });
+
+  it('clears the redo stack (a new edit invalidates the redo branch)', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      undoStack: [{ kind: 'reparent', objectId: 'n-1', newParentId: 'n-2' }],
+      redoStack: [{ kind: 'create', createdId: 'n-old' }],
+    };
+    const next = applyAction({ type: 'recordSceneEdit', command: createCmd }, state);
+    expect(next.undoStack).toHaveLength(2);
+    expect(next.undoStack[1]).toEqual(createCmd);
+    expect(next.redoStack).toEqual([]);
+  });
+});
+
+describe('undoCommitted / redoCommitted', () => {
+  it('undoCommitted moves the top of the undo stack to the redo stack', () => {
+    const a: SceneEditCommand = { kind: 'create', createdId: 'a' };
+    const b: SceneEditCommand = { kind: 'create', createdId: 'b' };
+    const state: BridgeState = { ...INITIAL_STATE, undoStack: [a, b], redoStack: [] };
+    const next = applyAction({ type: 'undoCommitted' }, state);
+    expect(next.undoStack).toEqual([a]);
+    expect(next.redoStack).toEqual([b]);
+  });
+
+  it('undoCommitted is a no-op on an empty undo stack', () => {
+    const next = applyAction({ type: 'undoCommitted' }, INITIAL_STATE);
+    expect(next.undoStack).toEqual([]);
+    expect(next.redoStack).toEqual([]);
+  });
+
+  it('redoCommitted moves the top of the redo stack back to the undo stack', () => {
+    const reparent: SceneEditCommand = { kind: 'reparent', objectId: 'n-1', newParentId: 'n-2' };
+    const state: BridgeState = { ...INITIAL_STATE, undoStack: [], redoStack: [reparent] };
+    const next = applyAction({ type: 'redoCommitted' }, state);
+    expect(next.redoStack).toEqual([]);
+    expect(next.undoStack).toEqual([reparent]);
+  });
+
+  it('redoCommitted replaces createdId with newId for a create (id-instability fix)', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      redoStack: [{ kind: 'create', createdId: 'stale', parentId: 'root', objectKind: 'object' }],
+    };
+    const next = applyAction({ type: 'redoCommitted', newId: 'fresh' }, state);
+    expect(next.undoStack).toEqual([
+      { kind: 'create', createdId: 'fresh', parentId: 'root', objectKind: 'object' },
+    ]);
+  });
+
+  it('redoCommitted replaces createdId with newId for a duplicate', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      redoStack: [{ kind: 'duplicate', createdId: 'stale', sourceId: 'src', parentId: 'root' }],
+    };
+    const next = applyAction({ type: 'redoCommitted', newId: 'fresh' }, state);
+    expect(next.undoStack).toEqual([
+      { kind: 'duplicate', createdId: 'fresh', sourceId: 'src', parentId: 'root' },
+    ]);
+  });
+
+  it('redoCommitted leaves a reparent entry unchanged even when newId is provided', () => {
+    const reparent: SceneEditCommand = { kind: 'reparent', objectId: 'n-1', newParentId: 'n-2' };
+    const state: BridgeState = { ...INITIAL_STATE, redoStack: [reparent] };
+    const next = applyAction({ type: 'redoCommitted', newId: 'ignored' }, state);
+    expect(next.undoStack).toEqual([reparent]);
+  });
+
+  it('redoCommitted is a no-op on an empty redo stack', () => {
+    const next = applyAction({ type: 'redoCommitted', newId: 'x' }, INITIAL_STATE);
+    expect(next.undoStack).toEqual([]);
+    expect(next.redoStack).toEqual([]);
+  });
+});
+
+describe('undoFailed / redoFailed', () => {
+  it('undoFailed drops the undo stack top and sets lastError', () => {
+    const a: SceneEditCommand = { kind: 'create', createdId: 'a' };
+    const b: SceneEditCommand = { kind: 'create', createdId: 'b' };
+    const state: BridgeState = { ...INITIAL_STATE, undoStack: [a, b] };
+    const next = applyAction({ type: 'undoFailed', message: 'stale id' }, state);
+    expect(next.undoStack).toEqual([a]);
+    expect(next.lastError).toEqual({ message: 'stale id' });
+  });
+
+  it('redoFailed drops the redo stack top and sets lastError', () => {
+    const a: SceneEditCommand = { kind: 'create', createdId: 'a' };
+    const state: BridgeState = { ...INITIAL_STATE, redoStack: [a] };
+    const next = applyAction({ type: 'redoFailed', message: 'rejected' }, state);
+    expect(next.redoStack).toEqual([]);
+    expect(next.lastError).toEqual({ message: 'rejected' });
+  });
+});
+
+describe('sceneEditHistoryCleared', () => {
+  it('empties both stacks', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      undoStack: [{ kind: 'create', createdId: 'a' }],
+      redoStack: [{ kind: 'create', createdId: 'b' }],
+    };
+    const next = applyAction({ type: 'sceneEditHistoryCleared' }, state);
+    expect(next.undoStack).toEqual([]);
+    expect(next.redoStack).toEqual([]);
+  });
+});
+
+describe('undo/redo history lifecycle (disconnect / process exit / workspace)', () => {
+  const seeded: BridgeState = {
+    ...INITIAL_STATE,
+    connection: { status: 'connected' },
+    undoStack: [{ kind: 'create', createdId: 'a' }],
+    redoStack: [{ kind: 'create', createdId: 'b' }],
+  };
+
+  it('connectionStateChanged(connected:false) empties both stacks', () => {
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: false, reason: 'closed' } },
+      seeded,
+    );
+    expect(next.undoStack).toEqual([]);
+    expect(next.redoStack).toEqual([]);
+  });
+
+  it('connectionStateChanged(connected:true) preserves the existing stacks', () => {
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: true, sessionId: 's' } },
+      seeded,
+    );
+    expect(next.undoStack).toEqual(seeded.undoStack);
+    expect(next.redoStack).toEqual(seeded.redoStack);
+  });
+
+  it('engineProcessExited empties both stacks', () => {
+    const next = applyAction({ type: 'engineProcessExited', payload: { exitCode: 0 } }, seeded);
+    expect(next.undoStack).toEqual([]);
+    expect(next.redoStack).toEqual([]);
+  });
+
+  it('workspaceClosed does NOT clear the stacks (the Bridge connection persists)', () => {
+    const state: BridgeState = {
+      ...seeded,
+      workspace: { rootPath: 'C:/P', assetsRoot: 'C:/P/Assets', name: 'P' },
+    };
+    const next = applyAction({ type: 'workspaceClosed' }, state);
+    expect(next.undoStack).toEqual(state.undoStack);
+    expect(next.redoStack).toEqual(state.redoStack);
+  });
+});
+
+describe('undo/redo history does not depend on a possibly-updated tree (live interleave)', () => {
+  // B1 proof at the reducer level: a scene.treeChanged live event that changes
+  // the tree BETWEEN capture and record must not affect the recorded oldParent.
+  // The recorded command carries the VALUE captured by the caller (useBridge),
+  // so the reducer stores it verbatim regardless of the current sceneTree.
+  it('records the caller-captured oldParentId verbatim after a live tree change', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: {
+        id: 'root',
+        children: [{ id: 'n-2', children: [{ id: 'n-1' }] }],
+      },
+    };
+    // A live event mutates the tree (moves n-1 to the root), which would give a
+    // DIFFERENT parent if the reducer recomputed from the current tree.
+    const afterLive = applyAction(
+      {
+        type: 'sceneTreeChangedLive',
+        payload: {
+          changedNodes: [{ id: 'root', children: [{ id: 'n-1' }, { id: 'n-2' }] }],
+        },
+      },
+      state,
+    );
+    // The caller captured n-1's parent as 'n-2' BEFORE the live event; record it.
+    const captured: SceneEditCommand = {
+      kind: 'reparent',
+      objectId: 'n-1',
+      oldParentId: 'n-2',
+      newParentId: 'root',
+    };
+    const recorded = applyAction({ type: 'recordSceneEdit', command: captured }, afterLive);
+    // The recorded oldParent is the captured VALUE, not the post-live parent.
+    expect(recorded.undoStack[0]).toEqual(captured);
+    expect((recorded.undoStack[0] as { oldParentId?: string }).oldParentId).toBe('n-2');
   });
 });

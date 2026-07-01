@@ -78,6 +78,8 @@ function makeActions(overrides: Partial<BridgeActions> = {}): BridgeActions {
     stopProcess:       vi.fn().mockResolvedValue(undefined),
     dismissError:      vi.fn(),
     selectObject:      vi.fn(),
+    undo:              vi.fn().mockResolvedValue(undefined),
+    redo:              vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -88,6 +90,9 @@ function makeState(
 ): BridgeState {
   return {
     connection: { status },
+    // Undo/Redo buttons read these lengths; default to empty stacks.
+    undoStack: [],
+    redoStack: [],
     ...overrides,
   } as BridgeState;
 }
@@ -96,10 +101,11 @@ function setup(
   status: BridgeState['connection']['status'],
   actionOverrides: Partial<BridgeActions> = {},
   props: Parameters<typeof ToolbarActions>[0] = {},
+  stateOverrides: Partial<BridgeState> = {},
 ) {
   const actions = makeActions(actionOverrides);
   (useBridgeActions as Mock).mockReturnValue(actions);
-  (useBridgeState   as Mock).mockReturnValue(makeState(status));
+  (useBridgeState   as Mock).mockReturnValue(makeState(status, stateOverrides));
   const { rerender } = render(<ToolbarActions {...props} />);
   return { actions, rerender };
 }
@@ -300,6 +306,84 @@ describe('ToolbarActions view-toggle disabled-when-unwired', () => {
     expect(btn.disabled).toBe(false);
     fireEvent.click(btn);
     expect(onReset).toHaveBeenCalledOnce();
+  });
+});
+
+// -------------------------------------------------------------------------
+// (e) Undo / Redo (Phase U1)
+// -------------------------------------------------------------------------
+
+describe('ToolbarActions Undo/Redo', () => {
+  const undoBtn = (): HTMLButtonElement =>
+    screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement;
+  const redoBtn = (): HTMLButtonElement =>
+    screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement;
+
+  it('Undo is disabled when the undo stack is empty', () => {
+    setup('connected', {}, {}, { undoStack: [], redoStack: [] });
+    expect(undoBtn().disabled).toBe(true);
+  });
+
+  it('Undo is enabled when connected and the undo stack is non-empty', () => {
+    setup('connected', {}, {}, { undoStack: [{ kind: 'create', createdId: 'a' }], redoStack: [] });
+    expect(undoBtn().disabled).toBe(false);
+  });
+
+  it('Undo is disabled when not connected even with a non-empty stack', () => {
+    setup('disconnected', {}, {}, { undoStack: [{ kind: 'create', createdId: 'a' }], redoStack: [] });
+    expect(undoBtn().disabled).toBe(true);
+  });
+
+  it('Undo is disabled when scene edit is unsupported', () => {
+    setup(
+      'connected',
+      {},
+      {},
+      { undoStack: [{ kind: 'create', createdId: 'a' }], redoStack: [], sceneEditUnsupported: true },
+    );
+    expect(undoBtn().disabled).toBe(true);
+  });
+
+  it('Redo is disabled when the redo stack is empty', () => {
+    setup('connected', {}, {}, { undoStack: [], redoStack: [] });
+    expect(redoBtn().disabled).toBe(true);
+  });
+
+  it('Redo is enabled when connected and the redo stack is non-empty', () => {
+    setup('connected', {}, {}, { undoStack: [], redoStack: [{ kind: 'create', createdId: 'a' }] });
+    expect(redoBtn().disabled).toBe(false);
+  });
+
+  it('Redo is disabled when scene edit is unsupported', () => {
+    setup(
+      'connected',
+      {},
+      {},
+      { undoStack: [], redoStack: [{ kind: 'create', createdId: 'a' }], sceneEditUnsupported: true },
+    );
+    expect(redoBtn().disabled).toBe(true);
+  });
+
+  it('clicking Undo calls actions.undo()', () => {
+    const { actions } = setup(
+      'connected',
+      {},
+      {},
+      { undoStack: [{ kind: 'create', createdId: 'a' }], redoStack: [] },
+    );
+    fireEvent.click(undoBtn());
+    expect(actions.undo).toHaveBeenCalledOnce();
+  });
+
+  it('clicking Redo calls actions.redo()', () => {
+    const { actions } = setup(
+      'connected',
+      {},
+      {},
+      { undoStack: [], redoStack: [{ kind: 'create', createdId: 'a' }] },
+    );
+    fireEvent.click(redoBtn());
+    expect(actions.redo).toHaveBeenCalledOnce();
   });
 });
 
