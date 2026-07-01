@@ -69,6 +69,8 @@ function makeActions(): BridgeActions {
     stopProcess:       vi.fn().mockResolvedValue(undefined),
     dismissError:      vi.fn(),
     selectObject:      vi.fn(),
+    undo:              vi.fn().mockResolvedValue(undefined),
+    redo:              vi.fn().mockResolvedValue(undefined),
   };
 }
 

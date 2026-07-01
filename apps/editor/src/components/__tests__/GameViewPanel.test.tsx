@@ -90,6 +90,8 @@ const mockActions = {
   stopProcess:    vi.fn<BridgeActions['stopProcess']>().mockResolvedValue(undefined),
   dismissError:   vi.fn<BridgeActions['dismissError']>(),
   selectObject:   vi.fn<BridgeActions['selectObject']>(),
+  undo:           vi.fn<BridgeActions['undo']>().mockResolvedValue(undefined),
+  redo:           vi.fn<BridgeActions['redo']>().mockResolvedValue(undefined),
 } satisfies BridgeActions;
 
 vi.mock('../../hooks/useBridge.js', () => ({

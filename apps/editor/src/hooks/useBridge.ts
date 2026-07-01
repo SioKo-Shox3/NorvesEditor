@@ -55,7 +55,7 @@ import type {
   ViewportThumbnail,
 } from '@norves/bridge-ui';
 import { useBridgeDispatch, useBridgeState } from '../state/BridgeContext.js';
-import { assetKeyForEntry } from '../state/store.js';
+import { assetKeyForEntry, normalizeOldParentId } from '../state/store.js';
 
 // -------------------------------------------------------------------------
 // Monotonic log-entry id (simple counter, avoids Date.now/Math.random churn)
@@ -372,6 +372,21 @@ export interface BridgeActions {
    * Engine-agnostic: id is a plain string token, not mock-specific.
    */
   selectObject: (id: string | undefined) => void;
+  /**
+   * Undo the most recent recorded scene-structure edit (Phase U1). No-op when
+   * the undo stack is empty, the engine is disconnected, scene edit is
+   * unsupported, or an undo/redo is already in flight. Issues the inverse scene
+   * command DIRECTLY (side-effect-free — does not go through the public wrappers
+   * and never records history), refreshes the tree, then commits the stack move.
+   */
+  undo: () => Promise<void>;
+  /**
+   * Redo the most recently undone scene-structure edit (Phase U1). No-op under
+   * the same guards as undo. Re-issues the FORWARD scene command directly and
+   * commits the stack move; for create/duplicate the re-created object's new id
+   * replaces the stored createdId (id-instability fix).
+   */
+  redo: () => Promise<void>;
 }
 
 /**
@@ -390,6 +405,16 @@ export function useBridgeActions(): BridgeActions {
   // after a disconnect/reconnect, even if the same asset stays selected.
   const connectionSessionIdRef = useRef(state.connection.sessionId);
   connectionSessionIdRef.current = state.connection.sessionId;
+  // Latest-state ref (B1): a mutable ref that always points at the freshest
+  // BridgeState. Updated on every render so callbacks can read the current
+  // sceneTree / undoStack / redoStack SYNCHRONOUSLY without a stale closure and
+  // without racing a live scene.treeChanged event that updates the reducer.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // In-flight guards for undo/redo — mirror SceneOutlinerPanel.refreshInFlightRef.
+  // A second undo/redo click while one is issuing is a no-op (avoids double-pop).
+  const undoInFlightRef = useRef(false);
+  const redoInFlightRef = useRef(false);
 
   const openWorkspace = useCallback(async (rootPath: string): Promise<void> => {
     try {
@@ -600,6 +625,19 @@ export function useBridgeActions(): BridgeActions {
           await getSceneTree();
           if (result.newId !== undefined) {
             dispatch({ type: 'objectSelected', id: result.newId });
+            // Record an undoable create keyed by the engine-assigned newId. Only
+            // recorded when accepted AND an id came back (undo needs the id to
+            // delete). parentId/kind are the args we passed so redo re-creates
+            // under the same parent.
+            dispatch({
+              type: 'recordSceneEdit',
+              command: {
+                kind: 'create',
+                createdId: result.newId,
+                parentId,
+                objectKind: kind,
+              },
+            });
           }
         }
         return result;
@@ -630,6 +668,10 @@ export function useBridgeActions(): BridgeActions {
         );
         if (result.accepted) {
           dispatch({ type: 'sceneObjectDeleted', accepted: true });
+          // Delete is NOT undoable in U1: any recorded history becomes
+          // unreconstructable (a deleted subtree cannot be re-created), so clear
+          // both stacks.
+          dispatch({ type: 'sceneEditHistoryCleared' });
           await getSceneTree();
         }
         return result;
@@ -653,6 +695,16 @@ export function useBridgeActions(): BridgeActions {
 
   const reparentObject = useCallback(
     async (objectId: string, newParentId?: string): Promise<SceneReparentObjectResult> => {
+      // B1/B2: capture the object's CURRENT parent SYNCHRONOUSLY, before issuing
+      // the command, from the freshest tree (stateRef) — never from the reducer
+      // later, which is racy against live scene.treeChanged events. A direct
+      // child of the scene root normalizes to undefined (the engine's
+      // nullptr=root path), so undo does not pass the root node's id as a parent.
+      const freshTree = stateRef.current.sceneTree;
+      const oldParentId =
+        freshTree !== undefined
+          ? normalizeOldParentId(freshTree, objectId)
+          : undefined;
       try {
         const args: { objectId: string; newParentId?: string } = { objectId };
         if (newParentId !== undefined) {
@@ -664,6 +716,13 @@ export function useBridgeActions(): BridgeActions {
         );
         if (result.accepted) {
           await getSceneTree();
+          // Record an undoable reparent with the VALUE captured above. Undo
+          // reissues reparentObject(objectId, oldParentId); redo reissues
+          // reparentObject(objectId, newParentId). The id is stable across both.
+          dispatch({
+            type: 'recordSceneEdit',
+            command: { kind: 'reparent', objectId, oldParentId, newParentId },
+          });
         }
         return result;
       } catch (err: unknown) {
@@ -699,6 +758,18 @@ export function useBridgeActions(): BridgeActions {
           await getSceneTree();
           if (result.newId !== undefined) {
             dispatch({ type: 'objectSelected', id: result.newId });
+            // Record an undoable duplicate keyed by the engine-assigned newId.
+            // sourceId is the original object (so redo can re-duplicate it);
+            // parentId is the requested newParentId.
+            dispatch({
+              type: 'recordSceneEdit',
+              command: {
+                kind: 'duplicate',
+                createdId: result.newId,
+                sourceId: objectId,
+                parentId: newParentId,
+              },
+            });
           }
         }
         return result;
@@ -934,6 +1005,165 @@ export function useBridgeActions(): BridgeActions {
     dispatch({ type: 'objectSelected', id });
   }, [dispatch]);
 
+  // -----------------------------------------------------------------------
+  // Undo / Redo (Phase U1)
+  //
+  // S6: undo/redo issue scene commands to compute an inverse (or re-apply a
+  // forward op), but they must be SIDE-EFFECT-FREE with respect to the history:
+  // they call invokeCommand(...) DIRECTLY (never the public createObject/
+  // deleteObject/... wrappers, which would dispatch recordSceneEdit /
+  // sceneEditHistoryCleared) and dispatch ONLY the stack-commit action
+  // (undoCommitted/redoCommitted) on success, or undoFailed/redoFailed on
+  // rejection. This is what keeps an undo-of-create from clearing the redo stack.
+  //
+  // LIMITATION (U1): id-sharing chains are out of scope. If a re-created object
+  // gets a new id and a later undo/redo targets a now-stale id, the engine
+  // answers accepted:false; we drop that entry and surface lastError rather than
+  // trying to rewrite dependent history. See docs/scene-structure-editing plan.
+  // -----------------------------------------------------------------------
+
+  const undo = useCallback(async (): Promise<void> => {
+    const current = stateRef.current;
+    const top = current.undoStack[current.undoStack.length - 1];
+    // No-op guards: empty stack / not connected / edit unsupported / in flight.
+    if (
+      top === undefined ||
+      current.connection.status !== 'connected' ||
+      current.sceneEditUnsupported === true ||
+      undoInFlightRef.current
+    ) {
+      return;
+    }
+    undoInFlightRef.current = true;
+    try {
+      let accepted = false;
+      if (top.kind === 'create' || top.kind === 'duplicate') {
+        // Inverse of a create/duplicate is a delete of the created id. Issue the
+        // raw command directly (S6) — NOT the public deleteObject wrapper, which
+        // would clear both stacks via sceneEditHistoryCleared.
+        const result = await invokeCommand<SceneDeleteObjectResult>(
+          BRIDGE_COMMANDS.sceneDeleteObject,
+          { objectId: top.createdId },
+        );
+        accepted = result.accepted;
+      } else {
+        // Inverse of a reparent is a reparent back to the captured oldParentId
+        // (undefined => omit newParentId => the engine's nullptr=root path).
+        const args: { objectId: string; newParentId?: string } = {
+          objectId: top.objectId,
+        };
+        if (top.oldParentId !== undefined) {
+          args.newParentId = top.oldParentId;
+        }
+        const result = await invokeCommand<SceneReparentObjectResult>(
+          BRIDGE_COMMANDS.sceneReparentObject,
+          args,
+        );
+        accepted = result.accepted;
+      }
+      if (accepted) {
+        await getSceneTree();
+        dispatch({ type: 'undoCommitted' });
+      } else {
+        dispatch({
+          type: 'undoFailed',
+          message: 'Undo was rejected by the engine.',
+        });
+      }
+    } catch (err: unknown) {
+      const { message } = extractBackendError(err);
+      dispatch({ type: 'undoFailed', message });
+    } finally {
+      undoInFlightRef.current = false;
+    }
+  }, [dispatch, getSceneTree]);
+
+  const redo = useCallback(async (): Promise<void> => {
+    const current = stateRef.current;
+    const top = current.redoStack[current.redoStack.length - 1];
+    if (
+      top === undefined ||
+      current.connection.status !== 'connected' ||
+      current.sceneEditUnsupported === true ||
+      redoInFlightRef.current
+    ) {
+      return;
+    }
+    redoInFlightRef.current = true;
+    try {
+      if (top.kind === 'create') {
+        // Re-issue the forward create directly (S6). The re-created object gets a
+        // NEW id; pass it to redoCommitted so a subsequent undo deletes it.
+        const args: { parentId?: string; kind?: string } = {};
+        if (top.parentId !== undefined) {
+          args.parentId = top.parentId;
+        }
+        if (top.objectKind !== undefined) {
+          args.kind = top.objectKind;
+        }
+        const result = await invokeCommand<SceneCreateObjectResult>(
+          BRIDGE_COMMANDS.sceneCreateObject,
+          args,
+        );
+        if (result.accepted) {
+          await getSceneTree();
+          dispatch({ type: 'redoCommitted', newId: result.newId });
+        } else {
+          dispatch({
+            type: 'redoFailed',
+            message: 'Redo was rejected by the engine.',
+          });
+        }
+      } else if (top.kind === 'duplicate') {
+        const args: { objectId: string; newParentId?: string } = {
+          objectId: top.sourceId,
+        };
+        if (top.parentId !== undefined) {
+          args.newParentId = top.parentId;
+        }
+        const result = await invokeCommand<SceneDuplicateObjectResult>(
+          BRIDGE_COMMANDS.sceneDuplicateObject,
+          args,
+        );
+        if (result.accepted) {
+          await getSceneTree();
+          dispatch({ type: 'redoCommitted', newId: result.newId });
+        } else {
+          dispatch({
+            type: 'redoFailed',
+            message: 'Redo was rejected by the engine.',
+          });
+        }
+      } else {
+        // reparent: re-apply the forward move. The id is stable, so no newId.
+        const args: { objectId: string; newParentId?: string } = {
+          objectId: top.objectId,
+        };
+        if (top.newParentId !== undefined) {
+          args.newParentId = top.newParentId;
+        }
+        const result = await invokeCommand<SceneReparentObjectResult>(
+          BRIDGE_COMMANDS.sceneReparentObject,
+          args,
+        );
+        if (result.accepted) {
+          await getSceneTree();
+          dispatch({ type: 'redoCommitted' });
+        } else {
+          dispatch({
+            type: 'redoFailed',
+            message: 'Redo was rejected by the engine.',
+          });
+        }
+      }
+    } catch (err: unknown) {
+      const { message } = extractBackendError(err);
+      dispatch({ type: 'redoFailed', message });
+    } finally {
+      redoInFlightRef.current = false;
+    }
+  }, [dispatch, getSceneTree]);
+
   return {
     openWorkspace,
     getWorkspace,
@@ -964,5 +1194,7 @@ export function useBridgeActions(): BridgeActions {
     stopProcess,
     dismissError,
     selectObject,
+    undo,
+    redo,
   };
 }

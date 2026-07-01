@@ -1059,3 +1059,396 @@ describe('useBridgeActions — resolveAsset', () => {
     expect(result.current.state.assetCapabilitySupported).toBeUndefined();
   });
 });
+
+// -------------------------------------------------------------------------
+// (j) scene-edit undo/redo (Phase U1)
+// -------------------------------------------------------------------------
+
+/** Marks the store as connected so undo/redo guards allow issuing commands. */
+function connect(dispatch: ReturnType<typeof useBridgeDispatch>): void {
+  dispatch({ type: 'connectionStateChanged', payload: { connected: true, sessionId: 's1' } });
+}
+
+describe('useBridgeActions — undo/redo recording (accepted only)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('createObject records an undoable create only when accepted:true with a newId', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_create_object') return Promise.resolve({ accepted: true, newId: 'n-new' });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root', children: [{ id: 'n-new' }] } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await result.current.actions.createObject('root', 'object');
+    });
+
+    expect(result.current.state.undoStack).toEqual([
+      { kind: 'create', createdId: 'n-new', parentId: 'root', objectKind: 'object' },
+    ]);
+    expect(result.current.state.redoStack).toEqual([]);
+  });
+
+  it('createObject records NOTHING when accepted:false', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_create_object') return Promise.resolve({ accepted: false });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await result.current.actions.createObject('root');
+    });
+
+    expect(result.current.state.undoStack).toEqual([]);
+  });
+
+  it('duplicateObject records an undoable duplicate keyed by newId when accepted', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_duplicate_object') return Promise.resolve({ accepted: true, newId: 'n-copy' });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root', children: [{ id: 'n-1' }, { id: 'n-copy' }] } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      await result.current.actions.duplicateObject('n-1', 'root');
+    });
+
+    expect(result.current.state.undoStack).toEqual([
+      { kind: 'duplicate', createdId: 'n-copy', sourceId: 'n-1', parentId: 'root' },
+    ]);
+  });
+
+  it('reparentObject captures oldParent SYNCHRONOUSLY before the tree refresh (B1)', async () => {
+    // Seed a tree where n-1 lives under n-2. The reparent moves it to the root;
+    // the getSceneTree refresh returns the MOVED tree. The recorded oldParentId
+    // must still be 'n-2' (captured before issuing), not derived from the moved
+    // tree.
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_reparent_object') return Promise.resolve({ accepted: true });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root', children: [{ id: 'n-1' }, { id: 'n-2' }] } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      result.current.dispatch({
+        type: 'sceneTreeLoaded',
+        root: { id: 'root', children: [{ id: 'n-2', children: [{ id: 'n-1' }] }] },
+      });
+    });
+
+    await act(async () => {
+      await result.current.actions.reparentObject('n-1', undefined);
+    });
+
+    expect(result.current.state.undoStack).toEqual([
+      { kind: 'reparent', objectId: 'n-1', oldParentId: 'n-2', newParentId: undefined },
+    ]);
+  });
+
+  it('reparentObject of a root-level object records oldParentId undefined (B2)', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_reparent_object') return Promise.resolve({ accepted: true });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root', children: [{ id: 'n-2', children: [{ id: 'n-1' }] }] } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      // n-1 starts as a direct child of the scene root.
+      result.current.dispatch({
+        type: 'sceneTreeLoaded',
+        root: { id: 'root', children: [{ id: 'n-1' }, { id: 'n-2' }] },
+      });
+    });
+
+    await act(async () => {
+      await result.current.actions.reparentObject('n-1', 'n-2');
+    });
+
+    expect(result.current.state.undoStack).toEqual([
+      { kind: 'reparent', objectId: 'n-1', oldParentId: undefined, newParentId: 'n-2' },
+    ]);
+  });
+
+  it('deleteObject clears both undo/redo stacks on accepted:true', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_delete_object') return Promise.resolve({ accepted: true });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      result.current.dispatch({ type: 'recordSceneEdit', command: { kind: 'create', createdId: 'a' } });
+    });
+    expect(result.current.state.undoStack).toHaveLength(1);
+
+    await act(async () => {
+      await result.current.actions.deleteObject('a');
+    });
+
+    expect(result.current.state.undoStack).toEqual([]);
+    expect(result.current.state.redoStack).toEqual([]);
+  });
+});
+
+describe('useBridgeActions — undo/redo execution (S6, id-instability)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('undo of a create issues scene_delete_object with the createdId and commits', async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = [];
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string, args: unknown) => {
+      calls.push({ cmd, args });
+      if (cmd === 'scene_delete_object') return Promise.resolve({ accepted: true });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      result.current.dispatch({
+        type: 'recordSceneEdit',
+        command: { kind: 'create', createdId: 'n-new', parentId: 'root', objectKind: 'object' },
+      });
+    });
+
+    await act(async () => {
+      await result.current.actions.undo();
+    });
+
+    // Delete was issued directly with the createdId...
+    expect(calls.some((c) => c.cmd === 'scene_delete_object')).toBe(true);
+    expect(tauriCore.invoke).toHaveBeenCalledWith('scene_delete_object', { objectId: 'n-new' });
+    // ...and the entry moved to the redo stack (undoCommitted).
+    expect(result.current.state.undoStack).toEqual([]);
+    expect(result.current.state.redoStack).toEqual([
+      { kind: 'create', createdId: 'n-new', parentId: 'root', objectKind: 'object' },
+    ]);
+  });
+
+  it('undo of a create (internal delete) does NOT clear the redo stack (S6)', async () => {
+    // If undo went through the PUBLIC deleteObject wrapper it would dispatch
+    // sceneEditHistoryCleared and wipe the redo stack. It must not.
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_delete_object') return Promise.resolve({ accepted: true });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      result.current.dispatch({
+        type: 'recordSceneEdit',
+        command: { kind: 'create', createdId: 'n-new' },
+      });
+    });
+
+    await act(async () => {
+      await result.current.actions.undo();
+    });
+
+    // The redo stack survived the internal delete — proof it did not go through
+    // the public deleteObject (which clears history).
+    expect(result.current.state.redoStack).toEqual([{ kind: 'create', createdId: 'n-new' }]);
+    expect(result.current.state.sceneEditUnsupported).not.toBe(true);
+  });
+
+  it('redo re-creates and a subsequent undo targets the NEW id (id-instability cycle)', async () => {
+    // create → undo (delete) → redo (re-create with a NEW id) → undo (delete NEW id).
+    let createCount = 0;
+    const deleteTargets: string[] = [];
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string, args: { objectId?: string }) => {
+      if (cmd === 'scene_create_object') {
+        createCount += 1;
+        return Promise.resolve({ accepted: true, newId: `n-${createCount}` });
+      }
+      if (cmd === 'scene_delete_object') {
+        deleteTargets.push(args.objectId!);
+        return Promise.resolve({ accepted: true });
+      }
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { connect(result.current.dispatch); });
+
+    // 1) create → newId n-1
+    await act(async () => { await result.current.actions.createObject('root', 'object'); });
+    expect(result.current.state.undoStack).toEqual([
+      { kind: 'create', createdId: 'n-1', parentId: 'root', objectKind: 'object' },
+    ]);
+
+    // 2) undo → deletes n-1, entry moves to redo
+    await act(async () => { await result.current.actions.undo(); });
+    expect(deleteTargets).toEqual(['n-1']);
+    expect(result.current.state.redoStack).toEqual([
+      { kind: 'create', createdId: 'n-1', parentId: 'root', objectKind: 'object' },
+    ]);
+
+    // 3) redo → re-creates with a NEW id n-2; undo stack entry now carries n-2
+    await act(async () => { await result.current.actions.redo(); });
+    expect(result.current.state.undoStack).toEqual([
+      { kind: 'create', createdId: 'n-2', parentId: 'root', objectKind: 'object' },
+    ]);
+
+    // 4) undo again → must delete the NEW id n-2, not the stale n-1
+    await act(async () => { await result.current.actions.undo(); });
+    expect(deleteTargets).toEqual(['n-1', 'n-2']);
+  });
+
+  it('undo accepted:false drops the entry and sets lastError', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_delete_object') return Promise.resolve({ accepted: false });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      result.current.dispatch({ type: 'recordSceneEdit', command: { kind: 'create', createdId: 'stale' } });
+    });
+
+    await act(async () => { await result.current.actions.undo(); });
+
+    expect(result.current.state.undoStack).toEqual([]);
+    expect(result.current.state.lastError?.message).toBeTruthy();
+  });
+
+  it('redo accepted:false drops the entry and sets lastError', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'scene_create_object') return Promise.resolve({ accepted: false });
+      if (cmd === 'scene_get_tree') return Promise.resolve({ root: { id: 'root' } });
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      connect(result.current.dispatch);
+      result.current.dispatch({ type: 'redoCommitted' }); // no-op (empty), just to set up
+      result.current.dispatch({ type: 'recordSceneEdit', command: { kind: 'create', createdId: 'a' } });
+      result.current.dispatch({ type: 'undoCommitted' }); // move 'a' to redo stack
+    });
+    expect(result.current.state.redoStack).toEqual([{ kind: 'create', createdId: 'a' }]);
+
+    await act(async () => { await result.current.actions.redo(); });
+
+    expect(result.current.state.redoStack).toEqual([]);
+    expect(result.current.state.lastError?.message).toBeTruthy();
+  });
+
+  it('undo is a no-op when disconnected', async () => {
+    (tauriCore.invoke as Mock).mockResolvedValue({ accepted: true });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      // Not connected; seed an undo entry directly.
+      result.current.dispatch({ type: 'recordSceneEdit', command: { kind: 'create', createdId: 'a' } });
+    });
+
+    await act(async () => { await result.current.actions.undo(); });
+
+    // Nothing issued; the stack is unchanged.
+    expect(tauriCore.invoke).not.toHaveBeenCalledWith('scene_delete_object', expect.anything());
+    expect(result.current.state.undoStack).toEqual([{ kind: 'create', createdId: 'a' }]);
+  });
+});

@@ -75,6 +75,12 @@ export function ToolbarActions({
   const connectionStatus = state.connection.status;
   const connected        = connectionStatus === 'connected';
 
+  // Scene-edit undo/redo (Phase U1). Read stack lengths from the store; the
+  // hook guards double-click / in-flight internally (a no-op while issuing).
+  const sceneEditUnsupported = state.sceneEditUnsupported === true;
+  const canUndo = connected && !sceneEditUnsupported && state.undoStack.length > 0;
+  const canRedo = connected && !sceneEditUnsupported && state.redoStack.length > 0;
+
   // -----------------------------------------------------------------------
   // Disabled conditions — copied verbatim from GameViewPanel (the "正")
   // -----------------------------------------------------------------------
@@ -110,6 +116,8 @@ export function ToolbarActions({
   const handlePause         = (): void => { void actions.pause(); };
   const handleStopRuntime   = (): void => { void actions.stop(); };
   const handleFocusViewport = (): void => { void actions.focusViewport(); };
+  const handleUndo          = (): void => { void actions.undo(); };
+  const handleRedo          = (): void => { void actions.redo(); };
 
   return (
     <>
@@ -195,6 +203,30 @@ export function ToolbarActions({
         aria-label="Focus Viewport"
       >
         Focus Viewport
+      </button>
+
+      <Sep />
+
+      {/* Scene-edit undo / redo (Phase U1) */}
+      <button
+        className="btn toolbar__btn"
+        type="button"
+        disabled={!canUndo}
+        onClick={handleUndo}
+        title="直前のシーン編集を取り消す (Ctrl+Z)"
+        aria-label="Undo"
+      >
+        Undo
+      </button>
+      <button
+        className="btn toolbar__btn"
+        type="button"
+        disabled={!canRedo}
+        onClick={handleRedo}
+        title="取り消したシーン編集をやり直す (Ctrl+Y)"
+        aria-label="Redo"
+      >
+        Redo
       </button>
 
       <Sep />
