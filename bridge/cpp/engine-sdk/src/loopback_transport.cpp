@@ -1,5 +1,5 @@
-#include "norves/bridge/bounded_queue.hpp"
-#include "norves/bridge/transport.hpp"
+#include "Norves/Bridge/bounded_queue.hpp"
+#include "Norves/Bridge/transport.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -24,7 +24,7 @@
 // ドレインしたのち nullopt を返し、その読み取りループを終了させる。各方向は独立した
 // キューなので、一方のエンドポイントでブロックした recv() がピアの send() を決して
 // ブロックしない。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     namespace
@@ -96,4 +96,4 @@ namespace norves::bridge
         return {std::move(a), std::move(b)};
     }
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

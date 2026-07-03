@@ -1,9 +1,9 @@
 ﻿#pragma once
 
-#include "norves/bridge/codec_error.hpp"
-#include "norves/bridge/dto/common.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/result.hpp"
+#include "Norves/Bridge/codec_error.hpp"
+#include "Norves/Bridge/Dto/common.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/result.hpp"
 
 #include <optional>
 #include <string>
@@ -30,7 +30,7 @@
 ///
 /// @note スコープ: これら 4 つのペイロードのみ。capabilities（hello）および開かれた値 $def
 ///       はここでは意図的にモデル化されず、opaque のままである。
-namespace norves::bridge::dto
+namespace Norves::Bridge::Dto
 {
 
     /// @brief bridge.hello のリクエスト params。スキーマの `capabilities` フィールドは
@@ -134,4 +134,4 @@ namespace norves::bridge::dto
         [[nodiscard]] static Result<PlayAck, CodecError> from_json(const JsonValue& value);
     };
 
-}  // namespace norves::bridge::dto
+}  // namespace Norves::Bridge::Dto

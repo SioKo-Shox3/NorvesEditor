@@ -37,17 +37,17 @@
 // この TU は SDK 公開ヘッダのみをインクルードし、サードパーティの唯一の
 // 表面は ITransport pImpl の背後に隠蔽されている。
 
-#include "norves/bridge/adapter.hpp"
-#include "norves/bridge/dto/common.hpp"
-#include "norves/bridge/dto/events.hpp"
-#include "norves/bridge/dto/methods.hpp"
-#include "norves/bridge/error.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/log_sink.hpp"
-#include "norves/bridge/result.hpp"
-#include "norves/bridge/server.hpp"
-#include "norves/bridge/transport.hpp"
-#include "norves/bridge/ws_server_transport.hpp"
+#include "Norves/Bridge/adapter.hpp"
+#include "Norves/Bridge/Dto/common.hpp"
+#include "Norves/Bridge/Dto/events.hpp"
+#include "Norves/Bridge/Dto/methods.hpp"
+#include "Norves/Bridge/error.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/log_sink.hpp"
+#include "Norves/Bridge/result.hpp"
+#include "Norves/Bridge/server.hpp"
+#include "Norves/Bridge/transport.hpp"
+#include "Norves/Bridge/ws_server_transport.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -64,24 +64,24 @@
 namespace
 {
 
-    using norves::bridge::BridgeEngineServer;
-    using norves::bridge::BridgeError;
-    using norves::bridge::IBridgeEngineAdapter;
-    using norves::bridge::ILogSink;
-    using norves::bridge::ITransport;
-    using norves::bridge::JsonValue;
-    using norves::bridge::LogSeverity;
-    using norves::bridge::make_websocket_server_transport;
-    using norves::bridge::Result;
+    using Norves::Bridge::BridgeEngineServer;
+    using Norves::Bridge::BridgeError;
+    using Norves::Bridge::IBridgeEngineAdapter;
+    using Norves::Bridge::ILogSink;
+    using Norves::Bridge::ITransport;
+    using Norves::Bridge::JsonValue;
+    using Norves::Bridge::LogSeverity;
+    using Norves::Bridge::make_websocket_server_transport;
+    using Norves::Bridge::Result;
 
-    using norves::bridge::dto::EngineState;
-    using norves::bridge::dto::HelloResult;
-    using norves::bridge::dto::LogLevel;
-    using norves::bridge::dto::LogMessageEvent;
-    using norves::bridge::dto::PlayAck;
-    using norves::bridge::dto::RuntimeState;
-    using norves::bridge::dto::ServerInfo;
-    using norves::bridge::dto::StatusSnapshot;
+    using Norves::Bridge::Dto::EngineState;
+    using Norves::Bridge::Dto::HelloResult;
+    using Norves::Bridge::Dto::LogLevel;
+    using Norves::Bridge::Dto::LogMessageEvent;
+    using Norves::Bridge::Dto::PlayAck;
+    using Norves::Bridge::Dto::RuntimeState;
+    using Norves::Bridge::Dto::ServerInfo;
+    using Norves::Bridge::Dto::StatusSnapshot;
 
     // @brief log.subscribe の ack 後に発行する log.message イベントの数（連続）。
     // @note 複数にすることで Rust 側が順序付き複数フレーム配送（G4 バースト要件）を

@@ -17,17 +17,17 @@
 // std とSDKの公開ヘッダのみを使用する。境界ルール（include/ に nlohmann を
 // 含めない）には影響しない。ctest の合否はプロセス終了コードで決まる。
 
-#include "norves/bridge/adapter.hpp"
-#include "norves/bridge/codec.hpp"
-#include "norves/bridge/dto/common.hpp"
-#include "norves/bridge/dto/events.hpp"
-#include "norves/bridge/dto/methods.hpp"
-#include "norves/bridge/envelope.hpp"
-#include "norves/bridge/error.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/result.hpp"
-#include "norves/bridge/server.hpp"
-#include "norves/bridge/transport.hpp"
+#include "Norves/Bridge/adapter.hpp"
+#include "Norves/Bridge/codec.hpp"
+#include "Norves/Bridge/Dto/common.hpp"
+#include "Norves/Bridge/Dto/events.hpp"
+#include "Norves/Bridge/Dto/methods.hpp"
+#include "Norves/Bridge/envelope.hpp"
+#include "Norves/Bridge/error.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/result.hpp"
+#include "Norves/Bridge/server.hpp"
+#include "Norves/Bridge/transport.hpp"
 
 #include <atomic>
 #include <optional>
@@ -41,26 +41,26 @@
 namespace
 {
 
-    using norves::bridge::BridgeEngineServer;
-    using norves::bridge::BridgeError;
-    using norves::bridge::decode_envelope;
-    using norves::bridge::Envelope;
-    using norves::bridge::IBridgeEngineAdapter;
-    using norves::bridge::ITransport;
-    using norves::bridge::JsonValue;
-    using norves::bridge::Kind;
-    using norves::bridge::make_loopback_pair;
-    using norves::bridge::Result;
+    using Norves::Bridge::BridgeEngineServer;
+    using Norves::Bridge::BridgeError;
+    using Norves::Bridge::decode_envelope;
+    using Norves::Bridge::Envelope;
+    using Norves::Bridge::IBridgeEngineAdapter;
+    using Norves::Bridge::ITransport;
+    using Norves::Bridge::JsonValue;
+    using Norves::Bridge::Kind;
+    using Norves::Bridge::make_loopback_pair;
+    using Norves::Bridge::Result;
 
-    using norves::bridge::dto::EngineState;
-    using norves::bridge::dto::HelloParams;
-    using norves::bridge::dto::HelloResult;
-    using norves::bridge::dto::LogLevel;
-    using norves::bridge::dto::LogMessageEvent;
-    using norves::bridge::dto::PlayAck;
-    using norves::bridge::dto::RuntimeState;
-    using norves::bridge::dto::ServerInfo;
-    using norves::bridge::dto::StatusSnapshot;
+    using Norves::Bridge::Dto::EngineState;
+    using Norves::Bridge::Dto::HelloParams;
+    using Norves::Bridge::Dto::HelloResult;
+    using Norves::Bridge::Dto::LogLevel;
+    using Norves::Bridge::Dto::LogMessageEvent;
+    using Norves::Bridge::Dto::PlayAck;
+    using Norves::Bridge::Dto::RuntimeState;
+    using Norves::Bridge::Dto::ServerInfo;
+    using Norves::Bridge::Dto::StatusSnapshot;
 
     JsonValue ParseOrFail(std::string_view text)
     {

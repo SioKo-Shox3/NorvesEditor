@@ -13,8 +13,8 @@
 // nlohmann/json は値等価比較のみに使用する。これはテスト TU であり SDK の公開面ではないため、
 // 境界ルール（include/ に nlohmann を含めない）には影響しない。
 
-#include "norves/bridge/codec.hpp"
-#include "norves/bridge/envelope.hpp"
+#include "Norves/Bridge/codec.hpp"
+#include "Norves/Bridge/envelope.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -125,7 +125,7 @@ int main()
             case Group::Positive:
             {
                 ++positive;
-                auto decoded = norves::bridge::decode_envelope(wire);
+                auto decoded = Norves::Bridge::decode_envelope(wire);
                 NORVES_CHECK(decoded.is_ok());
                 if (decoded.is_err())
                 {
@@ -133,7 +133,7 @@ int main()
                                  normalized.c_str(), decoded.error().message.c_str());
                     break;
                 }
-                auto encoded = norves::bridge::encode_envelope(decoded.value());
+                auto encoded = Norves::Bridge::encode_envelope(decoded.value());
                 NORVES_CHECK(encoded.is_ok());
                 if (encoded.is_err())
                 {
@@ -157,7 +157,7 @@ int main()
             case Group::EnvelopeRejectable:
             {
                 ++envelopeRejectable;
-                auto decoded = norves::bridge::decode_envelope(wire);
+                auto decoded = Norves::Bridge::decode_envelope(wire);
                 NORVES_CHECK(decoded.is_err());
                 if (decoded.is_ok())
                 {
@@ -171,7 +171,7 @@ int main()
                 ++payloadOnly;
                 // エンベロープとしては有効。ペイロードのみが不正だが、
                 // この層ではまだ検証しない。ACCEPTED でなければならない。
-                auto decoded = norves::bridge::decode_envelope(wire);
+                auto decoded = Norves::Bridge::decode_envelope(wire);
                 NORVES_CHECK(decoded.is_ok());
                 if (decoded.is_err())
                 {

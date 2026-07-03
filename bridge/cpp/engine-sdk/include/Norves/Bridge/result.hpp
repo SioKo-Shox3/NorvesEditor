@@ -7,7 +7,7 @@
 /// @file
 /// @brief エンジン SDK のための自己完結な Result<T, E>。
 /// @note 依存は <std> のみ。サードパーティヘッダはここに含めない。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief Result<T, E> は成功値またはエラー値を表す値型。
@@ -112,4 +112,4 @@ namespace norves::bridge
         std::variant<T, E> storage_;
     };
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

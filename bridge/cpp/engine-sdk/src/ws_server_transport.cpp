@@ -1,8 +1,8 @@
-#include "norves/bridge/ws_server_transport.hpp"
+#include "Norves/Bridge/ws_server_transport.hpp"
 
-#include "norves/bridge/bounded_queue.hpp"
-#include "norves/bridge/log_sink.hpp"
-#include "norves/bridge/transport.hpp"
+#include "Norves/Bridge/bounded_queue.hpp"
+#include "Norves/Bridge/log_sink.hpp"
+#include "Norves/Bridge/transport.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -46,7 +46,7 @@
 // 接続は LWS_CALLBACK_ESTABLISHED で拒否される（REJECTED。-1 を返し、新しい wsi を
 // クローズする）ため、既存のクライアントが妨げられることは決してない。アクティブな
 // クライアントが切断した後、次の接続は受け入れられる（G5 の再接続はこれに依存する）。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     namespace
@@ -414,4 +414,4 @@ namespace norves::bridge
         return transport;
     }
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

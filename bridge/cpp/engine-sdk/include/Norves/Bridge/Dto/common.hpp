@@ -16,7 +16,7 @@
 ///       のみがモデル化されている。viewportState / origin および開かれた値 $def
 ///       （propertyValue, sceneNode, ...）はここでは意図的に型付けしない（NOT）。それらは
 ///       後のフェーズが必要とするまで opaque（JsonValue として運ばれる）のままである。
-namespace norves::bridge::dto
+namespace Norves::Bridge::Dto
 {
 
     /// @brief common.schema.json#/$defs/engineState: ["initializing","ready","running","error"]。
@@ -60,4 +60,4 @@ namespace norves::bridge::dto
     [[nodiscard]] std::optional<RuntimeState> runtime_state_from_wire(std::string_view text);
     [[nodiscard]] std::optional<LogLevel> log_level_from_wire(std::string_view text);
 
-}  // namespace norves::bridge::dto
+}  // namespace Norves::Bridge::Dto
