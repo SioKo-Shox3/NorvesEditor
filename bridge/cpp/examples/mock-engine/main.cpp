@@ -54,27 +54,27 @@
 #include <csignal>
 #endif
 
-#include "norves/bridge/dto/common.hpp"
-#include "norves/bridge/dto/events.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/log_sink.hpp"
-#include "norves/bridge/server.hpp"
-#include "norves/bridge/transport.hpp"
-#include "norves/bridge/ws_server_transport.hpp"
+#include "Norves/Bridge/Dto/common.hpp"
+#include "Norves/Bridge/Dto/events.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/log_sink.hpp"
+#include "Norves/Bridge/server.hpp"
+#include "Norves/Bridge/transport.hpp"
+#include "Norves/Bridge/ws_server_transport.hpp"
 
 #include "mock_adapter.hpp"
 
 namespace
 {
 
-    using norves::bridge::BridgeEngineServer;
-    using norves::bridge::ILogSink;
-    using norves::bridge::ITransport;
-    using norves::bridge::LogSeverity;
-    using norves::bridge::make_websocket_server_transport;
+    using Norves::Bridge::BridgeEngineServer;
+    using Norves::Bridge::ILogSink;
+    using Norves::Bridge::ITransport;
+    using Norves::Bridge::LogSeverity;
+    using Norves::Bridge::make_websocket_server_transport;
 
-    using norves::bridge::dto::LogLevel;
-    using norves::bridge::dto::LogMessageEvent;
+    using Norves::Bridge::Dto::LogLevel;
+    using Norves::Bridge::Dto::LogMessageEvent;
 
     using norves::mock::MockAdapter;
 

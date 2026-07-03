@@ -1,7 +1,7 @@
 ﻿#pragma once
 
-#include "norves/bridge/codec_error.hpp"
-#include "norves/bridge/result.hpp"
+#include "Norves/Bridge/codec_error.hpp"
+#include "Norves/Bridge/result.hpp"
 
 #include <memory>
 #include <string>
@@ -15,15 +15,15 @@
 ///       ペイロード）を、解釈せず、かつ基底の JSON ライブラリをいかなる公開ヘッダにも
 ///       露出せずに、SDK を通して運ぶことである。.cpp 実装が、ベンダリングされた JSON
 ///       ライブラリを include してよい唯一の翻訳単位である。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
-    namespace detail
+    namespace Detail
     {
         /// @brief .cpp 実装でのみ定義される。基底の JSON ライブラリが pImpl の背後に
         ///        隠れたままになるよう、公開ヘッダでは決して完全型にしない。
         struct JsonValueImpl;
-    }  // namespace detail
+    }  // namespace Detail
 
     /// @brief 値所有の opaque な JSON 値。
     ///
@@ -75,21 +75,21 @@ namespace norves::bridge
     private:
         /// codec / json_value の .cpp TU は detail ブリッジを介して具体的な基底値から
         /// JsonValue を構築する。それらがこの構築を見られる唯一の TU である。
-        friend struct detail::JsonValueImpl;
-        explicit JsonValue(std::unique_ptr<detail::JsonValueImpl> impl);
+        friend struct Detail::JsonValueImpl;
+        explicit JsonValue(std::unique_ptr<Detail::JsonValueImpl> impl);
 
-        std::unique_ptr<detail::JsonValueImpl> m_Impl;
+        std::unique_ptr<Detail::JsonValueImpl> m_Impl;
 
         /// 実装 TU（codec.cpp, json_value.cpp）でのみ使われる内部アクセサ。opaque な
         /// impl ポインタを返す。それらの TU の外の呼び出し側は
-        /// `detail::JsonValueImpl` を完全型にできないため、これは何も漏らさない。
-        [[nodiscard]] const detail::JsonValueImpl* impl() const { return m_Impl.get(); }
-        [[nodiscard]] detail::JsonValueImpl* impl() { return m_Impl.get(); }
+        /// `Detail::JsonValueImpl` を完全型にできないため、これは何も漏らさない。
+        [[nodiscard]] const Detail::JsonValueImpl* impl() const { return m_Impl.get(); }
+        [[nodiscard]] Detail::JsonValueImpl* impl() { return m_Impl.get(); }
 
         /// 実装側の自由ヘルパ（.cpp TU で定義）は、これらを通して private メンバへ
         /// アクセスする。
-        friend JsonValue make_json_value(std::unique_ptr<detail::JsonValueImpl> impl);
-        friend const detail::JsonValueImpl* peek(const JsonValue& value);
+        friend JsonValue make_json_value(std::unique_ptr<Detail::JsonValueImpl> impl);
+        friend const Detail::JsonValueImpl* peek(const JsonValue& value);
     };
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

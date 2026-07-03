@@ -1,7 +1,7 @@
 ﻿#pragma once
 
-#include "norves/bridge/log_sink.hpp"
-#include "norves/bridge/ownership.hpp"
+#include "Norves/Bridge/log_sink.hpp"
+#include "Norves/Bridge/ownership.hpp"
 
 #include <condition_variable>
 #include <cstddef>
@@ -16,7 +16,7 @@
 /// @note 依存は <std> と SDK 自身の ILogSink / OwnedFrame のみ。サードパーティヘッダは
 ///       ここに露出しない。ベンダリングされた JSON ライブラリはこのヘッダから決して到達
 ///       できない。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief 満杯のキューに push() が到達したときにキューが行うこと。
@@ -126,4 +126,4 @@ namespace norves::bridge
         bool m_bClosed = false;
     };
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

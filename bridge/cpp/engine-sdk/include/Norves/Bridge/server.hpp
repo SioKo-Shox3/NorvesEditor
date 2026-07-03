@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "norves/bridge/json_value.hpp"
+#include "Norves/Bridge/json_value.hpp"
 
 #include <memory>
 #include <optional>
@@ -18,7 +18,7 @@
 ///       ディスパッチし、レスポンスフレームをエンコードする。トランスポート
 ///       （ソケットの読み書き）は後のフェーズであり、この型の一部ではない。組み込み側が
 ///       ワイヤーフレームを供給し、返されたワイヤーフレームを送出する。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     class IBridgeEngineAdapter;
@@ -77,4 +77,4 @@ namespace norves::bridge
         std::unique_ptr<Impl> m_Impl;
     };
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

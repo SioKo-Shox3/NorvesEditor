@@ -1,9 +1,9 @@
-#include "norves/bridge/bounded_queue.hpp"
+#include "Norves/Bridge/bounded_queue.hpp"
 
 #include <algorithm>
 #include <utility>
 
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     BoundedFrameQueue::BoundedFrameQueue(std::size_t capacity, OverflowPolicy policy,
@@ -148,4 +148,4 @@ namespace norves::bridge
         return m_bClosed;
     }
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

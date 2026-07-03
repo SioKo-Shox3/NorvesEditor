@@ -1,6 +1,6 @@
-#include "norves/bridge/error.hpp"
-#include "norves/bridge/result.hpp"
-#include "norves/bridge/version.hpp"
+#include "Norves/Bridge/error.hpp"
+#include "Norves/Bridge/result.hpp"
+#include "Norves/Bridge/version.hpp"
 
 #include <string>
 #include <string_view>
@@ -10,8 +10,8 @@
 namespace
 {
 
-    using norves::bridge::BridgeError;
-    using norves::bridge::Result;
+    using Norves::Bridge::BridgeError;
+    using Norves::Bridge::Result;
 
     void TestResultOk()
     {
@@ -45,24 +45,24 @@ namespace
 
     void TestErrorConstants()
     {
-        NORVES_CHECK_EQ(norves::bridge::ErrorProtocolVersionUnsupported,
+        NORVES_CHECK_EQ(Norves::Bridge::ErrorProtocolVersionUnsupported,
                         std::string_view{"PROTOCOL_VERSION_UNSUPPORTED"});
-        NORVES_CHECK_EQ(norves::bridge::ErrorMethodNotSupported,
+        NORVES_CHECK_EQ(Norves::Bridge::ErrorMethodNotSupported,
                         std::string_view{"METHOD_NOT_SUPPORTED"});
-        NORVES_CHECK_EQ(norves::bridge::ErrorBridgeTransportError,
+        NORVES_CHECK_EQ(Norves::Bridge::ErrorBridgeTransportError,
                         std::string_view{"BRIDGE_TRANSPORT_ERROR"});
 
-        BridgeError err{std::string{norves::bridge::ErrorMethodNotSupported}, "no such method"};
+        BridgeError err{std::string{Norves::Bridge::ErrorMethodNotSupported}, "no such method"};
         NORVES_CHECK_EQ(err.code, std::string{"METHOD_NOT_SUPPORTED"});
         NORVES_CHECK_EQ(err.message, std::string{"no such method"});
     }
 
     void TestSupportedProtocolVersions()
     {
-        NORVES_CHECK_EQ(norves::bridge::SupportedProtocolVersions.size(),
+        NORVES_CHECK_EQ(Norves::Bridge::SupportedProtocolVersions.size(),
                         static_cast<std::size_t>(2));
-        NORVES_CHECK_EQ(norves::bridge::SupportedProtocolVersions[0], std::string_view{"0.2"});
-        NORVES_CHECK(!norves::bridge::SdkVersion.empty());
+        NORVES_CHECK_EQ(Norves::Bridge::SupportedProtocolVersions[0], std::string_view{"0.2"});
+        NORVES_CHECK(!Norves::Bridge::SdkVersion.empty());
     }
 
 }  // namespace

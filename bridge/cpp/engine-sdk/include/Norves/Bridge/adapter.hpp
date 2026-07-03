@@ -1,8 +1,8 @@
 ﻿#pragma once
 
-#include "norves/bridge/error.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/result.hpp"
+#include "Norves/Bridge/error.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/result.hpp"
 
 #include <optional>
 #include <string>
@@ -32,7 +32,7 @@
 ///     所有する。
 ///   * `params` は呼び出しの間のみ借用される。アダプタはその参照を呼び出し終了後に
 ///     保持してはならない。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief 純粋仮想のエンジンアダプタ。対象範囲内のメソッドは純粋仮想である（エンジンは
@@ -193,4 +193,4 @@ namespace norves::bridge
         }
     };
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

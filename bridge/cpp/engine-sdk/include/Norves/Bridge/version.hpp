@@ -6,7 +6,7 @@
 /// @file
 /// @brief スタンドアロン C++ エンジン SDK のバージョンメタデータ。
 /// @note 依存は <std> のみ。サードパーティヘッダはここに含めない。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief この SDK ビルドのバージョン（ワイヤープロトコルバージョンとは独立）。
@@ -24,4 +24,4 @@ namespace norves::bridge
         std::string_view{"0.1"},
     };
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

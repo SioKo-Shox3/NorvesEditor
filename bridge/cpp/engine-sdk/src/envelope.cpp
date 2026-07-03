@@ -1,7 +1,7 @@
-#include "norves/bridge/envelope.hpp"
+#include "Norves/Bridge/envelope.hpp"
 
-#include "norves/bridge/codec_error.hpp"
-#include "norves/bridge/result.hpp"
+#include "Norves/Bridge/codec_error.hpp"
+#include "Norves/Bridge/result.hpp"
 
 #include <variant>
 
@@ -9,7 +9,7 @@
 // （bridge/crates/norves-bridge-core/src/envelope.rs, fn validate）の 1:1 移植である。
 // 2 つの実装が同じ最初の違反を報告するよう、チェックの順序と違反メッセージは同一に
 // 保たれている。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     namespace
@@ -111,4 +111,4 @@ namespace norves::bridge
         return Ok();
     }
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

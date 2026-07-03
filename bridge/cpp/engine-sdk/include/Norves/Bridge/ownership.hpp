@@ -9,7 +9,7 @@
 ///       型エイリアスと規範ドキュメントとして、SDK の残りが従うメモリ/バッファ
 ///       ポリシーを規定する（docs/memory-buffer-policy.md および CLAUDE.md
 ///       "Engine live memory is never sent over the transport" を参照）。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief OwnedFrame は自己所有のワイヤーペイロード。すなわち UTF-8 テキストとして
@@ -46,4 +46,4 @@ namespace norves::bridge
     ///       までは、SDK は完全にデフォルトアロケータ上で動作する。
     using OwnedFrame = std::string;
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

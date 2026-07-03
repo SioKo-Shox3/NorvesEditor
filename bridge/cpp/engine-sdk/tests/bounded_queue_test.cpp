@@ -9,9 +9,9 @@
 // std とSDKの公開ヘッダのみを使用する。境界ルール（include/ に nlohmann を
 // 含めない）には影響しない。
 
-#include "norves/bridge/bounded_queue.hpp"
+#include "Norves/Bridge/bounded_queue.hpp"
 
-#include "norves/bridge/log_sink.hpp"
+#include "Norves/Bridge/log_sink.hpp"
 
 #include <chrono>
 #include <mutex>
@@ -26,10 +26,10 @@
 namespace
 {
 
-    using norves::bridge::BoundedFrameQueue;
-    using norves::bridge::ILogSink;
-    using norves::bridge::LogSeverity;
-    using norves::bridge::OverflowPolicy;
+    using Norves::Bridge::BoundedFrameQueue;
+    using Norves::Bridge::ILogSink;
+    using Norves::Bridge::LogSeverity;
+    using Norves::Bridge::OverflowPolicy;
 
     // @brief Warn レベルのメッセージを記録し、テストが drop 診断の発火を検証できるようにする。
     class RecordingSink final : public ILogSink

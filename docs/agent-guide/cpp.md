@@ -40,7 +40,8 @@ C++ WebSocket backend は internal implementation detail。IXWebSocket、Boost.B
 - ポインタ/参照は型側に付ける（`Type* p` / `Type& r`）。
 - ヘッダガードは `#pragma once` を使う（旧来の include guard は禁止）。
 - ヘッダ内で `using namespace` を書かない。
-- namespace は `norves::bridge`（小文字）を維持する。
+- namespace は `Norves::Bridge`（PascalCase）を使う。NorvesLib の
+  `NorvesLib::Core` などのネスト名前空間規約に合わせる（ADR 0009）。
 ```
 
 命名:
@@ -74,14 +75,12 @@ C++ WebSocket backend は internal implementation detail。IXWebSocket、Boost.B
 ### Frozen public API (cross-repo contract)
 
 公開 API シンボル名は**凍結**する（ADR 0008、オプション A）。理由: NorvesLib 側の `NorvesLibBridgeAdapter` / `BridgeServerHost` がこの SDK の公開 API を直接消費しており、シンボルを改名すると別リポジトリ（NorvesLib）へ波及して無改修ビルドが壊れるため。clang-tidy の `--fix` でこれらが改名されないよう、上記命名規則は内部識別子のみに適用する。
+namespace 修飾子は本節の凍結対象に含めない。ADR 0009 で `Norves::Bridge` へ意図的に変更済みであり、本節が凍結するのは method 名・型名の綴りのみである。namespace 変更に伴う NorvesLib 側の include path / 修飾子の書き換えは、ADR 0009 が定める lockstep 手順で許容される。
 
 凍結対象（改名・並べ替え禁止）:
 
 ```text
-1. `IBridgeEngineAdapter` の基底クラス名と仮想メソッド:
-   hello / getCapabilities / getStatus / launchInfo /
-   runtimePlay / runtimePause / runtimeStop / runtimeFocusViewport /
-   logSubscribe / logUnsubscribe。
+1. `IBridgeEngineAdapter` の基底クラス名と仮想メソッド。完全なメソッド一覧は ADR 0009 を正典とする。
 2. `BridgeEngineServer` とメソッド handleFrame / emitEvent、コンストラクタのシグネチャ。
 3. `ITransport` とメソッド recv / send / close。
 4. 公開自由関数 make_websocket_server_transport / make_loopback_pair /
