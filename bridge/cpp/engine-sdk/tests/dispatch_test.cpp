@@ -8,14 +8,14 @@
 // std とSDKの公開ヘッダのみを使用する（値等価比較のための JsonValue::parse を含む）。
 // 境界ルール（include/ に nlohmann を含めない）には影響しない。
 
-#include "norves/bridge/adapter.hpp"
-#include "norves/bridge/codec.hpp"
-#include "norves/bridge/envelope.hpp"
-#include "norves/bridge/error.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/result.hpp"
-#include "norves/bridge/server.hpp"
-#include "norves/bridge/version.hpp"
+#include "Norves/Bridge/adapter.hpp"
+#include "Norves/Bridge/codec.hpp"
+#include "Norves/Bridge/envelope.hpp"
+#include "Norves/Bridge/error.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/result.hpp"
+#include "Norves/Bridge/server.hpp"
+#include "Norves/Bridge/version.hpp"
 
 #include <optional>
 #include <string>
@@ -26,15 +26,15 @@
 namespace
 {
 
-    using norves::bridge::BridgeEngineServer;
-    using norves::bridge::BridgeError;
-    using norves::bridge::CodecError;
-    using norves::bridge::decode_envelope;
-    using norves::bridge::Envelope;
-    using norves::bridge::IBridgeEngineAdapter;
-    using norves::bridge::JsonValue;
-    using norves::bridge::Kind;
-    using norves::bridge::Result;
+    using Norves::Bridge::BridgeEngineServer;
+    using Norves::Bridge::BridgeError;
+    using Norves::Bridge::CodecError;
+    using Norves::Bridge::decode_envelope;
+    using Norves::Bridge::Envelope;
+    using Norves::Bridge::IBridgeEngineAdapter;
+    using Norves::Bridge::JsonValue;
+    using Norves::Bridge::Kind;
+    using Norves::Bridge::Result;
 
     // @brief JSON テキストから JsonValue を構築する。パースエラーが発生した場合は
     // テストを失敗させ（null を返す）、呼び出し元がその値をインラインで使えるようにする。

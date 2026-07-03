@@ -64,6 +64,11 @@ before moving past C++20.
 4. **Hold namespace, line endings, encoding, and DTO members fixed.** Keep the
    `norves::bridge` (lower-case) namespace. SDK sources are UTF-8 / LF, but
    encoding differs by translation-unit visibility:
+   > Superseded namespace note (ADR 0009): the namespace part of this section was
+   > later replaced by the `Norves::Bridge` PascalCase namespace decision. See
+   > ADR 0009 for the current cross-repository contract and lockstep migration
+   > rule. The rest of this section, including line endings, encoding, and DTO
+   > member names/order, remains valid.
    - **Public headers (`bridge/cpp/engine-sdk/include/**`) carry a UTF-8 BOM.**
      They are compiled by separate repositories (NorvesLib's `Game` target)
      whose build does **not** pass `/utf-8`; without the BOM MSVC mis-detects the
@@ -92,6 +97,10 @@ Public constants (`kSdkVersion` etc.) may drop the `k` prefix **only** after
   header would break that build with C4819/C2447 even though the symbols are
   unchanged. The fix is encoding-only and stays inside this repository — no
   NorvesLib source edit (Option A).
+  > Superseded consequence note (ADR 0009): after the namespace migration, this
+  > "NorvesLib needs no changes" statement no longer holds. NorvesLib must update
+  > include paths and namespace qualifiers in lockstep; see ADR 0009 for the
+  > overriding decision and migration rule.
 - The **wire protocol is unchanged**: DTO members, their order, and the `to_json`
   output are untouched, so existing fixtures still hold.
 - Internal code (private members, locals, parameters, file-local helpers, enums)

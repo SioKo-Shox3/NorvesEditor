@@ -1,9 +1,9 @@
-#include "norves/bridge/codec_error.hpp"
-#include "norves/bridge/dto/common.hpp"
-#include "norves/bridge/dto/events.hpp"
-#include "norves/bridge/dto/methods.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/result.hpp"
+#include "Norves/Bridge/codec_error.hpp"
+#include "Norves/Bridge/Dto/common.hpp"
+#include "Norves/Bridge/Dto/events.hpp"
+#include "Norves/Bridge/Dto/methods.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/result.hpp"
 
 #include <memory>
 #include <optional>
@@ -24,7 +24,7 @@
 // 必須フィールドと JSON 型がチェックされ、スキーマの集合の外にある enum 文字列は拒否
 // される（serde の deny_unknown_fields と、Rust リファレンスでの enum メンバシップ
 // チェックを反映する）。
-namespace norves::bridge::dto
+namespace Norves::Bridge::Dto
 {
 
     namespace
@@ -42,7 +42,7 @@ namespace norves::bridge::dto
         // ラップする（codec.cpp と同じパターン）。
         JsonValue Wrap(json value)
         {
-            auto impl = std::make_unique<detail::JsonValueImpl>();
+            auto impl = std::make_unique<Detail::JsonValueImpl>();
             impl->json = std::move(value);
             return make_json_value(std::move(impl));
         }
@@ -605,4 +605,4 @@ namespace norves::bridge::dto
         return Result<LogMessageEvent, CodecError>::ok(std::move(out));
     }
 
-}  // namespace norves::bridge::dto
+}  // namespace Norves::Bridge::Dto

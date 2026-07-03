@@ -10,7 +10,7 @@
 ///       の `CodecError`（`bridge/crates/norves-bridge-core/src/error.rs`）の C++ 対応物で
 ///       あり、ローカルかつワイヤー上には決して載らない処理失敗である。BridgeError
 ///       （ワイヤーのエラーオブジェクト）とは区別される。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief デコード/検証失敗の粗い分類。これらの種別は Rust CodecError のバリアントを、
@@ -60,4 +60,4 @@ namespace norves::bridge
         }
     };
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

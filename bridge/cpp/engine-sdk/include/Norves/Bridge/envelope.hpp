@@ -1,9 +1,9 @@
 ﻿#pragma once
 
-#include "norves/bridge/codec_error.hpp"
-#include "norves/bridge/error.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/result.hpp"
+#include "Norves/Bridge/codec_error.hpp"
+#include "Norves/Bridge/error.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/result.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -19,7 +19,7 @@
 /// @note 依存は <std> と SDK 自身の値型のみ。サードパーティヘッダはここに含めない。
 ///       `params`、`result`、`error.data` は opaque な JsonValue として運ばれ、この層では
 ///       解釈されない。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief NorvesEditor Bridge のプロトコルマーカー定数。
@@ -83,4 +83,4 @@ namespace norves::bridge
         [[nodiscard]] Result<std::monostate, CodecError> validate() const;
     };
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

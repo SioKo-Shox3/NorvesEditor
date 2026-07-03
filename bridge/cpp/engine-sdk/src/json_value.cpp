@@ -1,7 +1,7 @@
-#include "norves/bridge/json_value.hpp"
+#include "Norves/Bridge/json_value.hpp"
 
-#include "norves/bridge/codec_error.hpp"
-#include "norves/bridge/result.hpp"
+#include "Norves/Bridge/codec_error.hpp"
+#include "Norves/Bridge/result.hpp"
 
 #include <memory>
 #include <string>
@@ -15,7 +15,7 @@
 // nlohmann/json はこの翻訳単位（および codec.cpp）に閉じ込められ、src-private な
 // json_value_impl.hpp を介してのみ到達される。公開ヘッダは opaque な pImpl のみを
 // 露出するため、この型は決して漏れない。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     // --- 内部ブリッジヘルパ（json_value.hpp で friend 宣言される） ---------------
@@ -23,26 +23,26 @@ namespace norves::bridge
     // これらは codec.cpp が具体的な nlohmann::json から JsonValue を構築し、基底値を
     // 読み戻すことを、公開 API を広げずに可能にする。
 
-    JsonValue make_json_value(std::unique_ptr<detail::JsonValueImpl> impl)
+    JsonValue make_json_value(std::unique_ptr<Detail::JsonValueImpl> impl)
     {
         return JsonValue(std::move(impl));
     }
 
-    const detail::JsonValueImpl* peek(const JsonValue& value) { return value.impl(); }
+    const Detail::JsonValueImpl* peek(const JsonValue& value) { return value.impl(); }
 
     // --- JsonValue の特殊メンバ --------------------------------------------------
 
-    JsonValue::JsonValue() : m_Impl(std::make_unique<detail::JsonValueImpl>()) {}
+    JsonValue::JsonValue() : m_Impl(std::make_unique<Detail::JsonValueImpl>()) {}
 
     JsonValue::~JsonValue() = default;
 
-    JsonValue::JsonValue(std::unique_ptr<detail::JsonValueImpl> impl) : m_Impl(std::move(impl))
+    JsonValue::JsonValue(std::unique_ptr<Detail::JsonValueImpl> impl) : m_Impl(std::move(impl))
     {
         // どこか別の場所で move-out されたソースからの構築は null を渡しうる。不変条件
         // 「m_Impl は決して null にならない」を保つため、JSON null に正規化する。
         if (m_Impl == nullptr)
         {
-            m_Impl = std::make_unique<detail::JsonValueImpl>();
+            m_Impl = std::make_unique<Detail::JsonValueImpl>();
         }
     }
 
@@ -51,8 +51,8 @@ namespace norves::bridge
         // 「m_Impl は決して null にならない」が保たれるよう、デフォルトの null-JSON 状態へ
         // フォールバックする。これは operator== と is_null の null ガードに一致する。
         : m_Impl(other.m_Impl == nullptr
-                     ? std::make_unique<detail::JsonValueImpl>()
-                     : std::make_unique<detail::JsonValueImpl>(other.m_Impl->json))
+                     ? std::make_unique<Detail::JsonValueImpl>()
+                     : std::make_unique<Detail::JsonValueImpl>(other.m_Impl->json))
     {
     }
 
@@ -65,8 +65,8 @@ namespace norves::bridge
             // コピーコンストラクタと同じ null ガード。moved-from のソースを決して逆参照
             // しない。
             m_Impl = other.m_Impl == nullptr
-                         ? std::make_unique<detail::JsonValueImpl>()
-                         : std::make_unique<detail::JsonValueImpl>(other.m_Impl->json);
+                         ? std::make_unique<Detail::JsonValueImpl>()
+                         : std::make_unique<Detail::JsonValueImpl>(other.m_Impl->json);
         }
         return *this;
     }
@@ -97,7 +97,7 @@ namespace norves::bridge
         {
             return Result<JsonValue, CodecError>::err(CodecError::parse("malformed JSON"));
         }
-        auto impl = std::make_unique<detail::JsonValueImpl>(std::move(parsed));
+        auto impl = std::make_unique<Detail::JsonValueImpl>(std::move(parsed));
         return Result<JsonValue, CodecError>::ok(make_json_value(std::move(impl)));
     }
 
@@ -112,4 +112,4 @@ namespace norves::bridge
         return m_Impl->json.dump();
     }
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

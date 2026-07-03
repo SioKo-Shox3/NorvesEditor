@@ -1,7 +1,7 @@
 ﻿#pragma once
 
-#include "norves/bridge/log_sink.hpp"
-#include "norves/bridge/transport.hpp"
+#include "Norves/Bridge/log_sink.hpp"
+#include "Norves/Bridge/transport.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -24,7 +24,7 @@
 ///       （コンシューマスレッド）は受信キューでブロックする。close()（任意のスレッド）は
 ///       サービススレッドへ通知してキューを閉じるだけであり、実際のティアダウンは
 ///       サービススレッド上で起こる。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief 127.0.0.1:`port` で待ち受ける WebSocket サーバトランスポートを生成する
@@ -55,4 +55,4 @@ namespace norves::bridge
         std::uint16_t port, std::size_t send_capacity, std::size_t recv_capacity,
         ILogSink* log_sink = nullptr);
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

@@ -1,9 +1,9 @@
 ﻿#pragma once
 
-#include "norves/bridge/codec_error.hpp"
-#include "norves/bridge/dto/common.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/result.hpp"
+#include "Norves/Bridge/codec_error.hpp"
+#include "Norves/Bridge/Dto/common.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/result.hpp"
 
 #include <optional>
 #include <string>
@@ -15,7 +15,7 @@
 /// @note 依存は <std> と SDK 自身の値/enum 型のみ。サードパーティヘッダはここに露出しない。
 ///       JSON の構築 / 検証は src/dto_codec.cpp にある。メソッド DTO と同じ厳格な契約が
 ///       適用される（additionalProperties: false、必須フィールドおよび enum のチェック）。
-namespace norves::bridge::dto
+namespace Norves::Bridge::Dto
 {
 
     /// @brief events/log.message.params.schema.json。`message` は自由形式の文字列
@@ -42,4 +42,4 @@ namespace norves::bridge::dto
         [[nodiscard]] static Result<LogMessageEvent, CodecError> from_json(const JsonValue& value);
     };
 
-}  // namespace norves::bridge::dto
+}  // namespace Norves::Bridge::Dto

@@ -1,6 +1,6 @@
 // @brief WebSocket サーバートランスポートテスト（Workstream G / G3）。
 //
-// norves::bridge::make_websocket_server_transport（公開の、lws フリーの ITransport シーム）を
+// Norves::Bridge::make_websocket_server_transport（公開の、lws フリーの ITransport シーム）を
 // 検証するため、このテスト TU 内でインプロセスの libwebsockets クライアントを立ち上げ、
 // フルラウンドトリップを実行する。クライアントはここで lws を直接使用する。これは
 // 境界ルールが SDK の公開 include/ ヘッダに lws を含めることのみを禁止しており、
@@ -17,9 +17,9 @@
 //   6. バインド失敗: 同一ポートに 2 番目のトランスポートを作成すると nullptr が返る（Warn）
 //   7. バインドは 127.0.0.1（ループバック）: 127.0.0.1 経由の接続が機能すること
 
-#include "norves/bridge/ws_server_transport.hpp"
+#include "Norves/Bridge/ws_server_transport.hpp"
 
-#include "norves/bridge/log_sink.hpp"
+#include "Norves/Bridge/log_sink.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -40,15 +40,15 @@ namespace
     using namespace std::chrono_literals;
 
     // @brief テストが Warn/Error 診断をアサートできるようにログ行を収集する。
-    class CapturingSink : public norves::bridge::ILogSink
+    class CapturingSink : public Norves::Bridge::ILogSink
     {
     public:
-        void log(norves::bridge::LogSeverity level, std::string_view message) override
+        void log(Norves::Bridge::LogSeverity level, std::string_view message) override
         {
             std::lock_guard<std::mutex> lk(m_Mutex);
             m_Lines.emplace_back(level, std::string(message));
         }
-        bool saw(norves::bridge::LogSeverity level)
+        bool saw(Norves::Bridge::LogSeverity level)
         {
             std::lock_guard<std::mutex> lk(m_Mutex);
             for (const auto& [lvl, msg] : m_Lines)
@@ -63,7 +63,7 @@ namespace
 
     private:
         std::mutex m_Mutex;
-        std::vector<std::pair<norves::bridge::LogSeverity, std::string>> m_Lines;
+        std::vector<std::pair<Norves::Bridge::LogSeverity, std::string>> m_Lines;
     };
 
     // -- libwebsockets テストクライアント -------------------------------------------
@@ -266,8 +266,8 @@ namespace
 
 int main()
 {
-    using norves::bridge::LogSeverity;
-    using norves::bridge::make_websocket_server_transport;
+    using Norves::Bridge::LogSeverity;
+    using Norves::Bridge::make_websocket_server_transport;
 
     const std::uint16_t Port = 39071;
     constexpr std::size_t SendCap = 256;
