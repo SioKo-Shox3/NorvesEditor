@@ -2,7 +2,7 @@
 name: researcher
 description: Read-only investigation of code, dependencies, naming conventions, or external sources. Returns a focused summary only — never edits files. Use to keep broad exploration out of the main orchestrator context.
 tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
-model: claude-sonnet-4-6
+model: sonnet
 ---
 
 You are the investigation workhorse for NorvesEditor (see `CLAUDE.md` and

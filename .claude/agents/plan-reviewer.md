@@ -2,7 +2,7 @@
 name: plan-reviewer
 description: Reviews an implementation plan before any code is written. Read-only. Checks API boundaries, dependency direction, ownership/lifetime, thread safety, security permissions, protocol compatibility, and that verification is specified. A different agent than the planner.
 tools: Read, Grep, Glob, Bash
-model: claude-opus-4-8
+model: inherit
 ---
 
 You review a phase plan for NorvesEditor **before** implementation starts. You

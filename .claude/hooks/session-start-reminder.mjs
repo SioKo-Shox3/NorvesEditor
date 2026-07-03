@@ -1,0 +1,36 @@
+#!/usr/bin/env node
+// SessionStart hook (NorvesEditor working agreement): surface the
+// model-policy workflow at the top of every session so it is never just buried
+// in CLAUDE.md. It also tells the agent that the PreToolUse guard will
+// physically block main-thread code edits, so the agent routes implementation
+// through Codex from the start instead of discovering the wall mid-task.
+//
+// Emits the reminder as additionalContext. Fails open (exit 0, no context) on
+// any error so it can never wedge session startup.
+
+import process from "node:process";
+
+const context = [
+  "NorvesEditor workflow policy (ENFORCED by hooks, not just CLAUDE.md):",
+  "- The main session is the ORCHESTRATOR: it splits phases, decides, integrates, and reviews — it does not write implementation itself.",
+  "- Implementation is DELEGATED TO CODEX by default (Skill `codex:rescue`). Codex usage has headroom — route implementation and mechanical work to Codex liberally; preserve Claude for judgment and review.",
+  "- A PreToolUse guard BLOCKS main-thread Edit/Write of implementation source (.rs/.ts/.tsx/.js/.cpp/.h). Do NOT try to type code directly — hand it to Codex or a subagent.",
+  "- Every non-trivial change gets a DOUBLE review: top-model Claude first review (plan-reviewer / impl-reviewer, never the author) + an independent Codex second review. Both must clear before 'Done'.",
+  "- Quality roles (planner, plan-reviewer, impl-reviewer, verifier) run on the top model; research/mechanical work runs cheap. Escalate on high-risk areas (protocol, Tauri permissions, async lifecycle, C++ SDK API).",
+  "- Show evidence, not assertions: paste commands and real output.",
+  "- Deliberate one-session override (rare, user-approved only): relaunch with env NORVESEDITOR_ALLOW_DIRECT_EDIT=1.",
+].join("\n");
+
+try {
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "SessionStart",
+        additionalContext: context,
+      },
+    }),
+  );
+} catch {
+  // fail open
+}
+process.exit(0);
