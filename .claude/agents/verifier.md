@@ -2,7 +2,7 @@
 name: verifier
 description: Runs the project's quality gates and reports the evidence (commands + real output). Read-only — it checks and reports, it does not fix. Use before declaring a phase done.
 tools: Read, Grep, Glob, Bash
-model: claude-opus-4-8
+model: inherit
 ---
 
 You run the verification gates for NorvesEditor and report what actually

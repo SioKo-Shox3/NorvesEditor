@@ -2,7 +2,7 @@
 name: impl-reviewer
 description: Reviews an actual diff against the approved plan after implementation. Read-only, top model, and always a different agent than the implementer. Rewarded for finding real problems.
 tools: Read, Grep, Glob, Bash
-model: claude-opus-4-8
+model: inherit
 ---
 
 You review implemented changes for NorvesEditor against the approved plan. You

@@ -48,19 +48,29 @@ never depend on it. Full plan: `docs/alpha-project-plan.md`,
 
 The main session is the **orchestrator**. It splits work, decides design,
 sequences phases, integrates, verifies, and owns branch/commit boundaries — and
-**delegates implementation to subagents; it does not write implementation
-itself.** The orchestrator does not author the detailed phase plan or review code
-it supervised; those go to subagents.
+**delegates implementation to Codex and subagents; it does not write
+implementation itself.** The orchestrator does not author the detailed phase
+plan or review code it supervised; those go to subagents.
 
 1. **Research** (subagent, read-only) — understand the code/conventions first.
 2. **Plan** (subagent) — a concrete, reviewable phase plan.
 3. **Plan review** (a *different* subagent) — boundaries, ownership, lifetime,
-   thread safety, permissions, protocol compatibility, verification.
+   thread safety, permissions, protocol compatibility, verification — plus an
+   independent **Codex second review** (double check) before approval.
 4. **User approval** — present the reviewed plan and get the user's OK **before
    writing code**.
-5. **Implement** (subagent) — execute the approved plan only.
-6. **Implementation review** (a subagent that is **not** the implementer — the
-   author never grades their own work) — real diff vs approved plan.
+5. **Implement** — **delegated to Codex by default** (codex plugin /
+   `codex:rescue`). Codex usage has headroom: route implementation and
+   mechanical work there liberally and preserve Claude for judgment. Hand over
+   the phase goal, allowed/forbidden write paths, layer conventions, and the
+   expected report; treat Codex output as a *proposal* — check
+   `git diff --stat` for scope creep before accepting. The Claude
+   `implementer` subagent is the fallback (Codex unavailable/thrashing, or
+   tiny fixes where the handover costs more than the fix).
+6. **Implementation review** (double) — a top-model `impl-reviewer` subagent
+   that is **not** the implementer (the author never grades their own work)
+   checks the real diff vs the approved plan, plus an independent **Codex
+   second review** in a clean context. Reconcile both before proceeding.
 7. **Integrate / verify / commit** (orchestrator) — run the gates, commit on a
    work branch, merge.
 
@@ -71,16 +81,54 @@ implementer, impl-reviewer, verifier). Full rules:
 
 ## Model policy (who thinks, who types)
 
-- **Main session / orchestrator: Opus (`claude-opus-4-8`).** Keep the strongest
-  model where being wrong is most expensive.
-- **Quality on Opus:** planner, plan-reviewer, impl-reviewer, verifier.
-- **Volume on Sonnet (`claude-sonnet-4-6`):** researcher, implementer.
-- **Escalate the implementer to Opus** for load-bearing/high-risk work: protocol
-  schema/compatibility, Tauri process/security permissions, Rust async task
-  lifecycle, WebSocket transport/reconnect, C++ SDK public API, buffer/memory
-  ownership, thread affinity, NorvesLib adapter, viewport strategy.
+- **Main session / orchestrator: the top model available** (pick via `/model`;
+  version-pinned model IDs are deliberately not written here). Keep the
+  strongest model where being wrong is most expensive.
+- **Quality follows the main session (`model: inherit`, set 2026-07-04):**
+  planner, plan-reviewer, impl-reviewer, verifier always run on whatever the
+  orchestrator runs — model generation changes need no edits here. If the main
+  session is deliberately run cheap, spawn quality agents with the top-tier
+  alias explicitly.
+- **Implementation goes to Codex by default** (see Workflow step 5); the
+  `sonnet`-alias `implementer` is the fallback. Research and mechanical work
+  stay on Sonnet or cheaper.
+- **Escalate Claude-side implementation to the top model** for
+  load-bearing/high-risk work: protocol schema/compatibility, Tauri
+  process/security permissions, Rust async task lifecycle, WebSocket
+  transport/reconnect, C++ SDK public API, buffer/memory ownership, thread
+  affinity, NorvesLib adapter, viewport strategy.
 - Model availability drifts; check `/model` and update these strings if it
   changes. Detail: `docs/agent-guide/orchestration.md`.
+
+## Dual-main operation (set 2026-07-04)
+
+- **The orchestrator is whichever CLI the user launched.** Claude Code reads
+  `CLAUDE.md`, Codex reads `AGENTS.md` (identical mirror) — no switching action
+  exists; instruct Codex and Codex is the main under this same agreement.
+- **The second review always goes to the non-main AI** (Claude main → Codex
+  second; Codex main → Claude second), guaranteeing a cross-vendor check.
+- **When Codex is main:** orchestrate with the `.codex/agents/` pod; use Claude
+  headless for consultation and second reviews, e.g.
+  `claude -p "<brief>" --model opus --permission-mode plan` (read-only), or
+  hand it `.claude/agents/impl-reviewer.md` to adopt for a review.
+- **Mutual help:** after 2 refutes/reworks on one phase, consult the partner AI
+  with a structured brief before burning more attempts. Advisory only — the
+  main decides.
+
+## Harness enforcement
+
+(Applies only when Claude is the main.)
+
+- A `PreToolUse` guard (`.claude/hooks/enforce-codex-impl.mjs`, wired in
+  `.claude/settings.local.json`) **blocks** main-thread `Edit`/`Write` of
+  implementation source (`.rs/.ts/.tsx/.js/.cpp/.h` etc.) so implementation is
+  physically routed to Codex/subagents. Docs, config, and protocol fixtures
+  are not blocked.
+- A `SessionStart` hook re-surfaces this policy at the top of every session.
+- Deliberate one-session override (rare, user-approved only): relaunch with
+  `NORVESEDITOR_ALLOW_DIRECT_EDIT=1`.
+- `settings.local.json` is machine-local; redeploy from
+  `../claude-workflow-template` (outside this repo) on other machines.
 
 ## Quality gates (must pass before a phase is "Done", with evidence)
 
