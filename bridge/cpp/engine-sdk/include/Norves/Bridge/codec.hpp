@@ -1,8 +1,8 @@
 ﻿#pragma once
 
-#include "norves/bridge/codec_error.hpp"
-#include "norves/bridge/envelope.hpp"
-#include "norves/bridge/result.hpp"
+#include "Norves/Bridge/codec_error.hpp"
+#include "Norves/Bridge/envelope.hpp"
+#include "Norves/Bridge/result.hpp"
 
 #include <string>
 #include <string_view>
@@ -15,7 +15,7 @@
 ///       （`bridge/crates/norves-bridge-core/src/codec.rs`）を反映する。すなわち
 ///       ENVELOPE 層のみが検証される。メソッドごと / イベントごとのペイロードスキーマは
 ///       後のフェーズであり、params / result / error.data は opaque なまま運ばれる。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief JSON 文字列を Envelope へデコードし、エンベロープ層の規則を適用する:
@@ -35,4 +35,4 @@ namespace norves::bridge
     /// @return 成功時は JSON 文字列。エンベロープをシリアライズできない場合は CodecError。
     [[nodiscard]] Result<std::string, CodecError> encode_envelope(const Envelope& envelope);
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

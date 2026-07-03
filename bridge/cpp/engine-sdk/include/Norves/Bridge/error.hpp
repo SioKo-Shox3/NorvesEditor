@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "norves/bridge/json_value.hpp"
+#include "Norves/Bridge/json_value.hpp"
 
 #include <optional>
 #include <string>
@@ -10,7 +10,7 @@
 /// @brief ワイヤーエラーコードと SDK のエラー値型。
 /// @note 依存は <std> と SDK 自身の opaque な JsonValue のみ。サードパーティヘッダは
 ///       ここに含めない。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief ワイヤーエラーコード。プロトコルはコード空間を開かれた（OPEN）レジストリと
@@ -41,4 +41,4 @@ namespace norves::bridge
         [[nodiscard]] bool operator!=(const BridgeError& other) const { return !(*this == other); }
     };
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

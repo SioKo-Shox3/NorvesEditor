@@ -1,10 +1,10 @@
-#include "norves/bridge/codec.hpp"
+#include "Norves/Bridge/codec.hpp"
 
-#include "norves/bridge/codec_error.hpp"
-#include "norves/bridge/envelope.hpp"
-#include "norves/bridge/error.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/result.hpp"
+#include "Norves/Bridge/codec_error.hpp"
+#include "Norves/Bridge/envelope.hpp"
+#include "Norves/Bridge/error.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/result.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -28,7 +28,7 @@
 //     非空の id、seq >= 0）、
 //   * kind 依存のクロスフィールド規則のための Envelope::validate。
 // params / result / error.data は opaque（JsonValue）として運ばれ、検査されない。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     namespace
@@ -156,7 +156,7 @@ namespace norves::bridge
 
         JsonValue Wrap(const json& value)
         {
-            auto impl = std::make_unique<detail::JsonValueImpl>();
+            auto impl = std::make_unique<Detail::JsonValueImpl>();
             impl->json = value;
             return make_json_value(std::move(impl));
         }
@@ -527,4 +527,4 @@ namespace norves::bridge
         return Result<std::string, CodecError>::ok(root.dump());
     }
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

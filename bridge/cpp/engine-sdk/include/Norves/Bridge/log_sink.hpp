@@ -10,7 +10,7 @@
 ///       標準ストリームログを禁止している）。SDK が発するすべての診断は、組み込み側が
 ///       供給する ILogSink を経由してルーティングされる。シンクが供給されない場合、
 ///       SDK は沈黙する。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief ログ重大度。common.schema.json#/$defs/logLevel
@@ -51,4 +51,4 @@ namespace norves::bridge
         ILogSink& operator=(ILogSink&&) = default;
     };
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

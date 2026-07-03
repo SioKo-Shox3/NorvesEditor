@@ -12,12 +12,12 @@
 // サードパーティ JSON 型を直接扱わない。これにより、このディレクトリから
 // libwebsockets / nlohmann のインクルードを排除する。
 
-#include "norves/bridge/adapter.hpp"
-#include "norves/bridge/dto/common.hpp"
-#include "norves/bridge/dto/methods.hpp"
-#include "norves/bridge/error.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/result.hpp"
+#include "Norves/Bridge/adapter.hpp"
+#include "Norves/Bridge/Dto/common.hpp"
+#include "Norves/Bridge/Dto/methods.hpp"
+#include "Norves/Bridge/error.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/result.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -32,9 +32,9 @@ namespace norves::mock
     // @brief JSON リテラルをパースするか中断する。以下のリテラルはコンパイル時定数であり、
     // パース失敗はランタイム条件ではなくプログラミングエラーを意味する。
     // モックエンジンには壊れたリテラルに対する回復可能なパスはない。
-    inline norves::bridge::JsonValue parse_or_die(std::string_view text)
+    inline Norves::Bridge::JsonValue parse_or_die(std::string_view text)
     {
-        auto parsed = norves::bridge::JsonValue::parse(text);
+        auto parsed = Norves::Bridge::JsonValue::parse(text);
         if (parsed.is_err())
         {
             std::exit(2);
@@ -45,31 +45,31 @@ namespace norves::mock
     // @brief モックエンジンアダプタ。レスポンス値は G4 FakeAdapter と 1 対 1 で一致するため、
     // エディタバックエンドは WebSocket 経由（main.cpp）でモックエンジンを駆動した場合でも
     // ループバックスモークの場合でも同一のワイヤー形状を観察する。
-    class MockAdapter : public norves::bridge::IBridgeEngineAdapter
+    class MockAdapter : public Norves::Bridge::IBridgeEngineAdapter
     {
     public:
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> hello(
-            const norves::bridge::JsonValue& /*params*/,
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError> hello(
+            const Norves::Bridge::JsonValue& /*params*/,
             std::string_view selectedProtocolVersion) override
         {
-            norves::bridge::dto::HelloResult result;
+            Norves::Bridge::Dto::HelloResult result;
             result.sessionId = "sess-mock-1";
             result.protocolVersion = std::string(selectedProtocolVersion);
             result.server =
-                norves::bridge::dto::ServerInfo{"MockEngine", std::optional<std::string>{"0.1.0"},
+                Norves::Bridge::Dto::ServerInfo{"MockEngine", std::optional<std::string>{"0.1.0"},
                                                 std::optional<std::string>{"mock"}};
-            return norves::bridge::Result<norves::bridge::JsonValue,
-                                          norves::bridge::BridgeError>::ok(result.to_json());
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::ok(result.to_json());
         }
 
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
-        getCapabilities(const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        getCapabilities(const Norves::Bridge::JsonValue& /*params*/) override
         {
             // スペックポジティブフィクスチャ
             // （methods/bridge.getCapabilities/positive/response-valid.json）の
             // result.capabilities と値等価にする。H-D 適合ランナーが結果全体を
             // 厳密比較してこのメソッドの乖離を検出できるようにする。
-            return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(
                     R"({"capabilities":[)"
                     R"({"name":"runtime.control","version":"0.1","description":"Play/pause/stop control."},)"
@@ -82,74 +82,74 @@ namespace norves::mock
                     R"({"name":"viewport.thumbnail"}]})"));
         }
 
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> getStatus(
-            const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError> getStatus(
+            const Norves::Bridge::JsonValue& /*params*/) override
         {
-            norves::bridge::dto::StatusSnapshot snap;
-            snap.engineState = norves::bridge::dto::EngineState::Ready;
-            snap.runtimeState = norves::bridge::dto::RuntimeState::Edit;
+            Norves::Bridge::Dto::StatusSnapshot snap;
+            snap.engineState = Norves::Bridge::Dto::EngineState::Ready;
+            snap.runtimeState = Norves::Bridge::Dto::RuntimeState::Edit;
             snap.engineName = "MockEngine";
             snap.engineVersion = "0.1.0";
             snap.title = "Mock Game";
-            return norves::bridge::Result<norves::bridge::JsonValue,
-                                          norves::bridge::BridgeError>::ok(snap.to_json());
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::ok(snap.to_json());
         }
 
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> launchInfo(
-            const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError> launchInfo(
+            const Norves::Bridge::JsonValue& /*params*/) override
         {
             // engine.launchInfo は必須（純粋仮想）メソッドのため、
             // METHOD_NOT_SUPPORTED ではなく最小限の成功結果を返す。
-            return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(R"({"launched":true})"));
         }
 
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> runtimePlay(
-            const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError> runtimePlay(
+            const Norves::Bridge::JsonValue& /*params*/) override
         {
-            norves::bridge::dto::PlayAck ack;
+            Norves::Bridge::Dto::PlayAck ack;
             ack.accepted = true;
-            ack.requestedState = norves::bridge::dto::RuntimeState::Playing;
-            return norves::bridge::Result<norves::bridge::JsonValue,
-                                          norves::bridge::BridgeError>::ok(ack.to_json());
+            ack.requestedState = Norves::Bridge::Dto::RuntimeState::Playing;
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::ok(ack.to_json());
         }
 
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> runtimePause(
-            const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError> runtimePause(
+            const Norves::Bridge::JsonValue& /*params*/) override
         {
-            return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(R"({"accepted":true})"));
         }
 
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> runtimeStop(
-            const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError> runtimeStop(
+            const Norves::Bridge::JsonValue& /*params*/) override
         {
-            return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(R"({"accepted":true})"));
         }
 
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
-        runtimeFocusViewport(const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        runtimeFocusViewport(const Norves::Bridge::JsonValue& /*params*/) override
         {
-            return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(R"({"focused":true})"));
         }
 
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> logSubscribe(
-            const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError> logSubscribe(
+            const Norves::Bridge::JsonValue& /*params*/) override
         {
             // この ack が送信された後に log.message バーストを発行するよう recv ループに
             // フラグを立てる。ack-before-event の順序を決定論的に維持する
             // （ws_test_server の FakeAdapter と同じ「フラグセット、ack 後に発行」パターン）。
             emit_log_burst.store(true);
-            return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(R"({"subscribed":true})"));
         }
 
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
-        logUnsubscribe(const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        logUnsubscribe(const Norves::Bridge::JsonValue& /*params*/) override
         {
-            return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(R"({"unsubscribed":true})"));
         }
 
@@ -163,10 +163,10 @@ namespace norves::mock
         // 一切渡さない（docs/memory-buffer-policy.md / adapter.hpp のスレッド・所有権規約）。
 
         // @brief scene.getTree。静的デモシーン（Root -> NodeA / GroupNode -> NodeB）を返す。
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError> sceneGetTree(
-            const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError> sceneGetTree(
+            const Norves::Bridge::JsonValue& /*params*/) override
         {
-            return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(
                     R"({"root":{"id":"n-0","name":"Root","kind":"object","children":[)"
                     R"({"id":"n-1","name":"NodeA","kind":"object"},)"
@@ -186,8 +186,8 @@ namespace norves::mock
         // には小さなデモプロパティ集合を返す。これにより Outliner で任意ノードを選ぶと Inspector
         // が表示される（per-node 化）。未知 id は空の propertyBag を返す。すべて値コピーのみで
         // JsonValue を構築し、エンジン内部ポインタや span を渡さない（memory-buffer-policy）。
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
-        objectGetSnapshot(const norves::bridge::JsonValue& params) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        objectGetSnapshot(const Norves::Bridge::JsonValue& params) override
         {
             const std::string paramsText = params.dump();
             const std::optional<std::string> objectId = extract_string_field(paramsText, "objectId");
@@ -213,7 +213,7 @@ namespace norves::mock
                     R"({"name":"parent","value":null},)"
                     R"({"name":"position","value":[0,1.5,-10],"valueType":"vector3"},)"
                     R"({"name":"metadata","value":{"locked":false,"tag":"primary"}}]})";
-                return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+                return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                     ok(parse_or_die(snapshot));
             }
 
@@ -222,7 +222,7 @@ namespace norves::mock
             const std::optional<std::string> demo = demo_snapshot_for(id);
             if (demo.has_value())
             {
-                return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+                return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                     ok(parse_or_die(demo.value()));
             }
 
@@ -230,8 +230,8 @@ namespace norves::mock
             std::string empty = R"({"objectId":")";
             empty += id;
             empty += R"(","properties":[]})";
-            return norves::bridge::Result<norves::bridge::JsonValue,
-                                          norves::bridge::BridgeError>::ok(parse_or_die(empty));
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::ok(parse_or_die(empty));
         }
 
         // @brief object.setProperty。{accepted:true, appliedValue:<echo>} を返し、インメモリ
@@ -241,8 +241,8 @@ namespace norves::mock
         // （adapter.hpp のスレッドアフィニティ規約）、この可変状態にロックは要らない。mock を
         // 将来もマルチスレッド化しないこと。Phase 6 の object.changed emit はこの更新済みマップを
         // 同スレッドで読む土台となる。
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
-        objectSetProperty(const norves::bridge::JsonValue& params) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        objectSetProperty(const Norves::Bridge::JsonValue& params) override
         {
             // params から objectId / property 名 / value（JSON テキスト）を取り出し、可変プロパティ
             // なら値コピーで内部マップを更新する。JsonValue は opaque なため params 全体を dump し、
@@ -276,8 +276,8 @@ namespace norves::mock
             std::string ack = R"({"accepted":true,"appliedValue":)";
             ack += valueText.has_value() ? valueText.value() : std::string("null");
             ack += "}";
-            return norves::bridge::Result<norves::bridge::JsonValue,
-                                          norves::bridge::BridgeError>::ok(parse_or_die(ack));
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::ok(parse_or_die(ack));
         }
 
         // @brief Phase 6: object.changed イベントの params を構築する。更新済みのインメモリ
@@ -285,7 +285,7 @@ namespace norves::mock
         // スナップショットをそのまま params とする（events/object.changed.params.schema.json と
         // 整合）。値コピーのみで JsonValue を構築し、エンジン内部ポインタや span を渡さない
         // （memory-buffer-policy）。シングルスレッド recv ループ前提（objectSetProperty の @note）。
-        norves::bridge::JsonValue object_changed_params()
+        Norves::Bridge::JsonValue object_changed_params()
         {
             std::string params = R"({"objectId":")";
             params += last_changed_object_id.empty() ? std::string("n-1") : last_changed_object_id;
@@ -301,7 +301,7 @@ namespace norves::mock
         // @brief Phase 6: scene.treeChanged イベントの params を構築する。変更されたノードの
         // スナップショット DTO（changedNodes）を 1 件返す（events/scene.treeChanged.params.schema.json
         // と整合）。最小トリガとして、setProperty 後に変更ノード 1 件を通知するのみ。値コピーのみ。
-        static norves::bridge::JsonValue scene_tree_changed_params()
+        static Norves::Bridge::JsonValue scene_tree_changed_params()
         {
             return parse_or_die(
                 R"({"changedNodes":[{"id":"n-1","name":"NodeA","kind":"object"}],)"
@@ -309,10 +309,10 @@ namespace norves::mock
         }
 
         // @brief schema.getSnapshot。型記述子（typeName + properties[{name,valueType}]）を返す。
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
-        schemaGetSnapshot(const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        schemaGetSnapshot(const Norves::Bridge::JsonValue& /*params*/) override
         {
-            return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(
                     R"({"types":[)"
                     R"({"typeName":"TypeA","kind":"object","properties":[)"
@@ -328,10 +328,10 @@ namespace norves::mock
         // base64 文字列は値コピーで JsonValue を構築し、エンジンのフレームバッファや内部
         // ポインタ・span を一切渡さない（docs/memory-buffer-policy.md の large-payload 戦略:
         // PNG / 最大 640x360 / 256 KiB / 最大 1 fps の pull 型）。
-        norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>
-        viewportGetThumbnail(const norves::bridge::JsonValue& /*params*/) override
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        viewportGetThumbnail(const Norves::Bridge::JsonValue& /*params*/) override
         {
-            return norves::bridge::Result<norves::bridge::JsonValue, norves::bridge::BridgeError>::
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(
                     R"({"imageBase64":")"
                     R"(iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mNwaDgARAwQCgAoDgYBqzvMVQAAAABJRU5ErkJggg==)"

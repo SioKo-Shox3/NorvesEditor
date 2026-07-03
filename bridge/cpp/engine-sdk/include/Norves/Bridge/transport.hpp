@@ -22,7 +22,7 @@
 ///       ピアがクローズするまでブロックする。WebSocket トランスポートは後のフェーズで
 ///       あり、ここではモデル化されていない。現時点ではプロセス内ループバックペア（下記）
 ///       のみが存在する。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     /// @brief 双方向・フレーム指向のトランスポート。1 フレーム == 1 ワイヤーエンベロープで
@@ -83,4 +83,4 @@ namespace norves::bridge
     [[nodiscard]] std::pair<std::unique_ptr<ITransport>, std::unique_ptr<ITransport>>
     make_loopback_pair(std::size_t capacity);
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge

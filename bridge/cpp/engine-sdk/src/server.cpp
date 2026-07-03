@@ -1,13 +1,13 @@
-#include "norves/bridge/server.hpp"
+#include "Norves/Bridge/server.hpp"
 
-#include "norves/bridge/adapter.hpp"
-#include "norves/bridge/codec.hpp"
-#include "norves/bridge/envelope.hpp"
-#include "norves/bridge/error.hpp"
-#include "norves/bridge/json_value.hpp"
-#include "norves/bridge/log_sink.hpp"
-#include "norves/bridge/result.hpp"
-#include "norves/bridge/version.hpp"
+#include "Norves/Bridge/adapter.hpp"
+#include "Norves/Bridge/codec.hpp"
+#include "Norves/Bridge/envelope.hpp"
+#include "Norves/Bridge/error.hpp"
+#include "Norves/Bridge/json_value.hpp"
+#include "Norves/Bridge/log_sink.hpp"
+#include "Norves/Bridge/result.hpp"
+#include "Norves/Bridge/version.hpp"
 
 #include <memory>
 #include <optional>
@@ -28,7 +28,7 @@
 //   * bridge.hello のプロトコルバージョンネゴシエーションを所有する、
 //   * 他の既知のリクエストを IBridgeEngineAdapter へディスパッチする、
 //   * リクエスト id を反映して、レスポンス（result またはワイヤーエラー）をエンコードする。
-namespace norves::bridge
+namespace Norves::Bridge
 {
 
     namespace
@@ -40,7 +40,7 @@ namespace norves::bridge
         // ヘルパ形状。nlohmann はこの TU 内に留まる）。
         JsonValue Wrap(json value)
         {
-            auto impl = std::make_unique<detail::JsonValueImpl>(std::move(value));
+            auto impl = std::make_unique<Detail::JsonValueImpl>(std::move(value));
             return make_json_value(std::move(impl));
         }
 
@@ -369,4 +369,4 @@ namespace norves::bridge
         return std::move(encoded).value();
     }
 
-}  // namespace norves::bridge
+}  // namespace Norves::Bridge
