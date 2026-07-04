@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // PreToolUse guard (NorvesEditor working agreement).
 //
-// CLAUDE.md model policy: implementation is delegated to Codex by default.
-// The main thread PLANS, INTEGRATES, and REVIEWS; Codex writes the code
-// (via the `codex` plugin / `codex:rescue`) — "delegate the typing, never
-// the judgment."
+// (Filename is historical — the rule it enforces is "the main thread never
+// types implementation code"; implementation belongs to the implementer
+// subagent, with a mandatory Codex second review via direct CLI.)
+//
+// CLAUDE.md workflow: the main thread PLANS, INTEGRATES, and REVIEWS —
+// "delegate the typing, never the judgment."
 //
 // Text in CLAUDE.md alone does not hold (proven on Sembazuru: a session typed
 // load-bearing code directly), so this hook makes the harness enforce it: an
@@ -40,6 +42,13 @@ process.stdin.on("end", () => {
     const ti = (data && data.tool_input) || {};
     const filePath = ti.file_path || ti.notebook_path || "";
 
+    // Subagent calls are ALLOWED — implementation belongs to the implementer
+    // subagent. Per the hooks reference, `agent_id` is present only when the
+    // hook fires inside a subagent call; the guard targets the MAIN thread.
+    if (data.agent_id) {
+      process.exit(0);
+    }
+
     // A deliberate, operator-approved escape hatch (one session).
     const override = /^(1|true|yes|on)$/i.test(
       process.env[OVERRIDE_ENV] || "",
@@ -52,15 +61,17 @@ process.stdin.on("end", () => {
       process.stderr.write(
         `BLOCKED by the ${PROJECT} workflow guard: the main thread must NOT ` +
           "type implementation code directly.\n\n" +
-          "CLAUDE.md model policy: implementation is delegated to Codex; the " +
-          "main thread plans, integrates, and REVIEWS. Every non-trivial " +
-          "change is a Codex + Claude double-review.\n\n" +
+          "CLAUDE.md workflow: the main thread plans, integrates, and REVIEWS; " +
+          "implementation runs in the `implementer` subagent. Every non-trivial " +
+          "change then gets a top-model first review plus a mandatory Codex " +
+          "second review via DIRECT CLI (never the codex plugin).\n\n" +
           `Refused edit: ${filePath}\n\n` +
           "Do this instead:\n" +
-          "  1. Hand the change to Codex (Skill `codex:rescue`) with the " +
-          "design/spec and the exact files + invariants to implement.\n" +
-          "  2. Review Codex's diff (git diff --stat first, then line-by-line); " +
-          "run an independent Claude review pass (impl-reviewer / verifier).\n" +
+          "  1. Hand the change to the `implementer` subagent " +
+          "(.claude/agents/implementer.md) with the approved plan, allowed " +
+          "write paths, and conventions.\n" +
+          "  2. First review: impl-reviewer subagent. Second review (mandatory): " +
+          "`codex exec --sandbox read-only ...` — direct CLI, synchronous.\n" +
           "  3. Only then stage + commit.\n\n" +
           "Deliberate, user-approved override for ONE session: relaunch " +
           `Claude Code with env ${OVERRIDE_ENV}=1.\n`,

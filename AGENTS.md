@@ -48,7 +48,7 @@ never depend on it. Full plan: `docs/alpha-project-plan.md`,
 
 The main session is the **orchestrator**. It splits work, decides design,
 sequences phases, integrates, verifies, and owns branch/commit boundaries — and
-**delegates implementation to Codex and subagents; it does not write
+**delegates implementation to subagents; it does not write
 implementation itself.** The orchestrator does not author the detailed phase
 plan or review code it supervised; those go to subagents.
 
@@ -56,21 +56,24 @@ plan or review code it supervised; those go to subagents.
 2. **Plan** (subagent) — a concrete, reviewable phase plan.
 3. **Plan review** (a *different* subagent) — boundaries, ownership, lifetime,
    thread safety, permissions, protocol compatibility, verification — plus an
-   independent **Codex second review** (double check) before approval.
+   independent **Codex second review via direct CLI** (double check) before
+   approval.
 4. **User approval** — present the reviewed plan and get the user's OK **before
    writing code**.
-5. **Implement** — **delegated to Codex by default** (codex plugin /
-   `codex:rescue`). Codex usage has headroom: route implementation and
-   mechanical work there liberally and preserve Claude for judgment. Hand over
-   the phase goal, allowed/forbidden write paths, layer conventions, and the
-   expected report; treat Codex output as a *proposal* — check
-   `git diff --stat` for scope creep before accepting. The Claude
-   `implementer` subagent is the fallback (Codex unavailable/thrashing, or
-   tiny fixes where the handover costs more than the fix).
-6. **Implementation review** (double) — a top-model `impl-reviewer` subagent
-   that is **not** the implementer (the author never grades their own work)
-   checks the real diff vs the approved plan, plus an independent **Codex
-   second review** in a clean context. Reconcile both before proceeding.
+5. **Implement** — the **`implementer` subagent** executes the approved plan;
+   the orchestrator never types code (Claude-complete — plugin-based Codex
+   delegation was dropped 2026-07-05). Hand over the phase goal,
+   allowed/forbidden write paths, layer conventions, and the expected report;
+   treat the output as a *proposal* — check `git diff --stat` for scope creep
+   before accepting. Spawn on a higher model for load-bearing areas.
+6. **Implementation review** (double, mandatory gate) — a top-model
+   `impl-reviewer` subagent that is **not** the implementer (the author never
+   grades their own work) checks the real diff vs the approved plan, plus an
+   independent **Codex second review via direct CLI**
+   (`codex exec --sandbox read-only ...`, synchronous — never via the codex
+   plugin) in a clean context. Reconcile both before proceeding; if the Codex
+   CLI call fails, substitute the `verifier` refute pass and report the
+   skipped gate.
 7. **Integrate / verify / commit** (orchestrator) — run the gates, commit on a
    work branch, merge.
 
@@ -89,9 +92,9 @@ implementer, impl-reviewer, verifier). Full rules:
   orchestrator runs — model generation changes need no edits here. If the main
   session is deliberately run cheap, spawn quality agents with the top-tier
   alias explicitly.
-- **Implementation goes to Codex by default** (see Workflow step 5); the
-  `sonnet`-alias `implementer` is the fallback. Research and mechanical work
-  stay on Sonnet or cheaper.
+- **Implementation runs in the `sonnet`-alias `implementer` subagent** (see
+  Workflow step 5); escalate its spawn model for load-bearing areas. Research
+  and mechanical work stay on Sonnet or cheaper.
 - **Escalate Claude-side implementation to the top model** for
   load-bearing/high-risk work: protocol schema/compatibility, Tauri
   process/security permissions, Rust async task lifecycle, WebSocket
@@ -106,7 +109,8 @@ implementer, impl-reviewer, verifier). Full rules:
   `CLAUDE.md`, Codex reads `AGENTS.md` (identical mirror) — no switching action
   exists; instruct Codex and Codex is the main under this same agreement.
 - **The second review always goes to the non-main AI** (Claude main → Codex
-  second; Codex main → Claude second), guaranteeing a cross-vendor check.
+  second; Codex main → Claude second), guaranteeing a cross-vendor check —
+  called via **direct CLI** (`codex exec` / `claude -p`), never via plugins.
 - **When Codex is main:** orchestrate with the `.codex/agents/` pod; use Claude
   headless for consultation and second reviews, e.g.
   `claude -p "<brief>" --model opus --permission-mode plan` (read-only), or
