@@ -9,9 +9,11 @@
 // "delegate the typing, never the judgment."
 //
 // Text in CLAUDE.md alone does not hold (proven on Sembazuru: a session typed
-// load-bearing code directly), so this hook makes the harness enforce it: an
-// Edit/Write/MultiEdit/NotebookEdit targeting implementation source is
-// BLOCKED, with instructions to route the change through Codex instead.
+// load-bearing code directly), so this hook makes the harness enforce it: a
+// main-thread Edit/Write/MultiEdit/NotebookEdit targeting implementation
+// source is BLOCKED, with instructions to route the change through the
+// `implementer` subagent instead (subagent calls carry an `agent_id` and are
+// allowed through below).
 //
 // Deliberate, operator-approved override for one session: set the environment
 // variable NORVESEDITOR_ALLOW_DIRECT_EDIT=1 before launching Claude Code.
