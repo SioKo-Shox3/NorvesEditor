@@ -120,6 +120,9 @@ implementer, impl-reviewer, verifier). Full rules:
   headless for consultation and second reviews, e.g.
   `claude -p "<brief>" --model opus --permission-mode plan` (read-only), or
   hand it `.claude/agents/impl-reviewer.md` to adopt for a review.
+  **Measured 2026-07-06: `claude -p` fails inside Codex's sandbox (network
+  blocked) — run it via the "outside the sandbox" approval in interactive
+  sessions; it cannot be called from non-interactive `codex exec`.**
 - **Mutual help:** after 2 refutes/reworks on one phase, consult the partner AI
   with a structured brief before burning more attempts. Advisory only — the
   main decides.
