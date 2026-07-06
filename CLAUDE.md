@@ -60,12 +60,16 @@ plan or review code it supervised; those go to subagents.
    approval.
 4. **User approval** — present the reviewed plan and get the user's OK **before
    writing code**.
-5. **Implement** — the **`implementer` subagent** executes the approved plan;
-   the orchestrator never types code (Claude-complete — plugin-based Codex
-   delegation was dropped 2026-07-05). Hand over the phase goal,
-   allowed/forbidden write paths, layer conventions, and the expected report;
-   treat the output as a *proposal* — check `git diff --stat` for scope creep
-   before accepting. Spawn on a higher model for load-bearing areas.
+5. **Implement** — route by task shape; the orchestrator never types code.
+   **Spec-complete implementation goes to Codex via direct CLI**
+   (`codex exec --sandbox workspace-write` — instruction-following + coding
+   quality; include the no-loop clause: stop after 2 failed attempts of one
+   approach and report back). Implementation with residual ambiguity or
+   cross-cutting judgment goes to the **`implementer` subagent** (higher model
+   for load-bearing areas). Hand over the phase goal, allowed/forbidden write
+   paths, layer conventions, and the expected report; treat the output as a
+   *proposal* — check `git diff --stat` for scope creep before accepting.
+   Plugin-based delegation stays banned (2026-07-05).
 6. **Implementation review** (double, mandatory gate) — a top-model
    `impl-reviewer` subagent that is **not** the implementer (the author never
    grades their own work) checks the real diff vs the approved plan, plus an
@@ -92,8 +96,9 @@ implementer, impl-reviewer, verifier). Full rules:
   orchestrator runs — model generation changes need no edits here. If the main
   session is deliberately run cheap, spawn quality agents with the top-tier
   alias explicitly.
-- **Implementation runs in the `sonnet`-alias `implementer` subagent** (see
-  Workflow step 5); escalate its spawn model for load-bearing areas. Research
+- **Implementation routes by task shape** (see Workflow step 5): spec-complete
+  → Codex direct CLI; ambiguous/cross-cutting → the `sonnet`-alias
+  `implementer` (escalate its spawn model for load-bearing areas). Research
   and mechanical work stay on Sonnet or cheaper.
 - **Escalate Claude-side implementation to the top model** for
   load-bearing/high-risk work: protocol schema/compatibility, Tauri
