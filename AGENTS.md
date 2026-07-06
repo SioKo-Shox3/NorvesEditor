@@ -8,7 +8,9 @@ in `AGENTS.md`) so the next session inherits the correction.
 > `CLAUDE.md` and `AGENTS.md` are kept **byte-identical**. Claude reads
 > `CLAUDE.md`, Codex reads `AGENTS.md`. Edit one, mirror the other in the same
 > change. These two files are the only top-level instructions; nothing else
-> overrides them.
+> overrides them. Under Claude Code a PostToolUse mirror-guard hook detects
+> drift; **when Codex is main there is no hook** — after editing either file,
+> immediately `cp` + `diff` the mirror yourself as part of completing that edit.
 
 ## Language
 
