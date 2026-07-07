@@ -9,8 +9,11 @@ in `AGENTS.md`) so the next session inherits the correction.
 > `CLAUDE.md`, Codex reads `AGENTS.md`. Edit one, mirror the other in the same
 > change. These two files are the only top-level instructions; nothing else
 > overrides them. Under Claude Code a PostToolUse mirror-guard hook detects
-> drift; **when Codex is main there is no hook** — after editing either file,
-> immediately `cp` + `diff` the mirror yourself as part of completing that edit.
+> drift; under Codex a Stop hook (`.codex/hooks/mirror-guard.mjs`, wired
+> 2026-07-07) blocks finishing the turn while they drift — but Codex hooks are
+> **silently inert** without trust entries in `~/.codex/config.toml`. Hooks are
+> a net: after editing either file, immediately `cp` + `diff` the mirror
+> yourself as part of completing that edit.
 
 ## Language
 
@@ -131,7 +134,11 @@ implementer, impl-reviewer, verifier). Full rules:
 
 ## Harness enforcement
 
-(Applies only when Claude is the main.)
+(Claude-main hooks below; Codex-main equivalents live in `.codex/hooks.json` —
+an `apply_patch` implementation guard, a Stop mirror-guard, and a SessionStart
+reminder (wired 2026-07-07). Codex hooks fire only once trusted in
+`~/.codex/config.toml` [hooks.state]; re-trust via
+`.codex/hooks/trust-hooks.mjs` after any hooks.json change.)
 
 - A `PreToolUse` guard (`.claude/hooks/enforce-codex-impl.mjs`, wired in
   `.claude/settings.local.json`) **blocks** main-thread `Edit`/`Write` of

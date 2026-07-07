@@ -36,7 +36,7 @@ const OVERRIDE_ENV = "NORVESEDITOR_ALLOW_DIRECT_EDIT";
 // and build scripts are NOT blocked — the main thread legitimately edits
 // those.
 const IMPL_SOURCE_RE =
-  /\.(rs|ts|tsx|js|jsx|cpp|cc|cxx|c|hpp|hh|hxx|h)$/i;
+  /\.(rs|ts|tsx|mts|cts|js|jsx|mjs|cjs|cpp|cc|cxx|c|hpp|hh|hxx|h)$/i;
 // ---------------------------------------------------------------------------
 
 const FILE_LINE_RE = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm;
