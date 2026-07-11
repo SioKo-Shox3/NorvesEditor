@@ -77,14 +77,13 @@ cost fleet-wide).
    approval.
 4. **User approval** — present the reviewed plan and get the user's OK **before
    writing code**.
-5. **Implement** — route by task shape; the orchestrator never types code.
-   **Spec-complete implementation goes to Codex via direct CLI**
-   (`codex exec --sandbox workspace-write` — instruction-following + coding
-   quality; include the no-loop clause: stop after 2 failed attempts of one
-   approach and report back). Implementation with residual ambiguity or
-   cross-cutting judgment goes to the **`implementer` subagent** (higher model
-   for load-bearing areas). Hand over the phase goal, allowed/forbidden write
-   paths, layer conventions, and the expected report; treat the output as a
+5. **Implement** — the orchestrator never types code. Implementation goes to
+   the **`implementer` subagent** (higher model for load-bearing areas;
+   include the no-loop clause: stop after 2 failed attempts of one approach
+   and report back). **Cross-CLI implementation handoff is abolished
+   (2026-07-12)** — the partner AI only does second reviews and
+   consultations. Hand over the phase goal, allowed/forbidden write paths,
+   layer conventions, and the expected report; treat the output as a
    *proposal* — check `git diff --stat` for scope creep before accepting.
    Plugin-based delegation stays banned (2026-07-05).
 6. **Implementation review** (double, mandatory gate) — a top-model
@@ -113,10 +112,10 @@ implementer, impl-reviewer, verifier). Full rules:
   orchestrator runs — model generation changes need no edits here. If the main
   session is deliberately run cheap, spawn quality agents with the top-tier
   alias explicitly.
-- **Implementation routes by task shape** (see Workflow step 5): spec-complete
-  → Codex direct CLI; ambiguous/cross-cutting → the `sonnet`-alias
-  `implementer` (escalate its spawn model for load-bearing areas). Research
-  and mechanical work stay on Sonnet or cheaper.
+- **Implementation goes to the `implementer` subagent** (see Workflow step 5;
+  escalate its spawn model for load-bearing areas). Cross-CLI implementation
+  handoff is abolished (2026-07-12). Research and mechanical work stay on
+  Sonnet or cheaper.
 - **Escalate Claude-side implementation to the top model** for
   load-bearing/high-risk work: protocol schema/compatibility, Tauri
   process/security permissions, Rust async task lifecycle, WebSocket
@@ -155,8 +154,8 @@ reminder (wired 2026-07-07). Codex hooks fire only once trusted in
 - A `PreToolUse` guard (`.claude/hooks/enforce-codex-impl.mjs`, wired in
   `.claude/settings.local.json`) **blocks** main-thread `Edit`/`Write` of
   implementation source (`.rs/.ts/.tsx/.js/.cpp/.h` etc.) so implementation is
-  physically routed to Codex/subagents. Docs, config, and protocol fixtures
-  are not blocked.
+  physically routed to the `implementer` subagent. Docs, config, and protocol
+  fixtures are not blocked.
 - A `SessionStart` hook re-surfaces this policy at the top of every session.
 - Deliberate one-session override (rare, user-approved only): relaunch with
   `NORVESEDITOR_ALLOW_DIRECT_EDIT=1`.
