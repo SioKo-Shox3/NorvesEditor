@@ -57,6 +57,18 @@ sequences phases, integrates, verifies, and owns branch/commit boundaries — an
 implementation itself.** The orchestrator does not author the detailed phase
 plan or review code it supervised; those go to subagents.
 
+**Scope of this section (revised 2026-07-11):** the workflow steps and the
+declaration / scope-check / advisor rituals are **orchestrator-only**. An agent
+spawned as a subagent (explicitly or via autonomous delegation) follows only
+these 3 rules: (1) stay inside the assigned write paths — if an out-of-scope
+change becomes necessary, report back instead of editing; (2) run the
+verification commands and return real output; (3) stop after 2 failures of the
+same approach and return the evidence to the parent. Subagents never write the
+5-line declaration, never run check-scope.mjs, never call ask-advisor — the
+orchestrator verifies the INTEGRATED diff once with check-scope.mjs (measured
+2026-07-11: children running their own declarations/checks multiplied ritual
+cost fleet-wide).
+
 1. **Research** (subagent, read-only) — understand the code/conventions first.
 2. **Plan** (subagent) — a concrete, reviewable phase plan.
 3. **Plan review** (a *different* subagent) — boundaries, ownership, lifetime,
