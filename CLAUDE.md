@@ -69,6 +69,19 @@ orchestrator verifies the INTEGRATED diff once with check-scope.mjs (measured
 2026-07-11: children running their own declarations/checks multiplied ritual
 cost fleet-wide).
 
+**Dev-stage dial (QA frequency follows the development stage; added 2026-07-13).**
+**Current stage: EXPLORATION (pre-alpha, set by the user 2026-07-13)** — only the
+user changes this line. Per-task QA at production strength kills pre-alpha
+velocity ("QA that slows development down defeats its purpose" — user policy).
+In EXPLORATION the **LIGHT path is the default** for everything outside the
+danger zones (Architecture boundaries above); the cross-AI second review and
+plan/test-design stages run **only for danger-zone work**. Quality debt is
+repaid in batch at milestones: code-gardening + one integrated review (cross-AI
+runs there). Unchanged regardless of stage: real verification output,
+stop-after-2-failures, one check-scope pass on the integrated diff, and danger
+zones are ALWAYS heavy. (STABILIZATION = the triage table as written;
+PRODUCTION = all gates.)
+
 **Size triage — once, before starting (over-processing is a cost accident;
 added 2026-07-12).** The numbered steps below are the STANDARD path, not a tax
 on every task. Classify first, declare the path, escalate one tier when unsure:
