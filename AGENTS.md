@@ -174,6 +174,13 @@ reminder (wired 2026-07-07). Codex hooks fire only once trusted in
   physically routed to the `implementer` subagent. Docs, config, and protocol
   fixtures are not blocked.
 - A `SessionStart` hook re-surfaces this policy at the top of every session.
+- **Never create a new workspace (git worktree add) without user approval**
+  (Codex-main: `.codex/hooks/workspace-guard.mjs` blocks it — added 2026-07-12).
+  A fresh tree carries a STALE mirror snapshot and its hooks.json path has no
+  trust entries, so the harness goes silently inert (measured). If isolation is
+  genuinely needed, re-establish the harness (fresh mirrors + trust-hooks.mjs +
+  session_start probe) as part of the same task. Approved override:
+  `NORVESEDITOR_ALLOW_WORKSPACE=1`.
 - Deliberate one-session override (rare, user-approved only): relaunch with
   `NORVESEDITOR_ALLOW_DIRECT_EDIT=1`.
 - `settings.local.json` is machine-local; redeploy from
