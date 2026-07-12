@@ -69,6 +69,23 @@ orchestrator verifies the INTEGRATED diff once with check-scope.mjs (measured
 2026-07-11: children running their own declarations/checks multiplied ritual
 cost fleet-wide).
 
+**Size triage — once, before starting (over-processing is a cost accident;
+added 2026-07-12).** The numbered steps below are the STANDARD path, not a tax
+on every task. Classify first, declare the path, escalate one tier when unsure:
+
+- **LIGHT** — local, reversible, small: ≤2 files, ~≤50 changed lines, no
+  load-bearing area, no public API/schema/ownership change. → ONE `implementer`
+  directly (no researcher/planner/test-designer; embed conventions +
+  verification commands in the brief) → `verifier` gates → commit. The
+  cross-AI second review MAY BE SKIPPED — state "light path" in the report.
+- **STANDARD** — beyond the LIGHT thresholds → steps 1-7 below, but the
+  cross-AI second review runs ONCE on the task's integrated diff, not per phase.
+- **HEAVY** — load-bearing areas, public API, data formats, concurrency,
+  ownership → all gates + heavy-artillery on load-bearing phases.
+
+When the user asks for speed, default to LIGHT and say so — never gold-plate
+silently.
+
 1. **Research** (subagent, read-only) — understand the code/conventions first.
 2. **Plan** (subagent) — a concrete, reviewable phase plan.
 3. **Plan review** (a *different* subagent) — boundaries, ownership, lifetime,
