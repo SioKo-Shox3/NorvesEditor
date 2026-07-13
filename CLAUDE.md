@@ -244,6 +244,10 @@ committed. Detail: `docs/agent-guide/build-and-verify.md`.
   launch/kill, Bridge public API, C++ ownership/buffer/thread, Rust async
   lifecycle, NorvesLib adapter, viewport strategy.
 - End commit messages with the required `Co-Authored-By` trailer.
+- **Cleanup is part of merge completion (added 2026-07-13):** after
+  integrating, delete fully-merged branches (verify with `git branch --merged`)
+  and retired worktrees (verify clean, then `git worktree remove`). Anything
+  unmerged, dirty, or in use: leave it and report.
 
 Detail: `docs/agent-guide/branching-and-commits.md`.
 
