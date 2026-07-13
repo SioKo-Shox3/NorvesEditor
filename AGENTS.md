@@ -121,9 +121,14 @@ silently.
    grades their own work) checks the real diff vs the approved plan, plus an
    independent **Codex second review via direct CLI**
    (`codex exec --sandbox read-only ...`, synchronous — never via the codex
-   plugin) in a clean context. Reconcile both before proceeding; if the Codex
-   CLI call fails, substitute the `verifier` refute pass and report the
-   skipped gate.
+   plugin) in a clean context. If the Codex CLI call fails, substitute the
+   `verifier` refute pass and report the skipped gate. **Convergence rule
+   (added 2026-07-13): max 2 review rounds.** Round 1 classifies findings
+   blocking (correctness / safety / data loss / danger-zone violations) vs
+   non-blocking; only blocking requires fixes. Round 2 verifies ONLY the
+   fix-diff, new findings accepted only if blocking. NO round 3 — leftovers
+   are logged as 残課題 and routed to the repayment cycle. Never loop
+   review↔fix (measured non-terminating pattern).
 7. **Integrate / verify / commit** (orchestrator) — run the gates, commit on a
    work branch, merge.
 
