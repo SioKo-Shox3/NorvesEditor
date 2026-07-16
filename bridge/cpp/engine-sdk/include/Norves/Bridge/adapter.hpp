@@ -176,6 +176,13 @@ namespace Norves::Bridge
             return not_supported(params);
         }
 
+        /// @brief asset.reloadManifest。エンジン起動時に構成された asset manifest を
+        ///        再読み込みする。params は空の JSON オブジェクトでなければならない。
+        virtual Result<JsonValue, BridgeError> assetReloadManifest(const JsonValue& params)
+        {
+            return not_supported(params);
+        }
+
     protected:
         IBridgeEngineAdapter() = default;
         IBridgeEngineAdapter(const IBridgeEngineAdapter&) = default;

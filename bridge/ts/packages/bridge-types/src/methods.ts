@@ -144,3 +144,9 @@ export type FocusViewportParams = Record<string, never>;
 export interface FocusViewportResult {
   focused: boolean;
 }
+
+// ---- asset.reloadManifest -----------------------------------------------
+
+export interface AssetReloadManifestResult {
+  accepted: boolean;
+}

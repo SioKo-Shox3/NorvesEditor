@@ -42,6 +42,7 @@ pub mod commands {
     pub const ASSET_READ_MANIFEST: &str = "asset_read_manifest";
     pub const ASSET_RESOLVE: &str = "asset_resolve";
     pub const ASSET_GET_MANIFEST: &str = "asset_get_manifest";
+    pub const ASSET_RELOAD_MANIFEST: &str = "asset_reload_manifest";
 }
 
 /// Tauri event names (backend -> frontend).
@@ -195,6 +196,11 @@ mod tests {
         assert_eq!(commands::ASSET_GET_MANIFEST, "asset_get_manifest");
     }
 
+    #[test]
+    fn command_asset_reload_manifest() {
+        assert_eq!(commands::ASSET_RELOAD_MANIFEST, "asset_reload_manifest");
+    }
+
     // -----------------------------------------------------------------------
     // Event literal assertions
     // -----------------------------------------------------------------------
@@ -295,6 +301,7 @@ mod tests {
             commands::ASSET_READ_MANIFEST,
             commands::ASSET_RESOLVE,
             commands::ASSET_GET_MANIFEST,
+            commands::ASSET_RELOAD_MANIFEST,
         ];
         let mut sorted = all;
         sorted.sort_unstable();

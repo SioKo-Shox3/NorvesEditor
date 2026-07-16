@@ -25,6 +25,8 @@ const selectAsset = vi.fn();
 const clearAssetManifest = vi.fn();
 const dismissError = vi.fn();
 const dismissAssetError = vi.fn();
+const reloadAssetRuntime = vi.fn();
+const dismissAssetReloadError = vi.fn();
 
 vi.mock('../../hooks/useBridge.js', () => ({
   useBridgeActions: () => ({
@@ -33,6 +35,8 @@ vi.mock('../../hooks/useBridge.js', () => ({
     clearAssetManifest,
     dismissError,
     dismissAssetError,
+    reloadAssetRuntime,
+    dismissAssetReloadError,
   }),
 }));
 
@@ -47,6 +51,8 @@ beforeEach(() => {
   clearAssetManifest.mockClear();
   dismissError.mockClear();
   dismissAssetError.mockClear();
+  reloadAssetRuntime.mockClear();
+  dismissAssetReloadError.mockClear();
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -158,6 +164,122 @@ describe('AssetBrowserPanel — degradation states', () => {
     };
     render(<AssetBrowserPanel {...makeDockviewProps()} />);
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('AssetBrowserPanel — runtime manifest reload', () => {
+  it.each<[string, BridgeState]>([
+    ['disconnected', { ...INITIAL_STATE }],
+    [
+      'capability absent',
+      {
+        ...INITIAL_STATE,
+        connection: {
+          status: 'connected',
+          sessionId: 's1',
+          capabilityNames: new Set(['asset.read']),
+        },
+      },
+    ],
+    [
+      'runtime reload unsupported',
+      {
+        ...INITIAL_STATE,
+        connection: {
+          status: 'connected',
+          sessionId: 's1',
+          capabilityNames: new Set(['asset.reload']),
+        },
+        assetReloadUnsupported: true,
+      },
+    ],
+  ])('keeps Reload Runtime disabled while %s', (_label, state) => {
+    mockState = state;
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+
+    const button = screen.getByRole('button', { name: 'Reload runtime asset manifest' });
+    expect(button.textContent).toBe('Reload Runtime');
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('enables Reload Runtime for a connected engine advertising asset.reload', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: {
+        status: 'connected',
+        sessionId: 's1',
+        capabilityNames: new Set(['asset.reload']),
+      },
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+
+    const button = screen.getByRole('button', { name: 'Reload runtime asset manifest' });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('reloads the runtime manifest once with no arguments and never reads the offline manifest', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      assetManifest: DEMO_MANIFEST,
+      connection: {
+        status: 'connected',
+        sessionId: 's1',
+        capabilityNames: new Set(['asset.reload']),
+      },
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reload runtime asset manifest' }));
+
+    expect(reloadAssetRuntime).toHaveBeenCalledOnce();
+    expect(reloadAssetRuntime).toHaveBeenCalledWith();
+    expect(readAssetManifest).not.toHaveBeenCalled();
+  });
+
+  it('shows a runtime reload error with its own dismiss action', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      assetReloadError: { kind: 'engine', message: 'runtime reload failed' },
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+
+    expect(screen.getByRole('alert').textContent).toContain('runtime reload failed');
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Dismiss runtime asset manifest reload error' }),
+    );
+    expect(dismissAssetReloadError).toHaveBeenCalledOnce();
+    expect(dismissAssetError).not.toHaveBeenCalled();
+  });
+
+  it('keeps offline and runtime errors independently dismissible while preserving the manifest', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      assetManifest: DEMO_MANIFEST,
+      assetError: { kind: 'asset', message: 'offline manifest parse failed' },
+      assetReloadError: { kind: 'engine', message: 'runtime reload failed' },
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+
+    expect(screen.getAllByRole('alert')).toHaveLength(2);
+    expect(screen.getByText(/offline manifest parse failed/)).toBeTruthy();
+    expect(screen.getByText(/runtime reload failed/)).toBeTruthy();
+    expect(screen.getByText('textures/hero.png')).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Dismiss runtime asset manifest reload error' }),
+    );
+    expect(dismissAssetReloadError).toHaveBeenCalledOnce();
+    expect(dismissAssetError).not.toHaveBeenCalled();
+    expect(screen.getByText(/offline manifest parse failed/)).toBeTruthy();
+    expect(screen.getByText('textures/hero.png')).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Dismiss offline asset manifest error' }),
+    );
+    expect(dismissAssetError).toHaveBeenCalledOnce();
+    expect(dismissAssetReloadError).toHaveBeenCalledOnce();
+    expect(screen.getByText(/runtime reload failed/)).toBeTruthy();
+    expect(screen.getByText('textures/hero.png')).toBeTruthy();
   });
 });
 

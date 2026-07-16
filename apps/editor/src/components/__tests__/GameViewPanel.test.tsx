@@ -65,6 +65,8 @@ const mockActions = {
   getWorkspace:    vi.fn<BridgeActions['getWorkspace']>().mockResolvedValue(undefined),
   closeWorkspace:  vi.fn<BridgeActions['closeWorkspace']>().mockResolvedValue(undefined),
   readAssetManifest: vi.fn<BridgeActions['readAssetManifest']>().mockResolvedValue(undefined),
+  reloadAssetRuntime: vi.fn<BridgeActions['reloadAssetRuntime']>().mockResolvedValue(undefined),
+  dismissAssetReloadError: vi.fn<BridgeActions['dismissAssetReloadError']>(),
   resolveAsset:    vi.fn<BridgeActions['resolveAsset']>().mockResolvedValue(undefined),
   selectAsset:     vi.fn<BridgeActions['selectAsset']>(),
   clearAssetManifest: vi.fn<BridgeActions['clearAssetManifest']>(),

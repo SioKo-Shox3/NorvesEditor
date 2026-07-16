@@ -201,13 +201,16 @@ export interface BridgeState {
   /** Selected asset key, derived from logicalPath + variant. */
   selectedAssetKey?: string;
   /**
-   * Last asset-manifest load/parse failure. Kept SEPARATE from `lastError`
-   * (which is shared with engine/workspace errors) so the Asset Browser shows
-   * only asset failures — including a failed *reload* while a previous manifest
-   * is still displayed — and never an unrelated Bridge error. Independent of
-   * Bridge connection state.
+   * Last offline asset-manifest read/parse failure. Kept SEPARATE from
+   * `lastError` and runtime reload failures so the Asset Browser never mixes
+   * editor-local file errors with Bridge errors. Independent of Bridge
+   * connection state.
    */
   assetError?: BackendError;
+  /** Runtime asset-manifest reload failure for the current Bridge connection. */
+  assetReloadError?: BackendError;
+  /** Whether runtime asset-manifest reload is unsupported for the current connection. */
+  assetReloadUnsupported: boolean;
   /**
    * Live asset.resolve health results keyed by assetKeyForEntry(logicalPath,
    * variant). This is per Bridge connection and overlays the offline manifest
@@ -218,7 +221,7 @@ export interface BridgeState {
    * Per-connection asset.resolve FAILURES keyed by assetKeyForEntry. A single
    * asset's live health probe failing (e.g. timeout) belongs HERE — surfaced as
    * that row's "未確定" health only — and must NOT touch the shared `assetError`
-   * manifest banner, which is reserved for manifest load/reload failures.
+   * manifest banner, which is reserved for offline manifest read/parse failures.
    */
   assetResolveErrorByKey?: Record<string, BackendError>;
   /**
@@ -231,6 +234,7 @@ export interface BridgeState {
     sessionId?: string;
     serverName?: string;
     endpoint?: string;
+    capabilityNames?: ReadonlySet<string>;
     reason?: string;
   };
   engineState?: EngineState;
@@ -343,6 +347,7 @@ export const INITIAL_STATE: BridgeState = {
   assetResolveByKey: undefined,
   assetResolveErrorByKey: undefined,
   assetCapabilitySupported: undefined,
+  assetReloadUnsupported: false,
   undoStack: [],
   redoStack: [],
 };
@@ -368,6 +373,10 @@ export type BridgeAction =
   | { type: 'assetSelected'; key: string | undefined }
   | { type: 'assetManifestError'; payload: { error: BackendError } }
   | { type: 'assetErrorDismissed' }
+  | { type: 'assetReloadSucceeded' }
+  | { type: 'assetReloadFailed'; payload: { error: BackendError } }
+  | { type: 'assetReloadUnsupported' }
+  | { type: 'assetReloadErrorDismissed' }
   | { type: 'assetResolveLoaded'; key: string; result: AssetResolveResult }
   | { type: 'assetResolveError'; key: string; payload: { error: BackendError } }
   | { type: 'assetResolveUnsupported' }
@@ -623,6 +632,22 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       return { ...state, assetError: undefined };
     }
 
+    case 'assetReloadSucceeded': {
+      return { ...state, assetReloadError: undefined, assetReloadUnsupported: false };
+    }
+
+    case 'assetReloadFailed': {
+      return { ...state, assetReloadError: action.payload.error };
+    }
+
+    case 'assetReloadUnsupported': {
+      return { ...state, assetReloadUnsupported: true };
+    }
+
+    case 'assetReloadErrorDismissed': {
+      return { ...state, assetReloadError: undefined };
+    }
+
     case 'assetResolveLoaded': {
       const nextErrors = { ...(state.assetResolveErrorByKey ?? {}) };
       delete nextErrors[action.key];
@@ -678,6 +703,11 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       const status: ConnectionStatus = p.connected ? 'connected' : 'disconnected';
       const connectionChanged =
         state.connection.status !== status || state.connection.sessionId !== p.sessionId;
+      const capabilityNames = p.capabilities !== undefined
+        ? new Set(p.capabilities.map((descriptor) => descriptor.name))
+        : p.connected && !connectionChanged
+          ? state.connection.capabilityNames
+          : undefined;
       return {
         ...state,
         connection: {
@@ -685,6 +715,7 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
           sessionId: p.sessionId,
           serverName: p.serverName,
           endpoint: p.endpoint,
+          capabilityNames,
           reason: p.reason,
         },
         // Clear lastError on successful connection
@@ -697,6 +728,10 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
           p.connected && !connectionChanged ? state.assetResolveErrorByKey : undefined,
         assetCapabilitySupported:
           p.connected && !connectionChanged ? state.assetCapabilitySupported : undefined,
+        assetReloadError:
+          p.connected && !connectionChanged ? state.assetReloadError : undefined,
+        assetReloadUnsupported:
+          p.connected && !connectionChanged ? state.assetReloadUnsupported : false,
         // Drop the scene snapshot + selection on disconnect so the Outliner
         // degrades to its disconnected empty state and stale ids cannot linger.
         // A fresh connection also clears any prior "unsupported" marker so the
@@ -781,7 +816,7 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         ...state,
         engineState: undefined,
         runtimeState: undefined,
-        connection: { ...state.connection, status: 'disconnected' },
+        connection: { ...state.connection, status: 'disconnected', capabilityNames: undefined },
         // The engine is gone: its scene snapshot + selection are no longer valid.
         sceneTree: undefined,
         selectedObjectId: undefined,
@@ -804,6 +839,8 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         assetResolveByKey: undefined,
         assetResolveErrorByKey: undefined,
         assetCapabilitySupported: undefined,
+        assetReloadError: undefined,
+        assetReloadUnsupported: false,
       };
     }
 

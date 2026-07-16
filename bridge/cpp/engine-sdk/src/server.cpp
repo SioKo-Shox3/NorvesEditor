@@ -174,6 +174,30 @@ namespace Norves::Bridge
             const std::string id = *request.id;  // 存在する。リクエストに対して検証済み。
             const std::string& method = *request.method;
 
+            if (method == "asset.reloadManifest")
+            {
+                if (!request.params.has_value())
+                {
+                    return MakeErrorResponse(
+                        id, BridgeError{
+                                std::string(ErrorEngineInvalidParams),
+                                "asset.reloadManifest params must be an empty object.",
+                                Wrap(json{{"method", "asset.reloadManifest"}})});
+                }
+
+                const json& reloadParams = peek(*request.params)->json;
+                if (!reloadParams.is_object() || !reloadParams.empty())
+                {
+                    return MakeErrorResponse(
+                        id, BridgeError{
+                                std::string(ErrorEngineInvalidParams),
+                                "asset.reloadManifest params must be an empty object.",
+                                Wrap(json{{"method", "asset.reloadManifest"}})});
+                }
+
+                return finish(id, m_Adapter.assetReloadManifest(*request.params));
+            }
+
             // アダプタの契約は `const JsonValue&` を取る。リクエストが params を省略した
             // 場合は JSON null 値を供給する。
             const JsonValue emptyParams;
@@ -318,7 +342,24 @@ namespace Norves::Bridge
 
     std::optional<std::string> BridgeEngineServer::handleFrame(std::string_view wire)
     {
-        auto decoded = decode_envelope(wire);
+        std::string normalizedWire;
+        bool bAssetReloadParamsNonObject = false;
+        json root = json::parse(wire, /*cb=*/nullptr, /*allow_exceptions=*/false);
+        if (root.is_object())
+        {
+            const auto methodIt = root.find("method");
+            const auto paramsIt = root.find("params");
+            if (methodIt != root.end() && methodIt->is_string() &&
+                *methodIt == "asset.reloadManifest" && paramsIt != root.end() &&
+                !paramsIt->is_object())
+            {
+                bAssetReloadParamsNonObject = true;
+                root["params"] = json::object();
+                normalizedWire = root.dump();
+            }
+        }
+
+        auto decoded = decode_envelope(bAssetReloadParamsNonObject ? normalizedWire : wire);
         if (decoded.is_err())
         {
             // 回復可能な相関 id がない -> 有効なレスポンスエンベロープを構築できない。
@@ -337,7 +378,14 @@ namespace Norves::Bridge
             return std::nullopt;
         }
 
-        const Envelope response = m_Impl->dispatch(request);
+        const Envelope response =
+            bAssetReloadParamsNonObject
+                ? MakeErrorResponse(
+                      *request.id,
+                      BridgeError{std::string(ErrorEngineInvalidParams),
+                                  "asset.reloadManifest params must be an empty object.",
+                                  Wrap(json{{"method", "asset.reloadManifest"}})})
+                : m_Impl->dispatch(request);
         auto encoded = encode_envelope(response);
         if (encoded.is_err())
         {

@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "request",
+  "id": "req-asset-reload-2",
+  "method": "asset.reloadManifest",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "path": "Assets/manifest.json"
+  }
+}

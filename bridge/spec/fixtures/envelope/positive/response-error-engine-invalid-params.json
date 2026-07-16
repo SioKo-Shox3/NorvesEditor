@@ -1,0 +1,14 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "response",
+  "id": "req-asset-reload-2",
+  "sessionId": "sess-7f3a",
+  "error": {
+    "code": "ENGINE_INVALID_PARAMS",
+    "message": "asset.reloadManifest params must be a present empty object.",
+    "data": {
+      "method": "asset.reloadManifest"
+    }
+  }
+}

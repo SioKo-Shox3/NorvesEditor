@@ -9,6 +9,7 @@
 //! Generic protocol only: asset entries are serialized DTO copies and never
 //! references into engine live memory, loaded manifest storage, or asset bytes.
 
+use serde::Deserialize;
 use serde_json::{Map, Value};
 
 /// Outcome of resolving one logical asset path.
@@ -54,6 +55,13 @@ pub struct AssetManifestResult {
     pub total_count: i64,
     pub page: Option<i64>,
     pub page_size: Option<i64>,
+}
+
+/// Acknowledgement returned by `asset.reloadManifest`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetReloadManifestResult {
+    pub accepted: bool,
 }
 
 /// One generic manifest entry. A DTO copy, never a live engine pointer.
@@ -130,6 +138,16 @@ pub fn parse_asset_manifest_result(result: &Value) -> Result<AssetManifestResult
         total_count,
         page,
         page_size,
+    })
+}
+
+/// Strictly extracts an [`AssetReloadManifestResult`] from an
+/// `asset.reloadManifest` `result` value.
+pub fn parse_asset_reload_manifest_result(
+    result: &Value,
+) -> Result<AssetReloadManifestResult, AssetError> {
+    serde_json::from_value(result.clone()).map_err(|err| {
+        AssetError::UnexpectedShape(format!("invalid asset.reloadManifest result: {err}"))
     })
 }
 
@@ -370,5 +388,28 @@ mod tests {
             parse_asset_manifest_result(&value),
             Err(AssetError::InvalidField(f)) if f == "result.entries"
         ));
+    }
+
+    #[test]
+    fn asset_reload_accepts_boolean_results() {
+        for accepted in [true, false] {
+            let value = serde_json::json!({ "accepted": accepted });
+            let result = parse_asset_reload_manifest_result(&value).expect("parses");
+            assert_eq!(result, AssetReloadManifestResult { accepted });
+        }
+    }
+
+    #[test]
+    fn asset_reload_rejects_missing_non_boolean_and_extra_fields() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({ "accepted": "true" }),
+            serde_json::json!({ "accepted": true, "extra": 1 }),
+        ] {
+            assert!(
+                parse_asset_reload_manifest_result(&value).is_err(),
+                "unexpectedly accepted {value}"
+            );
+        }
     }
 }

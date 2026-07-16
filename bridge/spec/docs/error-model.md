@@ -68,6 +68,7 @@ convention only — there is no closed enumeration of engine codes.
 | code | category | retryable | route | expected `data` (informative) | meaning |
 | --- | --- | --- | --- | --- | --- |
 | `ENGINE_ASSET_LOAD_FAILED` | extension (example) | maybe | `error.reported` event (engine wire) | `asset` | example engine-defined code: an asset failed to load. |
+| `ENGINE_INVALID_PARAMS` | extension | no | `asset.reloadManifest` error response (id-bearing) | `method` | method-specific params failed validation before adapter dispatch. |
 
 ## Code ↔ fixture correspondence
 
@@ -81,6 +82,7 @@ this document (`bridge/spec/docs/`).
 | `METHOD_NOT_SUPPORTED` | [`../fixtures/envelope/positive/response-error.json`](../fixtures/envelope/positive/response-error.json) |
 | `BRIDGE_TRANSPORT_ERROR` | [`../fixtures/events/error.reported/positive/event-synthesized-valid.json`](../fixtures/events/error.reported/positive/event-synthesized-valid.json) |
 | `ENGINE_ASSET_LOAD_FAILED` | [`../fixtures/events/error.reported/positive/event-engine-valid.json`](../fixtures/events/error.reported/positive/event-engine-valid.json) |
+| `ENGINE_INVALID_PARAMS` | [`../fixtures/envelope/positive/response-error-engine-invalid-params.json`](../fixtures/envelope/positive/response-error-engine-invalid-params.json) |
 
 ## Update discipline
 

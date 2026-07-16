@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/asset.reloadManifest.params.schema.json",
+  "title": "asset.reloadManifest.params",
+  "description": "Reload the asset manifest path configured when the engine started. The request carries no path or options.",
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}

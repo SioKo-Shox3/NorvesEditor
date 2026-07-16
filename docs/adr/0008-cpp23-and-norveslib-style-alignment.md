@@ -47,7 +47,7 @@ before moving past C++20.
    - `IBridgeEngineAdapter` (base class name) and its virtual methods: `hello`,
      `getCapabilities`, `getStatus`, `launchInfo`, `runtimePlay`,
      `runtimePause`, `runtimeStop`, `runtimeFocusViewport`, `logSubscribe`,
-     `logUnsubscribe`.
+     `logUnsubscribe`, `assetReloadManifest`.
    - `BridgeEngineServer` and its methods `handleFrame` / `emitEvent`, plus the
      constructor signature.
    - `ITransport` and its methods `recv` / `send` / `close`.

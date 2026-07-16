@@ -51,9 +51,10 @@ use norves_bridge_core::{
     VersionString,
 };
 use norves_bridge_editor_client::{
-    connect_with_retry, parse_hello_result, parse_log_message, parse_object_snapshot_result,
-    parse_scene_tree_result, parse_schema_snapshot_result, parse_set_property_result,
-    parse_status_result, parse_thumbnail_result, HelloParams, RequestError, RetryConfig,
+    connect_with_retry, parse_capabilities_result, parse_hello_result, parse_log_message,
+    parse_object_snapshot_result, parse_scene_tree_result, parse_schema_snapshot_result,
+    parse_set_property_result, parse_status_result, parse_thumbnail_result, HelloParams,
+    RequestError, RetryConfig,
 };
 use tokio::sync::broadcast;
 
@@ -245,6 +246,93 @@ async fn send_and_expect_result(
             panic!("[{step}] engine returned protocol error: {err:?}")
         }
     }
+}
+
+/// Capability discovery contract against the real mock-engine process.
+///
+/// The hello handshake and capability discovery share one persistent dispatcher
+/// handle. Both results go through the strict editor-client parsers, and the
+/// capability request carries the protocol-required present empty params object.
+#[tokio::test]
+async fn engine_capabilities_contract() {
+    let exe = match std::env::var("NORVES_ENGINE_PATH") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!(
+                "[SKIP] engine_capabilities_contract: \
+                 set NORVES_ENGINE_PATH to the norves_mock_engine executable to run this test"
+            );
+            return;
+        }
+    };
+
+    if !std::path::Path::new(&exe).is_file() {
+        eprintln!("[SKIP] engine_capabilities_contract: NORVES_ENGINE_PATH={exe:?} is not a file");
+        return;
+    }
+
+    let (guard, port) = spawn_engine_on_free_port(&exe);
+    let url = format!("ws://127.0.0.1:{port}");
+    let cfg = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+    let handle = connect_with_retry(&url, &cfg)
+        .await
+        .unwrap_or_else(|e| panic!("connect_with_retry failed for {url}: {e}"));
+
+    let hello_value = send_and_expect_result(&handle, hello_envelope(), "bridge.hello").await;
+    let hello = parse_hello_result(&hello_value)
+        .unwrap_or_else(|e| panic!("[bridge.hello] strict parse failed: {e}"));
+    assert!(!hello.session_id.is_empty(), "hello session id is empty");
+
+    let capabilities_value = send_and_expect_result(
+        &handle,
+        request_envelope(
+            "e2e-capabilities-1",
+            "bridge.getCapabilities",
+            Some(serde_json::Map::new()),
+        ),
+        "bridge.getCapabilities",
+    )
+    .await;
+    let capabilities = parse_capabilities_result(&capabilities_value)
+        .unwrap_or_else(|e| panic!("[bridge.getCapabilities] strict parse failed: {e}"))
+        .capabilities;
+    assert!(
+        !capabilities.is_empty(),
+        "bridge.getCapabilities returned an empty descriptor set"
+    );
+
+    let runtime_control = capabilities
+        .iter()
+        .find(|descriptor| descriptor.name.as_str() == "runtime.control")
+        .expect("mock capabilities must include runtime.control");
+    assert_eq!(
+        runtime_control
+            .version
+            .as_ref()
+            .map(|version| version.as_str()),
+        Some("0.1"),
+        "runtime.control version drifted"
+    );
+    assert!(
+        capabilities
+            .iter()
+            .any(|descriptor| descriptor.name.as_str() == "viewport.thumbnail"),
+        "mock capabilities must include viewport.thumbnail"
+    );
+
+    handle.shutdown().await;
+    drop(guard);
+    eprintln!(
+        "[PASS] engine_capabilities_contract: session={} descriptors={} \
+         runtime.control=0.1 viewport.thumbnail=present",
+        hello.session_id,
+        capabilities.len()
+    );
 }
 
 /// Runtime control contract test against the real NorvesLib engine.

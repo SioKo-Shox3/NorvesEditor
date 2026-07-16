@@ -47,6 +47,8 @@ viewport.thumbnail  return a low-frequency still thumbnail of the external
 asset.read          read asset resolution health and loaded manifest snapshots
                     via asset.resolve and asset.getManifest (asset browser live
                     overlay surface, protocol 0.2)
+asset.reload        reload the manifest path configured at engine startup via
+                    asset.reloadManifest (protocol 0.2)
 ```
 
 The `scene.query` token advertises that an engine can answer `scene.getTree`
@@ -110,6 +112,13 @@ and answers those methods with `METHOD_NOT_SUPPORTED`; the editor can continue
 using its offline workspace manifest. Returned values are DTO snapshots only and
 must not contain references to loaded asset memory, package buffers, or engine
 manifest storage.
+
+The `asset.reload` token advertises that an engine can answer
+`asset.reloadManifest`, synchronously reloading only the manifest path already
+configured at engine startup. The method takes a present empty params object and
+returns whether the runtime switch was accepted. An engine that omits the token
+answers the method with `METHOD_NOT_SUPPORTED`; invalid params instead produce
+the engine-extension error `ENGINE_INVALID_PARAMS` before adapter dispatch.
 
 Tokens are the unit of negotiation. A `capabilityDescriptor` wraps a token with
 optional metadata:

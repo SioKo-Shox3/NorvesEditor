@@ -38,7 +38,8 @@ import * as tauriEvent from '@tauri-apps/api/event';
 import { useBridgeSubscriptions, useBridgeActions } from '../useBridge.js';
 import { BridgeProvider, useBridgeDispatch, useBridgeState } from '../../state/BridgeContext.js';
 import { assetKeyForEntry } from '../../state/store.js';
-import type { AssetResolveResult } from '@norves/bridge-ui';
+import { BRIDGE_COMMANDS } from '@norves/bridge-ui';
+import type { AssetResolveResult, ConnectionStatePayload } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Helpers
@@ -212,8 +213,114 @@ describe('useBridgeActions — error mapping', () => {
   });
 });
 
+describe('useBridgeActions — connection command/event ordering', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function useTestHook() {
+    const actions = useBridgeActions();
+    const dispatch = useBridgeDispatch();
+    const state = useBridgeState();
+    return { actions, dispatch, state };
+  }
+
+  it.each<{
+    name: string;
+    command: string;
+    args: Record<string, unknown> | undefined;
+    invoke: (actions: ReturnType<typeof useBridgeActions>) => Promise<void>;
+  }>([
+    {
+      name: 'connect',
+      command: BRIDGE_COMMANDS.connect,
+      args: { port: 9001 },
+      invoke: (actions) => actions.connect(9001),
+    },
+    {
+      name: 'reconnect',
+      command: BRIDGE_COMMANDS.reconnect,
+      args: undefined,
+      invoke: (actions) => actions.reconnect(),
+    },
+    {
+      name: 'launch',
+      command: BRIDGE_COMMANDS.launchEngine,
+      args: undefined,
+      invoke: (actions) => actions.launch(),
+    },
+  ])('$name does not overwrite a newer disconnected event with its stale result', async ({
+    command,
+    args,
+    invoke,
+  }) => {
+    const deferred = createDeferred<ConnectionStatePayload>();
+    (tauriCore.invoke as Mock).mockReturnValue(deferred.promise);
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    const request = invoke(result.current.actions);
+    act(() => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: false, reason: 'peer closed' },
+      });
+    });
+    await act(async () => {
+      deferred.resolve({
+        connected: true,
+        sessionId: 'stale-session',
+        capabilities: [{ name: 'asset.reload' }],
+      });
+      await request;
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledOnce();
+    expect(tauriCore.invoke).toHaveBeenCalledWith(command, args);
+    expect(result.current.state.connection.status).toBe('disconnected');
+    expect(result.current.state.connection.capabilityNames).toBeUndefined();
+  });
+
+  it('disconnect does not overwrite a newer connected event with its stale result', async () => {
+    const deferred = createDeferred<ConnectionStatePayload>();
+    (tauriCore.invoke as Mock).mockReturnValue(deferred.promise);
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: {
+          connected: true,
+          sessionId: 'session-1',
+          capabilities: [{ name: 'asset.read' }],
+        },
+      });
+    });
+
+    const request = result.current.actions.disconnect();
+    act(() => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: {
+          connected: true,
+          sessionId: 'session-2',
+          capabilities: [{ name: 'asset.reload' }],
+        },
+      });
+    });
+    await act(async () => {
+      deferred.resolve({ connected: false, reason: 'stale disconnect result' });
+      await request;
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledOnce();
+    expect(tauriCore.invoke).toHaveBeenCalledWith(BRIDGE_COMMANDS.disconnect, undefined);
+    expect(result.current.state.connection.status).toBe('connected');
+    expect(result.current.state.connection.sessionId).toBe('session-2');
+    expect(result.current.state.connection.capabilityNames).toEqual(new Set(['asset.reload']));
+  });
+});
+
 // -------------------------------------------------------------------------
-// (d) launch() — invokes BRIDGE_COMMANDS.launchEngine, dispatches payload,
+// (d) launch() — invokes BRIDGE_COMMANDS.launchEngine, follows events,
 //                maps rejection to lastError without throwing
 // -------------------------------------------------------------------------
 
@@ -221,7 +328,7 @@ describe('useBridgeActions — launch', () => {
   beforeEach(() => { vi.clearAllMocks(); });
   afterEach(() => { vi.restoreAllMocks(); });
 
-  it('launch() invokes launch_engine with no args and dispatches the returned ConnectionStatePayload', async () => {
+  it('launch() invokes launch_engine with no args and follows the authoritative event state', async () => {
     const fakePayload = {
       connected: true,
       sessionId: 'sess-abc',
@@ -233,8 +340,9 @@ describe('useBridgeActions — launch', () => {
 
     function useTestHook() {
       const actions = useBridgeActions();
+      const dispatch = useBridgeDispatch();
       const state = useBridgeState();
-      return { actions, state };
+      return { actions, dispatch, state };
     }
 
     const { result } = renderHook(() => useTestHook(), { wrapper });
@@ -246,8 +354,13 @@ describe('useBridgeActions — launch', () => {
 
     // invoke must have been called with 'launch_engine' and no args (no second param or empty obj)
     expect(tauriCore.invoke).toHaveBeenCalledWith('launch_engine', undefined);
+    expect(result.current.state.connection.status).toBe('connecting');
 
-    // Store must reflect connected state
+    act(() => {
+      result.current.dispatch({ type: 'connectionStateChanged', payload: fakePayload });
+    });
+
+    // Store reflects the backend event, not the command's return payload.
     expect(result.current.state.connection.status).toBe('connected');
     expect(result.current.state.connection.sessionId).toBe('sess-abc');
   });
@@ -845,6 +958,309 @@ describe('useBridgeActions — asset manifest helpers', () => {
     });
     expect(result.current.state.selectedAssetKey).toBeUndefined();
     expect(result.current.state.assetManifest).toBeUndefined();
+  });
+});
+
+// -------------------------------------------------------------------------
+// (h2) runtime asset manifest reload — capability guard + success lifecycle
+// -------------------------------------------------------------------------
+
+describe('useBridgeActions — reloadAssetRuntime guard and success lifecycle', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function useTestHook() {
+    const actions = useBridgeActions();
+    const dispatch = useBridgeDispatch();
+    const state = useBridgeState();
+    return { actions, dispatch, state };
+  }
+
+  it('does not invoke reload while disconnected, capability-absent, sessionless, or unsupported', async () => {
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => { await result.current.actions.reloadAssetRuntime(); });
+    act(() => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's1', capabilities: [{ name: 'asset.read' }] },
+      });
+    });
+    await act(async () => { await result.current.actions.reloadAssetRuntime(); });
+    act(() => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: '', capabilities: [{ name: 'asset.reload' }] },
+      });
+    });
+    await act(async () => { await result.current.actions.reloadAssetRuntime(); });
+    act(() => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's2', capabilities: [{ name: 'asset.reload' }] },
+      });
+      result.current.dispatch({ type: 'assetReloadUnsupported' });
+    });
+    await act(async () => { await result.current.actions.reloadAssetRuntime(); });
+
+    expect(tauriCore.invoke).not.toHaveBeenCalled();
+  });
+
+  it('invokes asset_reload_manifest exactly once with no arguments when capability-gated', async () => {
+    (tauriCore.invoke as Mock).mockResolvedValue({ accepted: true });
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's1', capabilities: [{ name: 'asset.reload' }] },
+      });
+    });
+
+    await act(async () => { await result.current.actions.reloadAssetRuntime(); });
+
+    expect(tauriCore.invoke).toHaveBeenCalledOnce();
+    expect(tauriCore.invoke).toHaveBeenCalledWith('asset_reload_manifest');
+  });
+
+  it('accepted success clears only the runtime error and never reads the offline manifest', async () => {
+    const manifest = {
+      version: 1,
+      manifestPath: 'C:/Project/manifest.json',
+      assets: [],
+    };
+    const offlineError = { kind: 'asset', message: 'offline parse failed' };
+    (tauriCore.invoke as Mock).mockResolvedValue({ accepted: true });
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's1', capabilities: [{ name: 'asset.reload' }] },
+      });
+      result.current.dispatch({ type: 'assetManifestLoaded', payload: manifest });
+      result.current.dispatch({ type: 'assetManifestError', payload: { error: offlineError } });
+      result.current.dispatch({
+        type: 'assetReloadFailed',
+        payload: { error: { kind: 'asset', message: 'old runtime failure' } },
+      });
+    });
+
+    await act(async () => { await result.current.actions.reloadAssetRuntime(); });
+
+    expect(result.current.state.assetReloadError).toBeUndefined();
+    expect(result.current.state.assetError).toEqual(offlineError);
+    expect(result.current.state.assetManifest).toEqual(manifest);
+    expect(
+      (tauriCore.invoke as Mock).mock.calls.some(([command]) => command === 'asset_read_manifest'),
+    ).toBe(false);
+  });
+
+  it('accepted false records a stable runtime error without changing offline asset state', async () => {
+    const manifest = {
+      version: 1,
+      manifestPath: 'C:/Project/manifest.json',
+      assets: [],
+    };
+    const offlineError = { kind: 'asset', message: 'offline parse failed' };
+    (tauriCore.invoke as Mock).mockResolvedValue({ accepted: false });
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's1', capabilities: [{ name: 'asset.reload' }] },
+      });
+      result.current.dispatch({ type: 'assetManifestLoaded', payload: manifest });
+      result.current.dispatch({ type: 'assetManifestError', payload: { error: offlineError } });
+    });
+
+    await act(async () => { await result.current.actions.reloadAssetRuntime(); });
+
+    expect(result.current.state.assetReloadError).toEqual({
+      kind: 'asset',
+      message: 'Engine rejected runtime asset manifest reload.',
+    });
+    expect(result.current.state.assetError).toEqual(offlineError);
+    expect(result.current.state.assetManifest).toEqual(manifest);
+  });
+
+  it('ignores a late accepted success after the connection session changes', async () => {
+    const deferred = createDeferred<{ accepted: boolean }>();
+    (tauriCore.invoke as Mock).mockReturnValue(deferred.promise);
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's1', capabilities: [{ name: 'asset.reload' }] },
+      });
+    });
+
+    const request = result.current.actions.reloadAssetRuntime();
+    act(() => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's2', capabilities: [{ name: 'asset.reload' }] },
+      });
+      result.current.dispatch({
+        type: 'assetReloadFailed',
+        payload: { error: { kind: 'asset', message: 'new session failure' } },
+      });
+    });
+    await act(async () => {
+      deferred.resolve({ accepted: true });
+      await request;
+    });
+
+    expect(result.current.state.assetReloadError).toEqual({
+      kind: 'asset',
+      message: 'new session failure',
+    });
+  });
+
+  it('degrades METHOD_NOT_SUPPORTED without changing connection or offline asset state', async () => {
+    const manifest = {
+      version: 1,
+      manifestPath: 'C:/Project/manifest.json',
+      assets: [],
+    };
+    const offlineError = { kind: 'asset', message: 'offline parse failed' };
+    (tauriCore.invoke as Mock).mockRejectedValue({
+      kind: 'engine',
+      code: 'METHOD_NOT_SUPPORTED',
+      message: 'runtime reload unavailable',
+    });
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's1', capabilities: [{ name: 'asset.reload' }] },
+      });
+      result.current.dispatch({ type: 'assetManifestLoaded', payload: manifest });
+      result.current.dispatch({ type: 'assetManifestError', payload: { error: offlineError } });
+    });
+
+    await act(async () => { await result.current.actions.reloadAssetRuntime(); });
+
+    expect(result.current.state.assetReloadUnsupported).toBe(true);
+    expect(result.current.state.assetReloadError).toBeUndefined();
+    expect(result.current.state.connection.status).toBe('connected');
+    expect(result.current.state.lastError).toBeUndefined();
+    expect(result.current.state.assetError).toEqual(offlineError);
+    expect(result.current.state.assetManifest).toEqual(manifest);
+  });
+
+  it('records a generic reload exception as a runtime reload error only', async () => {
+    const backendError = { kind: 'request', message: 'runtime reload timed out' };
+    (tauriCore.invoke as Mock).mockRejectedValue(backendError);
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's1', capabilities: [{ name: 'asset.reload' }] },
+      });
+    });
+
+    await act(async () => { await result.current.actions.reloadAssetRuntime(); });
+
+    expect(result.current.state.assetReloadError).toEqual(backendError);
+    expect(result.current.state.assetReloadUnsupported).toBe(false);
+    expect(result.current.state.connection.status).toBe('connected');
+    expect(result.current.state.lastError).toBeUndefined();
+  });
+
+  it('ignores a late reload exception from an old connection session', async () => {
+    const deferred = createDeferred<{ accepted: boolean }>();
+    (tauriCore.invoke as Mock).mockReturnValue(deferred.promise);
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's1', capabilities: [{ name: 'asset.reload' }] },
+      });
+    });
+
+    const request = result.current.actions.reloadAssetRuntime();
+    act(() => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's2', capabilities: [{ name: 'asset.reload' }] },
+      });
+      result.current.dispatch({
+        type: 'assetReloadFailed',
+        payload: { error: { kind: 'asset', message: 'new session failure' } },
+      });
+    });
+    await act(async () => {
+      deferred.reject({
+        kind: 'engine',
+        code: 'METHOD_NOT_SUPPORTED',
+        message: 'old session reload unavailable',
+      });
+      await request;
+    });
+
+    expect(result.current.state.assetReloadUnsupported).toBe(false);
+    expect(result.current.state.assetReloadError).toEqual({
+      kind: 'asset',
+      message: 'new session failure',
+    });
+  });
+
+  it('dismisses only the runtime reload error', async () => {
+    const manifest = {
+      version: 1,
+      manifestPath: 'C:/Project/manifest.json',
+      assets: [],
+    };
+    const offlineError = { kind: 'asset', message: 'offline parse failed' };
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({ type: 'assetManifestLoaded', payload: manifest });
+      result.current.dispatch({ type: 'assetManifestError', payload: { error: offlineError } });
+      result.current.dispatch({
+        type: 'assetReloadFailed',
+        payload: { error: { kind: 'asset', message: 'runtime reload failed' } },
+      });
+    });
+
+    act(() => { result.current.actions.dismissAssetReloadError(); });
+
+    expect(result.current.state.assetReloadError).toBeUndefined();
+    expect(result.current.state.assetError).toEqual(offlineError);
+    expect(result.current.state.assetManifest).toEqual(manifest);
+  });
+
+  it('re-enables reload for a fresh session after METHOD_NOT_SUPPORTED degradation', async () => {
+    (tauriCore.invoke as Mock)
+      .mockRejectedValueOnce({
+        kind: 'engine',
+        code: 'METHOD_NOT_SUPPORTED',
+        message: 'runtime reload unavailable',
+      })
+      .mockResolvedValueOnce({ accepted: true });
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's1', capabilities: [{ name: 'asset.reload' }] },
+      });
+    });
+
+    await act(async () => { await result.current.actions.reloadAssetRuntime(); });
+    expect(result.current.state.assetReloadUnsupported).toBe(true);
+    expect(tauriCore.invoke).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 's2', capabilities: [{ name: 'asset.reload' }] },
+      });
+    });
+    expect(result.current.state.assetReloadUnsupported).toBe(false);
+
+    await act(async () => { await result.current.actions.reloadAssetRuntime(); });
+
+    expect(tauriCore.invoke).toHaveBeenCalledTimes(2);
+    expect(result.current.state.assetReloadError).toBeUndefined();
   });
 });
 

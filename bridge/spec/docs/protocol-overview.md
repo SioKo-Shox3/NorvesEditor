@@ -82,6 +82,7 @@ object.setProperty
 schema.getSnapshot
 asset.resolve
 asset.getManifest
+asset.reloadManifest
 ```
 
 Events:
@@ -110,6 +111,12 @@ Asset read methods (`asset.resolve`, `asset.getManifest`) are additive optional
 methods in protocol **0.2**. They carry resolution health and manifest DTO
 snapshots only — never asset bytes, package buffers, or references into loaded
 engine memory/storage — and are advertised by the `asset.read` capability token.
+
+`asset.reloadManifest` is an additive optional method in protocol **0.2**. It
+asks the engine to synchronously reload the manifest path configured at engine
+startup, carries no path in its empty params object, and is advertised by the
+`asset.reload` capability token. Its boolean `accepted` result distinguishes a
+completed runtime switch from a valid request rejected by runtime preconditions.
 
 The live-update events `scene.treeChanged` and `object.changed` are added in
 protocol **0.2** (additive). They are engine-wire events that push scene/object

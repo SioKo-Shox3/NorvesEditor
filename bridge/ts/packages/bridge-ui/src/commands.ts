@@ -4,6 +4,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  AssetReloadManifestResult,
   SceneCreateObjectResult,
   SceneDeleteObjectResult,
   SceneDuplicateObjectResult,
@@ -52,6 +53,7 @@ export const BRIDGE_COMMANDS = {
   assetReadManifest: 'asset_read_manifest',
   assetResolve: 'asset_resolve',
   assetGetManifest: 'asset_get_manifest',
+  assetReloadManifest: 'asset_reload_manifest',
 } as const;
 
 /** Union of all valid Tauri command name strings. */
@@ -143,4 +145,8 @@ export async function assetGetManifest(
     args.pageSize = pageSize;
   }
   return invoke<AssetManifestResult>(BRIDGE_COMMANDS.assetGetManifest, args);
+}
+
+export async function assetReloadManifest(): Promise<AssetReloadManifestResult> {
+  return invoke<AssetReloadManifestResult>(BRIDGE_COMMANDS.assetReloadManifest);
 }

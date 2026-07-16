@@ -8,6 +8,8 @@ import {
   assetReadManifest,
   assetResolve,
   assetGetManifest,
+  assetReloadManifest,
+  type AssetReloadManifestResult,
 } from '../index.js';
 
 // Mock @tauri-apps/api/core and @tauri-apps/api/event before the module is
@@ -149,6 +151,17 @@ describe('asset bridge command wrappers', () => {
       { pageSize: 50 },
     );
     expect(result).toEqual(payload);
+  });
+
+  it('assetReloadManifest invokes the reload command without path or body', async () => {
+    const payload: AssetReloadManifestResult = { accepted: true };
+    (tauriCore.invoke as Mock).mockResolvedValue(payload);
+
+    const result = await assetReloadManifest();
+
+    expect(tauriCore.invoke).toHaveBeenCalledOnce();
+    expect(tauriCore.invoke).toHaveBeenCalledWith('asset_reload_manifest');
+    expect(result).toBe(payload);
   });
 });
 
