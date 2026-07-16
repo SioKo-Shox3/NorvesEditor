@@ -66,6 +66,9 @@ describe('BRIDGE_COMMANDS literal values', () => {
   it('assetGetManifest = asset_get_manifest', () => {
     expect(BRIDGE_COMMANDS.assetGetManifest).toBe('asset_get_manifest');
   });
+  it('assetReloadManifest = asset_reload_manifest', () => {
+    expect(BRIDGE_COMMANDS.assetReloadManifest).toBe('asset_reload_manifest');
+  });
 });
 
 describe('BRIDGE_EVENTS literal values', () => {

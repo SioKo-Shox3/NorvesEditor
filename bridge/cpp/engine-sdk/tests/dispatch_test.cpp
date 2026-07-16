@@ -31,6 +31,7 @@ namespace
     using Norves::Bridge::CodecError;
     using Norves::Bridge::decode_envelope;
     using Norves::Bridge::Envelope;
+    using Norves::Bridge::ErrorEngineInvalidParams;
     using Norves::Bridge::IBridgeEngineAdapter;
     using Norves::Bridge::JsonValue;
     using Norves::Bridge::Kind;
@@ -161,6 +162,20 @@ namespace
             return Result<JsonValue, BridgeError>::ok(
                 ParseOrFail(R"({"imageBase64":"AAAA","mimeType":"image/png"})"));
         }
+    };
+
+    // @brief asset.reloadManifest を実装する偽アダプタ。厳格な params 検証が
+    // アダプタ呼び出しより先に完了することを呼び出し回数で検証する。
+    class AssetReloadManifestAdapter : public FakeAdapter
+    {
+    public:
+        Result<JsonValue, BridgeError> assetReloadManifest(const JsonValue& /*params*/) override
+        {
+            ++m_AssetReloadManifestCallCount;
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"accepted":true})"));
+        }
+
+        int m_AssetReloadManifestCallCount = 0;
     };
 
     // ワイヤーフレームビルダー -----------------------------------------------------------
@@ -455,6 +470,97 @@ namespace
         }
     }
 
+    void TestAssetReloadManifestDispatchesPresentEmptyObject()
+    {
+        AssetReloadManifestAdapter adapter;
+        BridgeEngineServer server(adapter);
+
+        const std::string frame = RequestFrame("reload-1", "asset.reloadManifest", "{}");
+        auto response = server.handleFrame(frame);
+        NORVES_CHECK(response.has_value());
+        if (!response.has_value())
+        {
+            return;
+        }
+
+        const Envelope env = DecodeOrFail(*response);
+        NORVES_CHECK_EQ(env.id, std::optional<std::string>{"reload-1"});
+        NORVES_CHECK(!env.error.has_value());
+        const JsonValue expected = ParseOrFail(R"({"accepted":true})");
+        NORVES_CHECK(env.result.has_value() && *env.result == expected);
+        NORVES_CHECK_EQ(adapter.m_AssetReloadManifestCallCount, 1);
+    }
+
+    void TestAssetReloadManifestDefaultIsMethodNotSupported()
+    {
+        FakeAdapter adapter;
+        BridgeEngineServer server(adapter);
+
+        const std::string frame = RequestFrame("reload-default", "asset.reloadManifest", "{}");
+        auto response = server.handleFrame(frame);
+        NORVES_CHECK(response.has_value());
+        if (!response.has_value())
+        {
+            return;
+        }
+
+        const Envelope env = DecodeOrFail(*response);
+        NORVES_CHECK_EQ(env.id, std::optional<std::string>{"reload-default"});
+        NORVES_CHECK(!env.result.has_value());
+        NORVES_CHECK(env.error.has_value());
+        if (env.error.has_value())
+        {
+            NORVES_CHECK_EQ(env.error->code, std::string{"METHOD_NOT_SUPPORTED"});
+        }
+    }
+
+    void TestAssetReloadManifestRejectsInvalidParamsWithoutDispatch()
+    {
+        struct InvalidParamsCase
+        {
+            std::string_view id;
+            std::string_view paramsJson;
+        };
+
+        constexpr InvalidParamsCase Cases[] = {
+            {"reload-missing", ""},
+            {"reload-null", "null"},
+            {"reload-string", R"("invalid")"},
+            {"reload-array", "[]"},
+            {"reload-nonempty", R"({"unexpected":true})"},
+        };
+
+        AssetReloadManifestAdapter adapter;
+        BridgeEngineServer server(adapter);
+        const JsonValue expectedData = ParseOrFail(R"({"method":"asset.reloadManifest"})");
+
+        for (const InvalidParamsCase& testCase : Cases)
+        {
+            const std::string frame =
+                RequestFrame(testCase.id, "asset.reloadManifest", testCase.paramsJson);
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (!response.has_value())
+            {
+                continue;
+            }
+
+            const Envelope env = DecodeOrFail(*response);
+            NORVES_CHECK_EQ(env.id, std::optional<std::string>{std::string(testCase.id)});
+            NORVES_CHECK(!env.result.has_value());
+            NORVES_CHECK(env.error.has_value());
+            if (env.error.has_value())
+            {
+                NORVES_CHECK_EQ(env.error->code, std::string(ErrorEngineInvalidParams));
+                NORVES_CHECK_EQ(env.error->message,
+                                std::string{"asset.reloadManifest params must be an empty object."});
+                NORVES_CHECK(env.error->data.has_value());
+                NORVES_CHECK(env.error->data.has_value() && *env.error->data == expectedData);
+            }
+            NORVES_CHECK_EQ(adapter.m_AssetReloadManifestCallCount, 0);
+        }
+    }
+
     void TestEmitEventRoundTrips()
     {
         FakeAdapter adapter;
@@ -527,6 +633,9 @@ int main()
     TestUnknownMethodIsMethodNotSupported();
     TestUnimplementedOptionalMethodsAreMethodNotSupported();
     TestOptionalMethodPassesAdapterResult();
+    TestAssetReloadManifestDispatchesPresentEmptyObject();
+    TestAssetReloadManifestDefaultIsMethodNotSupported();
+    TestAssetReloadManifestRejectsInvalidParamsWithoutDispatch();
     TestEmitEventRoundTrips();
     TestJsonValueParseDumpRoundTrips();
     TestNonRequestFrameReturnsNullopt();

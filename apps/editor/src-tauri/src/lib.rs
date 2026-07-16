@@ -47,6 +47,7 @@ pub fn run() {
             bridge_state::viewport_get_thumbnail,
             bridge_state::asset_resolve,
             bridge_state::asset_get_manifest,
+            bridge_state::asset_reload_manifest,
             bridge_state::runtime_play,
             bridge_state::runtime_pause,
             bridge_state::runtime_stop,

@@ -17,8 +17,8 @@
 //! The mock lives entirely in this test file — it is **not** production code and
 //! must never live under `src/`. It hand-writes responses that satisfy the
 //! relevant fixture/result schemas (`bridge.hello.result`,
-//! `engine.getStatus.result`, `log.message.params`) without reading or adding
-//! any fixture.
+//! `bridge.getCapabilities.result`, `engine.getStatus.result`,
+//! `log.message.params`) without reading or adding any fixture.
 
 use std::time::Duration;
 
@@ -27,8 +27,8 @@ use norves_bridge_core::{
     ValidatedEnvelope, VersionString,
 };
 use norves_bridge_editor_client::{
-    loopback_pair, parse_hello_result, parse_log_message, parse_status_result, Dispatcher,
-    HelloParams, LoopbackTransport, Transport,
+    loopback_pair, parse_capabilities_result, parse_hello_result, parse_log_message,
+    parse_status_result, Dispatcher, HelloParams, LoopbackTransport, Transport,
 };
 
 /// Short, generous-but-finite bound for every blocking receive in the test, so
@@ -92,20 +92,36 @@ fn log_event_frame(seq: u64) -> String {
 
 /// The minimal mock engine: it owns the engine-side transport, reads request
 /// frames, and answers per method using the core codec. It deliberately knows
-/// only the three methods this round trip exercises; anything else is ignored
-/// (the real engine would error, but the test never sends one).
+/// only the four methods this round trip exercises. Their receive order is an
+/// explicit part of this setup contract: hello, capability discovery, status,
+/// then log subscription.
 ///
 /// Returns when the transport reports EOF (the client side dropped), so the
 /// spawning test can `abort` it without relying on a clean shutdown.
 async fn run_mock_engine(mut engine: LoopbackTransport) {
+    const EXPECTED_METHODS: [&str; 4] = [
+        "bridge.hello",
+        "bridge.getCapabilities",
+        "engine.getStatus",
+        "log.subscribe",
+    ];
+
     // Monotonic event seq, advanced only when we emit an event.
     let mut next_seq: u64 = 1;
+    let mut next_request = 0usize;
 
     loop {
         let frame = match engine.recv().await {
             Ok(Some(frame)) => frame,
             // Clean peer close or transport error: the client is gone, so stop.
-            Ok(None) | Err(_) => return,
+            Ok(None) | Err(_) => {
+                assert_eq!(
+                    next_request,
+                    EXPECTED_METHODS.len(),
+                    "mock connection closed before the fixed request sequence completed"
+                );
+                return;
+            }
         };
 
         // The mock uses the same core codec the client does. A frame we cannot
@@ -115,10 +131,19 @@ async fn run_mock_engine(mut engine: LoopbackTransport) {
             Err(_) => continue,
         };
 
-        let ValidatedEnvelope::Request { id, method, .. } = envelope else {
+        let ValidatedEnvelope::Request {
+            id, method, params, ..
+        } = envelope
+        else {
             // The mock only ever receives requests in this test.
             continue;
         };
+
+        let expected = EXPECTED_METHODS
+            .get(next_request)
+            .unwrap_or_else(|| panic!("unexpected extra request method {}", method.as_str()));
+        assert_eq!(method.as_str(), *expected, "request order drifted");
+        next_request += 1;
 
         match method.as_str() {
             "bridge.hello" => {
@@ -130,6 +155,21 @@ async fn run_mock_engine(mut engine: LoopbackTransport) {
                         "version": "0.1.0",
                         "engine": "mock"
                     }
+                });
+                if engine.send(response_frame(&id, result)).await.is_err() {
+                    return;
+                }
+            }
+            "bridge.getCapabilities" => {
+                assert!(
+                    matches!(&params, Some(params) if params.is_empty()),
+                    "bridge.getCapabilities params must be a present empty object"
+                );
+                let result = serde_json::json!({
+                    "capabilities": [
+                        { "name": "runtime.control", "version": "0.1" },
+                        { "name": "viewport.thumbnail", "version": "0.1" }
+                    ]
                 });
                 if engine.send(response_frame(&id, result)).await.is_err() {
                     return;
@@ -166,8 +206,7 @@ async fn run_mock_engine(mut engine: LoopbackTransport) {
                     return;
                 }
             }
-            // Out of scope for this round trip; ignore rather than error.
-            _ => continue,
+            other => panic!("fixed request sequence included unsupported method {other}"),
         }
     }
 }
@@ -222,7 +261,49 @@ async fn loopback_mock_round_trip_hello_status_and_log() {
     assert_eq!(outcome.server_name, "MockEngine");
     assert_eq!(outcome.server_engine.as_deref(), Some("mock"));
 
-    // 5. engine.getStatus round trip.
+    // 5. Discover capabilities immediately after hello on the same dispatcher
+    // handle. The protocol requires present-but-empty params for this method.
+    let capabilities_response = with_timeout(
+        "bridge.getCapabilities response",
+        handle.request(
+            request(
+                "req-capabilities",
+                "bridge.getCapabilities",
+                Some(serde_json::Map::new()),
+            ),
+            RECV_TIMEOUT,
+        ),
+    )
+    .await
+    .expect("bridge.getCapabilities request resolves");
+    let capabilities_result = match capabilities_response {
+        ResponsePayload::Result(value) => value,
+        ResponsePayload::Error(err) => {
+            panic!("bridge.getCapabilities returned an engine error: {err:?}")
+        }
+    };
+    let capabilities = parse_capabilities_result(&capabilities_result)
+        .expect("bridge.getCapabilities result strictly parses")
+        .capabilities;
+    assert_eq!(capabilities.len(), 2);
+    assert_eq!(capabilities[0].name.as_str(), "runtime.control");
+    assert_eq!(
+        capabilities[0]
+            .version
+            .as_ref()
+            .map(|version| version.as_str()),
+        Some("0.1")
+    );
+    assert_eq!(capabilities[1].name.as_str(), "viewport.thumbnail");
+    assert_eq!(
+        capabilities[1]
+            .version
+            .as_ref()
+            .map(|version| version.as_str()),
+        Some("0.1")
+    );
+
+    // 6. engine.getStatus round trip.
     let status_response = with_timeout(
         "engine.getStatus response",
         handle.request(
@@ -249,7 +330,7 @@ async fn loopback_mock_round_trip_hello_status_and_log() {
     assert_eq!(snapshot.engine_name.as_deref(), Some("MockEngine"));
     assert_eq!(snapshot.title.as_deref(), Some("Mock Game"));
 
-    // 6. log.subscribe, then receive the log.message event. The subscription was
+    // 7. log.subscribe, then receive the log.message event. The subscription was
     //    established in step 3, so the event the mock emits after acking this
     //    request cannot be missed.
     let subscribe_response = with_timeout(
@@ -277,7 +358,7 @@ async fn loopback_mock_round_trip_hello_status_and_log() {
     assert_eq!(log.level, norves_bridge_core::LogLevel::Info);
     assert_eq!(log.message, "hello from mock");
 
-    // 7. Orderly shutdown of the dispatcher; then stop the mock so it cannot
+    // 8. Orderly shutdown of the dispatcher; then stop the mock so it cannot
     //    leak past the test.
     handle.shutdown().await;
     mock.abort();

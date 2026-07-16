@@ -53,6 +53,8 @@ function makeActions(overrides: Partial<BridgeActions> = {}): BridgeActions {
     getWorkspace:       vi.fn().mockResolvedValue(undefined),
     closeWorkspace:     vi.fn().mockResolvedValue(undefined),
     readAssetManifest:  vi.fn().mockResolvedValue(undefined),
+    reloadAssetRuntime: vi.fn().mockResolvedValue(undefined),
+    dismissAssetReloadError: vi.fn(),
     resolveAsset:       vi.fn().mockResolvedValue(undefined),
     selectAsset:        vi.fn(),
     clearAssetManifest: vi.fn(),

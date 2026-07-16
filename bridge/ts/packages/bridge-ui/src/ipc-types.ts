@@ -1,6 +1,8 @@
 // IPC contract types shared between Rust backend and frontend.
 // These mirror Rust DTO structs in apps/editor/src-tauri/src/dto.rs.
 
+import type { CapabilityDescriptor } from '@norves/bridge-types';
+
 /**
  * Payload returned by bridge_connect / bridge_disconnect / bridge_reconnect
  * Tauri commands, and emitted on the bridge:connection-state event.
@@ -12,6 +14,7 @@ export interface ConnectionStatePayload {
   sessionId?: string;
   serverName?: string;
   endpoint?: string;
+  capabilities?: CapabilityDescriptor[];
   reason?: string;
 }
 

@@ -20,6 +20,7 @@ namespace Norves::Bridge
         "PROTOCOL_VERSION_UNSUPPORTED";
     inline constexpr std::string_view ErrorMethodNotSupported = "METHOD_NOT_SUPPORTED";
     inline constexpr std::string_view ErrorBridgeTransportError = "BRIDGE_TRANSPORT_ERROR";
+    inline constexpr std::string_view ErrorEngineInvalidParams = "ENGINE_INVALID_PARAMS";
 
     /// @brief 失敗パスで Result が運ぶエラー値。
     ///

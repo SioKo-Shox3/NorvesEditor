@@ -23,6 +23,7 @@ import {
   BRIDGE_COMMANDS,
   BRIDGE_EVENTS,
   assetReadManifest,
+  assetReloadManifest,
   assetResolve,
   workspaceOpen,
   workspaceGet,
@@ -287,6 +288,8 @@ export interface BridgeActions {
   getWorkspace: () => Promise<void>;
   closeWorkspace: () => Promise<void>;
   readAssetManifest: (manifestPath: string) => Promise<void>;
+  reloadAssetRuntime: () => Promise<void>;
+  dismissAssetReloadError: () => void;
   /**
    * Resolve the currently selected asset through asset.resolve and overlay its
    * live health in the store. Late results for no-longer-selected assets are
@@ -463,6 +466,54 @@ export function useBridgeActions(): BridgeActions {
     }
   }, [dispatch]);
 
+  const reloadAssetRuntime = useCallback(async (): Promise<void> => {
+    const currentState = stateRef.current;
+    const startSessionId = currentState.connection.sessionId;
+    if (
+      currentState.connection.status !== 'connected' ||
+      startSessionId === undefined ||
+      startSessionId.length === 0 ||
+      currentState.connection.capabilityNames?.has('asset.reload') !== true ||
+      currentState.assetReloadUnsupported
+    ) {
+      return;
+    }
+
+    try {
+      const result = await assetReloadManifest();
+      if (connectionSessionIdRef.current !== startSessionId) {
+        return;
+      }
+      if (result.accepted) {
+        dispatch({ type: 'assetReloadSucceeded' });
+      } else {
+        dispatch({
+          type: 'assetReloadFailed',
+          payload: {
+            error: {
+              kind: 'asset',
+              message: 'Engine rejected runtime asset manifest reload.',
+            },
+          },
+        });
+      }
+    } catch (err: unknown) {
+      if (connectionSessionIdRef.current !== startSessionId) {
+        return;
+      }
+      if (isMethodNotSupported(err)) {
+        dispatch({ type: 'assetReloadUnsupported' });
+        return;
+      }
+      const { kind, message } = extractBackendError(err);
+      dispatch({ type: 'assetReloadFailed', payload: { error: { kind, message } } });
+    }
+  }, [dispatch]);
+
+  const dismissAssetReloadError = useCallback((): void => {
+    dispatch({ type: 'assetReloadErrorDismissed' });
+  }, [dispatch]);
+
   const resolveAsset = useCallback(
     async (logicalPath: string, kind?: string, variant?: string): Promise<void> => {
       const key = assetKeyForEntry({ logicalPath, variant });
@@ -519,11 +570,7 @@ export function useBridgeActions(): BridgeActions {
   const connect = useCallback(async (port: number): Promise<void> => {
     dispatch({ type: 'commandPending' });
     try {
-      const result = await invokeCommand<ConnectionStatePayload>(
-        BRIDGE_COMMANDS.connect,
-        { port },
-      );
-      dispatch({ type: 'connectionStateChanged', payload: result });
+      await invokeCommand(BRIDGE_COMMANDS.connect, { port });
     } catch (err: unknown) {
       const { kind, message } = extractBackendError(err);
       dispatch({
@@ -537,10 +584,7 @@ export function useBridgeActions(): BridgeActions {
 
   const disconnect = useCallback(async (): Promise<void> => {
     try {
-      const result = await invokeCommand<ConnectionStatePayload>(
-        BRIDGE_COMMANDS.disconnect,
-      );
-      dispatch({ type: 'connectionStateChanged', payload: result });
+      await invokeCommand(BRIDGE_COMMANDS.disconnect);
     } catch (err: unknown) {
       const { kind, message } = extractBackendError(err);
       dispatch({
@@ -555,10 +599,7 @@ export function useBridgeActions(): BridgeActions {
   const reconnect = useCallback(async (): Promise<void> => {
     dispatch({ type: 'commandPending' });
     try {
-      const result = await invokeCommand<ConnectionStatePayload>(
-        BRIDGE_COMMANDS.reconnect,
-      );
-      dispatch({ type: 'connectionStateChanged', payload: result });
+      await invokeCommand(BRIDGE_COMMANDS.reconnect);
     } catch (err: unknown) {
       const { kind, message } = extractBackendError(err);
       dispatch({
@@ -1000,10 +1041,7 @@ export function useBridgeActions(): BridgeActions {
   const launch = useCallback(async (): Promise<void> => {
     dispatch({ type: 'commandPending' });
     try {
-      const result = await invokeCommand<ConnectionStatePayload>(
-        BRIDGE_COMMANDS.launchEngine,
-      );
-      dispatch({ type: 'connectionStateChanged', payload: result });
+      await invokeCommand(BRIDGE_COMMANDS.launchEngine);
     } catch (err: unknown) {
       const { kind, message } = extractBackendError(err);
       dispatch({
@@ -1249,6 +1287,8 @@ export function useBridgeActions(): BridgeActions {
     getWorkspace,
     closeWorkspace,
     readAssetManifest,
+    reloadAssetRuntime,
+    dismissAssetReloadError,
     resolveAsset,
     selectAsset,
     clearAssetManifest,

@@ -39,10 +39,15 @@ export function AssetBrowserPanel(_props: IDockviewPanelProps): React.JSX.Elemen
   const selectedAssetKey = state.selectedAssetKey;
   const hasManifest = state.assetManifest !== undefined;
   const isConnected = state.connection.status === 'connected';
-  // Show asset errors whether or not a manifest is already loaded, so a failed
-  // *reload* is visible instead of silently keeping the stale list. Uses the
-  // dedicated assetError field, never the shared lastError.
+  const canReloadRuntime =
+    isConnected &&
+    state.connection.capabilityNames?.has('asset.reload') === true &&
+    !state.assetReloadUnsupported;
+  // Show offline manifest read/parse errors whether or not a manifest is
+  // already loaded, so a failed file refresh cannot silently keep a stale list.
+  // Uses the dedicated assetError field, never the shared lastError.
   const assetError = state.assetError;
+  const assetReloadError = state.assetReloadError;
 
   const handleLoad = (): void => {
     const trimmed = manifestPath.trim();
@@ -78,6 +83,15 @@ export function AssetBrowserPanel(_props: IDockviewPanelProps): React.JSX.Elemen
           <button
             className="btn"
             type="button"
+            aria-label="Reload runtime asset manifest"
+            disabled={!canReloadRuntime}
+            onClick={() => { void actions.reloadAssetRuntime(); }}
+          >
+            Reload Runtime
+          </button>
+          <button
+            className="btn"
+            type="button"
             disabled={!hasManifest}
             onClick={actions.clearAssetManifest}
           >
@@ -95,8 +109,26 @@ export function AssetBrowserPanel(_props: IDockviewPanelProps): React.JSX.Elemen
             <button
               className="error-banner__dismiss"
               type="button"
-              aria-label="Dismiss error"
+              aria-label="Dismiss offline asset manifest error"
               onClick={actions.dismissAssetError}
+            >
+              x
+            </button>
+          </div>
+        )}
+
+        {assetReloadError !== undefined && (
+          <div className="error-banner" role="alert">
+            <span className="error-banner__kind">{assetReloadError.kind ?? 'asset'}</span>
+            <span className="error-banner__message">
+              {': '}
+              {assetReloadError.message}
+            </span>
+            <button
+              className="error-banner__dismiss"
+              type="button"
+              aria-label="Dismiss runtime asset manifest reload error"
+              onClick={actions.dismissAssetReloadError}
             >
               x
             </button>

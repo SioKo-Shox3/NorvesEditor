@@ -30,7 +30,7 @@ Namespace unfreezing is acceptable for this alpha change because:
    - `bridge/cpp/engine-sdk/include/norves/bridge/**` becomes `bridge/cpp/engine-sdk/include/Norves/Bridge/**`.
    - `bridge/cpp/engine-sdk/include/norves/bridge/dto/**` becomes `bridge/cpp/engine-sdk/include/Norves/Bridge/Dto/**`.
    - Header filenames remain lower-case.
-4. Keep frozen public API symbol spellings unchanged. In particular, all `IBridgeEngineAdapter` virtual method names remain exactly: `hello`, `getCapabilities`, `getStatus`, `launchInfo`, `runtimePlay`, `runtimePause`, `runtimeStop`, `runtimeFocusViewport`, `logSubscribe`, `logUnsubscribe`, `sceneGetTree`, `sceneCreateObject`, `sceneDeleteObject`, `sceneReparentObject`, `sceneDuplicateObject`, `objectGetSnapshot`, `objectSetProperty`, `schemaGetSnapshot`, `assetResolve`, `assetGetManifest`, `viewportGetThumbnail`.
+4. Keep frozen public API symbol spellings unchanged. In particular, all `IBridgeEngineAdapter` virtual method names remain exactly: `hello`, `getCapabilities`, `getStatus`, `launchInfo`, `runtimePlay`, `runtimePause`, `runtimeStop`, `runtimeFocusViewport`, `logSubscribe`, `logUnsubscribe`, `sceneGetTree`, `sceneCreateObject`, `sceneDeleteObject`, `sceneReparentObject`, `sceneDuplicateObject`, `objectGetSnapshot`, `objectSetProperty`, `schemaGetSnapshot`, `assetResolve`, `assetGetManifest`, `viewportGetThumbnail`, `assetReloadManifest`.
 5. Keep the UTF-8 BOM / LF policy unchanged:
    - public headers under `bridge/cpp/engine-sdk/include/**` keep a UTF-8 BOM and LF line endings;
    - internal SDK files under `src`, `tests`, and `examples` stay BOM-less UTF-8 with LF line endings.

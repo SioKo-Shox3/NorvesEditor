@@ -400,6 +400,21 @@ not references into engine manifest storage. Schemas:
 | `page` | integer | no | page index the engine returned. |
 | `pageSize` | integer | no | maximum entries in this page. |
 
+### asset.reloadManifest
+
+Reload the asset manifest path configured when the engine started. The request
+never supplies a path, and the engine completes or rejects the runtime switch
+before returning. Schemas:
+[params](../schema/methods/asset.reloadManifest.params.schema.json),
+[result](../schema/methods/asset.reloadManifest.result.schema.json).
+
+- `params`: present empty object (no parameters).
+- `result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `accepted` | boolean | yes | whether the engine switched to the newly loaded runtime manifest snapshot; `false` is a valid runtime rejection. |
+
 ## Events
 
 Events are one-way notifications. Some arrive over the engine **wire**; others

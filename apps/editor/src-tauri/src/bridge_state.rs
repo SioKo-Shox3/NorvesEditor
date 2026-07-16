@@ -13,7 +13,8 @@
 //!
 //! * `bridge_connect` / `bridge_reconnect`: briefly lock to transition the
 //!   connection *phase* (rejecting overlap), then drop the guard *before* the
-//!   `connect_with_retry` / `subscribe` / `spawn relay` / `hello` work, then
+//!   `connect_with_retry` / `subscribe` / `spawn relay` / `hello` / capability
+//!   discovery work, then
 //!   briefly lock again to store the result.
 //! * Every request-issuing command: lock, clone the [`DispatchHandle`] (cheap —
 //!   it is `Clone`), drop the guard, then `.await` the request on the clone.
@@ -37,11 +38,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use norves_bridge_core::{
-    CorrelationId, MethodName, ResponsePayload, ValidatedEnvelope, VersionString,
+    CapabilityDescriptor, CorrelationId, MethodName, ResponsePayload, ValidatedEnvelope,
+    VersionString,
 };
 use norves_bridge_editor_client::{
-    connect_with_retry, hello_error_to_handshake, parse_hello_result, DispatchHandle, HelloParams,
-    RetryConfig,
+    connect_with_retry, hello_error_to_handshake, parse_hello_result, DispatchHandle, HelloOutcome,
+    HelloParams, RetryConfig,
 };
 use serde_json::Value;
 use tauri::async_runtime::JoinHandle;
@@ -84,12 +86,12 @@ fn ws_url_for_port(port: u16) -> String {
 }
 
 /// The live half of the connection: the dispatcher handle plus the running
-/// relay task's stop levers and the session info captured at handshake.
+/// relay task's stop levers and the session metadata captured during setup.
 struct LiveConnection {
-    /// Unique id for this connection, taken from `BridgeState::next_generation`
-    /// on each successful connect. The relay carries a copy and only resets the
-    /// backend phase on an unsolicited close if this still matches the current
-    /// connection — so a stale relay can never clobber a newer connection.
+    /// Unique token for this connect attempt, taken from
+    /// `BridgeState::next_generation`. The relay carries the same token and only
+    /// resets the backend phase on an unsolicited close if it still owns the
+    /// current attempt/session.
     generation: u64,
     handle: DispatchHandle,
     /// Join handle for the relay task; awaited (after abort / shutdown) to prove
@@ -98,13 +100,14 @@ struct LiveConnection {
     endpoint: String,
     session_id: String,
     server_name: String,
+    capabilities: Vec<CapabilityDescriptor>,
 }
 
-/// Connection phase. `Connecting` is a transient guard that rejects overlapping
-/// `bridge_connect` calls without holding the lock across the connect I/O.
+/// Connection phase. `Connecting(token)` rejects overlap and prevents stale
+/// success/failure paths from committing over a disconnected or newer attempt.
 enum Phase {
     Disconnected,
-    Connecting,
+    Connecting(u64),
     Connected(LiveConnection),
 }
 
@@ -115,9 +118,8 @@ pub struct BridgeState {
     /// Monotonic source of unique request correlation ids. Shared so every
     /// in-flight request across all commands gets a distinct id.
     next_request_id: AtomicU64,
-    /// Monotonic source of unique connection generation ids. Bumped on each
-    /// successful connect so the relay can detect whether the connection it
-    /// belongs to is still the current one (see [`LiveConnection::generation`]).
+    /// Monotonic source of unique connect-attempt tokens. Bumped when an attempt
+    /// starts so setup, relay self-heal, and commit share one identity.
     next_generation: AtomicU64,
 }
 
@@ -140,7 +142,7 @@ impl BridgeState {
         CorrelationId::try_from(format!("req-{n}")).expect("generated id is valid")
     }
 
-    /// Allocates a unique generation id for a new live connection.
+    /// Allocates a unique token for a new connect attempt.
     fn alloc_generation(&self) -> u64 {
         self.next_generation.fetch_add(1, Ordering::Relaxed)
     }
@@ -170,30 +172,115 @@ fn build_request(
     })
 }
 
+/// Builds the mandatory same-session capability discovery request.
+fn build_capabilities_request(state: &BridgeState) -> Result<ValidatedEnvelope, BackendError> {
+    build_request(
+        state.alloc_request_id(),
+        "bridge.getCapabilities",
+        Some(serde_json::Map::new()),
+    )
+}
+
+/// Strictly extracts the authoritative descriptor set from a capability result.
+fn parse_connection_capabilities(value: &Value) -> Result<Vec<CapabilityDescriptor>, BackendError> {
+    norves_bridge_editor_client::parse_capabilities_result(value)
+        .map(|result| result.capabilities)
+        .map_err(|err| BackendError::Request {
+            message: format!("malformed bridge.getCapabilities result: {err}"),
+        })
+}
+
+/// Discovers capabilities through the already-handshaken dispatcher handle.
+async fn request_connection_capabilities(
+    handle: &DispatchHandle,
+    state: &BridgeState,
+) -> Result<Vec<CapabilityDescriptor>, BackendError> {
+    let request = build_capabilities_request(state)?;
+    match handle.request(request, REQUEST_TIMEOUT).await {
+        Ok(ResponsePayload::Result(value)) => parse_connection_capabilities(&value),
+        Ok(ResponsePayload::Error(bridge_err)) => Err(bridge_err.into()),
+        Err(req_err) => Err(req_err.into()),
+    }
+}
+
+/// Builds the authoritative connected payload from the stored live session.
+fn connection_state_payload(conn: &LiveConnection) -> ConnectionStatePayload {
+    ConnectionStatePayload::connected(
+        conn.session_id.clone(),
+        conn.server_name.clone(),
+        conn.endpoint.clone(),
+        conn.capabilities.clone(),
+    )
+}
+
+/// Resets only the connect attempt that still owns `token`.
+fn reset_connecting_if_matches(phase: &mut Phase, token: u64) -> bool {
+    let matches_token = matches!(&*phase, Phase::Connecting(current) if *current == token);
+    if matches_token {
+        *phase = Phase::Disconnected;
+    }
+    matches_token
+}
+
+/// Commits `conn` only while its originating connect token is still current.
+fn try_commit_connection<F>(
+    phase: &mut Phase,
+    token: u64,
+    conn: LiveConnection,
+    on_commit: F,
+) -> Option<LiveConnection>
+where
+    F: FnOnce(&Phase),
+{
+    if matches!(&*phase, Phase::Connecting(current) if *current == token) {
+        *phase = Phase::Connected(conn);
+        on_commit(phase);
+        None
+    } else {
+        Some(conn)
+    }
+}
+
 /// Pure decision for the relay's self-heal: should a relay whose connection had
 /// `relay_generation` reset the backend `phase` to `Disconnected`?
 ///
-/// Returns `true` only when the phase is `Connected` AND its generation matches
-/// the relay's. A different generation means a newer connection already replaced
-/// this one (concurrent reconnect), so the relay must leave it alone; any
-/// non-`Connected` phase (e.g. an in-flight `Connecting`) is likewise untouched.
+/// Returns `true` only when the phase is the `Connecting` attempt or `Connected`
+/// session that owns the relay's generation. A different generation means a
+/// newer attempt already replaced this one, so the relay must leave it alone.
 fn relay_should_reset_phase(phase: &Phase, relay_generation: u64) -> bool {
-    matches!(phase, Phase::Connected(conn) if conn.generation == relay_generation)
+    matches!(phase, Phase::Connecting(token) if *token == relay_generation)
+        || matches!(phase, Phase::Connected(conn) if conn.generation == relay_generation)
+}
+
+/// Transitions an owned attempt/session to disconnected and runs the synchronous
+/// callback only after that transition. Callers keep the state mutex held while
+/// this function executes, making transition + event publication one ordering
+/// unit without introducing an await.
+fn reset_owned_phase_and_then<F>(phase: &mut Phase, generation: u64, on_reset: F) -> bool
+where
+    F: FnOnce(&Phase),
+{
+    if relay_should_reset_phase(phase, generation) {
+        *phase = Phase::Disconnected;
+        on_reset(phase);
+        true
+    } else {
+        false
+    }
 }
 
 /// Spawns the backend->UI relay task and returns its join handle.
 ///
 /// The task loops `events.recv().await`, maps each Bridge event NAME to a Tauri
 /// channel, and emits the event `params` as a raw [`Value`] (already wire-shaped
-/// — never re-modeled). It exits on `Closed` (peer/handle gone) after emitting a
-/// disconnected connection-state event; it logs-and-continues on `Lagged` and on
-/// unknown event names.
+/// — never re-modeled). On `Closed`, it publishes disconnected state only when
+/// it still owns the current generation; it logs-and-continues on `Lagged` and
+/// on unknown event names.
 ///
-/// `generation` is this relay's connection id. On an unsolicited `Closed` (the
-/// engine died without an explicit disconnect/reconnect) the relay self-heals
-/// the backend phase to `Disconnected` — but ONLY if the current connection
-/// still carries the same generation, so it can never clobber a newer
-/// connection created by a concurrent reconnect. It reaches `BridgeState` via
+/// `generation` is this relay's attempt/session id. On an unsolicited `Closed`,
+/// the relay self-heals and publishes `Disconnected` only if the current phase
+/// still carries that generation, so it cannot clobber or misreport a newer
+/// attempt/session. It reaches `BridgeState` via
 /// the Tauri managed state (`app.state::<BridgeState>()`); no extra `Arc` is
 /// threaded through because the state is already managed by this `AppHandle`.
 fn spawn_relay(
@@ -237,27 +324,23 @@ fn spawn_relay(
                     tracing::warn!(skipped = n, "relay: broadcast lagged, continuing");
                 }
                 Err(RecvError::Closed) => {
-                    tracing::debug!("relay: broadcast closed, emitting disconnected and exiting");
-                    // `emit` is synchronous in Tauri 2 (not an await), so this
-                    // happens before we touch any lock.
-                    let payload =
-                        ConnectionStatePayload::disconnected(Some("connection closed".to_owned()));
-                    if let Err(err) = app.emit(events::CONNECTION_STATE, payload) {
-                        tracing::warn!(error = %err, "relay: failed to emit disconnect state");
-                    }
-                    // Self-heal the backend phase so a later `bridge_connect`
-                    // succeeds instead of returning `AlreadyConnected`. Acquiring
-                    // the Mutex is itself an await, but at this point NO other
-                    // lock/guard is held and we perform NO `.await` while the
-                    // guard is held (the reset below is purely synchronous), so
-                    // the no-lock-across-await invariant holds.
+                    tracing::debug!("relay: broadcast closed, checking generation and exiting");
                     let state = app.state::<BridgeState>();
                     let mut guard = state.inner.lock().await;
-                    if relay_should_reset_phase(&guard, generation) {
-                        // Still the current connection: reset it. A newer
-                        // connection (different generation) is left untouched.
-                        *guard = Phase::Disconnected;
-                    }
+                    reset_owned_phase_and_then(&mut guard, generation, |_| {
+                        // `emit` is synchronous in Tauri 2. Keep transition and
+                        // publication in this one mutex interval so a connect
+                        // commit cannot interleave between them.
+                        let payload = ConnectionStatePayload::disconnected(Some(
+                            "connection closed".to_owned(),
+                        ));
+                        if let Err(err) = app.emit(events::CONNECTION_STATE, payload) {
+                            tracing::warn!(
+                                error = %err,
+                                "relay: failed to emit disconnect state"
+                            );
+                        }
+                    });
                     drop(guard);
                     return;
                 }
@@ -283,12 +366,14 @@ async fn tear_down(conn: LiveConnection) {
 /// `bridge_reconnect`).
 ///
 /// Runs WITHOUT the state lock held: dial with retry, subscribe BEFORE hello,
-/// spawn the relay, then perform the handshake. On any failure it tears down
-/// whatever it built so nothing leaks, and returns a [`BackendError`].
+/// spawn the relay, perform the handshake, then strictly discover capabilities
+/// on the same dispatcher. On any failure it tears down whatever it built so
+/// nothing leaks, and returns a [`BackendError`].
 async fn run_connect_flow(
     app: AppHandle,
     state: &BridgeState,
     endpoint: String,
+    generation: u64,
 ) -> Result<LiveConnection, BackendError> {
     // 1. Dial with retry -> DispatchHandle.
     let handle = connect_with_retry(&endpoint, &RetryConfig::default()).await?;
@@ -296,57 +381,88 @@ async fn run_connect_flow(
     // 2. Subscribe to events BEFORE hello so no early event is missed.
     let events = handle.subscribe_events();
 
-    // 3. Spawn the relay BEFORE hello. Allocate this connection's generation
-    //    now and hand a copy to the relay so it can self-heal the phase on an
-    //    unsolicited close without clobbering a later connection.
-    let generation = state.alloc_generation();
+    // 3. Spawn the relay BEFORE hello with the attempt token allocated by the
+    //    caller, so setup, relay self-heal, and commit use one generation.
     let relay = spawn_relay(app, generation, events);
 
-    // 4. Hello handshake.
-    let mut protocol_versions = Vec::with_capacity(OFFERED_PROTOCOL_VERSIONS.len());
-    for offered in OFFERED_PROTOCOL_VERSIONS {
-        protocol_versions.push(VersionString::try_from(offered.to_owned()).map_err(|_| {
-            BackendError::Handshake {
-                message: "internal: invalid protocol version constant".to_owned(),
-            }
-        })?);
-    }
-    let hello_params = HelloParams::new(CLIENT_NAME, protocol_versions);
-    let params = hello_params.to_params()?;
-    let request = build_request(state.alloc_request_id(), "bridge.hello", Some(params))?;
-
-    let outcome = match handle.request(request, REQUEST_TIMEOUT).await {
-        Ok(ResponsePayload::Result(value)) => match parse_hello_result(&value) {
-            Ok(outcome) => outcome,
-            Err(err) => {
-                // Malformed hello result: tear down and fail.
-                tear_down_partial(handle, relay).await;
-                return Err(err.into());
-            }
-        },
-        Ok(ResponsePayload::Error(bridge_err)) => {
-            // Engine rejected the handshake (e.g. version negotiation).
-            tear_down_partial(handle, relay).await;
-            return Err(hello_error_to_handshake(bridge_err).into());
-        }
-        Err(req_err) => {
-            tear_down_partial(handle, relay).await;
-            return Err(req_err.into());
-        }
-    };
+    let setup = complete_connection_setup(handle, relay, state).await?;
 
     Ok(LiveConnection {
         generation,
-        handle,
-        relay,
+        handle: setup.handle,
+        relay: setup.relay,
         endpoint,
-        session_id: outcome.session_id,
-        server_name: outcome.server_name,
+        session_id: setup.hello.session_id,
+        server_name: setup.hello.server_name,
+        capabilities: setup.capabilities,
     })
 }
 
-/// Tears down a half-built connection (handle + relay) when the handshake fails
-/// before a [`LiveConnection`] is assembled.
+/// Resources and authoritative metadata produced by connection setup.
+///
+/// The dispatcher handle and relay stay owned by this value on success so the
+/// caller can assemble a [`LiveConnection`] without replacing either resource.
+struct SetupOutcome {
+    handle: DispatchHandle,
+    relay: JoinHandle<()>,
+    hello: HelloOutcome,
+    capabilities: Vec<CapabilityDescriptor>,
+}
+
+/// Performs hello and same-handle capability discovery for a partial connection.
+///
+/// This helper owns both resources. Every error path shuts down the dispatcher,
+/// aborts and awaits the relay, then returns the original setup error. It does
+/// not know about Tauri application state or publish a connected phase.
+async fn complete_connection_setup(
+    handle: DispatchHandle,
+    relay: JoinHandle<()>,
+    state: &BridgeState,
+) -> Result<SetupOutcome, BackendError> {
+    let result: Result<(HelloOutcome, Vec<CapabilityDescriptor>), BackendError> = async {
+        // Hello handshake.
+        let mut protocol_versions = Vec::with_capacity(OFFERED_PROTOCOL_VERSIONS.len());
+        for offered in OFFERED_PROTOCOL_VERSIONS {
+            protocol_versions.push(VersionString::try_from(offered.to_owned()).map_err(|_| {
+                BackendError::Handshake {
+                    message: "internal: invalid protocol version constant".to_owned(),
+                }
+            })?);
+        }
+        let hello_params = HelloParams::new(CLIENT_NAME, protocol_versions);
+        let params = hello_params.to_params()?;
+        let request = build_request(state.alloc_request_id(), "bridge.hello", Some(params))?;
+
+        let hello = match handle.request(request, REQUEST_TIMEOUT).await {
+            Ok(ResponsePayload::Result(value)) => parse_hello_result(&value)?,
+            Ok(ResponsePayload::Error(bridge_err)) => {
+                return Err(hello_error_to_handshake(bridge_err).into())
+            }
+            Err(req_err) => return Err(req_err.into()),
+        };
+
+        // Capability discovery is a hard gate on this same dispatcher handle.
+        let capabilities = request_connection_capabilities(&handle, state).await?;
+        Ok((hello, capabilities))
+    }
+    .await;
+
+    match result {
+        Ok((hello, capabilities)) => Ok(SetupOutcome {
+            handle,
+            relay,
+            hello,
+            capabilities,
+        }),
+        Err(err) => {
+            tear_down_partial(handle, relay).await;
+            Err(err)
+        }
+    }
+}
+
+/// Tears down a half-built connection (handle + relay) when handshake or
+/// capability discovery fails before a [`LiveConnection`] is assembled.
 async fn tear_down_partial(handle: DispatchHandle, relay: JoinHandle<()>) {
     relay.abort();
     handle.shutdown().await;
@@ -409,38 +525,42 @@ pub(crate) async fn connect_on_port(
     port: u16,
 ) -> Result<ConnectionStatePayload, BackendError> {
     // Brief lock: transition Disconnected -> Connecting, reject overlap.
+    let token = state.alloc_generation();
     {
         let mut guard = state.inner.lock().await;
         match &*guard {
-            Phase::Disconnected => *guard = Phase::Connecting,
-            Phase::Connecting | Phase::Connected(_) => return Err(BackendError::AlreadyConnected),
+            Phase::Disconnected => *guard = Phase::Connecting(token),
+            Phase::Connecting(_) | Phase::Connected(_) => {
+                return Err(BackendError::AlreadyConnected);
+            }
         }
     } // guard dropped: connect I/O runs WITHOUT the lock.
 
     let endpoint = ws_url_for_port(port);
-    let result = run_connect_flow(app.clone(), state, endpoint).await;
+    let result = run_connect_flow(app.clone(), state, endpoint, token).await;
 
     match result {
         Ok(conn) => {
-            let payload = ConnectionStatePayload::connected(
-                conn.session_id.clone(),
-                conn.server_name.clone(),
-                conn.endpoint.clone(),
-            );
-            // Brief lock: store the live connection.
-            {
+            let payload = connection_state_payload(&conn);
+            let commit = {
                 let mut guard = state.inner.lock().await;
-                *guard = Phase::Connected(conn);
+                try_commit_connection(&mut guard, token, conn, |_| {
+                    // Synchronous emit under the same lock interval as commit.
+                    let _ = app.emit(events::CONNECTION_STATE, payload.clone());
+                })
+            };
+            if let Some(conn) = commit {
+                // Disconnect or a newer attempt invalidated this token while
+                // setup was in flight. Tear down without publishing ready.
+                tear_down(conn).await;
+                return Err(BackendError::NotConnected);
             }
-            let _ = app.emit(events::CONNECTION_STATE, payload.clone());
             Ok(payload)
         }
         Err(err) => {
-            // Reset the phase so a later connect can proceed.
-            {
-                let mut guard = state.inner.lock().await;
-                *guard = Phase::Disconnected;
-            }
+            // Reset only this failed attempt; never clobber a newer token.
+            let mut guard = state.inner.lock().await;
+            reset_connecting_if_matches(&mut guard, token);
             Err(err)
         }
     }
@@ -517,57 +637,49 @@ pub async fn bridge_reconnect(
 ) -> Result<ConnectionStatePayload, BackendError> {
     // Take the old connection (and remember its endpoint) under the lock, then
     // move to Connecting so an overlapping connect/reconnect is rejected.
+    let token = state.alloc_generation();
     let (old, endpoint) = {
         let mut guard = state.inner.lock().await;
-        match std::mem::replace(&mut *guard, Phase::Connecting) {
+        match std::mem::replace(&mut *guard, Phase::Connecting(token)) {
             Phase::Connected(conn) => {
                 let endpoint = conn.endpoint.clone();
-                (Some(conn), Some(endpoint))
+                (conn, endpoint)
             }
-            Phase::Connecting => {
+            Phase::Connecting(current) => {
                 // A connect/reconnect is already in progress: do not disturb it.
-                *guard = Phase::Connecting;
+                *guard = Phase::Connecting(current);
                 return Err(BackendError::AlreadyConnected);
             }
-            Phase::Disconnected => (None, None),
+            Phase::Disconnected => {
+                *guard = Phase::Disconnected;
+                return Err(BackendError::NotConnected);
+            }
         }
-    };
-
-    let Some(endpoint) = endpoint else {
-        // Never connected: there is no endpoint to reconnect to. Reset phase.
-        {
-            let mut guard = state.inner.lock().await;
-            *guard = Phase::Disconnected;
-        }
-        return Err(BackendError::NotConnected);
     };
 
     // Tear down the OLD relay + handle WITHOUT the lock held.
-    if let Some(conn) = old {
-        tear_down(conn).await;
-    }
+    tear_down(old).await;
 
     // Re-run the full connect flow (subscribe -> spawn relay -> hello).
-    let result = run_connect_flow(app.clone(), state.inner(), endpoint).await;
+    let result = run_connect_flow(app.clone(), state.inner(), endpoint, token).await;
     match result {
         Ok(conn) => {
-            let payload = ConnectionStatePayload::connected(
-                conn.session_id.clone(),
-                conn.server_name.clone(),
-                conn.endpoint.clone(),
-            );
-            {
+            let payload = connection_state_payload(&conn);
+            let commit = {
                 let mut guard = state.inner.lock().await;
-                *guard = Phase::Connected(conn);
+                try_commit_connection(&mut guard, token, conn, |_| {
+                    let _ = app.emit(events::CONNECTION_STATE, payload.clone());
+                })
+            };
+            if let Some(conn) = commit {
+                tear_down(conn).await;
+                return Err(BackendError::NotConnected);
             }
-            let _ = app.emit(events::CONNECTION_STATE, payload.clone());
             Ok(payload)
         }
         Err(err) => {
-            {
-                let mut guard = state.inner.lock().await;
-                *guard = Phase::Disconnected;
-            }
+            let mut guard = state.inner.lock().await;
+            reset_connecting_if_matches(&mut guard, token);
             Err(err)
         }
     }
@@ -912,6 +1024,32 @@ pub async fn asset_get_manifest(
     Ok(value)
 }
 
+/// Returns the exact wire method and required empty params for manifest reload.
+fn asset_reload_manifest_request_parts() -> (&'static str, serde_json::Map<String, Value>) {
+    ("asset.reloadManifest", serde_json::Map::new())
+}
+
+/// Strictly validates the acknowledgement while preserving the original wire
+/// value for the frontend.
+fn validate_asset_reload_manifest_result(value: Value) -> Result<Value, BackendError> {
+    norves_bridge_editor_client::parse_asset_reload_manifest_result(&value).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed asset.reloadManifest result: {err}"),
+        }
+    })?;
+    Ok(value)
+}
+
+/// `asset_reload_manifest`: asks the live engine to atomically reload its
+/// manifest. Strictly validates the acknowledgement, then returns the original
+/// wire-shaped result value unchanged.
+#[tauri::command]
+pub async fn asset_reload_manifest(state: State<'_, BridgeState>) -> Result<Value, BackendError> {
+    let (method, params) = asset_reload_manifest_request_parts();
+    let value = send_method(state.inner(), method, Some(params)).await?;
+    validate_asset_reload_manifest_result(value)
+}
+
 /// `runtime_play`: `runtime.play` with an empty params object. Returns the raw
 /// result Value.
 #[tauri::command]
@@ -949,6 +1087,117 @@ pub async fn focus_viewport(state: State<'_, BridgeState>) -> Result<Value, Back
 #[cfg(test)]
 mod tests {
     use super::*;
+    use norves_bridge_core::{decode_typed, encode_envelope, BridgeError, Envelope, ErrorCode};
+    use norves_bridge_editor_client::{loopback_pair, Dispatcher, LoopbackTransport, Transport};
+    use tokio::sync::oneshot;
+
+    const CONNECTION_SETUP_TIMEOUT: Duration = Duration::from_secs(2);
+
+    struct RelayDropProbe(Option<oneshot::Sender<()>>);
+
+    impl Drop for RelayDropProbe {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    fn connection_setup_relay_probe() -> (JoinHandle<()>, oneshot::Receiver<()>) {
+        let (sender, receiver) = oneshot::channel();
+        let probe = RelayDropProbe(Some(sender));
+        let relay = tauri::async_runtime::spawn(async move {
+            let _probe = probe;
+            std::future::pending::<()>().await;
+        });
+        (relay, receiver)
+    }
+
+    fn connection_setup_response_frame(id: CorrelationId, payload: ResponsePayload) -> String {
+        let envelope: Envelope = ValidatedEnvelope::Response {
+            version: VersionString::try_from(PROTOCOL_VERSION.to_owned())
+                .expect("protocol version is valid"),
+            id,
+            payload,
+            session_id: None,
+            seq: None,
+        }
+        .into();
+        encode_envelope(&envelope).expect("response envelope encodes")
+    }
+
+    async fn connection_setup_request(
+        engine: &mut LoopbackTransport,
+    ) -> (
+        CorrelationId,
+        String,
+        Option<serde_json::Map<String, Value>>,
+    ) {
+        let frame = tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, engine.recv())
+            .await
+            .expect("timed out waiting for setup request")
+            .expect("engine transport receive succeeds")
+            .expect("dispatcher sent a setup request");
+        match decode_typed(&frame).expect("setup request decodes") {
+            ValidatedEnvelope::Request {
+                id, method, params, ..
+            } => (id, method.as_str().to_owned(), params),
+            other => panic!("expected setup request, got {other:?}"),
+        }
+    }
+
+    async fn connection_setup_serve_hello(engine: &mut LoopbackTransport) {
+        let (id, method, params) = connection_setup_request(engine).await;
+        assert_eq!(method, "bridge.hello");
+        assert!(params.is_some());
+        engine
+            .send(connection_setup_response_frame(
+                id,
+                ResponsePayload::Result(serde_json::json!({
+                    "sessionId": "setup-session",
+                    "protocolVersion": "0.2",
+                    "server": {
+                        "name": "LoopbackEngine",
+                        "version": "0.1.0",
+                        "engine": "loopback"
+                    }
+                })),
+            ))
+            .await
+            .expect("hello response sends");
+    }
+
+    async fn connection_setup_capabilities_request(
+        engine: &mut LoopbackTransport,
+    ) -> CorrelationId {
+        let (id, method, params) = connection_setup_request(engine).await;
+        assert_eq!(method, "bridge.getCapabilities");
+        assert!(matches!(params, Some(params) if params.is_empty()));
+        id
+    }
+
+    async fn connection_setup_observe_peer_closed(engine: &mut LoopbackTransport) {
+        let closed = tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, engine.recv())
+            .await
+            .expect("timed out waiting for dispatcher transport close")
+            .expect("engine transport receive succeeds");
+        assert!(closed.is_none(), "dispatcher transport remained open");
+    }
+
+    async fn connection_setup_assert_failure_cleanup(
+        state: &BridgeState,
+        mut relay_dropped: oneshot::Receiver<()>,
+        engine: JoinHandle<()>,
+    ) {
+        relay_dropped
+            .try_recv()
+            .expect("setup returned before the relay future was dropped");
+        tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, engine)
+            .await
+            .expect("timed out waiting for loopback engine")
+            .expect("loopback engine task joins");
+        assert!(matches!(*state.inner.lock().await, Phase::Disconnected));
+    }
 
     #[test]
     fn ws_url_uses_loopback_host_and_port() {
@@ -990,13 +1239,181 @@ mod tests {
         }
     }
 
-    /// The relay never resets a non-`Connected` phase, regardless of generation.
-    /// `Disconnected` / `Connecting` carry no `LiveConnection`, so no runtime is
-    /// needed to construct them.
     #[test]
-    fn relay_does_not_reset_non_connected_phases() {
+    fn connection_capabilities_request_uses_empty_params() {
+        let state = BridgeState::default();
+        let env = build_capabilities_request(&state).expect("builds");
+        match env {
+            ValidatedEnvelope::Request {
+                method,
+                params: Some(params),
+                ..
+            } => {
+                assert_eq!(method.as_str(), "bridge.getCapabilities");
+                assert!(params.is_empty());
+            }
+            _ => panic!("expected a request envelope with empty params"),
+        }
+    }
+
+    #[test]
+    fn connection_capabilities_strict_result_is_propagated() {
+        let value = serde_json::json!({
+            "capabilities": [{ "name": "asset.reload", "version": "0.2" }]
+        });
+        let capabilities = parse_connection_capabilities(&value).expect("parses");
+        assert_eq!(capabilities.len(), 1);
+        assert_eq!(capabilities[0].name.as_str(), "asset.reload");
+    }
+
+    #[test]
+    fn connection_capabilities_malformed_result_is_rejected() {
+        let value = serde_json::json!({
+            "capabilities": [{ "name": "asset.reload", "extra": true }]
+        });
+        assert!(parse_connection_capabilities(&value).is_err());
+    }
+
+    #[tokio::test]
+    async fn connection_setup_real_dispatcher_completes_hello_then_capabilities() {
+        let state = BridgeState::default();
+        let (client, mut engine_transport) = loopback_pair(16);
+        let handle = Dispatcher::spawn(client);
+        let (relay, mut relay_dropped) = connection_setup_relay_probe();
+
+        let engine = tauri::async_runtime::spawn(async move {
+            connection_setup_serve_hello(&mut engine_transport).await;
+            let id = connection_setup_capabilities_request(&mut engine_transport).await;
+            engine_transport
+                .send(connection_setup_response_frame(
+                    id,
+                    ResponsePayload::Result(serde_json::json!({
+                        "capabilities": [
+                            { "name": "asset.reload", "version": "0.2" },
+                            { "name": "scene.read", "version": "0.1" }
+                        ]
+                    })),
+                ))
+                .await
+                .expect("capability response sends");
+            connection_setup_observe_peer_closed(&mut engine_transport).await;
+        });
+
+        let setup: SetupOutcome = tokio::time::timeout(
+            CONNECTION_SETUP_TIMEOUT,
+            complete_connection_setup(handle, relay, &state),
+        )
+        .await
+        .expect("timed out waiting for connection setup")
+        .expect("connection setup succeeds");
+        assert_eq!(setup.hello.session_id, "setup-session");
+        assert_eq!(setup.hello.server_name, "LoopbackEngine");
+        assert_eq!(setup.capabilities.len(), 2);
+        assert_eq!(setup.capabilities[0].name.as_str(), "asset.reload");
+
+        tear_down_partial(setup.handle, setup.relay).await;
+        relay_dropped
+            .try_recv()
+            .expect("teardown returned before the relay future was dropped");
+        tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, engine)
+            .await
+            .expect("timed out waiting for loopback engine")
+            .expect("loopback engine task joins");
+    }
+
+    #[tokio::test]
+    async fn connection_setup_malformed_capabilities_tears_down_partial_connection() {
+        let state = BridgeState::default();
+        let (client, mut engine_transport) = loopback_pair(16);
+        let handle = Dispatcher::spawn(client);
+        let (relay, relay_dropped) = connection_setup_relay_probe();
+        let engine = tauri::async_runtime::spawn(async move {
+            connection_setup_serve_hello(&mut engine_transport).await;
+            let id = connection_setup_capabilities_request(&mut engine_transport).await;
+            engine_transport
+                .send(connection_setup_response_frame(
+                    id,
+                    ResponsePayload::Result(serde_json::json!({
+                        "capabilities": [
+                            { "name": "asset.reload", "version": "0.2", "extra": true }
+                        ]
+                    })),
+                ))
+                .await
+                .expect("malformed capability response sends");
+            connection_setup_observe_peer_closed(&mut engine_transport).await;
+        });
+
+        let result = tokio::time::timeout(
+            CONNECTION_SETUP_TIMEOUT,
+            complete_connection_setup(handle, relay, &state),
+        )
+        .await
+        .expect("timed out waiting for malformed capability rejection");
+        assert!(matches!(result, Err(BackendError::Request { .. })));
+        connection_setup_assert_failure_cleanup(&state, relay_dropped, engine).await;
+    }
+
+    #[tokio::test]
+    async fn connection_setup_engine_error_tears_down_partial_connection() {
+        let state = BridgeState::default();
+        let (client, mut engine_transport) = loopback_pair(16);
+        let handle = Dispatcher::spawn(client);
+        let (relay, relay_dropped) = connection_setup_relay_probe();
+        let engine = tauri::async_runtime::spawn(async move {
+            let (id, method, _) = connection_setup_request(&mut engine_transport).await;
+            assert_eq!(method, "bridge.hello");
+            engine_transport
+                .send(connection_setup_response_frame(
+                    id,
+                    ResponsePayload::Error(BridgeError {
+                        code: ErrorCode::protocol_version_unsupported(),
+                        message: "no common protocol version".to_owned(),
+                        data: None,
+                    }),
+                ))
+                .await
+                .expect("engine error response sends");
+            connection_setup_observe_peer_closed(&mut engine_transport).await;
+        });
+
+        let result = tokio::time::timeout(
+            CONNECTION_SETUP_TIMEOUT,
+            complete_connection_setup(handle, relay, &state),
+        )
+        .await
+        .expect("timed out waiting for engine error rejection");
+        assert!(matches!(result, Err(BackendError::Handshake { .. })));
+        connection_setup_assert_failure_cleanup(&state, relay_dropped, engine).await;
+    }
+
+    #[tokio::test]
+    async fn connection_setup_peer_drop_during_capability_request_tears_down_relay() {
+        let state = BridgeState::default();
+        let (client, mut engine_transport) = loopback_pair(16);
+        let handle = Dispatcher::spawn(client);
+        let (relay, relay_dropped) = connection_setup_relay_probe();
+        let engine = tauri::async_runtime::spawn(async move {
+            connection_setup_serve_hello(&mut engine_transport).await;
+            let _ = connection_setup_capabilities_request(&mut engine_transport).await;
+            drop(engine_transport);
+        });
+
+        let result = tokio::time::timeout(
+            CONNECTION_SETUP_TIMEOUT,
+            complete_connection_setup(handle, relay, &state),
+        )
+        .await
+        .expect("timed out waiting for transport failure");
+        assert!(matches!(result, Err(BackendError::Request { .. })));
+        connection_setup_assert_failure_cleanup(&state, relay_dropped, engine).await;
+    }
+
+    /// A relay must ignore disconnected state and a newer connecting token.
+    #[test]
+    fn connection_generation_relay_ignores_disconnected_and_stale_connecting() {
         assert!(!relay_should_reset_phase(&Phase::Disconnected, 0));
-        assert!(!relay_should_reset_phase(&Phase::Connecting, 0));
+        assert!(!relay_should_reset_phase(&Phase::Connecting(1), 0));
     }
 
     /// Builds a real `LiveConnection` (via a loopback-backed dispatcher and a
@@ -1014,7 +1431,137 @@ mod tests {
             endpoint: "ws://127.0.0.1:0".to_owned(),
             session_id: "session".to_owned(),
             server_name: "server".to_owned(),
+            capabilities: vec![serde_json::from_value(serde_json::json!({
+                "name": "asset.reload",
+                "version": "0.2"
+            }))
+            .expect("valid capability descriptor")],
         }
+    }
+
+    #[tokio::test]
+    async fn connection_capabilities_live_connection_propagates_to_payload() {
+        let conn = live_connection_with_generation(7);
+        let payload = connection_state_payload(&conn);
+        let value = serde_json::to_value(payload).expect("serializes");
+        assert_eq!(
+            value["capabilities"],
+            serde_json::json!([{ "name": "asset.reload", "version": "0.2" }])
+        );
+        tear_down(conn).await;
+    }
+
+    #[test]
+    fn connection_generation_stale_failure_cannot_reset_newer_connecting() {
+        let mut phase = Phase::Connecting(2);
+        assert!(!reset_connecting_if_matches(&mut phase, 1));
+        assert!(matches!(phase, Phase::Connecting(2)));
+    }
+
+    #[test]
+    fn connection_generation_matching_failure_resets_connecting() {
+        let mut phase = Phase::Connecting(3);
+        assert!(reset_connecting_if_matches(&mut phase, 3));
+        assert!(matches!(phase, Phase::Disconnected));
+    }
+
+    #[tokio::test]
+    async fn connection_generation_stale_success_cannot_commit_after_disconnect() {
+        let mut phase = Phase::Disconnected;
+        let conn = live_connection_with_generation(4);
+        let rejected = match try_commit_connection(&mut phase, 4, conn, |_| {}) {
+            None => panic!("stale connection committed after disconnect"),
+            Some(conn) => conn,
+        };
+        assert!(matches!(phase, Phase::Disconnected));
+        tear_down(rejected).await;
+    }
+
+    #[tokio::test]
+    async fn connection_generation_stale_success_cannot_commit_over_newer_connecting() {
+        let mut phase = Phase::Connecting(6);
+        let conn = live_connection_with_generation(5);
+        let rejected = match try_commit_connection(&mut phase, 5, conn, |_| {}) {
+            None => panic!("stale connection replaced a newer attempt"),
+            Some(conn) => conn,
+        };
+        assert!(matches!(phase, Phase::Connecting(6)));
+        tear_down(rejected).await;
+    }
+
+    #[tokio::test]
+    async fn connection_generation_matching_success_commits() {
+        let mut phase = Phase::Connecting(7);
+        let conn = live_connection_with_generation(7);
+        assert!(try_commit_connection(&mut phase, 7, conn, |_| {}).is_none());
+        let committed = match std::mem::replace(&mut phase, Phase::Disconnected) {
+            Phase::Connected(conn) => conn,
+            _ => panic!("matching connection was not committed"),
+        };
+        tear_down(committed).await;
+    }
+
+    #[tokio::test]
+    async fn connection_generation_relay_resets_only_matching_attempt_or_connection() {
+        assert!(relay_should_reset_phase(&Phase::Connecting(8), 8));
+        assert!(!relay_should_reset_phase(&Phase::Connecting(9), 8));
+
+        let connected = Phase::Connected(live_connection_with_generation(8));
+        assert!(relay_should_reset_phase(&connected, 8));
+        assert!(!relay_should_reset_phase(&connected, 9));
+        if let Phase::Connected(conn) = connected {
+            tear_down(conn).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_generation_commit_callback_runs_only_after_matching_transition() {
+        use std::cell::Cell;
+
+        let matching_callback = Cell::new(false);
+        let mut matching = Phase::Connecting(10);
+        let conn = live_connection_with_generation(10);
+        let rejected = try_commit_connection(&mut matching, 10, conn, |phase| {
+            matching_callback.set(matches!(phase, Phase::Connected(conn) if conn.generation == 10));
+        });
+        assert!(rejected.is_none());
+        assert!(matching_callback.get());
+        let committed = match std::mem::replace(&mut matching, Phase::Disconnected) {
+            Phase::Connected(conn) => conn,
+            _ => panic!("matching connection was not committed"),
+        };
+        tear_down(committed).await;
+
+        let stale_callback_count = Cell::new(0);
+        let mut newer = Phase::Connecting(12);
+        let stale = live_connection_with_generation(11);
+        let rejected = try_commit_connection(&mut newer, 11, stale, |_| {
+            stale_callback_count.set(stale_callback_count.get() + 1);
+        })
+        .expect("stale connection is returned for teardown");
+        assert_eq!(stale_callback_count.get(), 0);
+        assert!(matches!(newer, Phase::Connecting(12)));
+        tear_down(rejected).await;
+    }
+
+    #[test]
+    fn connection_generation_relay_callback_runs_only_after_matching_reset() {
+        use std::cell::Cell;
+
+        let callback_count = Cell::new(0);
+        let mut phase = Phase::Connecting(14);
+        assert!(!reset_owned_phase_and_then(&mut phase, 13, |_| {
+            callback_count.set(callback_count.get() + 1);
+        }));
+        assert_eq!(callback_count.get(), 0);
+        assert!(matches!(phase, Phase::Connecting(14)));
+
+        assert!(reset_owned_phase_and_then(&mut phase, 14, |phase| {
+            assert!(matches!(phase, Phase::Disconnected));
+            callback_count.set(callback_count.get() + 1);
+        }));
+        assert_eq!(callback_count.get(), 1);
+        assert!(matches!(phase, Phase::Disconnected));
     }
 
     /// `send_method` (and thus `scene_get_tree`) must fail with `NotConnected`
@@ -1320,6 +1867,24 @@ mod tests {
             }
             _ => panic!("expected a request envelope with params"),
         }
+    }
+
+    #[test]
+    fn bridge_state_asset_reload_manifest_request_parts_are_exact() {
+        let (method, params) = asset_reload_manifest_request_parts();
+        assert_eq!(method, "asset.reloadManifest");
+        assert!(params.is_empty());
+        let _command = asset_reload_manifest;
+    }
+
+    #[test]
+    fn bridge_state_asset_reload_manifest_validation_returns_original_value() {
+        let value = serde_json::json!({ "accepted": false });
+        let returned = validate_asset_reload_manifest_result(value.clone()).expect("valid result");
+        assert_eq!(returned, value);
+
+        let malformed = serde_json::json!({ "accepted": true, "extra": 1 });
+        assert!(validate_asset_reload_manifest_result(malformed).is_err());
     }
 
     /// Core of Fix 1: a relay whose generation no longer matches the current

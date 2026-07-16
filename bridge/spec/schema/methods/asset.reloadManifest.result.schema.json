@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/asset.reloadManifest.result.schema.json",
+  "title": "asset.reloadManifest.result",
+  "description": "Reports whether the engine synchronously accepted and completed the configured asset manifest reload.",
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "description": "Whether the engine switched to the newly loaded runtime manifest snapshot.",
+      "type": "boolean"
+    }
+  },
+  "required": ["accepted"],
+  "additionalProperties": false
+}

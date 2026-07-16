@@ -350,6 +350,131 @@ describe('asset manifest state', () => {
   });
 });
 
+describe('asset runtime reload state', () => {
+  const manifest: AssetManifestPayload = {
+    version: 1,
+    manifestPath: 'C:/Project/manifest.json',
+    assets: [{ logicalPath: 'textures/hero.png', kind: 'texture' }],
+  };
+  const assetError = { kind: 'asset', message: 'offline parse failed' };
+  const runtimeError = { kind: 'request', message: 'reload failed' };
+  const lastError = { kind: 'engine', message: 'unrelated engine failure' };
+  const connection = { status: 'connected' as const, sessionId: 'sess-1' };
+
+  function reloadState(): BridgeState {
+    return {
+      ...INITIAL_STATE,
+      assetManifest: manifest,
+      assetError,
+      assetReloadError: runtimeError,
+      assetReloadUnsupported: true,
+      connection,
+      lastError,
+    };
+  }
+
+  function expectUnrelatedStatePreserved(next: BridgeState): void {
+    expect(next.assetManifest).toBe(manifest);
+    expect(next.assetError).toBe(assetError);
+    expect(next.connection).toBe(connection);
+    expect(next.lastError).toBe(lastError);
+  }
+
+  it('starts without a runtime reload error or unsupported verdict', () => {
+    expect(INITIAL_STATE.assetReloadError).toBeUndefined();
+    expect(INITIAL_STATE.assetReloadUnsupported).toBe(false);
+  });
+
+  it('assetReloadSucceeded clears only the runtime error and unsupported verdict', () => {
+    const next = applyAction({ type: 'assetReloadSucceeded' }, reloadState());
+
+    expect(next.assetReloadError).toBeUndefined();
+    expect(next.assetReloadUnsupported).toBe(false);
+    expectUnrelatedStatePreserved(next);
+  });
+
+  it('assetReloadFailed sets only the runtime error', () => {
+    const error = { kind: 'request', message: 'engine rejected reload' };
+    const next = applyAction(
+      { type: 'assetReloadFailed', payload: { error } },
+      reloadState(),
+    );
+
+    expect(next.assetReloadError).toBe(error);
+    expect(next.assetReloadUnsupported).toBe(true);
+    expectUnrelatedStatePreserved(next);
+  });
+
+  it('assetReloadUnsupported records only the connection-local degradation verdict', () => {
+    const next = applyAction({ type: 'assetReloadUnsupported' }, reloadState());
+
+    expect(next.assetReloadError).toBe(runtimeError);
+    expect(next.assetReloadUnsupported).toBe(true);
+    expectUnrelatedStatePreserved(next);
+  });
+
+  it('assetReloadErrorDismissed clears only the runtime error', () => {
+    const next = applyAction({ type: 'assetReloadErrorDismissed' }, reloadState());
+
+    expect(next.assetReloadError).toBeUndefined();
+    expect(next.assetReloadUnsupported).toBe(true);
+    expectUnrelatedStatePreserved(next);
+  });
+
+  it.each<BridgeAction>([
+    { type: 'assetManifestLoaded', payload: manifest },
+    { type: 'assetManifestCleared' },
+    {
+      type: 'assetManifestError',
+      payload: { error: { kind: 'asset', message: 'new offline error' } },
+    },
+    { type: 'assetErrorDismissed' },
+  ])('$type preserves runtime reload state', (action) => {
+    const next = applyAction(action, reloadState());
+
+    expect(next.assetReloadError).toBe(runtimeError);
+    expect(next.assetReloadUnsupported).toBe(true);
+  });
+
+  it('preserves runtime reload state for same-session informational connection payloads', () => {
+    const state = reloadState();
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: true, sessionId: 'sess-1' } },
+      state,
+    );
+
+    expect(next.assetReloadError).toBe(runtimeError);
+    expect(next.assetReloadUnsupported).toBe(true);
+  });
+
+  it('resets runtime reload state on session change and disconnect', () => {
+    const state = reloadState();
+    const changedSession = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: true, sessionId: 'sess-2' } },
+      state,
+    );
+    const disconnected = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: false, reason: 'closed' } },
+      state,
+    );
+
+    expect(changedSession.assetReloadError).toBeUndefined();
+    expect(changedSession.assetReloadUnsupported).toBe(false);
+    expect(disconnected.assetReloadError).toBeUndefined();
+    expect(disconnected.assetReloadUnsupported).toBe(false);
+  });
+
+  it('resets runtime reload state when the engine process exits', () => {
+    const next = applyAction(
+      { type: 'engineProcessExited', payload: { exitCode: 0 } },
+      reloadState(),
+    );
+
+    expect(next.assetReloadError).toBeUndefined();
+    expect(next.assetReloadUnsupported).toBe(false);
+  });
+});
+
 describe('asset resolve live health state', () => {
   it('assetResolveLoaded stores result by asset key and marks capability supported', () => {
     const key = assetKeyForEntry({ logicalPath: 'textures/hero.png', variant: 'default' });
@@ -453,6 +578,112 @@ describe('connectionStateChanged', () => {
       state,
     );
     expect(next.lastError).toEqual({ message: 'old error' });
+  });
+
+  it('derives authoritative capability names from descriptors', () => {
+    const next = applyAction({
+      type: 'connectionStateChanged',
+      payload: {
+        connected: true,
+        sessionId: 'sess-1',
+        capabilities: [
+          { name: 'asset.read', version: '0.2' },
+          { name: 'asset.reload', description: 'Reload the runtime manifest.' },
+        ],
+      },
+    });
+
+    expect(next.connection.capabilityNames).toEqual(new Set(['asset.read', 'asset.reload']));
+  });
+
+  it('replaces same-session capabilities with an authoritative empty set', () => {
+    const previousNames = new Set(['asset.reload']);
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: {
+        status: 'connected',
+        sessionId: 'sess-1',
+        capabilityNames: previousNames,
+      },
+    };
+
+    const next = applyAction(
+      {
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 'sess-1', capabilities: [] },
+      },
+      state,
+    );
+
+    expect(next.connection.capabilityNames).toEqual(new Set());
+    expect(next.connection.capabilityNames).not.toBe(previousNames);
+  });
+
+  it('preserves capabilities for a same-session informational payload that omits them', () => {
+    const capabilityNames = new Set(['asset.reload']);
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected', sessionId: 'sess-1', capabilityNames },
+      assetCapabilitySupported: false,
+    };
+
+    const next = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: true, sessionId: 'sess-1' } },
+      state,
+    );
+
+    expect(next.connection.capabilityNames).toBe(capabilityNames);
+    expect(next.assetCapabilitySupported).toBe(false);
+  });
+
+  it('clears capabilities when a changed session or disconnect omits them', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: {
+        status: 'connected',
+        sessionId: 'sess-1',
+        capabilityNames: new Set(['asset.reload']),
+      },
+    };
+
+    const changedSession = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: true, sessionId: 'sess-2' } },
+      state,
+    );
+    const disconnected = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: false, reason: 'closed' } },
+      state,
+    );
+
+    expect(changedSession.connection.capabilityNames).toBeUndefined();
+    expect(disconnected.connection.capabilityNames).toBeUndefined();
+  });
+
+  it('installs a fresh authoritative set for a new session', () => {
+    const previousNames = new Set(['asset.read']);
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: {
+        status: 'connected',
+        sessionId: 'sess-1',
+        capabilityNames: previousNames,
+      },
+    };
+
+    const next = applyAction(
+      {
+        type: 'connectionStateChanged',
+        payload: {
+          connected: true,
+          sessionId: 'sess-2',
+          capabilities: [{ name: 'asset.reload' }],
+        },
+      },
+      state,
+    );
+
+    expect(next.connection.capabilityNames).toEqual(new Set(['asset.reload']));
+    expect(next.connection.capabilityNames).not.toBe(previousNames);
   });
 });
 
@@ -608,7 +839,11 @@ describe('engineProcessExited', () => {
       ...INITIAL_STATE,
       engineState: 'running',
       runtimeState: 'playing',
-      connection: { status: 'connected' },
+      connection: {
+        status: 'connected',
+        sessionId: 'sess-1',
+        capabilityNames: new Set(['asset.reload']),
+      },
     };
     const next = applyAction(
       { type: 'engineProcessExited', payload: { exitCode: 0 } },
@@ -617,6 +852,7 @@ describe('engineProcessExited', () => {
     expect(next.engineState).toBeUndefined();
     expect(next.runtimeState).toBeUndefined();
     expect(next.connection.status).toBe('disconnected');
+    expect(next.connection.capabilityNames).toBeUndefined();
   });
 
   it('clears live asset health but keeps offline manifest and selection', () => {

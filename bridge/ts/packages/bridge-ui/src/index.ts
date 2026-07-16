@@ -59,6 +59,7 @@ export {
   assetReadManifest,
   assetResolve,
   assetGetManifest,
+  assetReloadManifest,
   type BridgeCommandName,
 } from './commands.js';
 export {
