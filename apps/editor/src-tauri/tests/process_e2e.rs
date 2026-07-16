@@ -40,7 +40,7 @@
 //! prints a `[SKIP]` message and returns immediately (passes).  CI / manual
 //! verification sets the variable so the real run is gated.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc};
@@ -51,10 +51,10 @@ use norves_bridge_core::{
     VersionString,
 };
 use norves_bridge_editor_client::{
-    connect_with_retry, parse_capabilities_result, parse_hello_result, parse_log_message,
-    parse_object_snapshot_result, parse_scene_tree_result, parse_schema_snapshot_result,
-    parse_set_property_result, parse_status_result, parse_thumbnail_result, HelloParams,
-    RequestError, RetryConfig,
+    connect_with_retry, parse_asset_reload_manifest_result, parse_capabilities_result,
+    parse_hello_result, parse_log_message, parse_object_snapshot_result, parse_scene_tree_result,
+    parse_schema_snapshot_result, parse_set_property_result, parse_status_result,
+    parse_thumbnail_result, HelloParams, RequestError, RetryConfig,
 };
 use tokio::sync::broadcast;
 
@@ -78,6 +78,135 @@ impl Drop for ChildGuard {
     }
 }
 
+/// Restores an opt-in fixture file even when a later assertion unwinds.
+struct FileRestoreGuard {
+    path: std::path::PathBuf,
+    original_bytes: Option<Vec<u8>>,
+}
+
+impl FileRestoreGuard {
+    /// Restores the original bytes and disarms the unwind fallback only after
+    /// the atomic replacement succeeds.
+    fn restore(&mut self) -> std::io::Result<()> {
+        let original_bytes = self
+            .original_bytes
+            .as_deref()
+            .expect("restore guard is already disarmed");
+        atomic_replace_file_bytes(&self.path, original_bytes)?;
+        self.original_bytes = None;
+        Ok(())
+    }
+}
+
+impl Drop for FileRestoreGuard {
+    fn drop(&mut self) {
+        if let Some(original_bytes) = self.original_bytes.as_deref() {
+            if let Err(err) = atomic_replace_file_bytes(&self.path, original_bytes) {
+                eprintln!(
+                    "[WARN] failed to restore manifest fixture {:?}: {err}",
+                    self.path
+                );
+            }
+        }
+    }
+}
+
+/// Writes bytes to a same-directory temporary file, flushes and syncs it, then
+/// atomically replaces an existing destination. The temporary file is removed
+/// if writing, syncing, or replacement fails.
+fn atomic_replace_file_bytes(destination: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+    let parent = destination.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("destination has no parent: {destination:?}"),
+        )
+    })?;
+    let file_name = destination.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("destination has no file name: {destination:?}"),
+        )
+    })?;
+    let temp_id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_path = parent.join(format!(
+        ".{}.norves-replace-{}-{temp_id}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+
+    let replace_result = (|| {
+        let mut temp_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        temp_file.write_all(bytes)?;
+        temp_file.flush()?;
+        temp_file.sync_all()?;
+        drop(temp_file);
+        atomic_replace_existing_file(&temp_path, destination)
+    })();
+
+    if replace_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    replace_result
+}
+
+#[cfg(windows)]
+fn atomic_replace_existing_file(
+    replacement: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn ReplaceFileW(
+            replaced_file_name: *const u16,
+            replacement_file_name: *const u16,
+            backup_file_name: *const u16,
+            replace_flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    let destination_wide: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let replacement_wide: Vec<u16> = replacement
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let replaced = unsafe {
+        ReplaceFileW(
+            destination_wide.as_ptr(),
+            replacement_wide.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if replaced == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace_existing_file(
+    replacement: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::rename(replacement, destination)
+}
+
 /// Claims an OS-assigned ephemeral `127.0.0.1` port, then releases it so the
 /// engine can bind it. The connect retry loop in `connect_with_retry` absorbs
 /// the release / re-bind race.
@@ -96,11 +225,18 @@ fn pick_free_port() -> u16 {
 /// channel `recv_timeout` rather than blocking forever on a child that never
 /// prints READY.
 fn spawn_engine_on_free_port(exe: &str) -> (ChildGuard, u16) {
+    spawn_engine_on_free_port_with_args(exe, &[])
+}
+
+/// Variant of [`spawn_engine_on_free_port`] that appends engine arguments
+/// after the injected Bridge port while preserving existing callers.
+fn spawn_engine_on_free_port_with_args(exe: &str, extra_args: &[&str]) -> (ChildGuard, u16) {
     let port = pick_free_port();
 
     let mut child = Command::new(exe)
         .arg("--bridge-port")
         .arg(port.to_string())
+        .args(extra_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -246,6 +382,189 @@ async fn send_and_expect_result(
             panic!("[{step}] engine returned protocol error: {err:?}")
         }
     }
+}
+
+/// Enforces the `asset.getManifest.result` JSON Schema shape that the current
+/// DTO parser does not reject on unknown fields or negative integers.
+fn assert_asset_manifest_wire_shape(value: &serde_json::Value, step: &str) {
+    const TOP_LEVEL_KEYS: [&str; 5] = ["version", "entries", "totalCount", "page", "pageSize"];
+    const ENTRY_KEYS: [&str; 10] = [
+        "logicalPath",
+        "kind",
+        "variant",
+        "format",
+        "sourceHash",
+        "cookedPackage",
+        "entryName",
+        "entryType",
+        "cookedHash",
+        "cookedVersion",
+    ];
+    const OPTIONAL_STRING_KEYS: [&str; 7] = [
+        "variant",
+        "format",
+        "sourceHash",
+        "cookedPackage",
+        "entryName",
+        "entryType",
+        "cookedHash",
+    ];
+
+    let object = value
+        .as_object()
+        .unwrap_or_else(|| panic!("[{step}] result must be an object, got {value}"));
+    for key in object.keys() {
+        assert!(
+            TOP_LEVEL_KEYS.contains(&key.as_str()),
+            "[{step}] result contains unknown key {key:?}: {value}"
+        );
+    }
+
+    let version = object
+        .get("version")
+        .unwrap_or_else(|| panic!("[{step}] result.version is required"));
+    assert!(
+        is_schema_nonnegative_integer(version),
+        "[{step}.version] must be a non-negative mathematical integer, got {version}"
+    );
+    let total_count = object
+        .get("totalCount")
+        .unwrap_or_else(|| panic!("[{step}] result.totalCount is required"));
+    assert!(
+        is_schema_nonnegative_integer(total_count),
+        "[{step}.totalCount] must be a non-negative mathematical integer, got {total_count}"
+    );
+    if let Some(page) = object.get("page") {
+        assert!(
+            is_schema_nonnegative_integer(page),
+            "[{step}.page] must be a non-negative mathematical integer, got {page}"
+        );
+    }
+    if let Some(page_size) = object.get("pageSize") {
+        assert!(
+            is_schema_nonnegative_integer(page_size) && !is_schema_zero(page_size),
+            "[{step}.pageSize] must be a mathematical integer of at least 1, got {page_size}"
+        );
+    }
+
+    let entries = object
+        .get("entries")
+        .and_then(serde_json::Value::as_array)
+        .unwrap_or_else(|| panic!("[{step}] result.entries must be an array"));
+    for (index, entry) in entries.iter().enumerate() {
+        let entry_path = format!("{step}.entries[{index}]");
+        let entry_object = entry
+            .as_object()
+            .unwrap_or_else(|| panic!("[{entry_path}] must be an object, got {entry}"));
+        for key in entry_object.keys() {
+            assert!(
+                ENTRY_KEYS.contains(&key.as_str()),
+                "[{entry_path}] contains unknown key {key:?}: {entry}"
+            );
+        }
+        for required_key in ["logicalPath", "kind"] {
+            assert!(
+                entry_object
+                    .get(required_key)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some(),
+                "[{entry_path}.{required_key}] is required and must be a string"
+            );
+        }
+        for optional_key in OPTIONAL_STRING_KEYS {
+            if let Some(optional_value) = entry_object.get(optional_key) {
+                assert!(
+                    optional_value.is_string(),
+                    "[{entry_path}.{optional_key}] must be a string, got {optional_value}"
+                );
+            }
+        }
+        if let Some(cooked_version) = entry_object.get("cookedVersion") {
+            assert!(
+                is_schema_nonnegative_integer(cooked_version),
+                "[{entry_path}.cookedVersion] must be a non-negative mathematical integer, \
+                 got {cooked_version}"
+            );
+        }
+    }
+}
+
+/// JSON Schema's `integer` is mathematical, so finite `1.0` is an integer even
+/// when serde_json stores it through the floating representation.
+fn is_schema_nonnegative_integer(value: &serde_json::Value) -> bool {
+    let Some(number) = value.as_number() else {
+        return false;
+    };
+    if number.as_u64().is_some() {
+        return true;
+    }
+    if let Some(signed) = number.as_i64() {
+        return signed >= 0;
+    }
+    number
+        .as_f64()
+        .is_some_and(|float| float.is_finite() && float >= 0.0 && float.fract() == 0.0)
+}
+
+fn is_schema_zero(value: &serde_json::Value) -> bool {
+    value
+        .as_number()
+        .and_then(serde_json::Number::as_f64)
+        .is_some_and(|number| number == 0.0)
+}
+
+fn validated_asset_manifest_entries(value: &serde_json::Value) -> &[serde_json::Value] {
+    value
+        .as_object()
+        .and_then(|object| object.get("entries"))
+        .and_then(serde_json::Value::as_array)
+        .expect("asset manifest wire shape was validated before entry access")
+}
+
+fn validated_asset_manifest_contains(value: &serde_json::Value, logical_path: &str) -> bool {
+    validated_asset_manifest_entries(value).iter().any(|entry| {
+        entry
+            .as_object()
+            .and_then(|object| object.get("logicalPath"))
+            .and_then(serde_json::Value::as_str)
+            == Some(logical_path)
+    })
+}
+
+#[test]
+fn asset_manifest_wire_shape_accepts_mathematical_integers() {
+    for accepted in [
+        serde_json::json!(0),
+        serde_json::json!(1),
+        serde_json::json!(-0.0),
+        serde_json::json!(0.0),
+        serde_json::json!(1.0),
+        serde_json::json!(1e100),
+    ] {
+        assert!(is_schema_nonnegative_integer(&accepted));
+    }
+    for rejected in [
+        serde_json::json!(-1),
+        serde_json::json!(-1.0),
+        serde_json::json!(0.5),
+        serde_json::json!("1"),
+        serde_json::json!(true),
+        serde_json::Value::Null,
+    ] {
+        assert!(!is_schema_nonnegative_integer(&rejected));
+    }
+
+    let valid = serde_json::json!({ "version": 1.0, "entries": [], "totalCount": 0.0 });
+    assert_asset_manifest_wire_shape(&valid, "schema integer acceptance probe");
+
+    let fractional = serde_json::json!({ "version": 1.5, "entries": [], "totalCount": 0 });
+    assert!(
+        std::panic::catch_unwind(|| {
+            assert_asset_manifest_wire_shape(&fractional, "schema fraction rejection probe")
+        })
+        .is_err(),
+        "fractional schema integer field must be rejected"
+    );
 }
 
 /// Capability discovery contract against the real mock-engine process.
@@ -2128,4 +2447,264 @@ async fn engine_object_set_property_norveslib_contract() {
          bool={bool_summary}"
     );
     // _guard drops here, killing the engine process.
+}
+
+/// Real-process contract for reloading the configured NorvesLib asset manifest.
+///
+/// The test is opt-in because it mutates a caller-provided live manifest file
+/// while the Game process is running. The original bytes are restored on every
+/// exit path. Task8's fixture setup must provide an A live manifest and a B
+/// manifest containing at least one logical path that A does not contain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_asset_manifest_reload_contract() {
+    const INPUT_NAMES: [&str; 4] = [
+        "NORVES_NORVESLIB_ENGINE_PATH",
+        "NORVES_ASSET_RELOAD_ROOT",
+        "NORVES_ASSET_RELOAD_LIVE_MANIFEST",
+        "NORVES_ASSET_RELOAD_MANIFEST_B",
+    ];
+
+    let mut inputs = Vec::with_capacity(INPUT_NAMES.len());
+    for name in INPUT_NAMES {
+        match std::env::var(name) {
+            Ok(value) => inputs.push(value),
+            Err(err) => {
+                eprintln!(
+                    "[SKIP] engine_asset_manifest_reload_contract: {name} is unavailable: {err}"
+                );
+                return;
+            }
+        }
+    }
+
+    let exe = inputs[0].as_str();
+    let asset_root = inputs[1].as_str();
+    let live_manifest = inputs[2].as_str();
+    let manifest_b = inputs[3].as_str();
+
+    for (name, path) in [
+        (INPUT_NAMES[0], exe),
+        (INPUT_NAMES[2], live_manifest),
+        (INPUT_NAMES[3], manifest_b),
+    ] {
+        if !std::path::Path::new(path).is_file() {
+            eprintln!(
+                "[SKIP] engine_asset_manifest_reload_contract: {name}={path:?} is not a file"
+            );
+            return;
+        }
+    }
+    if !std::path::Path::new(asset_root).is_dir() {
+        eprintln!(
+            "[SKIP] engine_asset_manifest_reload_contract: {}={asset_root:?} is not a directory",
+            INPUT_NAMES[1]
+        );
+        return;
+    }
+
+    let original_manifest_bytes = std::fs::read(live_manifest)
+        .unwrap_or_else(|err| panic!("failed to read live manifest {live_manifest:?}: {err}"));
+    let manifest_b_bytes = std::fs::read(manifest_b)
+        .unwrap_or_else(|err| panic!("failed to read manifest B {manifest_b:?}: {err}"));
+    let manifest_b_json_bytes = manifest_b_bytes
+        .strip_prefix(&[0xef, 0xbb, 0xbf])
+        .unwrap_or(&manifest_b_bytes);
+    let manifest_b_value: serde_json::Value = serde_json::from_slice(manifest_b_json_bytes)
+        .unwrap_or_else(|err| panic!("manifest B is not valid JSON {manifest_b:?}: {err}"));
+    let manifest_b_assets = manifest_b_value
+        .as_object()
+        .and_then(|object| object.get("assets"))
+        .and_then(serde_json::Value::as_array)
+        .unwrap_or_else(|| panic!("manifest B must contain an assets array: {manifest_b:?}"));
+
+    let configured_args = [
+        "--texture-asset-root",
+        asset_root,
+        "--texture-asset-manifest",
+        live_manifest,
+    ];
+    let (configured_guard, configured_port) =
+        spawn_engine_on_free_port_with_args(exe, &configured_args);
+    let configured_url = format!("ws://127.0.0.1:{configured_port}");
+    let retry = RetryConfig {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        max_elapsed: Duration::from_secs(5),
+        jitter: false,
+    };
+    let configured_handle = connect_with_retry(&configured_url, &retry)
+        .await
+        .unwrap_or_else(|err| panic!("connect_with_retry failed for {configured_url}: {err}"));
+
+    let hello_value = send_and_expect_result(
+        &configured_handle,
+        hello_envelope(),
+        "configured bridge.hello",
+    )
+    .await;
+    let hello = parse_hello_result(&hello_value)
+        .unwrap_or_else(|err| panic!("[configured bridge.hello] strict parse failed: {err}"));
+    assert!(
+        !hello.session_id.is_empty(),
+        "configured bridge.hello returned an empty session id"
+    );
+
+    let capabilities_value = send_and_expect_result(
+        &configured_handle,
+        request_envelope(
+            "asset-reload-capabilities",
+            "bridge.getCapabilities",
+            Some(serde_json::Map::new()),
+        ),
+        "configured bridge.getCapabilities",
+    )
+    .await;
+    let capabilities = parse_capabilities_result(&capabilities_value)
+        .unwrap_or_else(|err| {
+            panic!("[configured bridge.getCapabilities] strict parse failed: {err}")
+        })
+        .capabilities;
+    assert!(
+        capabilities
+            .iter()
+            .any(|descriptor| descriptor.name.as_str() == "asset.reload"),
+        "real NorvesLib capabilities must include asset.reload"
+    );
+
+    let initial_manifest_value = send_and_expect_result(
+        &configured_handle,
+        request_envelope(
+            "asset-reload-manifest-a",
+            "asset.getManifest",
+            Some(serde_json::Map::new()),
+        ),
+        "asset.getManifest before reload",
+    )
+    .await;
+    assert_asset_manifest_wire_shape(&initial_manifest_value, "asset.getManifest before reload");
+    let initial_entry_count = validated_asset_manifest_entries(&initial_manifest_value).len();
+
+    let b_only_logical_path = manifest_b_assets
+        .iter()
+        .map(|entry| {
+            entry
+                .as_object()
+                .and_then(|object| object.get("logical_path"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| {
+                    panic!("every manifest B asset must contain a string logical_path")
+                })
+        })
+        .find(|logical_path| {
+            !validated_asset_manifest_contains(&initial_manifest_value, logical_path)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "manifest B must contain a logical_path absent from the initial A snapshot; \
+                 initial entries={}, B entries={}",
+                initial_entry_count,
+                manifest_b_assets.len()
+            )
+        })
+        .to_owned();
+    assert!(
+        !validated_asset_manifest_contains(&initial_manifest_value, &b_only_logical_path),
+        "initial A snapshot unexpectedly exposes B-only path {b_only_logical_path:?}"
+    );
+
+    let mut restore_guard = FileRestoreGuard {
+        path: std::path::PathBuf::from(live_manifest),
+        original_bytes: Some(original_manifest_bytes),
+    };
+    atomic_replace_file_bytes(std::path::Path::new(live_manifest), &manifest_b_bytes)
+        .unwrap_or_else(|err| {
+            panic!("failed to atomically replace live manifest with B bytes: {err}")
+        });
+
+    let reload_value = send_and_expect_result(
+        &configured_handle,
+        request_envelope(
+            "asset-reload-configured",
+            "asset.reloadManifest",
+            Some(serde_json::Map::new()),
+        ),
+        "configured asset.reloadManifest",
+    )
+    .await;
+    let reload = parse_asset_reload_manifest_result(&reload_value).unwrap_or_else(|err| {
+        panic!("[configured asset.reloadManifest] strict parse failed: {err}")
+    });
+    assert!(
+        reload.accepted,
+        "configured asset.reloadManifest must return exactly accepted:true"
+    );
+
+    restore_guard
+        .restore()
+        .unwrap_or_else(|err| panic!("failed to atomically restore live manifest A bytes: {err}"));
+
+    let reloaded_manifest_value = send_and_expect_result(
+        &configured_handle,
+        request_envelope(
+            "asset-reload-manifest-b",
+            "asset.getManifest",
+            Some(serde_json::Map::new()),
+        ),
+        "asset.getManifest after reload",
+    )
+    .await;
+    assert_asset_manifest_wire_shape(&reloaded_manifest_value, "asset.getManifest after reload");
+    let reloaded_entry_count = validated_asset_manifest_entries(&reloaded_manifest_value).len();
+    assert!(
+        validated_asset_manifest_contains(&reloaded_manifest_value, &b_only_logical_path),
+        "reloaded retained manifest does not expose B-only path {b_only_logical_path:?}"
+    );
+
+    let (unconfigured_guard, unconfigured_port) = spawn_engine_on_free_port(exe);
+    let unconfigured_url = format!("ws://127.0.0.1:{unconfigured_port}");
+    let unconfigured_handle = connect_with_retry(&unconfigured_url, &retry)
+        .await
+        .unwrap_or_else(|err| panic!("connect_with_retry failed for {unconfigured_url}: {err}"));
+    let unconfigured_hello_value = send_and_expect_result(
+        &unconfigured_handle,
+        hello_envelope(),
+        "unconfigured bridge.hello",
+    )
+    .await;
+    let unconfigured_hello = parse_hello_result(&unconfigured_hello_value)
+        .unwrap_or_else(|err| panic!("[unconfigured bridge.hello] strict parse failed: {err}"));
+    assert!(
+        !unconfigured_hello.session_id.is_empty(),
+        "unconfigured bridge.hello returned an empty session id"
+    );
+
+    let unconfigured_reload_value = send_and_expect_result(
+        &unconfigured_handle,
+        request_envelope(
+            "asset-reload-unconfigured",
+            "asset.reloadManifest",
+            Some(serde_json::Map::new()),
+        ),
+        "unconfigured asset.reloadManifest",
+    )
+    .await;
+    let unconfigured_reload = parse_asset_reload_manifest_result(&unconfigured_reload_value)
+        .unwrap_or_else(|err| {
+            panic!("[unconfigured asset.reloadManifest] strict parse failed: {err}")
+        });
+    assert!(
+        !unconfigured_reload.accepted,
+        "unconfigured asset.reloadManifest must return exactly accepted:false"
+    );
+
+    unconfigured_handle.shutdown().await;
+    configured_handle.shutdown().await;
+    drop(unconfigured_guard);
+    drop(configured_guard);
+
+    eprintln!(
+        "[PASS] engine_asset_manifest_reload_contract: B-only path={b_only_logical_path:?} \
+         initial_entries={} reloaded_entries={} configured=true unconfigured=false",
+        initial_entry_count, reloaded_entry_count
+    );
 }
