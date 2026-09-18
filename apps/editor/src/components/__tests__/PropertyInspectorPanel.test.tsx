@@ -434,6 +434,15 @@ describe('PropertyInspectorPanel — components', () => {
     expect(screen.getByText(/コンポーネントがありません/)).toBeTruthy();
   });
 
+  it('still lists components when the object itself has no properties', () => {
+    // Legal on the wire: an entity with no reflected properties of its own can
+    // still carry components. The empty-bag notice must not hide the list.
+    renderSelected({ ...ENTITY_WITH_COMPONENTS, properties: [] });
+    expect(screen.getByText('コンポーネント')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'camera' })).toBeTruthy();
+    expect(screen.getByText(/プロパティがありません/)).toBeTruthy();
+  });
+
   it('selects a component on click', () => {
     renderSelected(ENTITY_WITH_COMPONENTS);
     fireEvent.click(screen.getByRole('button', { name: 'camera' }));

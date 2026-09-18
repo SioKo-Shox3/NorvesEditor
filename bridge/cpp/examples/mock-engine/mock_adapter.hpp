@@ -193,31 +193,9 @@ namespace norves::mock
             const std::optional<std::string> objectId = extract_string_field(paramsText, "objectId");
             const std::string id = objectId.value_or("n-1");
 
-            // n-1: 適合フィクスチャと値等価の経路（温存）。fieldOfView は可変。
-            if (id == "n-1")
-            {
-                std::string fieldOfView = "60";
-                const auto it = object_field_of_view.find("n-1");
-                if (it != object_field_of_view.end())
-                {
-                    fieldOfView = it->second;
-                }
-                std::string snapshot =
-                    R"({"objectId":"n-1","name":"NodeA","kind":"object","properties":[)"
-                    R"({"name":"label","value":"Example Name","valueType":"string"},)"
-                    R"({"name":"fieldOfView","value":)";
-                snapshot += fieldOfView;
-                snapshot +=
-                    R"(,"valueType":"number"},)"
-                    R"({"name":"enabled","value":true,"valueType":"boolean"},)"
-                    R"({"name":"parent","value":null},)"
-                    R"({"name":"position","value":[0,1.5,-10],"valueType":"vector3"},)"
-                    R"({"name":"metadata","value":{"locked":false,"tag":"primary"}}]})";
-                return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
-                    ok(parse_or_die(snapshot));
-            }
-
-            // 他の既知ノード / コンポーネント / 未知 id。components 付きで綴る。
+            // 本文は snapshot_text が一元管理する（object.changed の params も同じ本文を
+            // components 抜きで綴るため。分けて持つと、一方だけ直した結果イベントが空の
+            // propertyBag を運ぶ）。
             return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(snapshot_text(id, true)));
         }
@@ -355,6 +333,30 @@ namespace norves::mock
         // （入れ子のコンポーネントは無い）。
         std::string snapshot_text(const std::string& id, bool with_components)
         {
+            if (id == "n-1")
+            {
+                // 適合フィクスチャ（object.getSnapshot/positive/response-valid.json）と
+                // 値等価の経路。components は持たない（exact-match を壊さない）。
+                // fieldOfView は可変。
+                std::string fieldOfView = "60";
+                const auto it = object_field_of_view.find("n-1");
+                if (it != object_field_of_view.end())
+                {
+                    fieldOfView = it->second;
+                }
+                std::string out(
+                    R"({"objectId":"n-1","name":"NodeA","kind":"object","properties":[)"
+                    R"({"name":"label","value":"Example Name","valueType":"string"},)"
+                    R"({"name":"fieldOfView","value":)");
+                out += fieldOfView;
+                out +=
+                    R"(,"valueType":"number"},)"
+                    R"({"name":"enabled","value":true,"valueType":"boolean"},)"
+                    R"({"name":"parent","value":null},)"
+                    R"({"name":"position","value":[0,1.5,-10],"valueType":"vector3"},)"
+                    R"({"name":"metadata","value":{"locked":false,"tag":"primary"}}]})";
+                return out;
+            }
             if (id == "n-0")
             {
                 return std::string(

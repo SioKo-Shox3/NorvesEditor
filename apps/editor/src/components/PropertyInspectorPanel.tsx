@@ -169,15 +169,14 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
             <span>プロパティを読み込み中...</span>
             <span style={{ fontSize: 11 }}>Loading properties...</span>
           </div>
-        ) : currentSnapshot.properties.length === 0 ? (
-          /* (d) Empty property bag */
-          <div className="placeholder-box" style={{ flex: 1 }}>
-            <span className="placeholder-box__title">{snapshotTitle(currentSnapshot)}</span>
-            <span>プロパティがありません。</span>
-            <span style={{ fontSize: 11 }}>This object has no properties.</span>
-          </div>
         ) : (
           <>
+            {/*
+              The component list comes before the property branches on purpose:
+              an object with no reflected properties of its own can still carry
+              components, and the empty-bag notice must not hide the only way to
+              reach them.
+            */}
             {currentSnapshot.components !== undefined && (
               <ComponentList
                 snapshot={currentSnapshot}
@@ -187,7 +186,16 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
               />
             )}
             {selectedComponentId === undefined ? (
-              <ObjectProperties snapshot={currentSnapshot} schemaTypes={schemaTypes} />
+              currentSnapshot.properties.length === 0 ? (
+                /* (d) Empty property bag */
+                <div className="placeholder-box" style={{ flex: 1 }}>
+                  <span className="placeholder-box__title">{snapshotTitle(currentSnapshot)}</span>
+                  <span>プロパティがありません。</span>
+                  <span style={{ fontSize: 11 }}>This object has no properties.</span>
+                </div>
+              ) : (
+                <ObjectProperties snapshot={currentSnapshot} schemaTypes={schemaTypes} />
+              )
             ) : currentComponentSnapshot === undefined ? (
               <div className="placeholder-box" style={{ flex: 1 }}>
                 <span className="placeholder-box__title">{selectedComponentId}</span>

@@ -247,7 +247,42 @@ namespace
             }
         }
 
-        // 4. object.getSnapshot のコンポーネント経路 --------------------------------
+        // 4. n-1 の setProperty 後の object.changed --------------------------------
+        // イベントの params はスナップショット本文を components 抜きで綴り直したもの。
+        // 本文をイベント側とメソッド側で別々に持つと、片方だけ直したときにイベントが
+        // 空の propertyBag を運ぶ（実際に一度そうなった）。中身まで検査して固定する。
+        client->send(RequestFrame(
+            "req-set-n1", "object.setProperty",
+            R"({"objectId":"n-1","property":"fieldOfView","value":75})"));
+        {
+            std::optional<std::string> ack = client->recv();
+            NORVES_CHECK(ack.has_value());
+            if (ack.has_value())
+            {
+                const Envelope env = DecodeOrFail(*ack);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-set-n1"});
+            }
+            for (int i = 0; i < 2; ++i)
+            {
+                std::optional<std::string> event = client->recv();
+                NORVES_CHECK(event.has_value());
+                if (!event.has_value())
+                {
+                    break;
+                }
+                const Envelope env = DecodeOrFail(*event);
+                NORVES_CHECK(env.kind == Kind::Event);
+                if (env.event == std::optional<std::string>{"object.changed"})
+                {
+                    NORVES_CHECK(event->find(R"("objectId":"n-1")") != std::string::npos);
+                    NORVES_CHECK(event->find(R"("name":"label")") != std::string::npos);
+                    NORVES_CHECK(event->find(R"("value":75)") != std::string::npos);
+                    NORVES_CHECK(event->find(R"("components")") == std::string::npos);
+                }
+            }
+        }
+
+        // 5. object.getSnapshot のコンポーネント経路 --------------------------------
         // エディタは components の objectId をそのままキーとして投げ返す（中身は解釈しない）。
         // ここでは wire テキストで確かめる: n-2 が2件を広告し、その id が解決でき、
         // コンポーネント宛ての setProperty が受理されて後続の読みに反映されること。

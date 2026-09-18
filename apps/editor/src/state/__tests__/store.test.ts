@@ -1211,6 +1211,59 @@ describe('component selection state', () => {
     expect(next.componentSnapshot?.properties[0]?.value).toBe(42);
   });
 
+  it('drops the component selection on disconnect and on process exit', () => {
+    const seeded: BridgeState = {
+      ...withComponents,
+      connection: { status: 'connected' },
+      selectedComponentId: 'component:n-2:1',
+      componentSnapshot: { objectId: 'component:n-2:1', properties: [] },
+    };
+    for (const action of [
+      { type: 'connectionStateChanged', payload: { connected: false } },
+      { type: 'engineProcessExited' },
+      { type: 'objectSnapshotUnsupported' },
+    ] as BridgeAction[]) {
+      const next = applyAction(action, seeded);
+      expect(next.selectedComponentId, `${action.type} should clear the id`).toBeUndefined();
+      expect(next.componentSnapshot, `${action.type} should clear the snapshot`).toBeUndefined();
+    }
+  });
+
+  it('ignores a component snapshot that arrives after the selection cleared', () => {
+    const next = applyAction(
+      {
+        type: 'componentSnapshotLoaded',
+        snapshot: { objectId: 'component:n-2:1', properties: [] },
+      },
+      { ...withComponents, selectedComponentId: undefined },
+    );
+    expect(next.componentSnapshot).toBeUndefined();
+  });
+
+  it('applies a live object.changed addressed to the selected component', () => {
+    const seeded: BridgeState = {
+      ...withComponents,
+      selectedComponentId: 'component:n-2:1',
+      componentSnapshot: {
+        objectId: 'component:n-2:1',
+        properties: [{ name: 'fieldOfView', value: 50 }],
+      },
+    };
+    const next = applyAction(
+      {
+        type: 'objectChangedLive',
+        payload: {
+          objectId: 'component:n-2:1',
+          properties: [{ name: 'fieldOfView', value: 12 }],
+        },
+      },
+      seeded,
+    );
+    expect(next.componentSnapshot?.properties[0]?.value).toBe(12);
+    // The entity snapshot (and its component list) is untouched.
+    expect(next.objectSnapshot?.components).toHaveLength(2);
+  });
+
   it('keeps the component list through a live object.changed event', () => {
     // The event payload carries no components; merging it must not erase the
     // list the snapshot fetch established.
