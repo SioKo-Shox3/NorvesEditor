@@ -4,13 +4,15 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
-- (まだ無し。T-001 から開始する)
+- T-001 (`34ee756`): result に optional `components:[{objectId,kind}]` を追加。fixture 160 → 163
+  (positive 77 / envelope-negative 14 / payload-negative 72)。`OK: 163 fixture(s) validated.`、
+  Rust `fixtures_roundtrip` 4 テスト通過、C++ `fixtures_roundtrip_test` 通過。
 
 ## In progress
-- なし
+- T-002: mock engine の `objectGetSnapshot` に components を持たせる。
 
 ## Next
-- T-001: `object.getSnapshot` の result に optional `components` を足す(spec + fixture)。
+- T-003: Rust 側の厳格パース(optional・欠落は None・未知フィールド拒否)。
 
 ## Notes
 - 主題はコンポーネント縦断。エンジン側は `Component : Object` で `REFLECTION_CLASS` / `PROPERTY` を持ち、

@@ -11,7 +11,7 @@ RigidBody / Collider / Script …)をエディタから見て直せるように�
 を受けるので追加メソッドは作らない。
 
 ## T-001: object.getSnapshot の result に optional components を足す(spec + fixture)
-- status: todo
+- status: done
 - done-when: `object.getSnapshot.result.schema.json` が optional `components:[{objectId,kind}]`(`additionalProperties:false`)を持ち、components 付き positive fixture と 未知フィールド negative fixture が追加され、fixture 総数が C++ 4 箇所・Rust 4 箇所のハードコードと一致する。`message-payloads.md` に欄と意味を書く。
 - verify: `python3 scripts/validate-bridge-fixtures.py`
 - verify: `cargo test -p norves-bridge-core --test fixtures_roundtrip`
@@ -19,7 +19,7 @@ RigidBody / Collider / Script …)をエディタから見て直せるように�
 - notes: 既存 160 fixture は壊さない(additive)。components 欄が無い既存 fixture も通ること自体を回帰として残す。
 
 ## T-002: mock engine が components を返す(C++)
-- status: todo
+- status: doing
 - done-when: mock の `objectGetSnapshot` が、デモツリーのエンティティに対し `component:<id>:<cid>` 形式の components を返し、その component id を `objectGetSnapshot` / `objectSetProperty` に渡すと解決できる。ctest が通る。
 - verify: `cmake --build build/cpp -j4`
 - verify: `ctest --test-dir build/cpp --output-on-failure`
