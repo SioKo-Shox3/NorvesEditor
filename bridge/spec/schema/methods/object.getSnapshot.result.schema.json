@@ -24,6 +24,26 @@
     "properties": {
       "description": "Serialized property entries for this object. May be empty.",
       "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/propertyBag"
+    },
+    "components": {
+      "description": "Optional components attached to this object. Absent when the engine does not project components; an empty array means the object has none. Each entry carries the identifier to pass back to object.getSnapshot / object.setProperty for that component.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["objectId", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "objectId": {
+            "description": "Identifier of this component as a scene object. Opaque to the editor.",
+            "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+          },
+          "kind": {
+            "description": "Generic component classification (free-form, not a NorvesLib type name).",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
     }
   }
 }

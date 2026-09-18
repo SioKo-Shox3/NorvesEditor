@@ -309,6 +309,14 @@ generic values, not a reference into engine live memory. Schemas:
 | `name` | string | no | human-readable object name. |
 | `kind` | string | no | generic object classification (free-form). |
 | `properties` | `propertyBag` | yes | serialized property entries; may be empty. |
+| `components` | array of `{ objectId, kind }` | no | components attached to this object. Absent when the engine does not project components; an empty array means the object has none. |
+
+An entry's `objectId` is an opaque handle the editor passes back to
+`object.getSnapshot` and `object.setProperty` to read and edit that component;
+the editor never parses it. `kind` is a generic classification for display and
+is not a NorvesLib type name. Component entries carry no property values — the
+editor fetches them with a separate `object.getSnapshot` on the component id,
+so a snapshot of a component itself omits `components`.
 
 ### object.setProperty
 
