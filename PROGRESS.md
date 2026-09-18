@@ -13,12 +13,18 @@
 - T-003 (`d776b8b`): `ObjectSnapshot.components: Option<Vec<ComponentRef>>`。欠落と空配列を
   区別し、エントリは両欄必須・非空・未知欄拒否。ルート workspace 179 件、clippy 両 workspace、
   process E2E 14 件通過。
+- T-004 (`38bd0da`): `ComponentRef` 型と、エンティティとは別枠のコンポーネント選択状態。
+  `object.changed` は components を運べないのでマージ時に持ち越す(外すとテストが落ちることを確認)。
+- T-005 (`71004c8`): Inspector にコンポーネント一覧。欄なし=節を出さない / 空配列=注記付きの節。
+  選択でそのコンポーネントの snapshot を取り、編集は component id 宛ての object.setProperty。
+- T-006 (`26d7bcf`): NorvesLib 側の結線契約(`docs/norveslib-component-projection-contract.md`)。
 
 ## In progress
-- T-004: TS の型と store に components を通す。
+- 別文脈の評価者による反証(危険地帯=プロトコル変更のため必須)。結果は NEXT_FINDINGS.md へ。
 
 ## Next
-- T-005: Property Inspector にコンポーネント一覧と編集を出す。
+- 評価者の指摘対応。その後は NorvesLib 側の結線(作業機)と、components の一覧表示に対する
+  実機確認。
 
 ## Notes
 - 主題はコンポーネント縦断。エンジン側は `Component : Object` で `REFLECTION_CLASS` / `PROPERTY` を持ち、

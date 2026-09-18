@@ -36,7 +36,7 @@ RigidBody / Collider / Script …)をエディタから見て直せるように�
 - notes: components を持たないエンジン(0.2 の既存実装)でも接続が落ちないことを回帰で固定する。
 
 ## T-004: TS の型と store に components を通す
-- status: doing
+- status: done
 - done-when: `bridge-types` に component 記述子の型があり、store が選択エンティティの components を保持し、セッション変更/切断で消える。型検査とテストが通る。
 - verify: `pnpm -r --if-present typecheck`
 - verify: `pnpm exec vitest run bridge/ts/packages/bridge-ui apps/editor/src/state`
@@ -44,7 +44,7 @@ RigidBody / Collider / Script …)をエディタから見て直せるように�
 - notes: 世代は既存どおり `sessionId`。Rust の内部世代番号は露出しない。
 
 ## T-005: Property Inspector にコンポーネント一覧と編集を出す
-- status: todo
+- status: done
 - done-when: エンティティ選択時に Inspector がコンポーネント一覧を表示し、選択したコンポーネントのプロパティを読み、編集が `object.setProperty` に component id 付きで飛ぶ。components を返さないエンジンでは一覧セクションごと出ない(エラー表示にしない)。
 - verify: `pnpm exec vitest run apps/editor/src/components apps/editor/src/hooks`
 - verify: `pnpm -r --if-present typecheck`
@@ -52,7 +52,7 @@ RigidBody / Collider / Script …)をエディタから見て直せるように�
 - notes: 既存の Entity プロパティ編集と Undo/Redo(U2)の経路を壊さない。
 
 ## T-006: NorvesLib 側の結線契約を固定する(作業機向け)
-- status: todo
+- status: done
 - done-when: `docs/norveslib-integration.md`(または新規の契約文書)に、アダプタの (1) component target の ScriptComponent 特例撤去と `BuildObjectSnapshot(const Object&)` への統一、(2) `objectSetProperty` の汎用プロパティ適用経路への統一、(3) Entity snapshot への components 付与、の3点が、受け入れ条件と検証コマンド付きで書かれている。
 - verify: `node scripts/check-protocol-names.mjs`
 - paths: docs/**
