@@ -19,7 +19,7 @@ RigidBody / Collider / Script …)をエディタから見て直せるように�
 - notes: 既存 160 fixture は壊さない(additive)。components 欄が無い既存 fixture も通ること自体を回帰として残す。
 
 ## T-002: mock engine が components を返す(C++)
-- status: doing
+- status: done
 - done-when: mock の `objectGetSnapshot` が、デモツリーのエンティティに対し `component:<id>:<cid>` 形式の components を返し、その component id を `objectGetSnapshot` / `objectSetProperty` に渡すと解決できる。ctest が通る。
 - verify: `cmake --build build/cpp -j4`
 - verify: `ctest --test-dir build/cpp --output-on-failure`
@@ -27,7 +27,7 @@ RigidBody / Collider / Script …)をエディタから見て直せるように�
 - notes: mock の状態はインメモリ静的マップ・single-thread recv loop 前提(マルチスレッド化しない)。
 
 ## T-003: Rust 側で components を厳格にパースする
-- status: todo
+- status: doing
 - done-when: `object.getSnapshot` の DTO が optional `components` を `deny_unknown_fields` のまま受け、欠落は `None`、要素の欠けたフィールド/未知フィールドは拒否する。Tauri コマンドは wire の値をそのまま UI へ渡す。
 - verify: `cargo test --workspace`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`

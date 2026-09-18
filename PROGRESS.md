@@ -7,12 +7,15 @@
 - T-001 (`34ee756`): result に optional `components:[{objectId,kind}]` を追加。fixture 160 → 163
   (positive 77 / envelope-negative 14 / payload-negative 72)。`OK: 163 fixture(s) validated.`、
   Rust `fixtures_roundtrip` 4 テスト通過、C++ `fixtures_roundtrip_test` 通過。
+- T-002 (`f32c644`): mock の n-2 が camera/script を広告し、n-3 は空配列、n-1 は欄なし(適合の
+  exact-match 温存)。object.changed は components を持たない(イベント側スキーマが許さない)。
+  ctest 7/7、conformance 1 件、process E2E 14 件通過。
 
 ## In progress
-- T-002: mock engine の `objectGetSnapshot` に components を持たせる。
+- T-003: Rust 側の厳格パース(optional・欠落は None・未知フィールド拒否)。
 
 ## Next
-- T-003: Rust 側の厳格パース(optional・欠落は None・未知フィールド拒否)。
+- T-004: TS の型と store に components を通す。
 
 ## Notes
 - 主題はコンポーネント縦断。エンジン側は `Component : Object` で `REFLECTION_CLASS` / `PROPERTY` を持ち、
