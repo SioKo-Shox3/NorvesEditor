@@ -18,13 +18,18 @@
 - T-005 (`71004c8`): Inspector にコンポーネント一覧。欄なし=節を出さない / 空配列=注記付きの節。
   選択でそのコンポーネントの snapshot を取り、編集は component id 宛ての object.setProperty。
 - T-006 (`26d7bcf`): NorvesLib 側の結線契約(`docs/norveslib-component-projection-contract.md`)。
+- 評価者の指摘対応 (`52c594b`): 5 件。最大の1件は自分で入れた回帰で、mock がスナップショット
+  本文をメソッド側とイベント側で分けて持ったため、n-1 の object.changed が空の propertyBag を
+  運んでいた(受け手の store が丸ごと置換するので Inspector が空になる)。本文を一元化し、
+  イベントの中身を smoke で固定した。ゲートは全部緑のまま通っていたので、ゲートだけでは
+  この種の回帰は止まらない。
 
 ## In progress
-- 別文脈の評価者による反証(危険地帯=プロトコル変更のため必須)。結果は NEXT_FINDINGS.md へ。
+- 評価者の2周目(対応差分のみ)の判定待ち。
 
 ## Next
-- 評価者の指摘対応。その後は NorvesLib 側の結線(作業機)と、components の一覧表示に対する
-  実機確認。
+- NorvesLib 側の結線(作業機。`docs/norveslib-component-projection-contract.md`)。
+- 実機(mock 接続)での目視確認: コンポーネント一覧の選択と編集。
 
 ## Notes
 - 主題はコンポーネント縦断。エンジン側は `Component : Object` で `REFLECTION_CLASS` / `PROPERTY` を持ち、
