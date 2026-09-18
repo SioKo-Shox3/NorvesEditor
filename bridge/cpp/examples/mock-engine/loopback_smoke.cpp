@@ -100,6 +100,23 @@ namespace
                     }
                 }
             }
+            // setProperty の ack 後のライブ更新イベント（main.cpp の常駐ループと同じ順序・
+            // 同じ構築方法。params は更新済みのインメモリ状態に依存するので実行時に綴る）。
+            if (adapter.emit_object_changed.exchange(false))
+            {
+                if (!engine.send(server.emitEvent("object.changed", adapter.object_changed_params())))
+                {
+                    return;
+                }
+            }
+            if (adapter.emit_scene_tree_changed.exchange(false))
+            {
+                if (!engine.send(
+                        server.emitEvent("scene.treeChanged", MockAdapter::scene_tree_changed_params())))
+                {
+                    return;
+                }
+            }
         }
     }
 
@@ -227,6 +244,79 @@ namespace
                         }
                     }
                 }
+            }
+        }
+
+        // 4. object.getSnapshot のコンポーネント経路 --------------------------------
+        // エディタは components の objectId をそのままキーとして投げ返す（中身は解釈しない）。
+        // ここでは wire テキストで確かめる: n-2 が2件を広告し、その id が解決でき、
+        // コンポーネント宛ての setProperty が受理されて後続の読みに反映されること。
+        client->send(RequestFrame("req-snap-n2", "object.getSnapshot", R"({"objectId":"n-2"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                const Envelope env = DecodeOrFail(*resp);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-snap-n2"});
+                NORVES_CHECK(resp->find(R"("objectId":"component:n-2:1")") != std::string::npos);
+                NORVES_CHECK(resp->find(R"("kind":"camera")") != std::string::npos);
+                NORVES_CHECK(resp->find(R"("objectId":"component:n-2:2")") != std::string::npos);
+            }
+        }
+        client->send(RequestFrame("req-snap-comp", "object.getSnapshot",
+                                  R"({"objectId":"component:n-2:1"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                const Envelope env = DecodeOrFail(*resp);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-snap-comp"});
+                NORVES_CHECK(resp->find(R"("fieldOfView")") != std::string::npos);
+                NORVES_CHECK(resp->find(R"("value":50)") != std::string::npos);
+                // コンポーネント自身のスナップショットは components を持たない。
+                NORVES_CHECK(resp->find(R"("components")") == std::string::npos);
+            }
+        }
+        client->send(RequestFrame(
+            "req-set-comp", "object.setProperty",
+            R"({"objectId":"component:n-2:1","property":"fieldOfView","value":33})"));
+        {
+            std::optional<std::string> ack = client->recv();
+            NORVES_CHECK(ack.has_value());
+            if (ack.has_value())
+            {
+                const Envelope env = DecodeOrFail(*ack);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-set-comp"});
+                NORVES_CHECK(env.result.has_value());
+            }
+            // ack の後に object.changed と scene.treeChanged が 1 回ずつ流れる。
+            // object.changed は components を持たない（イベントのスキーマが許さない）。
+            for (int i = 0; i < 2; ++i)
+            {
+                std::optional<std::string> event = client->recv();
+                NORVES_CHECK(event.has_value());
+                if (event.has_value())
+                {
+                    const Envelope env = DecodeOrFail(*event);
+                    NORVES_CHECK(env.kind == Kind::Event);
+                    if (env.event == std::optional<std::string>{"object.changed"})
+                    {
+                        NORVES_CHECK(event->find(R"("value":33)") != std::string::npos);
+                        NORVES_CHECK(event->find(R"("components")") == std::string::npos);
+                    }
+                }
+            }
+        }
+        client->send(RequestFrame("req-snap-comp-2", "object.getSnapshot",
+                                  R"({"objectId":"component:n-2:1"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                NORVES_CHECK(resp->find(R"("value":33)") != std::string::npos);
             }
         }
 

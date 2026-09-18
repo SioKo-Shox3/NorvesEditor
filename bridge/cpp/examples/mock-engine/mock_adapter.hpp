@@ -217,21 +217,9 @@ namespace norves::mock
                     ok(parse_or_die(snapshot));
             }
 
-            // 他の既知ノード: scene.getTree のツリー（Root/GroupNode/NodeB）と整合する小さな
-            // デモプロパティ集合。conformance には現れない additive な経路。
-            const std::optional<std::string> demo = demo_snapshot_for(id);
-            if (demo.has_value())
-            {
-                return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
-                    ok(parse_or_die(demo.value()));
-            }
-
-            // 未知 id: 空の propertyBag（必須フィールドのみ）。
-            std::string empty = R"({"objectId":")";
-            empty += id;
-            empty += R"(","properties":[]})";
-            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
-                                          Norves::Bridge::BridgeError>::ok(parse_or_die(empty));
+            // 他の既知ノード / コンポーネント / 未知 id。components 付きで綴る。
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
+                ok(parse_or_die(snapshot_text(id, true)));
         }
 
         // @brief object.setProperty。{accepted:true, appliedValue:<echo>} を返し、インメモリ
@@ -287,15 +275,12 @@ namespace norves::mock
         // （memory-buffer-policy）。シングルスレッド recv ループ前提（objectSetProperty の @note）。
         Norves::Bridge::JsonValue object_changed_params()
         {
-            std::string params = R"({"objectId":")";
-            params += last_changed_object_id.empty() ? std::string("n-1") : last_changed_object_id;
-            params += R"("})";
-            auto snapshot = objectGetSnapshot(parse_or_die(params));
-            if (snapshot.is_err())
-            {
-                std::exit(2);
-            }
-            return std::move(snapshot).value();
+            const std::string id =
+                last_changed_object_id.empty() ? std::string("n-1") : last_changed_object_id;
+            // events/object.changed.params.schema.json は additionalProperties:false で
+            // components を持たない。コンポーネント一覧は object.getSnapshot の result でだけ
+            // 運ぶ契約なので、イベント params は components 抜きで綴る。
+            return parse_or_die(snapshot_text(id, false));
         }
 
         // @brief Phase 6: scene.treeChanged イベントの params を構築する。変更されたノードの
@@ -360,10 +345,15 @@ namespace norves::mock
         // params 構築時に同スレッドで読む。シングルスレッド recv ループ前提。
         std::string last_changed_object_id;
 
-        // @brief n-1 以外の既知ノード（scene.getTree のツリーと整合）に対する小さなデモ
-        // スナップショット JSON を返す。conformance には現れない additive 経路であり、n-1 の
-        // exact-match を一切壊さない。未知 id では nullopt。
-        static std::optional<std::string> demo_snapshot_for(const std::string& id)
+        // @brief n-1 以外の既知ノード（scene.getTree のツリーと整合）、コンポーネント、未知 id に
+        // 対するスナップショット JSON を綴る。conformance には現れない additive 経路であり、n-1 の
+        // exact-match を一切壊さない。
+        //
+        // with_components が真のときだけ、コンポーネントを持つノードに components を足す。
+        // object.changed の params はこの欄を持てない（上記 object_changed_params の注記）ので、
+        // 同じ本文を偽で綴り直す。コンポーネント自身のスナップショットは components を持たない
+        // （入れ子のコンポーネントは無い）。
+        std::string snapshot_text(const std::string& id, bool with_components)
         {
             if (id == "n-0")
             {
@@ -373,18 +363,67 @@ namespace norves::mock
             }
             if (id == "n-2")
             {
-                return std::string(
+                std::string out(
                     R"({"objectId":"n-2","name":"GroupNode","kind":"object","properties":[)"
                     R"({"name":"label","value":"Group","valueType":"string"},)"
-                    R"({"name":"childCount","value":1,"valueType":"number"}]})");
+                    R"({"name":"childCount","value":1,"valueType":"number"}])");
+                if (with_components)
+                {
+                    out +=
+                        R"(,"components":[)"
+                        R"({"objectId":"component:n-2:1","kind":"camera"},)"
+                        R"({"objectId":"component:n-2:2","kind":"script"}])";
+                }
+                out += "}";
+                return out;
             }
             if (id == "n-3")
             {
-                return std::string(
+                // コンポーネントを1つも持たないノード: 空配列で「投影はしたが無い」を表す。
+                std::string out(
                     R"({"objectId":"n-3","name":"NodeB","kind":"object","properties":[)"
-                    R"({"name":"enabled","value":false,"valueType":"boolean"}]})");
+                    R"({"name":"enabled","value":false,"valueType":"boolean"}])");
+                if (with_components)
+                {
+                    out += R"(,"components":[])";
+                }
+                out += "}";
+                return out;
             }
-            return std::nullopt;
+            if (id == "component:n-2:1")
+            {
+                // fieldOfView は n-1 と同じく可変。objectSetProperty は objectId をキーに
+                // 同じマップを更新するので、コンポーネント宛ての編集も後続の getSnapshot と
+                // object.changed へ反映される。
+                std::string fieldOfView = "50";
+                const auto it = object_field_of_view.find(id);
+                if (it != object_field_of_view.end())
+                {
+                    fieldOfView = it->second;
+                }
+                std::string out(
+                    R"({"objectId":"component:n-2:1","name":"Camera","kind":"camera","properties":[)"
+                    R"({"name":"fieldOfView","value":)");
+                out += fieldOfView;
+                out +=
+                    R"(,"valueType":"number"},)"
+                    R"({"name":"nearPlane","value":0.1,"valueType":"number"},)"
+                    R"({"name":"isActive","value":true,"valueType":"boolean"}]})";
+                return out;
+            }
+            if (id == "component:n-2:2")
+            {
+                return std::string(
+                    R"({"objectId":"component:n-2:2","name":"Script","kind":"script","properties":[)"
+                    R"({"name":"scriptPath","value":"Scripts/Demo.as","valueType":"string"},)"
+                    R"({"name":"scriptClassName","value":"DemoBehaviour","valueType":"string"}]})");
+            }
+
+            // 未知 id: 空の propertyBag（必須フィールドのみ）。
+            std::string empty = R"({"objectId":")";
+            empty += id;
+            empty += R"(","properties":[]})";
+            return empty;
         }
 
         // @brief コンパクトな JSON オブジェクトテキストから、トップレベルの文字列フィールドの値
