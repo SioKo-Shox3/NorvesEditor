@@ -27,7 +27,7 @@ RigidBody / Collider / Script …)をエディタから見て直せるように�
 - notes: mock の状態はインメモリ静的マップ・single-thread recv loop 前提(マルチスレッド化しない)。
 
 ## T-003: Rust 側で components を厳格にパースする
-- status: doing
+- status: done
 - done-when: `object.getSnapshot` の DTO が optional `components` を `deny_unknown_fields` のまま受け、欠落は `None`、要素の欠けたフィールド/未知フィールドは拒否する。Tauri コマンドは wire の値をそのまま UI へ渡す。
 - verify: `cargo test --workspace`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
@@ -36,7 +36,7 @@ RigidBody / Collider / Script …)をエディタから見て直せるように�
 - notes: components を持たないエンジン(0.2 の既存実装)でも接続が落ちないことを回帰で固定する。
 
 ## T-004: TS の型と store に components を通す
-- status: todo
+- status: doing
 - done-when: `bridge-types` に component 記述子の型があり、store が選択エンティティの components を保持し、セッション変更/切断で消える。型検査とテストが通る。
 - verify: `pnpm -r --if-present typecheck`
 - verify: `pnpm exec vitest run bridge/ts/packages/bridge-ui apps/editor/src/state`

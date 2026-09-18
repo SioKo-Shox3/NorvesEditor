@@ -10,12 +10,15 @@
 - T-002 (`f32c644`): mock の n-2 が camera/script を広告し、n-3 は空配列、n-1 は欄なし(適合の
   exact-match 温存)。object.changed は components を持たない(イベント側スキーマが許さない)。
   ctest 7/7、conformance 1 件、process E2E 14 件通過。
+- T-003 (`d776b8b`): `ObjectSnapshot.components: Option<Vec<ComponentRef>>`。欠落と空配列を
+  区別し、エントリは両欄必須・非空・未知欄拒否。ルート workspace 179 件、clippy 両 workspace、
+  process E2E 14 件通過。
 
 ## In progress
-- T-003: Rust 側の厳格パース(optional・欠落は None・未知フィールド拒否)。
+- T-004: TS の型と store に components を通す。
 
 ## Next
-- T-004: TS の型と store に components を通す。
+- T-005: Property Inspector にコンポーネント一覧と編集を出す。
 
 ## Notes
 - 主題はコンポーネント縦断。エンジン側は `Component : Object` で `REFLECTION_CLASS` / `PROPERTY` を持ち、
