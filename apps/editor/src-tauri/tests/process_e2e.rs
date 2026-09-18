@@ -1361,6 +1361,74 @@ async fn engine_object_set_property_contract() {
         group.properties.len()
     );
 
+    // 4. components: n-2 advertises them, n-1 omits the field entirely, and a
+    // component id round-trips through getSnapshot and setProperty. The editor
+    // treats the id as opaque, so this asserts addressability, not its shape.
+    let components = group
+        .components
+        .clone()
+        .unwrap_or_else(|| panic!("[object.getSnapshot n-2] expected a components list"));
+    assert_eq!(
+        components.len(),
+        2,
+        "[object.getSnapshot n-2] expected two components"
+    );
+    assert!(
+        snapshot.components.is_none(),
+        "[object.getSnapshot n-1] an engine that omits components must stay distinguishable"
+    );
+    let camera = components
+        .iter()
+        .find(|c| c.kind == "camera")
+        .unwrap_or_else(|| panic!("[object.getSnapshot n-2] camera component missing"));
+
+    let mut comp_params = serde_json::Map::new();
+    comp_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String(camera.object_id.clone()),
+    );
+    let comp_value = send_and_expect_result(
+        &handle,
+        request_envelope("obj-comp", "object.getSnapshot", Some(comp_params)),
+        "object.getSnapshot",
+    )
+    .await;
+    let comp = parse_object_snapshot_result(&comp_value)
+        .unwrap_or_else(|e| panic!("[object.getSnapshot component] parse failed: {e}"));
+    assert_eq!(comp.object_id, camera.object_id);
+    assert!(
+        comp.components.is_none(),
+        "[object.getSnapshot component] a component snapshot carries no nested components"
+    );
+
+    let mut comp_set = serde_json::Map::new();
+    comp_set.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String(camera.object_id.clone()),
+    );
+    comp_set.insert(
+        "property".to_owned(),
+        serde_json::Value::String("fieldOfView".to_owned()),
+    );
+    comp_set.insert("value".to_owned(), serde_json::Value::from(42));
+    let comp_ack_value = send_and_expect_result(
+        &handle,
+        request_envelope("obj-comp-set", "object.setProperty", Some(comp_set)),
+        "object.setProperty",
+    )
+    .await;
+    let comp_ack = parse_set_property_result(&comp_ack_value)
+        .unwrap_or_else(|e| panic!("[object.setProperty component] parse failed: {e}"));
+    assert!(
+        comp_ack.accepted,
+        "[object.setProperty component] engine rejected a component-addressed edit"
+    );
+    eprintln!(
+        "[PASS] object.getSnapshot components: {} on n-2, {} addressable",
+        components.len(),
+        camera.object_id
+    );
+
     handle.shutdown().await;
     eprintln!("[PASS] engine_object_set_property_contract: all steps passed");
 }

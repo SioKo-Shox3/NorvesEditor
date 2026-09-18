@@ -34,6 +34,26 @@ pub struct ObjectSnapshot {
     pub kind: Option<String>,
     /// Serialized property entries for this object; empty when there are none.
     pub properties: Vec<PropertyEntry>,
+    /// Components attached to this object, when the engine projects them.
+    ///
+    /// `None` means the engine omitted the field (it does not project
+    /// components at all); `Some(vec![])` means it projected them and the
+    /// object has none. The editor must be able to tell those apart, so this
+    /// is an `Option<Vec<_>>` and not a plain `Vec`.
+    pub components: Option<Vec<ComponentRef>>,
+}
+
+/// One entry of an object snapshot's `components` list.
+///
+/// `object_id` is an opaque handle the editor passes back to
+/// `object.getSnapshot` / `object.setProperty` to read and edit that component;
+/// it is never parsed here. `kind` is a free-form classification for display.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentRef {
+    /// Identifier of this component as a scene object (non-empty on the wire).
+    pub object_id: String,
+    /// Generic component classification (non-empty on the wire, free-form).
+    pub kind: String,
 }
 
 /// One generic `name -> value` entry in an object property snapshot.
@@ -128,13 +148,65 @@ pub fn parse_object_snapshot_result(result: &Value) -> Result<ObjectSnapshot, Ob
     let name = optional_str(obj, "name", "result")?.map(str::to_owned);
     let kind = optional_str(obj, "kind", "result")?.map(str::to_owned);
     let properties = parse_property_bag(obj)?;
+    let components = parse_components(obj)?;
 
     Ok(ObjectSnapshot {
         object_id,
         name,
         kind,
         properties,
+        components,
     })
+}
+
+/// Parses the optional `components` array. Absence is `None` (the engine does
+/// not project components); an empty array is `Some(vec![])`.
+///
+/// Entries are validated strictly — both fields required and non-empty, and no
+/// unknown field — because `object.getSnapshot.result.schema.json` declares the
+/// entry with `additionalProperties: false`. A component the editor cannot
+/// address is worse than no component list at all, so a malformed entry fails
+/// the whole snapshot at the boundary instead of being dropped silently.
+fn parse_components(obj: &Map<String, Value>) -> Result<Option<Vec<ComponentRef>>, ObjectError> {
+    let value = match obj.get("components") {
+        None => return Ok(None),
+        Some(value) => value,
+    };
+    let items = value
+        .as_array()
+        .ok_or_else(|| ObjectError::InvalidField("result.components".to_owned()))?;
+
+    let mut components = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let path = format!("result.components[{index}]");
+        let entry = item
+            .as_object()
+            .ok_or_else(|| ObjectError::InvalidField(format!("{path} is not an object")))?;
+        for key in entry.keys() {
+            if key != "objectId" && key != "kind" {
+                return Err(ObjectError::InvalidField(format!(
+                    "{path}.{key} is unknown"
+                )));
+            }
+        }
+        let object_id = required_str(entry, "objectId", &path)?;
+        let kind = required_str(entry, "kind", &path)?;
+        // The schema gives both `minLength: 1`; an empty handle cannot address
+        // anything and an empty kind cannot be displayed.
+        if object_id.is_empty() {
+            return Err(ObjectError::InvalidField(format!(
+                "{path}.objectId is empty"
+            )));
+        }
+        if kind.is_empty() {
+            return Err(ObjectError::InvalidField(format!("{path}.kind is empty")));
+        }
+        components.push(ComponentRef {
+            object_id: object_id.to_owned(),
+            kind: kind.to_owned(),
+        });
+    }
+    Ok(Some(components))
 }
 
 /// Extracts a [`SetPropertyAck`] from an `object.setProperty` `result` value.
@@ -370,6 +442,100 @@ mod tests {
         assert_eq!(snapshot.name, None);
         assert_eq!(snapshot.kind, None);
         assert!(snapshot.properties.is_empty());
+    }
+
+    #[test]
+    fn parse_object_snapshot_result_reads_components() {
+        // Mirrors fixtures/methods/object.getSnapshot/positive/response-with-components.json.
+        let value = serde_json::json!({
+            "objectId": "n-1",
+            "properties": [],
+            "components": [
+                { "objectId": "component:n-1:1", "kind": "camera" },
+                { "objectId": "component:n-1:2", "kind": "script" }
+            ]
+        });
+        let snapshot = parse_object_snapshot_result(&value).expect("parses");
+        let components = snapshot.components.expect("components present");
+        assert_eq!(components.len(), 2);
+        assert_eq!(components[0].object_id, "component:n-1:1");
+        assert_eq!(components[0].kind, "camera");
+        assert_eq!(components[1].object_id, "component:n-1:2");
+    }
+
+    #[test]
+    fn parse_object_snapshot_result_absent_components_is_none() {
+        // An engine that does not project components omits the field entirely.
+        // That must stay distinguishable from "projected, but none attached".
+        let value = serde_json::json!({ "objectId": "n-9", "properties": [] });
+        assert_eq!(
+            parse_object_snapshot_result(&value)
+                .expect("parses")
+                .components,
+            None
+        );
+
+        let value = serde_json::json!({ "objectId": "n-9", "properties": [], "components": [] });
+        assert_eq!(
+            parse_object_snapshot_result(&value)
+                .expect("parses")
+                .components,
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn parse_object_snapshot_result_rejects_malformed_components() {
+        // Not an array.
+        let value = serde_json::json!({ "objectId": "n-1", "properties": [], "components": {} });
+        assert!(matches!(
+            parse_object_snapshot_result(&value),
+            Err(ObjectError::InvalidField(f)) if f == "result.components"
+        ));
+
+        // Entry missing `kind`.
+        let value = serde_json::json!({
+            "objectId": "n-1",
+            "properties": [],
+            "components": [{ "objectId": "component:n-1:1" }]
+        });
+        assert!(matches!(
+            parse_object_snapshot_result(&value),
+            Err(ObjectError::MissingField(f)) if f == "result.components[0].kind"
+        ));
+
+        // Entry missing `objectId`.
+        let value = serde_json::json!({
+            "objectId": "n-1",
+            "properties": [],
+            "components": [{ "kind": "camera" }]
+        });
+        assert!(matches!(
+            parse_object_snapshot_result(&value),
+            Err(ObjectError::MissingField(f)) if f == "result.components[0].objectId"
+        ));
+
+        // Entry is not an object.
+        let value = serde_json::json!({
+            "objectId": "n-1",
+            "properties": [],
+            "components": ["component:n-1:1"]
+        });
+        assert!(matches!(
+            parse_object_snapshot_result(&value),
+            Err(ObjectError::InvalidField(_))
+        ));
+
+        // Empty `kind` / `objectId` are rejected (schema requires minLength 1).
+        let value = serde_json::json!({
+            "objectId": "n-1",
+            "properties": [],
+            "components": [{ "objectId": "component:n-1:1", "kind": "" }]
+        });
+        assert!(matches!(
+            parse_object_snapshot_result(&value),
+            Err(ObjectError::InvalidField(_))
+        ));
     }
 
     #[test]
