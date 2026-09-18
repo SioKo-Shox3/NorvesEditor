@@ -328,6 +328,18 @@ export interface BridgeActions {
    */
   getObjectSnapshot: (id: string) => Promise<void>;
   /**
+   * Fetch the property snapshot of one component (object.getSnapshot on the
+   * component's opaque id, taken from the entity snapshot's `components`) and
+   * store it apart from the entity snapshot, so drilling into a component does
+   * not drop the list it was chosen from.
+   */
+  getComponentSnapshot: (id: string) => Promise<void>;
+  /**
+   * Select a component of the currently selected object, or clear the selection
+   * with undefined to go back to the object's own properties.
+   */
+  selectComponent: (id: string | undefined) => void;
+  /**
    * Fetch the engine's type-schema descriptors (schema.getSnapshot) and store
    * them. METHOD_NOT_SUPPORTED degrades the same way as getObjectSnapshot.
    */
@@ -858,6 +870,31 @@ export function useBridgeActions(): BridgeActions {
     }
   }, [dispatch]);
 
+  const getComponentSnapshot = useCallback(async (id: string): Promise<void> => {
+    try {
+      const result = await invokeCommand<ObjectSnapshot>(
+        BRIDGE_COMMANDS.objectGetSnapshot,
+        { objectId: id },
+      );
+      dispatch({ type: 'componentSnapshotLoaded', snapshot: result });
+    } catch (err: unknown) {
+      // This is the same method the entity snapshot just came from, so an
+      // engine that answers it for the entity cannot answer METHOD_NOT_SUPPORTED
+      // here; anything that fails is a real error and is reported as one.
+      const { kind, message } = extractBackendError(err);
+      dispatch({
+        type: 'errorReported',
+        payload: {
+          error: { code: kind ?? 'OBJECT_GET_SNAPSHOT_FAILED', message },
+        },
+      });
+    }
+  }, [dispatch]);
+
+  const selectComponent = useCallback((id: string | undefined): void => {
+    dispatch({ type: 'componentSelected', id });
+  }, [dispatch]);
+
   const getSchemaSnapshot = useCallback(async (): Promise<void> => {
     try {
       const result = await invokeCommand<SchemaSnapshot>(
@@ -1303,6 +1340,8 @@ export function useBridgeActions(): BridgeActions {
     reparentObject,
     duplicateObject,
     getObjectSnapshot,
+    getComponentSnapshot,
+    selectComponent,
     getSchemaSnapshot,
     setObjectProperty,
     getViewportThumbnail,

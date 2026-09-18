@@ -39,12 +39,22 @@
  *      (store.objectUnsupported, set when object/schema query answers
  *       METHOD_NOT_SUPPORTED — works for any engine, not just the mock).
  *  (d) empty property bag        → "プロパティがありません"
+ *
+ * Components (protocol 0.2 additive):
+ * The entity snapshot may carry a `components` list. Absent means the engine
+ * does not project components at all (no section at all); an empty array means
+ * it does and this object has none (section with a note). Choosing a component
+ * fetches ITS snapshot with the same object.getSnapshot method on the
+ * component's opaque id and shows its properties in place of the entity's,
+ * while the list stays on screen so the user can switch back. Edits go through
+ * the same object.setProperty path addressed by that component id.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import type {
+  ComponentRef,
   ObjectSnapshot,
   PropertyEntry,
   PropertyValue,
@@ -100,6 +110,28 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
       ? objectSnapshot
       : undefined;
 
+  // -----------------------------------------------------------------------
+  // Component drill-down. The entity snapshot carries the component list; a
+  // selected component's own properties come from a second object.getSnapshot
+  // on its opaque id. Same race guard as above: the stored component snapshot
+  // is only rendered while its objectId matches the current component
+  // selection, so a late response for a previously selected component is
+  // discarded at render time.
+  // -----------------------------------------------------------------------
+  const selectedComponentId = state.selectedComponentId;
+  const getComponentSnapshot = actions.getComponentSnapshot;
+  useEffect(() => {
+    if (isConnected && selectedComponentId !== undefined) {
+      void getComponentSnapshot(selectedComponentId);
+    }
+  }, [isConnected, selectedComponentId, getComponentSnapshot]);
+
+  const currentComponentSnapshot =
+    state.componentSnapshot !== undefined &&
+    state.componentSnapshot.objectId === selectedComponentId
+      ? state.componentSnapshot
+      : undefined;
+
   return (
     <div className="panel">
       <div className="panel__header">
@@ -145,7 +177,35 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
             <span style={{ fontSize: 11 }}>This object has no properties.</span>
           </div>
         ) : (
-          <ObjectProperties snapshot={currentSnapshot} schemaTypes={schemaTypes} />
+          <>
+            {currentSnapshot.components !== undefined && (
+              <ComponentList
+                snapshot={currentSnapshot}
+                components={currentSnapshot.components}
+                selectedComponentId={selectedComponentId}
+                onSelect={actions.selectComponent}
+              />
+            )}
+            {selectedComponentId === undefined ? (
+              <ObjectProperties snapshot={currentSnapshot} schemaTypes={schemaTypes} />
+            ) : currentComponentSnapshot === undefined ? (
+              <div className="placeholder-box" style={{ flex: 1 }}>
+                <span className="placeholder-box__title">{selectedComponentId}</span>
+                <span>プロパティを読み込み中...</span>
+                <span style={{ fontSize: 11 }}>Loading properties...</span>
+              </div>
+            ) : currentComponentSnapshot.properties.length === 0 ? (
+              <div className="placeholder-box" style={{ flex: 1 }}>
+                <span className="placeholder-box__title">
+                  {snapshotTitle(currentComponentSnapshot)}
+                </span>
+                <span>プロパティがありません。</span>
+                <span style={{ fontSize: 11 }}>This component has no properties.</span>
+              </div>
+            ) : (
+              <ObjectProperties snapshot={currentComponentSnapshot} schemaTypes={schemaTypes} />
+            )}
+          </>
         )}
       </div>
     </div>
@@ -155,6 +215,69 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
 /** Header label for an object: prefer name, fall back to objectId. */
 function snapshotTitle(snapshot: ObjectSnapshot): string {
   return snapshot.name ?? snapshot.objectId;
+}
+
+// -------------------------------------------------------------------------
+// Component list
+// -------------------------------------------------------------------------
+
+interface ComponentListProps {
+  snapshot: ObjectSnapshot;
+  components: ComponentRef[];
+  selectedComponentId: string | undefined;
+  onSelect: (id: string | undefined) => void;
+}
+
+/**
+ * The selected object's components, plus a row for the object itself so the
+ * user can go back to its own properties. Rendered only when the engine
+ * projected a list at all: an absent `components` means "this engine does not
+ * do components" (no section), while an empty array means "it does, and this
+ * object has none" (section with a note).
+ *
+ * A component's `objectId` is opaque here — it is passed back verbatim; only
+ * `kind` is displayed (falling back to the id when an engine sends an empty
+ * one is not needed: the wire requires a non-empty kind).
+ */
+function ComponentList({
+  snapshot,
+  components,
+  selectedComponentId,
+  onSelect,
+}: ComponentListProps): React.JSX.Element {
+  return (
+    <div className="inspector__components">
+      <span className="inspector__section-title">コンポーネント</span>
+      {components.length === 0 ? (
+        <span className="inspector__empty">コンポーネントがありません。</span>
+      ) : (
+        <ul className="inspector__component-list">
+          <li>
+            <button
+              type="button"
+              className="inspector__component"
+              aria-pressed={selectedComponentId === undefined}
+              onClick={() => onSelect(undefined)}
+            >
+              {snapshotTitle(snapshot)}
+            </button>
+          </li>
+          {components.map((component) => (
+            <li key={component.objectId}>
+              <button
+                type="button"
+                className="inspector__component"
+                aria-pressed={selectedComponentId === component.objectId}
+                onClick={() => onSelect(component.objectId)}
+              >
+                {component.kind}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 // -------------------------------------------------------------------------

@@ -81,6 +81,10 @@ const mockActions = {
   reparentObject: vi.fn<BridgeActions['reparentObject']>().mockResolvedValue({ accepted: true }),
   duplicateObject: vi.fn<BridgeActions['duplicateObject']>().mockResolvedValue({ accepted: true }),
   getObjectSnapshot: vi.fn<BridgeActions['getObjectSnapshot']>().mockResolvedValue(undefined),
+  getComponentSnapshot: vi
+    .fn<BridgeActions['getComponentSnapshot']>()
+    .mockResolvedValue(undefined),
+  selectComponent: vi.fn<BridgeActions['selectComponent']>(),
   getSchemaSnapshot: vi.fn<BridgeActions['getSchemaSnapshot']>().mockResolvedValue(undefined),
   setObjectProperty: vi.fn<BridgeActions['setObjectProperty']>().mockResolvedValue({ accepted: true }),
   getViewportThumbnail: vi.fn<BridgeActions['getViewportThumbnail']>().mockResolvedValue('ok' as ThumbnailPullResult),

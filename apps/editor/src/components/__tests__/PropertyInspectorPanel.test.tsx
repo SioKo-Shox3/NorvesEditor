@@ -49,8 +49,17 @@ const setObjectProperty = vi.fn<
   (objectId: string, property: string, value: unknown) => Promise<SetObjectPropertyResult>
 >();
 
+const getComponentSnapshot = vi.fn();
+const selectComponent = vi.fn();
+
 vi.mock('../../hooks/useBridge.js', () => ({
-  useBridgeActions: () => ({ getObjectSnapshot, getSchemaSnapshot, setObjectProperty }),
+  useBridgeActions: () => ({
+    getObjectSnapshot,
+    getSchemaSnapshot,
+    setObjectProperty,
+    getComponentSnapshot,
+    selectComponent,
+  }),
 }));
 
 import { PropertyInspectorPanel } from '../PropertyInspectorPanel.js';
@@ -61,6 +70,8 @@ beforeEach(() => {
   getObjectSnapshot.mockClear();
   getSchemaSnapshot.mockClear();
   setObjectProperty.mockReset();
+  getComponentSnapshot.mockClear();
+  selectComponent.mockClear();
   // Default: every write is accepted with the requested value echoed.
   setObjectProperty.mockImplementation((_id, _prop, value) =>
     Promise.resolve({ accepted: true, appliedValue: value as SetObjectPropertyResult['appliedValue'] }),
@@ -381,5 +392,117 @@ describe('PropertyInspectorPanel — race guard', () => {
   it('renders the snapshot when its objectId matches the current selection', () => {
     renderSelected(DEMO_SNAPSHOT);
     expect(screen.getByDisplayValue('Example Name')).toBeTruthy();
+  });
+});
+
+// -------------------------------------------------------------------------
+// Components section (entity -> component drill-down)
+// -------------------------------------------------------------------------
+
+const ENTITY_WITH_COMPONENTS: ObjectSnapshot = {
+  objectId: 'n-2',
+  name: 'GroupNode',
+  kind: 'object',
+  properties: [{ name: 'label', value: 'Group', valueType: 'string' }],
+  components: [
+    { objectId: 'component:n-2:1', kind: 'camera' },
+    { objectId: 'component:n-2:2', kind: 'script' },
+  ],
+};
+
+const CAMERA_SNAPSHOT: ObjectSnapshot = {
+  objectId: 'component:n-2:1',
+  kind: 'camera',
+  properties: [{ name: 'fieldOfView', value: 50, valueType: 'number' }],
+};
+
+describe('PropertyInspectorPanel — components', () => {
+  it('lists the components of the selected object', () => {
+    renderSelected(ENTITY_WITH_COMPONENTS);
+    expect(screen.getByRole('button', { name: 'camera' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'script' })).toBeTruthy();
+  });
+
+  it('shows no components section when the engine omits the field', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    expect(screen.queryByText('コンポーネント')).toBeNull();
+  });
+
+  it('shows the section with an empty note when the object has none', () => {
+    renderSelected({ ...ENTITY_WITH_COMPONENTS, components: [] });
+    expect(screen.getByText('コンポーネント')).toBeTruthy();
+    expect(screen.getByText(/コンポーネントがありません/)).toBeTruthy();
+  });
+
+  it('selects a component on click', () => {
+    renderSelected(ENTITY_WITH_COMPONENTS);
+    fireEvent.click(screen.getByRole('button', { name: 'camera' }));
+    expect(selectComponent).toHaveBeenCalledWith('component:n-2:1');
+    // The fetch is driven by the selection state, not by the click itself, so
+    // an out-of-band selection (e.g. restored state) fetches just the same.
+    expect(getComponentSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('fetches the snapshot of whatever component is selected', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      selectedComponentId: 'component:n-2:1',
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect(getComponentSnapshot).toHaveBeenCalledWith('component:n-2:1');
+    // Until it arrives the panel shows a loading state, not the entity's bag.
+    expect(screen.getByText(/プロパティを読み込み中/)).toBeTruthy();
+  });
+
+  it('shows the component properties while keeping the component list', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      selectedComponentId: 'component:n-2:1',
+      componentSnapshot: CAMERA_SNAPSHOT,
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    // The component's own property is shown...
+    expect(screen.getByDisplayValue('50')).toBeTruthy();
+    // ...the entity's property is not...
+    expect(screen.queryByDisplayValue('Group')).toBeNull();
+    // ...and the list is still there to switch back.
+    expect(screen.getByRole('button', { name: 'camera' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /GroupNode/ })).toBeTruthy();
+  });
+
+  it('writes to the component id when editing a component property', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      selectedComponentId: 'component:n-2:1',
+      componentSnapshot: CAMERA_SNAPSHOT,
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    const input = screen.getByDisplayValue('50');
+    fireEvent.change(input, { target: { value: '42' } });
+    fireEvent.blur(input);
+    expect(setObjectProperty).toHaveBeenCalledWith('component:n-2:1', 'fieldOfView', 42);
+  });
+
+  it('returns to the entity properties when the object row is clicked', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      selectedComponentId: 'component:n-2:1',
+      componentSnapshot: CAMERA_SNAPSHOT,
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.click(screen.getByRole('button', { name: /GroupNode/ }));
+    expect(selectComponent).toHaveBeenCalledWith(undefined);
   });
 });

@@ -620,6 +620,55 @@ html, body, #root {
   font-family: var(--font-mono, monospace);
 }
 
+/* component list: the entity row plus one row per component of the selection */
+.inspector__components {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.inspector__section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.inspector__empty {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.inspector__component-list {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.inspector__component {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.inspector__component:hover {
+  background: var(--color-surface-alt);
+}
+
+.inspector__component[aria-pressed='true'] {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+  background: var(--color-surface-alt);
+}
+
 .inspector__props {
   list-style: none;
   display: flex;
