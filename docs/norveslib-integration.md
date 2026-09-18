@@ -164,6 +164,10 @@ See [`docs/engine-integration.md` §Generic Boundary](engine-integration.md#gene
 and [`docs/agent-guide/norveslib-adapter.md`](agent-guide/norveslib-adapter.md)
 for the full boundary contract.
 
+コンポーネント投影(`object.getSnapshot` の `components` とコンポーネント単位のプロパティ
+読み書き)を NorvesLib 側で結線する手順と受け入れ条件は
+[`docs/norveslib-component-projection-contract.md`](norveslib-component-projection-contract.md)。
+
 ---
 
 ## Known Limitations
