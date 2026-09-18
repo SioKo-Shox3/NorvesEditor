@@ -262,6 +262,12 @@ namespace
                 const Envelope env = DecodeOrFail(*ack);
                 NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-set-n1"});
             }
+            // イベントが来たときの中身だけを見ると、object.changed が別のイベントへ
+            // すり替わった場合に検査が 1 つも走らない。発行の有無を立ててループの後で
+            // 確かめる。なお発行そのものが消えた場合は recv() が塞がるので、失敗は
+            // 断言ではなく CTest のタイムアウトとして出る(ループバックの recv に
+            // 期限が無いため。実測で確認済み)。
+            bool sawObjectChanged = false;
             for (int i = 0; i < 2; ++i)
             {
                 std::optional<std::string> event = client->recv();
@@ -274,12 +280,14 @@ namespace
                 NORVES_CHECK(env.kind == Kind::Event);
                 if (env.event == std::optional<std::string>{"object.changed"})
                 {
+                    sawObjectChanged = true;
                     NORVES_CHECK(event->find(R"("objectId":"n-1")") != std::string::npos);
                     NORVES_CHECK(event->find(R"("name":"label")") != std::string::npos);
                     NORVES_CHECK(event->find(R"("value":75)") != std::string::npos);
                     NORVES_CHECK(event->find(R"("components")") == std::string::npos);
                 }
             }
+            NORVES_CHECK(sawObjectChanged);
         }
 
         // 5. object.getSnapshot のコンポーネント経路 --------------------------------
@@ -328,6 +336,7 @@ namespace
             }
             // ack の後に object.changed と scene.treeChanged が 1 回ずつ流れる。
             // object.changed は components を持たない（イベントのスキーマが許さない）。
+            bool sawComponentChanged = false;
             for (int i = 0; i < 2; ++i)
             {
                 std::optional<std::string> event = client->recv();
@@ -338,11 +347,13 @@ namespace
                     NORVES_CHECK(env.kind == Kind::Event);
                     if (env.event == std::optional<std::string>{"object.changed"})
                     {
+                        sawComponentChanged = true;
                         NORVES_CHECK(event->find(R"("value":33)") != std::string::npos);
                         NORVES_CHECK(event->find(R"("components")") == std::string::npos);
                     }
                 }
             }
+            NORVES_CHECK(sawComponentChanged);
         }
         client->send(RequestFrame("req-snap-comp-2", "object.getSnapshot",
                                   R"({"objectId":"component:n-2:1"})"));
