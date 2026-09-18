@@ -23,9 +23,11 @@
   運んでいた(受け手の store が丸ごと置換するので Inspector が空になる)。本文を一元化し、
   イベントの中身を smoke で固定した。ゲートは全部緑のまま通っていたので、ゲートだけでは
   この種の回帰は止まらない。
+- 評価者2周目 PASS (`bfc88eb` まで)。non-blocking 指摘のうち smoke の「イベント発行の有無を
+  検査していない」を処理した。もう1件(NEXT_FINDINGS の整理)は `004c359` で処理済み。
 
 ## In progress
-- 評価者の2周目(対応差分のみ)の判定待ち。
+- なし(コンポーネント縦断は評価者 PASS まで到達。TASKS.md に未完なし)。
 
 ## Next
 - NorvesLib 側の結線(作業機。`docs/norveslib-component-projection-contract.md`)。
