@@ -1126,6 +1126,106 @@ describe('objectSnapshotUnsupported', () => {
   });
 });
 
+describe('component selection state', () => {
+  const withComponents: BridgeState = {
+    ...INITIAL_STATE,
+    selectedObjectId: 'n-2',
+    objectSnapshot: {
+      objectId: 'n-2',
+      properties: [],
+      components: [
+        { objectId: 'component:n-2:1', kind: 'camera' },
+        { objectId: 'component:n-2:2', kind: 'script' },
+      ],
+    },
+  };
+
+  it('keeps the entity snapshot when a component is selected', () => {
+    const next = applyAction(
+      { type: 'componentSelected', id: 'component:n-2:1' },
+      withComponents,
+    );
+    expect(next.selectedComponentId).toBe('component:n-2:1');
+    expect(next.objectSnapshot?.objectId).toBe('n-2');
+    expect(next.objectSnapshot?.components).toHaveLength(2);
+    expect(next.componentSnapshot).toBeUndefined();
+  });
+
+  it('stores the component snapshot separately from the entity snapshot', () => {
+    const selected = applyAction(
+      { type: 'componentSelected', id: 'component:n-2:1' },
+      withComponents,
+    );
+    const next = applyAction(
+      {
+        type: 'componentSnapshotLoaded',
+        snapshot: {
+          objectId: 'component:n-2:1',
+          kind: 'camera',
+          properties: [{ name: 'fieldOfView', value: 50 }],
+        },
+      },
+      selected,
+    );
+    expect(next.componentSnapshot?.objectId).toBe('component:n-2:1');
+    expect(next.objectSnapshot?.objectId).toBe('n-2');
+  });
+
+  it('drops the component selection when another object is selected', () => {
+    const selected = applyAction(
+      { type: 'componentSelected', id: 'component:n-2:1' },
+      withComponents,
+    );
+    const loaded = applyAction(
+      {
+        type: 'componentSnapshotLoaded',
+        snapshot: { objectId: 'component:n-2:1', properties: [] },
+      },
+      selected,
+    );
+    const next = applyAction({ type: 'objectSelected', id: 'n-3' }, loaded);
+    expect(next.selectedComponentId).toBeUndefined();
+    expect(next.componentSnapshot).toBeUndefined();
+  });
+
+  it('applies an accepted write to the component snapshot', () => {
+    const loaded = applyAction(
+      {
+        type: 'componentSnapshotLoaded',
+        snapshot: {
+          objectId: 'component:n-2:1',
+          properties: [{ name: 'fieldOfView', value: 50 }],
+        },
+      },
+      applyAction({ type: 'componentSelected', id: 'component:n-2:1' }, withComponents),
+    );
+    const next = applyAction(
+      {
+        type: 'objectPropertyApplied',
+        objectId: 'component:n-2:1',
+        property: 'fieldOfView',
+        appliedValue: 42,
+      },
+      loaded,
+    );
+    expect(next.componentSnapshot?.properties[0]?.value).toBe(42);
+  });
+
+  it('keeps the component list through a live object.changed event', () => {
+    // The event payload carries no components; merging it must not erase the
+    // list the snapshot fetch established.
+    const next = applyAction(
+      {
+        type: 'objectChangedLive',
+        payload: { objectId: 'n-2', properties: [{ name: 'label', value: 'Renamed' }] },
+      },
+      withComponents,
+    );
+    expect(next.objectSnapshot?.components).toHaveLength(2);
+    expect(next.objectSnapshot?.properties[0]?.value).toBe('Renamed');
+  });
+});
+
 describe('objectPropertyApplied', () => {
   const seeded: BridgeState = {
     ...INITIAL_STATE,

@@ -47,11 +47,29 @@ export interface PropertyEntry {
 }
 
 /**
+ * One component attached to an object, as advertised by `object.getSnapshot`.
+ *
+ * `objectId` is an opaque handle: the editor passes it straight back to
+ * `object.getSnapshot` / `object.setProperty` to read and edit that component
+ * and never parses it. `kind` is a free-form classification for display.
+ */
+export interface ComponentRef {
+  /** Identifier of this component as a scene object. */
+  objectId: ObjectId;
+  /** Generic component classification (free-form, not an engine type name). */
+  kind: string;
+}
+
+/**
  * Result of the `object.getSnapshot` method: one object's serialized property
  * snapshot. A DTO copy of generic values, never a live engine pointer.
  *
- * `objectId` and `properties` are required (`properties` may be empty); `name`
- * and `kind` are optional.
+ * `objectId` and `properties` are required (`properties` may be empty); `name`,
+ * `kind` and `components` are optional.
+ *
+ * An absent `components` means the engine does not project components at all;
+ * an empty array means it does and this object has none. The two differ in the
+ * UI (no section versus an empty section), so callers must not collapse them.
  */
 export interface ObjectSnapshot {
   /** Object this snapshot describes. */
@@ -62,6 +80,8 @@ export interface ObjectSnapshot {
   kind?: string;
   /** Serialized property entries for this object; may be empty. */
   properties: PropertyEntry[];
+  /** Components attached to this object, when the engine projects them. */
+  components?: ComponentRef[];
 }
 
 /**
