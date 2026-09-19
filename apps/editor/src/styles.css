@@ -669,6 +669,52 @@ html, body, #root {
   background: var(--color-surface-alt);
 }
 
+.inspector__component-list li {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.inspector__component-remove {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.inspector__component-remove:hover {
+  color: var(--color-text);
+  background: var(--color-surface-alt);
+}
+
+.inspector__component-add {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.inspector__component-add select,
+.inspector__component-add button {
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+}
+
+.inspector__component-add button {
+  cursor: pointer;
+}
+
+.inspector__component-add button:hover {
+  background: var(--color-surface-alt);
+}
+
 .inspector__props {
   list-style: none;
   display: flex;

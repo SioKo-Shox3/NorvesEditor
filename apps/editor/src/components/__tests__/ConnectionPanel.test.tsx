@@ -61,6 +61,8 @@ function makeActions(): BridgeActions {
     duplicateObject:   vi.fn().mockResolvedValue({ accepted: true }),
     getObjectSnapshot: vi.fn().mockResolvedValue(undefined),
     getComponentSnapshot: vi.fn().mockResolvedValue(undefined),
+    addComponent: vi.fn().mockResolvedValue(false),
+    removeComponent: vi.fn().mockResolvedValue(false),
     selectComponent: vi.fn(),
     getSchemaSnapshot: vi.fn().mockResolvedValue(undefined),
     setObjectProperty: vi.fn().mockResolvedValue({ accepted: true }),

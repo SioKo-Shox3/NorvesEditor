@@ -335,6 +335,20 @@ export interface BridgeActions {
    */
   getComponentSnapshot: (id: string) => Promise<void>;
   /**
+   * Attach a component of `kind` to the object `objectId` (component.add) and,
+   * on an accepted call, re-read that object's snapshot so the component list
+   * reflects the engine's own view. Resolves with whether the engine accepted.
+   * A no-op (resolves false) when the engine does not advertise `component.edit`.
+   */
+  addComponent: (objectId: string, kind: string) => Promise<boolean>;
+  /**
+   * Detach the component `componentId` (component.remove) and re-read the owning
+   * object's snapshot on acceptance. `ownerObjectId` is the object to re-read —
+   * the editor never parses the component id to find it. Resolves with whether
+   * the engine accepted.
+   */
+  removeComponent: (componentId: string, ownerObjectId: string) => Promise<boolean>;
+  /**
    * Select a component of the currently selected object, or clear the selection
    * with undefined to go back to the object's own properties.
    */
@@ -895,6 +909,85 @@ export function useBridgeActions(): BridgeActions {
     dispatch({ type: 'componentSelected', id });
   }, [dispatch]);
 
+  // Component structure edits live behind the `component.edit` capability, which
+  // is per-connection: an engine that does not advertise it gets no calls at all
+  // (rather than a METHOD_NOT_SUPPORTED round trip), and the session id captured
+  // before the call guards a result that lands after a reconnect.
+  const editComponents = useCallback(
+    async (
+      run: () => Promise<{ accepted: boolean }>,
+      ownerObjectId: string,
+      errorCode: string,
+    ): Promise<boolean> => {
+      const currentState = stateRef.current;
+      const startSessionId = currentState.connection.sessionId;
+      if (
+        currentState.connection.status !== 'connected' ||
+        startSessionId === undefined ||
+        currentState.connection.capabilityNames?.has('component.edit') !== true
+      ) {
+        return false;
+      }
+      try {
+        const result = await run();
+        if (connectionSessionIdRef.current !== startSessionId) {
+          return false;
+        }
+        if (result.accepted) {
+          // The engine is the authority on what the object now holds; re-read it
+          // instead of patching the list from the ack.
+          await getObjectSnapshot(ownerObjectId);
+        }
+        return result.accepted;
+      } catch (err: unknown) {
+        if (connectionSessionIdRef.current !== startSessionId) {
+          return false;
+        }
+        const { kind, message } = extractBackendError(err);
+        dispatch({
+          type: 'errorReported',
+          payload: { error: { code: kind ?? errorCode, message } },
+        });
+        return false;
+      }
+    },
+    [dispatch, getObjectSnapshot],
+  );
+
+  const addComponent = useCallback(
+    async (objectId: string, kind: string): Promise<boolean> =>
+      editComponents(
+        () =>
+          invokeCommand<{ accepted: boolean; componentId?: string }>(
+            BRIDGE_COMMANDS.componentAdd,
+            { objectId, kind },
+          ),
+        objectId,
+        'COMPONENT_ADD_FAILED',
+      ),
+    [editComponents],
+  );
+
+  const removeComponent = useCallback(
+    async (componentId: string, ownerObjectId: string): Promise<boolean> => {
+      const accepted = await editComponents(
+        () =>
+          invokeCommand<{ accepted: boolean }>(BRIDGE_COMMANDS.componentRemove, {
+            objectId: componentId,
+          }),
+        ownerObjectId,
+        'COMPONENT_REMOVE_FAILED',
+      );
+      if (accepted) {
+        // The removed component cannot stay selected; the entity's own
+        // properties come back into view.
+        dispatch({ type: 'componentSelected', id: undefined });
+      }
+      return accepted;
+    },
+    [dispatch, editComponents],
+  );
+
   const getSchemaSnapshot = useCallback(async (): Promise<void> => {
     try {
       const result = await invokeCommand<SchemaSnapshot>(
@@ -1342,6 +1435,8 @@ export function useBridgeActions(): BridgeActions {
     getObjectSnapshot,
     getComponentSnapshot,
     selectComponent,
+    addComponent,
+    removeComponent,
     getSchemaSnapshot,
     setObjectProperty,
     getViewportThumbnail,

@@ -126,6 +126,16 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
     }
   }, [isConnected, selectedComponentId, getComponentSnapshot]);
 
+  // Structure edits are per-connection: only an engine that advertises
+  // component.edit gets the controls. The set of types it can build is a
+  // separate statement, carried by schema.getSnapshot — a type may be described
+  // without being creatable, and one that says nothing about instantiability is
+  // not an invitation to try.
+  const componentEditSupported = state.connection.capabilityNames?.has('component.edit') === true;
+  const creatableKinds = (schemaTypes ?? [])
+    .filter((t) => t.kind === 'component' && t.instantiable === true)
+    .map((t) => t.typeName);
+
   const currentComponentSnapshot =
     state.componentSnapshot !== undefined &&
     state.componentSnapshot.objectId === selectedComponentId
@@ -183,6 +193,18 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
                 components={currentSnapshot.components}
                 selectedComponentId={selectedComponentId}
                 onSelect={actions.selectComponent}
+                creatableKinds={creatableKinds}
+                onAdd={
+                  componentEditSupported
+                    ? (kind) => void actions.addComponent(currentSnapshot.objectId, kind)
+                    : undefined
+                }
+                onRemove={
+                  componentEditSupported
+                    ? (componentId) =>
+                        void actions.removeComponent(componentId, currentSnapshot.objectId)
+                    : undefined
+                }
               />
             )}
             {selectedComponentId === undefined ? (
@@ -234,6 +256,11 @@ interface ComponentListProps {
   components: ComponentRef[];
   selectedComponentId: string | undefined;
   onSelect: (id: string | undefined) => void;
+  /** Types the engine said it can create, already filtered to components. */
+  creatableKinds: string[];
+  /** Absent when the engine does not advertise component.edit (read-only list). */
+  onAdd: ((kind: string) => void) | undefined;
+  onRemove: ((componentId: string) => void) | undefined;
 }
 
 /**
@@ -252,7 +279,15 @@ function ComponentList({
   components,
   selectedComponentId,
   onSelect,
+  creatableKinds,
+  onAdd,
+  onRemove,
 }: ComponentListProps): React.JSX.Element {
+  // The chosen type is local: picking one in the select must not re-render the
+  // other panels (same reason property edits keep their draft state local).
+  const [kindToAdd, setKindToAdd] = useState(creatableKinds[0] ?? '');
+  const selectedKind = creatableKinds.includes(kindToAdd) ? kindToAdd : (creatableKinds[0] ?? '');
+
   return (
     <div className="inspector__components">
       <span className="inspector__section-title">コンポーネント</span>
@@ -280,9 +315,48 @@ function ComponentList({
               >
                 {component.kind}
               </button>
+              {onRemove !== undefined && (
+                <button
+                  type="button"
+                  className="inspector__component-remove"
+                  aria-label={`${component.kind} を外す`}
+                  title={`${component.kind} を外す`}
+                  onClick={() => {
+                    // Detaching cannot be undone through the protocol (the engine
+                    // is not asked to keep the property values), so ask first.
+                    if (
+                      window.confirm(
+                        `${component.kind} を外します。プロパティの値は元に戻せません。`,
+                      )
+                    ) {
+                      onRemove(component.objectId);
+                    }
+                  }}
+                >
+                  ×
+                </button>
+              )}
             </li>
           ))}
         </ul>
+      )}
+      {onAdd !== undefined && creatableKinds.length > 0 && (
+        <div className="inspector__component-add">
+          <select
+            aria-label="追加するコンポーネントの種類"
+            value={selectedKind}
+            onChange={(e) => setKindToAdd(e.target.value)}
+          >
+            {creatableKinds.map((kind) => (
+              <option key={kind} value={kind}>
+                {kind}
+              </option>
+            ))}
+          </select>
+          <button type="button" onClick={() => onAdd(selectedKind)}>
+            コンポーネントを追加
+          </button>
+        </div>
       )}
     </div>
   );

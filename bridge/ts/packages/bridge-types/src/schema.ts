@@ -35,6 +35,15 @@ export interface TypeDescriptor {
   kind?: string;
   /** Optional property definitions for this type. */
   properties?: PropertyDefinition[];
+  /**
+   * Whether the engine can create an instance of this type on request
+   * (`component.add`).
+   *
+   * Absent means the engine does not report instantiability at all, which is a
+   * different statement from `false` on the wire but has the same consequence
+   * here: only an explicit `true` may be offered as something to create.
+   */
+  instantiable?: boolean;
 }
 
 /**

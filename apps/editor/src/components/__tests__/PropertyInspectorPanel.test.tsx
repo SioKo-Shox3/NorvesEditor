@@ -51,6 +51,8 @@ const setObjectProperty = vi.fn<
 
 const getComponentSnapshot = vi.fn();
 const selectComponent = vi.fn();
+const addComponent = vi.fn<(objectId: string, kind: string) => Promise<boolean>>();
+const removeComponent = vi.fn<(componentId: string, ownerObjectId: string) => Promise<boolean>>();
 
 vi.mock('../../hooks/useBridge.js', () => ({
   useBridgeActions: () => ({
@@ -59,6 +61,8 @@ vi.mock('../../hooks/useBridge.js', () => ({
     setObjectProperty,
     getComponentSnapshot,
     selectComponent,
+    addComponent,
+    removeComponent,
   }),
 }));
 
@@ -72,6 +76,10 @@ beforeEach(() => {
   setObjectProperty.mockReset();
   getComponentSnapshot.mockClear();
   selectComponent.mockClear();
+  addComponent.mockReset();
+  addComponent.mockResolvedValue(true);
+  removeComponent.mockReset();
+  removeComponent.mockResolvedValue(true);
   // Default: every write is accepted with the requested value echoed.
   setObjectProperty.mockImplementation((_id, _prop, value) =>
     Promise.resolve({ accepted: true, appliedValue: value as SetObjectPropertyResult['appliedValue'] }),
@@ -513,5 +521,93 @@ describe('PropertyInspectorPanel — components', () => {
     render(<PropertyInspectorPanel {...makeDockviewProps()} />);
     fireEvent.click(screen.getByRole('button', { name: /GroupNode/ }));
     expect(selectComponent).toHaveBeenCalledWith(undefined);
+  });
+});
+
+// -------------------------------------------------------------------------
+// Attaching and detaching components
+// -------------------------------------------------------------------------
+
+const CAPABLE_CONNECTION = {
+  status: 'connected' as const,
+  capabilityNames: new Set(['component.edit']),
+};
+
+const SCHEMA_TYPES = [
+  { typeName: 'camera', kind: 'component', instantiable: true },
+  { typeName: 'script', kind: 'component', instantiable: false },
+  { typeName: 'rigidBody', kind: 'component' },
+  { typeName: 'GroupNode', kind: 'object', instantiable: true },
+];
+
+function renderEditable(snapshot: ObjectSnapshot = ENTITY_WITH_COMPONENTS): void {
+  mockState = {
+    ...INITIAL_STATE,
+    connection: CAPABLE_CONNECTION,
+    selectedObjectId: snapshot.objectId,
+    objectSnapshot: snapshot,
+    schemaTypes: SCHEMA_TYPES,
+  };
+  render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+}
+
+describe('PropertyInspectorPanel — component structure edits', () => {
+  it('offers only the types the engine said it can create', () => {
+    renderEditable();
+    const select = screen.getByLabelText('追加するコンポーネントの種類') as HTMLSelectElement;
+    const offered = Array.from(select.options).map((o) => o.value);
+    // camera is instantiable; script said false; rigidBody said nothing at all;
+    // GroupNode is instantiable but is not a component.
+    expect(offered).toEqual(['camera']);
+  });
+
+  it('adds the chosen type to the selected object', async () => {
+    renderEditable();
+    fireEvent.click(screen.getByRole('button', { name: 'コンポーネントを追加' }));
+    expect(addComponent).toHaveBeenCalledWith('n-2', 'camera');
+  });
+
+  it('asks before detaching and passes the owning object', () => {
+    renderEditable();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fireEvent.click(screen.getByRole('button', { name: 'camera を外す' }));
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(removeComponent).toHaveBeenCalledWith('component:n-2:1', 'n-2');
+    confirmSpy.mockRestore();
+  });
+
+  it('does not detach when the confirmation is declined', () => {
+    renderEditable();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    fireEvent.click(screen.getByRole('button', { name: 'camera を外す' }));
+    expect(removeComponent).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it('stays read-only when the engine does not advertise component.edit', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected', capabilityNames: new Set(['object.edit']) },
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      schemaTypes: SCHEMA_TYPES,
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect(screen.queryByRole('button', { name: 'コンポーネントを追加' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'camera を外す' })).toBeNull();
+    // The list itself is still there to read.
+    expect(screen.getByRole('button', { name: 'camera' })).toBeTruthy();
+  });
+
+  it('hides the add control when no type is creatable', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: CAPABLE_CONNECTION,
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      schemaTypes: [{ typeName: 'script', kind: 'component', instantiable: false }],
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect(screen.queryByRole('button', { name: 'コンポーネントを追加' })).toBeNull();
   });
 });
