@@ -590,6 +590,12 @@ html, body, #root {
   background: var(--color-surface-alt);
 }
 
+/* ドロップを受け付ける行。選択（塗りつぶし）と紛れないよう、枠で示す。 */
+.scene-node__row--drop {
+  outline: 2px dashed var(--color-accent);
+  outline-offset: -2px;
+}
+
 .scene-node__row--selected {
   background: var(--color-accent-dim);
   color: #fff;

@@ -169,7 +169,9 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
   // -----------------------------------------------------------------------
   // ドラッグで親を付け替える。掴んでいる id は ref に持ち、dataTransfer には載せない —
   // 同じアプリの中で完結する操作で、dataTransfer は WebView やテスト環境ごとに扱いが違う。
-  // 受けるかどうかの判定は**絞り込み前の木**に対して行う（隠れているだけの子孫も子孫）。
+  // 受けるかどうかの判定は**絞り込み前の木**に対して行う。いまの絞り込みは一致ノードの
+  // 部分木と祖先を残すので、見えている範囲でも親子関係は保たれている — だが「見えない子孫は
+  // 子孫でない」に依存した判定にはしない。絞り込みの規則が変われば輪ができる。
   // -----------------------------------------------------------------------
   const draggedIdRef = useRef<string | undefined>(undefined);
   const [dropTargetId, setDropTargetId] = useState<string | undefined>(undefined);

@@ -59,6 +59,7 @@ import {
   SceneOutlinerPanel,
   filterSceneTree,
   flattenVisibleRows,
+  resolveDropTarget,
   __resetOutlinerMemory,
 } from '../SceneOutlinerPanel.js';
 
@@ -765,5 +766,116 @@ describe('SceneOutlinerPanel — keyboard navigation', () => {
     row('Root').focus();
     press('ArrowDown');
     expect(selectObject).toHaveBeenLastCalledWith('n-2');
+  });
+});
+
+// -------------------------------------------------------------------------
+// ドラッグでの親付け替え
+// -------------------------------------------------------------------------
+
+describe('resolveDropTarget', () => {
+  it('reparents onto another node', () => {
+    // NodeA(n-1) を GroupNode(n-2) の下へ。
+    expect(resolveDropTarget(DEMO_TREE, 'n-1', 'n-2')).toEqual({
+      accepted: true,
+      newParentId: 'n-2',
+    });
+  });
+
+  it('passes undefined for the scene root, not its id', () => {
+    // 最上段は engine が返す合成ルート。親は nullptr=root の経路で渡す。
+    expect(resolveDropTarget(DEMO_TREE, 'n-3', 'n-0')).toEqual({
+      accepted: true,
+      newParentId: undefined,
+    });
+  });
+
+  it('refuses a drop that would make a cycle', () => {
+    // GroupNode を自分の子 NodeB の下へは入れられない。
+    expect(resolveDropTarget(DEMO_TREE, 'n-2', 'n-3')).toEqual({ accepted: false });
+    // 自分自身の上も同じ。
+    expect(resolveDropTarget(DEMO_TREE, 'n-2', 'n-2')).toEqual({ accepted: false });
+  });
+
+  it('refuses a drop that changes nothing', () => {
+    // NodeA はすでにルート直下。
+    expect(resolveDropTarget(DEMO_TREE, 'n-1', 'n-0')).toEqual({ accepted: false });
+    // NodeB はすでに GroupNode の子。
+    expect(resolveDropTarget(DEMO_TREE, 'n-3', 'n-2')).toEqual({ accepted: false });
+  });
+
+  it('refuses moving the scene root itself', () => {
+    expect(resolveDropTarget(DEMO_TREE, 'n-0', 'n-2')).toEqual({ accepted: false });
+  });
+
+  it('refuses ids that are not in the tree', () => {
+    expect(resolveDropTarget(DEMO_TREE, 'missing', 'n-2')).toEqual({ accepted: false });
+    expect(resolveDropTarget(DEMO_TREE, 'n-1', 'missing')).toEqual({ accepted: false });
+  });
+});
+
+describe('SceneOutlinerPanel — drag to reparent', () => {
+  function renderTree(extra?: Partial<BridgeState>): void {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      ...extra,
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+  }
+
+  function row(name: string): HTMLButtonElement {
+    return screen.getByText(name).closest('button') as HTMLButtonElement;
+  }
+
+  it('reparents on drop', () => {
+    renderTree();
+    fireEvent.dragStart(row('NodeA'));
+    fireEvent.dragOver(row('GroupNode'));
+    fireEvent.drop(row('GroupNode'));
+    expect(reparentObject).toHaveBeenCalledWith('n-1', 'n-2');
+  });
+
+  it('moves to the root when dropped on the top node', () => {
+    renderTree();
+    fireEvent.dragStart(row('NodeB'));
+    fireEvent.drop(row('Root'));
+    expect(reparentObject).toHaveBeenCalledWith('n-3', undefined);
+  });
+
+  it('sends nothing for a drop that would make a cycle', () => {
+    renderTree();
+    fireEvent.dragStart(row('GroupNode'));
+    fireEvent.drop(row('NodeB'));
+    expect(reparentObject).not.toHaveBeenCalled();
+  });
+
+  it('still reparents while a filter is active', () => {
+    renderTree();
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'Node' } });
+    fireEvent.dragStart(row('NodeA'));
+    fireEvent.drop(row('GroupNode'));
+    expect(reparentObject).toHaveBeenCalledWith('n-1', 'n-2');
+  });
+
+  it('does not let a read-only connection drag', () => {
+    renderTree({ sceneEditUnsupported: true });
+    expect(row('NodeA').draggable).toBe(false);
+    fireEvent.dragStart(row('NodeA'));
+    fireEvent.drop(row('GroupNode'));
+    expect(reparentObject).not.toHaveBeenCalled();
+  });
+
+  it('marks the row that would accept the drop, and clears it afterwards', () => {
+    renderTree();
+    fireEvent.dragStart(row('NodeA'));
+    fireEvent.dragOver(row('GroupNode'));
+    expect(row('GroupNode').className).toContain('scene-node__row--drop');
+    // 受け付けない行には印を出さない。
+    fireEvent.dragOver(row('NodeA'));
+    expect(row('NodeA').className).not.toContain('scene-node__row--drop');
+    fireEvent.dragEnd(row('NodeA'));
+    expect(row('GroupNode').className).not.toContain('scene-node__row--drop');
   });
 });
