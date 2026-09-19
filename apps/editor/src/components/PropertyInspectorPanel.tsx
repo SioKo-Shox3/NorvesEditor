@@ -574,7 +574,13 @@ type RowFeedback =
  * 再シード: 確定値が変わったら（取得し直し・書き込みの反映・engine 発の object.changed）
  * 下書きを作り直す。ただし**この行が焦点を持つ間は作り直さない** — 入力の途中で値が届いた
  * だけで打った文字が黙って消えるのは、編集の取りこぼしになる。焦点が外れた時点で最新の
- * 確定値へ揃える。コミットに使う値は常に最新で、下書きだけを据え置く。
+ * 確定値へ揃える。
+ *
+ * 据え置き中は**確定値が 2 つある**ので、使い分けを間違えない:
+ *   - `seededValue`: 下書きの元。**「触ったか」の判定はこちらと比べる。** 最新値と比べると、
+ *     1 文字も打っていない行が「変化あり」に化けて、engine の更新を古い値で上書きし返す。
+ *   - `value`: 最新。**送る中身を組むのはこちら。** ベクトルの 1 成分を編集している間に別の
+ *     成分が動いたら、送るのは「編集した成分は下書き、他は最新」。
  */
 function PropertyEditor({ objectId, property, value }: PropertyEditorProps): React.JSX.Element {
   const actions = useBridgeActions();
@@ -584,10 +590,11 @@ function PropertyEditor({ objectId, property, value }: PropertyEditorProps): Rea
   const [pending, setPending] = useState(false);
   const [feedback, setFeedback] = useState<RowFeedback>({ kind: 'none' });
 
-  // 下書きを作り直す契機。これが変わったときだけ編集コントロールを作り直す。
+  // 下書きの元になっている確定値。焦点がある間は据え置かれ、最新の value と食い違う。
   const rowRef = useRef<HTMLSpanElement>(null);
+  const [seededValue, setSeededValue] = useState<PropertyValue>(value);
   const liveKey = stableValueKey(value);
-  const [seedKey, setSeedKey] = useState(liveKey);
+  const seedKey = stableValueKey(seededValue);
 
   function hasFocus(): boolean {
     const row = rowRef.current;
@@ -597,7 +604,7 @@ function PropertyEditor({ objectId, property, value }: PropertyEditorProps): Rea
   // 焦点が無いときに届いた新しい確定値は、その場で下書きへ反映する。
   useEffect(() => {
     if (liveKey !== seedKey && !hasFocus()) {
-      setSeedKey(liveKey);
+      setSeededValue(value);
     }
   });
 
@@ -626,14 +633,20 @@ function PropertyEditor({ objectId, property, value }: PropertyEditorProps): Rea
     <span
       className="prop-editor"
       ref={rowRef}
-      // focusout。行から焦点が外れた時点で、据え置いていた確定値へ揃える。
-      onBlur={() => setSeedKey(stableValueKey(value))}
+      onBlur={(event) => {
+        // focusout は行の中で焦点が移っただけでも起きる（ベクトルの X -> Tab -> Y）。
+        // 行の外へ出たときだけ揃える — 中で移るたびに作り直すと、移った先の焦点が飛ぶ。
+        if (!rowRef.current?.contains(event.relatedTarget as Node | null)) {
+          setSeededValue(value);
+        }
+      }}
     >
       <PropertyEditorControl
         key={seedKey}
         kind={kind}
         property={property}
         value={value}
+        seededValue={seededValue}
         pending={pending}
         onCommitValue={(next) => void commit(next)}
         onInvalidJson={(message) => setFeedback({ kind: 'invalidJson', message })}
@@ -648,7 +661,10 @@ interface PropertyEditorControlProps {
   kind: ValueKind;
   /** The property name — used to give each control a unique accessible name. */
   property: string;
+  /** 最新の確定値。**送る中身を組むのはこちら。** */
   value: PropertyValue;
+  /** 下書きの元になった確定値。**「触ったか」の判定はこちらと比べる。** */
+  seededValue: PropertyValue;
   pending: boolean;
   /** Commit a parsed/coerced PropertyValue to the engine. */
   onCommitValue: (next: PropertyValue) => void;
@@ -687,15 +703,17 @@ function PropertyEditorControl(props: PropertyEditorControlProps): React.JSX.Ele
 // ---- scalar editors -------------------------------------------------------
 
 function StringEditor({
-  value,
+  seededValue,
   pending,
   onCommitValue,
   onClearFeedback,
 }: PropertyEditorControlProps): React.JSX.Element {
-  const [draft, setDraft] = useState<string>(value as string);
+  const [draft, setDraft] = useState<string>(seededValue as string);
 
   function commitIfChanged(): void {
-    if (draft !== (value as string)) {
+    // 比べる相手は下書きの元（最新値ではない）。据え置き中に最新と比べると、1 文字も
+    // 打っていない行が「変化あり」に化けて engine の更新を古い値で上書きし返す。
+    if (draft !== (seededValue as string)) {
       onCommitValue(draft);
     }
   }
@@ -721,16 +739,17 @@ function StringEditor({
 }
 
 function NumberEditor({
-  value,
+  seededValue,
   pending,
   onCommitValue,
   onInvalidJson,
   onClearFeedback,
 }: PropertyEditorControlProps): React.JSX.Element {
-  const [draft, setDraft] = useState<string>(String(value as number));
+  const [draft, setDraft] = useState<string>(String(seededValue as number));
 
   function commitIfChanged(): void {
-    if (draft === String(value as number)) return;
+    // 比べる相手は下書きの元（StringEditor と同じ理由）。
+    if (draft === String(seededValue as number)) return;
     const parsed = Number(draft);
     if (draft.trim() === '' || Number.isNaN(parsed)) {
       // Reuse the invalid-feedback channel for a non-numeric entry.
@@ -832,13 +851,15 @@ function VectorOrJsonEditor(props: PropertyEditorControlProps): React.JSX.Elemen
 function VectorEditor({
   property,
   value,
+  seededValue,
   pending,
   onCommitValue,
   onInvalidJson,
   onClearFeedback,
 }: PropertyEditorControlProps): React.JSX.Element {
-  const committed = value as number[];
-  const [drafts, setDrafts] = useState<string[]>(() => committed.map((component) => String(component)));
+  // 入力欄は下書きの元に対応する（据え置き中に成分の数が変わっても並びが崩れない）。
+  const seeded = seededValue as number[];
+  const [drafts, setDrafts] = useState<string[]>(() => seeded.map((component) => String(component)));
 
   function commitIndex(index: number, input: HTMLInputElement): void {
     if (pending) {
@@ -864,21 +885,30 @@ function VectorEditor({
       onInvalidJson(`数値として読めません: ${text}`);
       return;
     }
-    if (parsed === committed[index]) {
-      return;  // 変化なし。往復を増やさない。
+    if (parsed === seeded[index]) {
+      return;  // 触っていない。往復を増やさない（比べる相手は下書きの元）。
     }
-    onCommitValue(committed.map((component, at) => (at === index ? parsed : component)));
+
+    // 送る中身は最新の確定値から組む。編集した成分だけ下書きで置き換える。
+    const latest = value as number[];
+    if (index >= latest.length) {
+      // 据え置き中に成分の数が減った。どこへ入れるべきか決められないので送らない。
+      // 焦点が外れれば新しい形で作り直される。
+      onInvalidJson('この成分は engine 側で無くなりました。');
+      return;
+    }
+    onCommitValue(latest.map((component, at) => (at === index ? parsed : component)));
   }
 
   return (
     <span
       className={
-        committed.length === 4
+        seeded.length === 4
           ? 'prop-editor__vector prop-editor__vector--quad'
           : 'prop-editor__vector'
       }
     >
-      {committed.map((_component, index) => {
+      {seeded.map((_component, index) => {
         const label = AXIS_LABELS[index] ?? String(index);
         return (
           <label className="prop-editor__axis" key={index}>
@@ -918,7 +948,7 @@ function VectorEditor({
 // ---- JSON editor (null / array / object) ----------------------------------
 
 function JsonEditor({
-  value,
+  seededValue,
   pending,
   onCommitValue,
   onInvalidJson,
@@ -926,7 +956,9 @@ function JsonEditor({
 }: PropertyEditorControlProps): React.JSX.Element {
   // Seed from a pretty-printed serialization of the committed value. The user
   // edits raw JSON text; nothing is dispatched until Apply (JSON.parse here).
-  const initial = JSON.stringify(value, null, 2) ?? 'null';
+  // 下書きの元を使う — 最新値を使うと、据え置き中に engine 側が動いただけで dirty が立ち、
+  // 1 文字も打っていないのに Apply が押せてしまう（押すと更新を巻き戻す）。
+  const initial = JSON.stringify(seededValue, null, 2) ?? 'null';
   const [draft, setDraft] = useState<string>(initial);
 
   function apply(): void {

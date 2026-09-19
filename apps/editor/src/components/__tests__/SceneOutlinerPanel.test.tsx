@@ -724,6 +724,40 @@ describe('SceneOutlinerPanel — keyboard navigation', () => {
     expect(selectObject).toHaveBeenLastCalledWith('n-2');
   });
 
+  it('acts on the row the toggle belongs to, not on the selection', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      selectedObjectId: 'n-0',  // 選択は Root。
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    // 焦点は GroupNode のトグル。ここで左を押して閉じるのは GroupNode であって Root ではない。
+    screen.getByRole('button', { name: 'GroupNode を折りたたむ' }).focus();
+    press('ArrowLeft');
+    expect(screen.queryByText('NodeB')).toBeNull();
+    expect(screen.getByText('NodeA')).toBeTruthy();  // Root は開いたまま
+  });
+
+  it('does nothing but swallow the key on a leaf pressed right', () => {
+    renderTree();
+    row('NodeA').focus();
+    press('ArrowRight');
+    expect(selectObject).not.toHaveBeenCalled();
+  });
+
+  it('enters the tree from outside with ArrowDown', () => {
+    renderTree();
+    // どの行にも焦点が無く、選択も無い状態。
+    press('ArrowDown');
+    expect(selectObject).not.toHaveBeenCalled();
+
+    // ツリー自身にキーを届ける（本文のどこかに焦点がある想定）。
+    const tree = document.querySelector('.scene-tree') as HTMLElement;
+    fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    expect(selectObject).toHaveBeenLastCalledWith('n-0');
+  });
+
   it('walks the filtered rows, not the whole tree', () => {
     renderTree();
     fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'Group' } });

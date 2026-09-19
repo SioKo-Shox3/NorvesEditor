@@ -582,6 +582,93 @@ describe('PropertyInspectorPanel — re-seeding while editing', () => {
     expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [7, 9, -10]);
   });
 
+  it('sends nothing when the row is merely focused and the engine moves', () => {
+    // 1 文字も打っていない行が、engine の更新を古い値で上書きし返してはならない。
+    // ゲームエディタで最も普通の状況（入力欄をクリックしたまま再生中のオブジェクトが動く）。
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    y.focus();
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [7, 100, -10]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.blur(y);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing for a focused number the engine moves', () => {
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const num = screen.getByDisplayValue('60') as HTMLInputElement;
+    num.focus();
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'fieldOfView' ? { ...entry, value: 90 } : entry,
+        ),
+      },
+    };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.blur(num);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing for a focused string the engine moves', () => {
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const text = screen.getByDisplayValue('Example Name') as HTMLInputElement;
+    text.focus();
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'label' ? { ...entry, value: 'from engine' } : entry,
+        ),
+      },
+    };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.blur(text);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+  });
+
+  it('does not arm Apply on a focused JSON editor the engine moves', () => {
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const textarea = screen
+      .getAllByRole('textbox')
+      .filter((el): el is HTMLTextAreaElement => el.tagName === 'TEXTAREA')
+      .find((t) => t.value.includes('locked')) as HTMLTextAreaElement;
+    textarea.focus();
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'metadata' ? { ...entry, value: { locked: true, tag: 'primary' } } : entry,
+        ),
+      },
+    };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    const apply = textarea.parentElement?.querySelector('button') as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+  });
+
+  it('keeps focus inside the row when moving between vector components', () => {
+    // 行の中の focusout で作り直すと、X -> Tab -> Y の移動先から焦点が飛ぶ。
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const x = screen.getByLabelText('position X') as HTMLInputElement;
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    x.focus();
+    fireEvent.change(x, { target: { value: '5' } });
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [0, 1.5, -99]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+
+    // 行の中へ移る（relatedTarget が同じ行）。
+    fireEvent.blur(x, { relatedTarget: y });
+    y.focus();
+    expect((document.activeElement as HTMLElement).getAttribute('aria-label')).toBe('position Y');
+    // 送る中身は「編集した成分は下書き、他は最新」。
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [5, 1.5, -99]);
+  });
+
   it('keeps a string draft too', () => {
     const { rerender } = renderWith(DEMO_SNAPSHOT);
     const input = screen.getByDisplayValue('Example Name') as HTMLInputElement;

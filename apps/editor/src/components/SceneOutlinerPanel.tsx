@@ -176,7 +176,9 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
     // セレクタを組み立てない。id は engine が決める任意の文字列で（`component:12:3` のように
     // 記号を含む）、属性セレクタへ埋めるとエスケープが要る。走査して比べるほうが安全で、
     // 木の行数はいつも小さい。
-    const rows = treeRef.current?.querySelectorAll<HTMLButtonElement>('[data-node-id]') ?? [];
+    const rows = treeRef.current?.querySelectorAll<HTMLButtonElement>(
+      'button.scene-node__row[data-node-id]',
+    ) ?? [];
     for (const row of rows) {
       if (row.dataset.nodeId === id) {
         row.focus();
@@ -195,8 +197,10 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
       return;
     }
     const rows = flattenVisibleRows(visibleTree, effectiveCollapsed);
+    // 焦点がトグルにあっても、基準はその行。選択中の別の行を開閉してはならない。
+    const active = document.activeElement as HTMLElement | null;
     const focusedId =
-      (document.activeElement as HTMLElement | null)?.dataset?.nodeId ?? selectedObjectId;
+      active?.closest<HTMLElement>('[data-node-id]')?.dataset.nodeId ?? selectedObjectId;
     const index = rows.findIndex((row) => row.id === focusedId);
     if (index < 0) {
       // どの行にも居ないときは、下方向のキーで先頭へ入る。
@@ -210,14 +214,16 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
 
     switch (event.key) {
       case 'ArrowDown':
+        // 端でも既定動作は止める。止めないとパネル本文が裏でスクロールして、
+        // 行は動いていないのに画面だけ動く。
+        event.preventDefault();
         if (index + 1 < rows.length) {
-          event.preventDefault();
           moveTo(rows[index + 1].id);
         }
         return;
       case 'ArrowUp':
+        event.preventDefault();
         if (index > 0) {
-          event.preventDefault();
           moveTo(rows[index - 1].id);
         }
         return;
@@ -498,6 +504,8 @@ function SceneTreeNode({
           <button
             type="button"
             className="scene-node__toggle"
+            // 矢印キーの基準行を決めるための目印（焦点がトグルにあるときも行が分かる）。
+            data-node-id={node.id}
             aria-expanded={!isCollapsed}
             aria-label={`${label} を${isCollapsed ? '展開' : '折りたたむ'}`}
             onClick={handleToggle}
