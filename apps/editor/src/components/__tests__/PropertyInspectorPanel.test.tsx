@@ -22,7 +22,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import type { BridgeState } from '../../state/store.js';
 import { INITIAL_STATE } from '../../state/store.js';
-import type { ObjectSnapshot, SetObjectPropertyResult } from '@norves/bridge-ui';
+import type { ObjectSnapshot, PropertyValue, SetObjectPropertyResult } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Mock dockview-react
@@ -66,7 +66,11 @@ vi.mock('../../hooks/useBridge.js', () => ({
   }),
 }));
 
-import { PropertyInspectorPanel } from '../PropertyInspectorPanel.js';
+import {
+  PropertyInspectorPanel,
+  classifyValue,
+  isNumericVector,
+} from '../PropertyInspectorPanel.js';
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -609,5 +613,53 @@ describe('PropertyInspectorPanel — component structure edits', () => {
     };
     render(<PropertyInspectorPanel {...makeDockviewProps()} />);
     expect(screen.queryByRole('button', { name: 'コンポーネントを追加' })).toBeNull();
+  });
+});
+
+// -------------------------------------------------------------------------
+// 数値ベクトルの判定（純粋関数）
+// -------------------------------------------------------------------------
+
+describe('isNumericVector / classifyValue', () => {
+  it('treats a finite numeric array of length 2..4 as a vector', () => {
+    expect(isNumericVector([0, 0])).toBe(true);
+    expect(isNumericVector([1.5, -2, 0])).toBe(true);
+    expect(isNumericVector([0, 0, 0, 1])).toBe(true);
+    expect(classifyValue([1, 2, 3])).toBe('vector');
+  });
+
+  it('leaves every other array as a plain array', () => {
+    // 長さの境界（1 は成分編集の意味が薄く、5 以上はラベルを決められない）。
+    expect(isNumericVector([])).toBe(false);
+    expect(isNumericVector([1])).toBe(false);
+    expect(isNumericVector([1, 2, 3, 4, 5])).toBe(false);
+    // 数値以外が 1 つでも混ざれば成分編集できない。
+    expect(isNumericVector([1, '2', 3])).toBe(false);
+    expect(isNumericVector([1, null, 3])).toBe(false);
+    expect(isNumericVector([1, true, 3])).toBe(false);
+    expect(isNumericVector([1, [2], 3])).toBe(false);
+    expect(isNumericVector([1, { x: 2 }, 3])).toBe(false);
+    for (const value of [[], [1], [1, 2, 3, 4, 5], [1, '2', 3]] as PropertyValue[]) {
+      expect(classifyValue(value)).toBe('array');
+    }
+  });
+
+  it('rejects values JSON cannot carry', () => {
+    // NaN / Infinity は JSON.stringify で null になる。成分エディタから送らせない。
+    expect(isNumericVector([Number.NaN, 0, 0])).toBe(false);
+    expect(isNumericVector([0, Number.POSITIVE_INFINITY, 0])).toBe(false);
+    expect(isNumericVector([0, 0, Number.NEGATIVE_INFINITY])).toBe(false);
+    expect(classifyValue([Number.NaN, 0, 0])).toBe('array');
+  });
+
+  it('does not reclassify non-array values', () => {
+    expect(isNumericVector(null)).toBe(false);
+    expect(isNumericVector(3)).toBe(false);
+    expect(isNumericVector('1,2,3')).toBe(false);
+    expect(classifyValue(null)).toBe('null');
+    expect(classifyValue(3)).toBe('number');
+    expect(classifyValue('x')).toBe('string');
+    expect(classifyValue(true)).toBe('boolean');
+    expect(classifyValue({ x: 1, y: 2 })).toBe('object');
   });
 });

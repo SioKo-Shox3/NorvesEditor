@@ -428,11 +428,38 @@ function ObjectProperties({ snapshot, schemaTypes }: ObjectPropertiesProps): Rea
 // -------------------------------------------------------------------------
 
 /** Coarse classification of a PropertyValue for type-driven rendering. */
-type ValueKind = 'string' | 'number' | 'boolean' | 'null' | 'array' | 'object';
+export type ValueKind =
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'null'
+  | 'vector'
+  | 'array'
+  | 'object';
 
-function classifyValue(value: PropertyValue): ValueKind {
+/** 成分ごとに編集できる配列の長さ。2 = XY / 3 = XYZ / 4 = XYZW。 */
+const VECTOR_MIN_LENGTH = 2;
+const VECTOR_MAX_LENGTH = 4;
+
+/**
+ * 有限な数値だけが 2〜4 個並んだ配列か。
+ *
+ * 判定に `valueType` の名前は使わない。型名は engine ごとに違い(`Vector3` / `Float3` / …)、
+ * 汎用ブリッジが特定エンジンの綴りを知ってはならない。値の形だけで決めるので、どの engine が
+ * 返した数値ベクトルにも同じように効く。
+ *
+ * NaN / Infinity を含むものは対象外。JSON にできない値なので成分エディタから送れず、
+ * JSON エディタ側で見えたほうがよい。
+ */
+export function isNumericVector(value: PropertyValue): value is number[] {
+  if (!Array.isArray(value)) return false;
+  if (value.length < VECTOR_MIN_LENGTH || value.length > VECTOR_MAX_LENGTH) return false;
+  return value.every((component) => typeof component === 'number' && Number.isFinite(component));
+}
+
+export function classifyValue(value: PropertyValue): ValueKind {
   if (value === null) return 'null';
-  if (Array.isArray(value)) return 'array';
+  if (Array.isArray(value)) return isNumericVector(value) ? 'vector' : 'array';
   switch (typeof value) {
     case 'string':
       return 'string';
@@ -541,10 +568,12 @@ function PropertyEditorControl(props: PropertyEditorControlProps): React.JSX.Ele
     case 'boolean':
       return <BooleanEditor {...props} />;
     case 'null':
+    case 'vector':
     case 'array':
     case 'object':
       // null / array / object all edit through the JSON editor so the user can
       // set any JSON value (a null can become a scalar, an array can be reshaped).
+      // vector はこの反復ではまだ JSON 編集のまま（成分エディタは T-017）。
       return <JsonEditor {...props} />;
     default: {
       // Exhaustiveness guard — TypeScript catches any unhandled kind.
