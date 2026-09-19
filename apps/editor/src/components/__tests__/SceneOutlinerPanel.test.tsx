@@ -867,6 +867,32 @@ describe('SceneOutlinerPanel — drag to reparent', () => {
     expect(reparentObject).not.toHaveBeenCalled();
   });
 
+  it('sends nothing for a drop that never started as a drag', () => {
+    renderTree();
+    fireEvent.drop(row('GroupNode'));
+    expect(reparentObject).not.toHaveBeenCalled();
+  });
+
+  it('does not let one grab be dropped twice', () => {
+    renderTree();
+    fireEvent.dragStart(row('NodeA'));
+    fireEvent.drop(row('GroupNode'));
+    expect(reparentObject).toHaveBeenCalledTimes(1);
+    // 掴んでいた id は落とした時点で捨てる。次のドロップは何も送らない。
+    fireEvent.drop(row('NodeB'));
+    expect(reparentObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('forgets the grab when the drag ends without a drop', () => {
+    renderTree();
+    fireEvent.dragStart(row('NodeA'));
+    fireEvent.dragOver(row('GroupNode'));
+    fireEvent.dragEnd(row('NodeA'));
+    expect(row('GroupNode').className).not.toContain('scene-node__row--drop');
+    fireEvent.drop(row('GroupNode'));
+    expect(reparentObject).not.toHaveBeenCalled();
+  });
+
   it('marks the row that would accept the drop, and clears it afterwards', () => {
     renderTree();
     fireEvent.dragStart(row('NodeA'));
