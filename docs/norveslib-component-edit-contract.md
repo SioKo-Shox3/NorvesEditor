@@ -48,7 +48,11 @@ Linux では構築できないため、実装と検証は作業機で行う。
 
 `schemaGetSnapshot` の出力で、factory に登録済みの `Component` 派生クラスにだけ
 `"instantiable":true` を付ける。それ以外の型には**欄そのものを出さない**(false を明示しても
-よいが、既定は「言わない」)。`kind` は投影契約どおりクラス名を使う。
+よいが、既定は「言わない」)。
+
+`typeDescriptor.kind` は**分類**であって型名ではない — `Component` 派生には `"component"`、
+それ以外には `"object"` を綴る(型名は `typeName` が運ぶ)。スナップショットの `components[].kind`
+がクラス名なのとは別の欄で、混同しないこと。
 
 エディタは `kind === "component" && instantiable === true` の型だけを追加候補に出す。欄が無い型は
 候補に入らないので、**広告を足すまで実エンジンでは追加 UI が出ない**(これは意図した degrade)。
@@ -87,6 +91,20 @@ component.remove params { objectId: "component:<entityObjectId>:<componentId>" }
 - `object.changed` に components を載せない(イベント側スキーマは `additionalProperties:false`)。
 - Undo/Redo の対応。削除はプロパティ値を復元できないため、エディタ側も undo スタックに積んでいない。
 - `scene.createObject` の `kind` 対応。同じ factory が土台になるが、別タスク。
+
+## 生成時にプロパティを渡せない型は登録しない
+
+`Entity::AddComponent` は生成直後に `BeginPlay` を呼ぶ。`component.add` の params は
+`{ objectId, kind }` だけで初期プロパティを運べないため、**BeginPlay の時点でプロパティが
+必要な型は、生成しても死んだ状態になる**。
+
+実例: `ScriptComponent` は `BeginPlay` で `ScriptRuntime::BindComponent` を試み、`ScriptPath` が
+空なので必ず失敗する。失敗後に再束縛する経路は無い(`BeginFrameMaintenance` は既存の束縛
+スロットしか見ない)ので、後から `object.setProperty` で `ScriptPath` を入れても動かない。
+したがって `ScriptComponent` は factory に登録しない。
+
+この制約を外すには `component.add` に初期プロパティを運ぶ欄を足すか、`AddComponent` と
+`BeginPlay` を分離する必要がある。どちらも別タスク。
 
 ## 受け入れ条件
 
