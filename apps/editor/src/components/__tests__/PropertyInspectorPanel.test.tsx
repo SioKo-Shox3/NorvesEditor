@@ -69,7 +69,9 @@ vi.mock('../../hooks/useBridge.js', () => ({
 import {
   PropertyInspectorPanel,
   classifyValue,
+  filterPropertyRows,
   isNumericVector,
+  __resetPropertyFilterMemory,
 } from '../PropertyInspectorPanel.js';
 
 afterEach(cleanup);
@@ -84,6 +86,8 @@ beforeEach(() => {
   addComponent.mockResolvedValue(true);
   removeComponent.mockReset();
   removeComponent.mockResolvedValue(true);
+  // 絞り込みはパネルをまたいで残るので、テストごとに戻す。
+  __resetPropertyFilterMemory();
   // Default: every write is accepted with the requested value echoed.
   setObjectProperty.mockImplementation((_id, _prop, value) =>
     Promise.resolve({ accepted: true, appliedValue: value as SetObjectPropertyResult['appliedValue'] }),
@@ -933,5 +937,114 @@ describe('isNumericVector / classifyValue', () => {
     expect(classifyValue('x')).toBe('string');
     expect(classifyValue(true)).toBe('boolean');
     expect(classifyValue({ x: 1, y: 2 })).toBe('object');
+  });
+});
+
+// -------------------------------------------------------------------------
+// プロパティの絞り込み
+// -------------------------------------------------------------------------
+
+describe('filterPropertyRows', () => {
+  const rows = [
+    { name: 'Position', value: [0, 0, 0], valueType: 'Vector3' },
+    { name: 'FieldOfView', value: 60, valueType: 'Float' },
+    { name: 'bEnabled', value: true, valueType: 'Bool' },
+    { name: 'Tag', value: 'hero' },
+  ];
+
+  it('passes everything through for an empty query', () => {
+    expect(filterPropertyRows(rows, '').map((r) => r.name)).toEqual([
+      'Position',
+      'FieldOfView',
+      'bEnabled',
+      'Tag',
+    ]);
+    expect(filterPropertyRows(rows, '   ').map((r) => r.name)).toHaveLength(4);
+  });
+
+  it('matches the name regardless of case, as a substring', () => {
+    expect(filterPropertyRows(rows, 'pos').map((r) => r.name)).toEqual(['Position']);
+    expect(filterPropertyRows(rows, 'OF').map((r) => r.name)).toEqual(['FieldOfView']);
+  });
+
+  it('matches the type name as well', () => {
+    expect(filterPropertyRows(rows, 'vector').map((r) => r.name)).toEqual(['Position']);
+    expect(filterPropertyRows(rows, 'bool').map((r) => r.name)).toEqual(['bEnabled']);
+  });
+
+  it('does not crash on a row without a type name', () => {
+    expect(filterPropertyRows(rows, 'tag').map((r) => r.name)).toEqual(['Tag']);
+    expect(filterPropertyRows(rows, 'float').map((r) => r.name)).toEqual(['FieldOfView']);
+  });
+
+  it('treats the query literally, not as a regular expression', () => {
+    // 打ち間違いが黙って 0 件に化けないこと。
+    expect(filterPropertyRows(rows, '.*')).toHaveLength(0);
+    expect(filterPropertyRows(rows, 'Position|Tag')).toHaveLength(0);
+  });
+
+  it('keeps the original order', () => {
+    // 'e' は Position の型名 Vector3 にも当たる（名前か型名のどちらかで残る）。
+    expect(filterPropertyRows(rows, 'e').map((r) => r.name)).toEqual([
+      'Position',
+      'FieldOfView',
+      'bEnabled',
+    ]);
+  });
+});
+
+describe('PropertyInspectorPanel — property filter', () => {
+  it('narrows the list and says so when nothing matches', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const input = screen.getByLabelText('プロパティを絞り込む');
+    fireEvent.change(input, { target: { value: 'label' } });
+    expect(screen.getByText('label')).toBeTruthy();
+    expect(screen.queryByText('fieldOfView')).toBeNull();
+
+    fireEvent.change(input, { target: { value: 'nothing-here' } });
+    expect(screen.getByText(/一致するプロパティがありません/)).toBeTruthy();
+
+    fireEvent.change(input, { target: { value: '' } });
+    expect(screen.getByText('fieldOfView')).toBeTruthy();
+  });
+
+  it('matches the type name shown on the row, including one filled in from the schema', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: 'n-9',
+      objectSnapshot: {
+        objectId: 'n-9',
+        kind: 'TypeA',
+        properties: [{ name: 'fieldOfView', value: 60 }, { name: 'other', value: 1 }],
+      },
+      // valueType はスナップショットに無く、schema 由来で画面に出る。
+      schemaTypes: [
+        { typeName: 'TypeA', properties: [{ name: 'fieldOfView', valueType: 'number' }] },
+      ],
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.change(screen.getByLabelText('プロパティを絞り込む'), {
+      target: { value: 'number' },
+    });
+    expect(screen.getByText('fieldOfView')).toBeTruthy();
+    expect(screen.queryByText('other')).toBeNull();
+  });
+
+  it('does not touch the selection or re-fetch', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    getObjectSnapshot.mockClear();
+    fireEvent.change(screen.getByLabelText('プロパティを絞り込む'), { target: { value: 'label' } });
+    expect(selectComponent).not.toHaveBeenCalled();
+    expect(getObjectSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('keeps the filter when the panel is closed and opened again', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    fireEvent.change(screen.getByLabelText('プロパティを絞り込む'), { target: { value: 'label' } });
+    cleanup();
+    renderSelected(DEMO_SNAPSHOT);
+    expect((screen.getByLabelText('プロパティを絞り込む') as HTMLInputElement).value).toBe('label');
+    expect(screen.queryByText('fieldOfView')).toBeNull();
   });
 });

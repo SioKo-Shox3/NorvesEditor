@@ -385,6 +385,22 @@ function ObjectProperties({ snapshot, schemaTypes }: ObjectPropertiesProps): Rea
     return descriptor?.properties?.find((p) => p.name === entry.name)?.valueType;
   }
 
+  // 絞り込みは他のパネルと同じ作り: パネルローカルで、パネルを離れても残す。1 文字ごとの
+  // dispatch で全パネルが再描画されるのを避けるため store には載せない。
+  const [filter, setFilterState] = useState(rememberedPropertyFilter);
+  function setFilter(next: string): void {
+    rememberedPropertyFilter = next;
+    setFilterState(next);
+  }
+
+  // 表示に使う型名まで解決してから絞り込む。画面に出ていない型名に当たって残る/消えるのは
+  // 利用者から見て説明がつかない。
+  const rows: PropertyEntry[] = snapshot.properties.map((entry) => ({
+    ...entry,
+    valueType: valueTypeFor(entry),
+  }));
+  const visibleRows = filterPropertyRows(rows, filter);
+
   return (
     <div className="inspector">
       <div className="inspector__header">
@@ -395,8 +411,21 @@ function ObjectProperties({ snapshot, schemaTypes }: ObjectPropertiesProps): Rea
         <span className="inspector__id">{snapshot.objectId}</span>
       </div>
 
+      <div className="panel__filter">
+        <input
+          type="search"
+          aria-label="プロパティを絞り込む"
+          placeholder="名前 / 型 で絞り込む"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+      </div>
+
+      {visibleRows.length === 0 ? (
+        <p className="inspector__empty-filter">一致するプロパティがありません。</p>
+      ) : (
       <ul className="inspector__props">
-        {snapshot.properties.map((entry) => (
+        {visibleRows.map((entry) => (
           // 数値ベクトルは成分の入力欄が 2〜4 個並ぶので、name と同じ行に押し込むと
           // Inspector の幅では 1 個ずつ折り返してしまう。行を分けて全幅を使う。
           <li
@@ -421,13 +450,46 @@ function ObjectProperties({ snapshot, schemaTypes }: ObjectPropertiesProps): Rea
                 value={entry.value}
               />
             </span>
-            {valueTypeFor(entry) !== undefined && (
-              <span className="inspector-prop__type">{valueTypeFor(entry)}</span>
+            {entry.valueType !== undefined && (
+              <span className="inspector-prop__type">{entry.valueType}</span>
             )}
           </li>
         ))}
       </ul>
+      )}
     </div>
+  );
+}
+
+/**
+ * パネルを離れても残す絞り込み。Outliner / Asset Browser と同じ理由で store に載せない。
+ * Entity のプロパティとコンポーネントのプロパティで 1 つを共有する — 絞り込みの文字は
+ * 入力欄に出ているので、意図せず隠れることはない。
+ */
+let rememberedPropertyFilter = '';
+
+/** テスト用: パネルをまたいで残る絞り込みを初期化する。 */
+export function __resetPropertyFilterMemory(): void {
+  rememberedPropertyFilter = '';
+}
+
+/**
+ * プロパティ行を `query` で絞り込む。名前か型名のどちらかに、大小を無視した部分一致。
+ * 正規表現にしない — 打ち間違いが黙って「0 件」に化ける。空の query は素通し。
+ *
+ * @param rows 表示に使う型名まで解決済みの行
+ * @param query 絞り込み文字列
+ * @returns 残る行（入力順のまま）
+ */
+export function filterPropertyRows(rows: PropertyEntry[], query: string): PropertyEntry[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') {
+    return rows;
+  }
+  return rows.filter(
+    (row) =>
+      row.name.toLowerCase().includes(needle) ||
+      (row.valueType?.toLowerCase().includes(needle) ?? false),
   );
 }
 

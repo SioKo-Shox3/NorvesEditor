@@ -871,6 +871,13 @@ html, body, #root {
   overflow: auto;
 }
 
+.inspector__empty-filter {
+  margin: 0;
+  padding: 10px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
 /* ---- property editor (Phase 5: object.setProperty write path) ---- */
 .prop-editor {
   display: flex;
