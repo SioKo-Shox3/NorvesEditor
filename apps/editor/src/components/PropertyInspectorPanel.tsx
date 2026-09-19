@@ -752,7 +752,19 @@ function VectorEditor({
   const committed = value as number[];
   const [drafts, setDrafts] = useState<string[]>(() => committed.map((component) => String(component)));
 
-  function commitIndex(index: number): void {
+  function commitIndex(index: number, input: HTMLInputElement): void {
+    if (pending) {
+      return;  // 送信中は読み取り専用。Enter の二重送信を止める。
+    }
+
+    // `type="number"` は数値として読めない入力を value から落とすが、打った文字は画面に残り、
+    // validity.badInput が立つ。空欄として扱うと「数値を入力してください」が画面と食い違うので
+    // 分けて言う。
+    if (input.validity.badInput) {
+      onInvalidJson('数値として読めません。');
+      return;
+    }
+
     const text = (drafts[index] ?? '').trim();
     if (text === '') {
       onInvalidJson('数値を入力してください。');
@@ -788,17 +800,23 @@ function VectorEditor({
               type="number"
               aria-label={`${property} ${label}`}
               value={drafts[index] ?? ''}
-              disabled={pending}
+              /*
+                送信中も disabled にしない。フォーカス中の要素を disable すると Chromium が
+                そこでフォーカスを捨て、X -> Tab -> Y と続けて打てなくなる（成分が 2〜4 個
+                あるベクトルではこれが編集の主経路）。readOnly なら焦点は残り、入力だけ止まる。
+              */
+              readOnly={pending}
+              aria-busy={pending}
               onChange={(e) => {
                 const next = e.target.value;
                 setDrafts((previous) => previous.map((draft, at) => (at === index ? next : draft)));
                 onClearFeedback();
               }}
-              onBlur={() => commitIndex(index)}
+              onBlur={(e) => commitIndex(index, e.currentTarget)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
-                  commitIndex(index);
+                  commitIndex(index, e.currentTarget);
                 }
               }}
             />

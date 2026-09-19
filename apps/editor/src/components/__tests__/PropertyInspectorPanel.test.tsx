@@ -446,6 +446,56 @@ describe('PropertyInspectorPanel — vector editor', () => {
     expect(screen.queryByRole('button', { name: 'samples を JSON で編集' })).toBeNull();
   });
 
+  it('keeps focus reachable while a write is in flight', () => {
+    // 送信中に disabled にすると、Chromium はフォーカス中の要素から焦点を捨てる。成分が
+    // 2〜4 個あるベクトルでは X -> Tab -> Y が編集の主経路なので、readOnly で止める。
+    let settle: (result: SetObjectPropertyResult) => void = () => {};
+    setObjectProperty.mockImplementation(
+      () => new Promise<SetObjectPropertyResult>((resolve) => { settle = resolve; }),
+    );
+    renderSelected(VECTOR_SNAPSHOT);
+    const x = axis('position', 'X');
+    const y = axis('position', 'Y');
+    fireEvent.change(x, { target: { value: '3' } });
+    fireEvent.blur(x);
+
+    expect(x.disabled).toBe(false);
+    expect(x.readOnly).toBe(true);
+    expect(y.disabled).toBe(false);
+    expect(y.readOnly).toBe(true);
+    settle({ accepted: true });
+  });
+
+  it('does not send a second write while one is in flight', () => {
+    let settle: (result: SetObjectPropertyResult) => void = () => {};
+    setObjectProperty.mockImplementation(
+      () => new Promise<SetObjectPropertyResult>((resolve) => { settle = resolve; }),
+    );
+    renderSelected(VECTOR_SNAPSHOT);
+    const y = axis('position', 'Y');
+    fireEvent.change(y, { target: { value: '4' } });
+    fireEvent.keyDown(y, { key: 'Enter' });
+    expect(setObjectProperty).toHaveBeenCalledTimes(1);
+    // readOnly なので値は変えられないが、Enter は届く。送信中は無視する。
+    fireEvent.keyDown(y, { key: 'Enter' });
+    fireEvent.blur(y);
+    expect(setObjectProperty).toHaveBeenCalledTimes(1);
+    settle({ accepted: true });
+  });
+
+  it('says the input is unreadable when the browser reports bad input', () => {
+    // type="number" は読めない入力を value から落とすが、打った文字は画面に残り
+    // validity.badInput が立つ。空欄扱いの文言だと画面と食い違う。
+    renderSelected(VECTOR_SNAPSHOT);
+    const x = axis('position', 'X');
+    Object.defineProperty(x, 'validity', { value: { badInput: true }, configurable: true });
+    fireEvent.change(x, { target: { value: '' } });
+    fireEvent.blur(x);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+    expect(screen.getByText('数値として読めません。')).toBeTruthy();
+    expect(screen.queryByText(/数値を入力してください/)).toBeNull();
+  });
+
   it('reports a rejected vector write inline', async () => {
     setObjectProperty.mockResolvedValue({ accepted: false });
     renderSelected(VECTOR_SNAPSHOT);

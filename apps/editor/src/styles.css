@@ -934,6 +934,12 @@ html, body, #root {
   min-width: 0;
 }
 
+/* 送信中は disabled ではなく readOnly にしている（フォーカスを保つため）ので、
+   同じ「触れない」見え方をここで与える。 */
+.prop-editor__input--axis:read-only {
+  opacity: 0.6;
+}
+
 .prop-editor__mode {
   align-self: flex-start;
   padding: 1px 8px;
