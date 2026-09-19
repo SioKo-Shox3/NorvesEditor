@@ -410,13 +410,12 @@ function ObjectProperties({ snapshot, schemaTypes }: ObjectPropertiesProps): Rea
             <span className="inspector-prop__name">{entry.name}</span>
             <span className="inspector-prop__value">
               {/*
-                Key the editor by objectId + property + a serialization of the
-                committed value so that when the store snapshot is replaced (a
-                fresh fetch or an applied write) the editor re-seeds its local
-                state from the new value instead of keeping stale local edits.
+                Key the editor by objectId + property only. Re-seeding on a new
+                committed value is decided inside the row, which knows whether
+                the user is currently typing in it (see PropertyEditor).
               */}
               <PropertyEditor
-                key={`${snapshot.objectId}:${entry.name}:${stableValueKey(entry.value)}`}
+                key={`${snapshot.objectId}:${entry.name}`}
                 objectId={snapshot.objectId}
                 property={entry.name}
                 value={entry.value}
@@ -508,8 +507,12 @@ type RowFeedback =
  * One editable property row. Holds the in-progress edit in LOCAL state so a
  * keystroke never dispatches (no per-keystroke全パネル re-render). Commits via
  * setObjectProperty only on blur / Enter (scalars), toggle (boolean), or Apply
- * (JSON for null / array / object). On a successful accepted write the store
- * snapshot is updated by the action; this row's key changes and it re-seeds.
+ * (JSON for null / array / object).
+ *
+ * 再シード: 確定値が変わったら（取得し直し・書き込みの反映・engine 発の object.changed）
+ * 下書きを作り直す。ただし**この行が焦点を持つ間は作り直さない** — 入力の途中で値が届いた
+ * だけで打った文字が黙って消えるのは、編集の取りこぼしになる。焦点が外れた時点で最新の
+ * 確定値へ揃える。コミットに使う値は常に最新で、下書きだけを据え置く。
  */
 function PropertyEditor({ objectId, property, value }: PropertyEditorProps): React.JSX.Element {
   const actions = useBridgeActions();
@@ -518,6 +521,23 @@ function PropertyEditor({ objectId, property, value }: PropertyEditorProps): Rea
   // Whether a commit is in flight (disables the control + shows a hint).
   const [pending, setPending] = useState(false);
   const [feedback, setFeedback] = useState<RowFeedback>({ kind: 'none' });
+
+  // 下書きを作り直す契機。これが変わったときだけ編集コントロールを作り直す。
+  const rowRef = useRef<HTMLSpanElement>(null);
+  const liveKey = stableValueKey(value);
+  const [seedKey, setSeedKey] = useState(liveKey);
+
+  function hasFocus(): boolean {
+    const row = rowRef.current;
+    return row !== null && row.contains(document.activeElement);
+  }
+
+  // 焦点が無いときに届いた新しい確定値は、その場で下書きへ反映する。
+  useEffect(() => {
+    if (liveKey !== seedKey && !hasFocus()) {
+      setSeedKey(liveKey);
+    }
+  });
 
   // Submit a committed value to the engine. Centralizes the pending / feedback
   // lifecycle for every editor kind. The value here is already a real
@@ -541,8 +561,14 @@ function PropertyEditor({ objectId, property, value }: PropertyEditorProps): Rea
   }
 
   return (
-    <span className="prop-editor">
+    <span
+      className="prop-editor"
+      ref={rowRef}
+      // focusout。行から焦点が外れた時点で、据え置いていた確定値へ揃える。
+      onBlur={() => setSeedKey(stableValueKey(value))}
+    >
       <PropertyEditorControl
+        key={seedKey}
         kind={kind}
         property={property}
         value={value}

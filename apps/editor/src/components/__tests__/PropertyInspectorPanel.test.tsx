@@ -507,6 +507,98 @@ describe('PropertyInspectorPanel — vector editor', () => {
 });
 
 // -------------------------------------------------------------------------
+// 入力中に届いた確定値の扱い（再シード）
+// -------------------------------------------------------------------------
+
+describe('PropertyInspectorPanel — re-seeding while editing', () => {
+  function renderWith(snapshot: ObjectSnapshot) {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: snapshot.objectId,
+      objectSnapshot: snapshot,
+    };
+    return render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+  }
+
+  function withProperty(name: string, value: PropertyValue): ObjectSnapshot {
+    return {
+      ...VECTOR_SNAPSHOT,
+      properties: VECTOR_SNAPSHOT.properties.map((entry) =>
+        entry.name === name ? { ...entry, value } : entry,
+      ),
+    };
+  }
+
+  it('keeps the in-progress draft when a live update lands on the focused row', () => {
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    y.focus();
+    fireEvent.change(y, { target: { value: '9' } });
+
+    // engine 発の object.changed 相当。行は焦点を持っているので下書きは消えない。
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [0, 100, -10]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect((screen.getByLabelText('position Y') as HTMLInputElement).value).toBe('9');
+  });
+
+  it('re-seeds a row the user is not editing', () => {
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    // どこにも焦点を置かない。
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [0, 100, -10]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect((screen.getByLabelText('position Y') as HTMLInputElement).value).toBe('100');
+  });
+
+  it('catches up to the latest value once the row loses focus', () => {
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    y.focus();
+    fireEvent.change(y, { target: { value: '9' } });
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [0, 100, -10]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+
+    // 打った 9 を送ったあと（blur でコミット）、据え置いていた確定値へ揃う。
+    y.blur();
+    fireEvent.blur(y);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [0, 9, -10]);
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect((screen.getByLabelText('position Y') as HTMLInputElement).value).toBe('100');
+  });
+
+  it('sends the latest sibling components, not the ones seen when editing started', () => {
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    y.focus();
+    fireEvent.change(y, { target: { value: '9' } });
+    // X が engine 側で動いた。送るのは「編集した成分は下書き、他は最新」。
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [7, 1.5, -10]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.blur(y);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [7, 9, -10]);
+  });
+
+  it('keeps a string draft too', () => {
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const input = screen.getByDisplayValue('Example Name') as HTMLInputElement;
+    input.focus();
+    fireEvent.change(input, { target: { value: 'typing...' } });
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'label' ? { ...entry, value: 'from engine' } : entry,
+        ),
+      },
+    };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect(screen.getByDisplayValue('typing...')).toBeTruthy();
+    expect(screen.queryByDisplayValue('from engine')).toBeNull();
+  });
+});
+
+// -------------------------------------------------------------------------
 // Write feedback (accepted:false / backend error)
 // -------------------------------------------------------------------------
 
