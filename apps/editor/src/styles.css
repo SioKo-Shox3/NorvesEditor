@@ -870,6 +870,64 @@ html, body, #root {
   cursor: default;
 }
 
+/* 数値ベクトル: 成分入力を横に並べ、幅が足りなければ折り返す（Inspector は狭い）。 */
+.prop-editor__vector-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.prop-editor__vector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.prop-editor__axis {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  /* 成分が 2〜4 個なので、2 個並んでも折り返しても読める最小幅にする。 */
+  flex: 1 1 64px;
+}
+
+.prop-editor__axis-label {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  /* X / Y / Z / W で幅が揺れないように固定する。 */
+  width: 9px;
+  flex: none;
+}
+
+.prop-editor__input--axis {
+  /* number 入力の既定の最小幅より狭くできるようにする。 */
+  min-width: 0;
+}
+
+.prop-editor__mode {
+  align-self: flex-start;
+  padding: 1px 8px;
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.prop-editor__mode:hover:not(:disabled) {
+  color: var(--color-text);
+}
+
+.prop-editor__mode:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .prop-editor__hint {
   font-size: 10px;
 }

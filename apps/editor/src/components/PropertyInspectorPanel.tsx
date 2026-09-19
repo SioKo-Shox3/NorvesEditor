@@ -535,6 +535,7 @@ function PropertyEditor({ objectId, property, value }: PropertyEditorProps): Rea
     <span className="prop-editor">
       <PropertyEditorControl
         kind={kind}
+        property={property}
         value={value}
         pending={pending}
         onCommitValue={(next) => void commit(next)}
@@ -548,6 +549,8 @@ function PropertyEditor({ objectId, property, value }: PropertyEditorProps): Rea
 
 interface PropertyEditorControlProps {
   kind: ValueKind;
+  /** The property name — used to give each control a unique accessible name. */
+  property: string;
   value: PropertyValue;
   pending: boolean;
   /** Commit a parsed/coerced PropertyValue to the engine. */
@@ -567,13 +570,14 @@ function PropertyEditorControl(props: PropertyEditorControlProps): React.JSX.Ele
       return <NumberEditor {...props} />;
     case 'boolean':
       return <BooleanEditor {...props} />;
-    case 'null':
     case 'vector':
+      // 数値ベクトルは成分ごとの入力欄。JSON 編集へ戻す道も残す（下記 VectorOrJsonEditor）。
+      return <VectorOrJsonEditor {...props} />;
+    case 'null':
     case 'array':
     case 'object':
       // null / array / object all edit through the JSON editor so the user can
       // set any JSON value (a null can become a scalar, an array can be reshaped).
-      // vector はこの反復ではまだ JSON 編集のまま（成分エディタは T-017）。
       return <JsonEditor {...props} />;
     default: {
       // Exhaustiveness guard — TypeScript catches any unhandled kind.
@@ -680,6 +684,113 @@ function BooleanEditor({
       />
       <span>{(value as boolean) ? 'true' : 'false'}</span>
     </label>
+  );
+}
+
+// ---- vector editor (numeric array of length 2..4) --------------------------
+
+/** 成分ラベル。長さ 4 はクォータニオンにも RGBA にもなり得るので中立な綴りにする。 */
+const AXIS_LABELS = ['X', 'Y', 'Z', 'W'] as const;
+
+/**
+ * 数値ベクトル行。成分ごとの入力欄と、JSON 編集へ戻す切り替えを持つ。
+ *
+ * 切り替えを残すのは、この変更の前は**あらゆる配列が JSON で編集でき、長さも変えられた**ため。
+ * 成分エディタがその能力を奪ってはならない。
+ *
+ * 切り替えの状態は行のローカル state で、確定値が変わると行ごと再生成されて既定（成分編集）へ
+ * 戻る。書き込みが通ったあとも JSON のままにしておく理由が無く、状態を持ち越す仕掛けを足す
+ * ほうが読みにくいので、そのままにする。
+ */
+function VectorOrJsonEditor(props: PropertyEditorControlProps): React.JSX.Element {
+  const [useJson, setUseJson] = useState(false);
+
+  return (
+    <span className="prop-editor__vector-wrap">
+      {useJson ? <JsonEditor {...props} /> : <VectorEditor {...props} />}
+      <button
+        type="button"
+        className="prop-editor__mode"
+        disabled={props.pending}
+        aria-label={useJson ? `${props.property} を成分で編集` : `${props.property} を JSON で編集`}
+        onClick={() => {
+          props.onClearFeedback();
+          setUseJson((previous) => !previous);
+        }}
+      >
+        {useJson ? '成分で編集' : 'JSON で編集'}
+      </button>
+    </span>
+  );
+}
+
+/**
+ * 成分ごとの number 入力。blur / Enter で**配列全体**を送る（プロトコルは配列全体を運ぶので、
+ * 成分単位の書き込みという概念が無い）。編集していない成分は確定値から取る。
+ *
+ * 空欄は送らず、行内にエラーを出す。`type="number"` の入力欄は数値として読めない文字列を
+ * 空文字へ正規化するので、UI から届く不正値は実質これだけ。`Number.isFinite` の判定はその
+ * 先の防御で、JSON にできない値（NaN / Infinity）をエンジンへ渡さないために残す。
+ */
+function VectorEditor({
+  property,
+  value,
+  pending,
+  onCommitValue,
+  onInvalidJson,
+  onClearFeedback,
+}: PropertyEditorControlProps): React.JSX.Element {
+  const committed = value as number[];
+  const [drafts, setDrafts] = useState<string[]>(() => committed.map((component) => String(component)));
+
+  function commitIndex(index: number): void {
+    const text = (drafts[index] ?? '').trim();
+    if (text === '') {
+      onInvalidJson('数値を入力してください。');
+      return;
+    }
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed)) {
+      // 入力欄が先に正規化するので通常は届かない。届いたら JSON にできないので送らない。
+      onInvalidJson(`数値として読めません: ${text}`);
+      return;
+    }
+    if (parsed === committed[index]) {
+      return;  // 変化なし。往復を増やさない。
+    }
+    onCommitValue(committed.map((component, at) => (at === index ? parsed : component)));
+  }
+
+  return (
+    <span className="prop-editor__vector">
+      {committed.map((_component, index) => {
+        const label = AXIS_LABELS[index] ?? String(index);
+        return (
+          <label className="prop-editor__axis" key={index}>
+            <span className="prop-editor__axis-label">{label}</span>
+            <input
+              className="value value--number prop-editor__input prop-editor__input--axis"
+              type="number"
+              aria-label={`${property} ${label}`}
+              value={drafts[index] ?? ''}
+              disabled={pending}
+              onChange={(e) => {
+                const next = e.target.value;
+                setDrafts((previous) => previous.map((draft, at) => (at === index ? next : draft)));
+                onClearFeedback();
+              }}
+              onBlur={() => commitIndex(index)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  commitIndex(index);
+                }
+              }}
+            />
+          </label>
+        );
+      })}
+    </span>
   );
 }
 

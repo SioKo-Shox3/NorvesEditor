@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import type { BridgeState } from '../../state/store.js';
 import { INITIAL_STATE } from '../../state/store.js';
 import type { ObjectSnapshot, PropertyValue, SetObjectPropertyResult } from '@norves/bridge-ui';
@@ -103,6 +103,8 @@ const DEMO_SNAPSHOT: ObjectSnapshot = {
     { name: 'enabled', value: true, valueType: 'boolean' },
     { name: 'parent', value: null },
     { name: 'position', value: [0, 1.5, -10], valueType: 'vector3' },
+    // 成分編集の対象にならない配列（長さ 5）。JSON エディタの経路をここで押さえる。
+    { name: 'samples', value: [1, 1.5, 2, 3, 4], valueType: 'array' },
     { name: 'metadata', value: { locked: false, tag: 'primary' } },
   ],
 };
@@ -188,7 +190,15 @@ describe('PropertyInspectorPanel — editor controls', () => {
 
   it('renders all property names', () => {
     renderSelected(DEMO_SNAPSHOT);
-    for (const name of ['label', 'fieldOfView', 'enabled', 'parent', 'position', 'metadata']) {
+    for (const name of [
+      'label',
+      'fieldOfView',
+      'enabled',
+      'parent',
+      'position',
+      'samples',
+      'metadata',
+    ]) {
       expect(screen.getByText(name)).toBeTruthy();
     }
   });
@@ -306,7 +316,7 @@ describe('PropertyInspectorPanel — JSON editor', () => {
     fireEvent.change(textarea, { target: { value: '[9, 8, 7]' } });
     const apply = textarea.parentElement?.querySelector('button') as HTMLButtonElement;
     fireEvent.click(apply);
-    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [9, 8, 7]);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'samples', [9, 8, 7]);
   });
 
   it('lets a null value be edited to a scalar via the JSON editor', () => {
@@ -323,6 +333,126 @@ describe('PropertyInspectorPanel — JSON editor', () => {
     ) as HTMLButtonElement;
     fireEvent.click(apply);
     expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'parent', 'now-a-string');
+  });
+});
+
+// -------------------------------------------------------------------------
+// 数値ベクトルの成分エディタ
+// -------------------------------------------------------------------------
+
+const VECTOR_SNAPSHOT: ObjectSnapshot = {
+  objectId: 'n-1',
+  name: 'NodeV',
+  kind: 'object',
+  properties: [
+    { name: 'position', value: [0, 1.5, -10], valueType: 'vector3' },
+    { name: 'rotation', value: [0, 0, 0, 1], valueType: 'quat' },
+    { name: 'uv', value: [0.25, 0.75] },
+  ],
+};
+
+describe('PropertyInspectorPanel — vector editor', () => {
+  function axis(property: string, label: string): HTMLInputElement {
+    return screen.getByLabelText(`${property} ${label}`) as HTMLInputElement;
+  }
+
+  it('renders one number input per component, seeded and labelled', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    expect(axis('position', 'X').value).toBe('0');
+    expect(axis('position', 'Y').value).toBe('1.5');
+    expect(axis('position', 'Z').value).toBe('-10');
+    expect(axis('position', 'X').type).toBe('number');
+    // 長さ 4 は W まで、長さ 2 は Y まで。
+    expect(axis('rotation', 'W').value).toBe('1');
+    expect(axis('uv', 'Y').value).toBe('0.75');
+    expect(screen.queryByLabelText('uv Z')).toBeNull();
+    expect(screen.queryByLabelText('position W')).toBeNull();
+  });
+
+  it('commits the whole array on blur, changing only the edited component', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    const y = axis('position', 'Y');
+    fireEvent.change(y, { target: { value: '4' } });
+    // 打鍵では送らない（編集は行ローカル）。
+    expect(setObjectProperty).not.toHaveBeenCalled();
+    fireEvent.blur(y);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [0, 4, -10]);
+  });
+
+  it('commits on Enter as well', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    const z = axis('position', 'Z');
+    fireEvent.change(z, { target: { value: '-2.5' } });
+    fireEvent.keyDown(z, { key: 'Enter' });
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [0, 1.5, -2.5]);
+  });
+
+  it('does not commit when the component is unchanged', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    const x = axis('position', 'X');
+    fireEvent.blur(x);
+    // 表記が違っても値が同じなら送らない。
+    fireEvent.change(x, { target: { value: '0.0' } });
+    fireEvent.blur(x);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+  });
+
+  it('refuses an empty component and says so inline', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    const x = axis('position', 'X');
+    fireEvent.change(x, { target: { value: '' } });
+    fireEvent.blur(x);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+    expect(screen.getByText(/数値を入力してください/)).toBeTruthy();
+  });
+
+  it('never sends a value JSON cannot carry', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    const x = axis('position', 'X');
+    // type="number" の入力欄は数値として読めない文字列を空文字へ正規化する。したがって
+    // 溢れる値も読めない文字列も、成分エディタからは出ていかない。
+    for (const candidate of ['1e999', 'abc', '--3', '1.2.3']) {
+      fireEvent.change(x, { target: { value: candidate } });
+      expect(x.value).toBe('');
+      fireEvent.blur(x);
+    }
+    expect(setObjectProperty).not.toHaveBeenCalled();
+  });
+
+  it('keeps a JSON escape hatch so the array can still be reshaped', async () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    expect(screen.queryByRole('textbox')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'position を JSON で編集' }));
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    expect(textarea.tagName).toBe('TEXTAREA');
+    // 成分エディタでは作れない長さへ変えられる。
+    fireEvent.change(textarea, { target: { value: '[1, 2, 3, 4, 5]' } });
+    fireEvent.click(textarea.parentElement?.querySelector('button') as HTMLButtonElement);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [1, 2, 3, 4, 5]);
+
+    // 戻せる。送信中は切り替えを止めているので、確定してから押す。
+    const backToAxes = screen.getByRole('button', { name: 'position を成分で編集' });
+    await waitFor(() => expect((backToAxes as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(backToAxes);
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(axis('position', 'X')).toBeTruthy();
+  });
+
+  it('leaves a non-vector array on the JSON editor', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    // samples は長さ 5 なので成分編集にならない。
+    expect(screen.queryByLabelText('samples X')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'samples を JSON で編集' })).toBeNull();
+  });
+
+  it('reports a rejected vector write inline', async () => {
+    setObjectProperty.mockResolvedValue({ accepted: false });
+    renderSelected(VECTOR_SNAPSHOT);
+    const y = axis('position', 'Y');
+    fireEvent.change(y, { target: { value: '9' } });
+    fireEvent.blur(y);
+    expect(await screen.findByText(/エンジンが変更を拒否しました/)).toBeTruthy();
   });
 });
 
