@@ -669,6 +669,60 @@ describe('PropertyInspectorPanel — re-seeding while editing', () => {
     expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [5, 1.5, -99]);
   });
 
+  it('survives the engine changing the kind of a focused value', () => {
+    // 種類を最新値から決め、入力欄を下書きの元から描くと、焦点中に種類が変わった行で
+    // 噛み合わないコントロールが描かれて落ちる。error boundary は無いので画面ごと白くなる。
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const text = screen.getByDisplayValue('Example Name') as HTMLInputElement;
+    text.focus();
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'label' ? { ...entry, value: [1, 2, 3] } : entry,
+        ),
+      },
+    };
+    expect(() => rerender(<PropertyInspectorPanel {...makeDockviewProps()} />)).not.toThrow();
+    // 据え置き中は元の姿のまま。焦点が外れてから新しい形になる。
+    expect(screen.getByDisplayValue('Example Name')).toBeTruthy();
+    fireEvent.blur(text);
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect(screen.getByLabelText('label X')).toBeTruthy();
+  });
+
+  it('survives the same change on a JSON row', () => {
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const nullEditor = screen
+      .getAllByRole('textbox')
+      .filter((el): el is HTMLTextAreaElement => el.tagName === 'TEXTAREA')
+      .find((t) => t.value === 'null') as HTMLTextAreaElement;
+    nullEditor.focus();
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'parent' ? { ...entry, value: [1, 2, 3] } : entry,
+        ),
+      },
+    };
+    expect(() => rerender(<PropertyInspectorPanel {...makeDockviewProps()} />)).not.toThrow();
+  });
+
+  it('refuses to send when the engine changed the value out of vector shape', () => {
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    y.focus();
+    fireEvent.change(y, { target: { value: '9' } });
+    mockState = { ...mockState, objectSnapshot: withProperty('position', 'not a vector') };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.blur(y);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+    expect(screen.getByText(/engine 側で無くなりました/)).toBeTruthy();
+  });
+
   it('keeps a string draft too', () => {
     const { rerender } = renderWith(DEMO_SNAPSHOT);
     const input = screen.getByDisplayValue('Example Name') as HTMLInputElement;

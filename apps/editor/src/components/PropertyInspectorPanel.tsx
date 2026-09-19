@@ -584,7 +584,6 @@ type RowFeedback =
  */
 function PropertyEditor({ objectId, property, value }: PropertyEditorProps): React.JSX.Element {
   const actions = useBridgeActions();
-  const kind = classifyValue(value);
 
   // Whether a commit is in flight (disables the control + shows a hint).
   const [pending, setPending] = useState(false);
@@ -593,6 +592,11 @@ function PropertyEditor({ objectId, property, value }: PropertyEditorProps): Rea
   // 下書きの元になっている確定値。焦点がある間は据え置かれ、最新の value と食い違う。
   const rowRef = useRef<HTMLSpanElement>(null);
   const [seededValue, setSeededValue] = useState<PropertyValue>(value);
+
+  // 種類は**下書きの元**から決める。最新値から決めると、据え置き中に engine が値の種類を
+  // 変えたとき（null -> 配列など）、下書きと噛み合わないコントロールが描かれて落ちる。
+  // 描くものと下書きの元は常に同じ値から作る。
+  const kind = classifyValue(seededValue);
   const liveKey = stableValueKey(value);
   const seedKey = stableValueKey(seededValue);
 
@@ -890,14 +894,14 @@ function VectorEditor({
     }
 
     // 送る中身は最新の確定値から組む。編集した成分だけ下書きで置き換える。
-    const latest = value as number[];
-    if (index >= latest.length) {
-      // 据え置き中に成分の数が減った。どこへ入れるべきか決められないので送らない。
-      // 焦点が外れれば新しい形で作り直される。
+    // 据え置き中に engine 側が値の種類ごと変えている場合があるので、数値ベクトルのままか
+    // 確かめてから使う。外れていたら、どこへ入れるべきか決められないので送らない
+    // （焦点が外れれば新しい形で作り直される）。
+    if (!isNumericVector(value) || index >= value.length) {
       onInvalidJson('この成分は engine 側で無くなりました。');
       return;
     }
-    onCommitValue(latest.map((component, at) => (at === index ? parsed : component)));
+    onCommitValue(value.map((component, at) => (at === index ? parsed : component)));
   }
 
   return (

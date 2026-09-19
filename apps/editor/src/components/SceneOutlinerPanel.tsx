@@ -26,6 +26,7 @@ import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import type { SceneNode } from '@norves/bridge-ui';
+import { normalizeOldParentId } from '../state/store.js';
 import { useBridgeState } from '../state/BridgeContext.js';
 import { useBridgeActions } from '../hooks/useBridge.js';
 
@@ -164,6 +165,62 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
   const filtering = filter.trim() !== '';
   // 絞り込み中は折りたたみを無視するので、キー操作が歩く並びも同じ集合で作る。
   const effectiveCollapsed = filtering ? EMPTY_COLLAPSED : collapsed;
+
+  // -----------------------------------------------------------------------
+  // ドラッグで親を付け替える。掴んでいる id は ref に持ち、dataTransfer には載せない —
+  // 同じアプリの中で完結する操作で、dataTransfer は WebView やテスト環境ごとに扱いが違う。
+  // 受けるかどうかの判定は**絞り込み前の木**に対して行う（隠れているだけの子孫も子孫）。
+  // -----------------------------------------------------------------------
+  const draggedIdRef = useRef<string | undefined>(undefined);
+  const [dropTargetId, setDropTargetId] = useState<string | undefined>(undefined);
+
+  function decideDrop(targetId: string): DropDecision {
+    const dragged = draggedIdRef.current;
+    if (dragged === undefined || sceneTree === undefined || editDisabled) {
+      return { accepted: false };
+    }
+    return resolveDropTarget(sceneTree, dragged, targetId);
+  }
+
+  const handleDragStart = (id: string): void => {
+    draggedIdRef.current = id;
+  };
+
+  const handleDragEnd = (): void => {
+    draggedIdRef.current = undefined;
+    setDropTargetId(undefined);
+  };
+
+  const handleDragOver = (id: string, event: React.DragEvent): boolean => {
+    if (!decideDrop(id).accepted) {
+      return false;
+    }
+    // preventDefault を呼んだ要素だけがドロップを受け付ける（HTML の約束）。
+    event.preventDefault();
+    if (dropTargetId !== id) {
+      setDropTargetId(id);
+    }
+    return true;
+  };
+
+  const handleDragLeave = (id: string): void => {
+    if (dropTargetId === id) {
+      setDropTargetId(undefined);
+    }
+  };
+
+  const handleDrop = (id: string, event: React.DragEvent): void => {
+    const draggedId = draggedIdRef.current;
+    const decision = decideDrop(id);
+    draggedIdRef.current = undefined;
+    setDropTargetId(undefined);
+    if (draggedId === undefined || !decision.accepted) {
+      return;
+    }
+    event.preventDefault();
+    // 動かすのは掴んでいたノード。落とし先は新しい親になる（最上段はルート = undefined）。
+    void actions.reparentObject(draggedId, decision.newParentId);
+  };
 
   // -----------------------------------------------------------------------
   // キーボード操作。上下で行を移り、左右で開閉する（ツリーの一般的な約束）。
@@ -367,12 +424,95 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
               onSelect={handleSelect}
               collapsed={effectiveCollapsed}
               onToggleCollapsed={toggleCollapsed}
+              drag={{
+                enabled: !editDisabled,
+                dropTargetId,
+                onDragStart: handleDragStart,
+                onDragEnd: handleDragEnd,
+                onDragOver: handleDragOver,
+                onDragLeave: handleDragLeave,
+                onDrop: handleDrop,
+              }}
             />
           </ul>
         )}
       </div>
     </div>
   );
+}
+
+// -------------------------------------------------------------------------
+// Drag and drop reparenting
+// -------------------------------------------------------------------------
+
+/** ドロップを受けるかどうかと、受けるなら渡す親。 */
+export type DropDecision =
+  | { accepted: false }
+  | { accepted: true; newParentId: string | undefined };
+
+/** `node` の部分木に `id` が含まれるか（自分自身を含む）。 */
+function subtreeContains(node: SceneNode, id: string): boolean {
+  if (node.id === id) {
+    return true;
+  }
+  return (node.children ?? []).some((child) => subtreeContains(child, id));
+}
+
+/** `root` の部分木から `id` のノードを探す。 */
+function findNode(node: SceneNode, id: string): SceneNode | undefined {
+  if (node.id === id) {
+    return node;
+  }
+  for (const child of node.children ?? []) {
+    const found = findNode(child, id);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * `draggedId` を `targetId` の上に落としたときに、エンジンへ何を送るかを決める。
+ *
+ * 判定は**絞り込み前の木**に対して行う。絞り込みで隠れているだけの子孫も子孫であり、
+ * 見えていないからといって親子関係を作ってよいわけではない。
+ *
+ * 受けないのは: 同じノード / シーンルート自身を動かす / 自分の部分木の中へ入れる（輪ができる）/
+ * いまと同じ親へ入れる（何も変わらない往復を作らない）/ 木に無い id。
+ *
+ * ツリーの最上段はエンジンが返す合成ルートなので、そこへ落とすときは親を `undefined` に
+ * する（エンジンの nullptr=root の経路。id をそのまま渡さない）。
+ *
+ * @param root シーンツリーの根（絞り込み前）
+ * @param draggedId 掴んでいるノードの id
+ * @param targetId 落とし先のノードの id
+ * @returns 送る内容、または受けない
+ */
+export function resolveDropTarget(
+  root: SceneNode,
+  draggedId: string,
+  targetId: string,
+): DropDecision {
+  if (draggedId === targetId || draggedId === root.id) {
+    return { accepted: false };
+  }
+
+  const dragged = findNode(root, draggedId);
+  if (dragged === undefined || findNode(root, targetId) === undefined) {
+    return { accepted: false };
+  }
+
+  // 自分の中へは入れられない（輪ができる）。
+  if (subtreeContains(dragged, targetId)) {
+    return { accepted: false };
+  }
+
+  const newParentId = targetId === root.id ? undefined : targetId;
+  if (normalizeOldParentId(root, draggedId) === newParentId) {
+    return { accepted: false };  // いまと同じ親。
+  }
+  return { accepted: true, newParentId };
 }
 
 // -------------------------------------------------------------------------
@@ -462,6 +602,19 @@ export function filterSceneTree(node: SceneNode, query: string): SceneNode | und
 // Recursive tree node
 // -------------------------------------------------------------------------
 
+/** ドラッグでの親付け替えに必要なものをまとめて渡す（行ごとに 6 個の prop を配らない）。 */
+interface SceneTreeDrag {
+  /** 編集できない接続では掴めないようにする。 */
+  enabled: boolean;
+  /** いま受け入れ表示にする行。 */
+  dropTargetId: string | undefined;
+  onDragStart: (id: string) => void;
+  onDragEnd: () => void;
+  onDragOver: (id: string, event: React.DragEvent) => boolean;
+  onDragLeave: (id: string) => void;
+  onDrop: (id: string, event: React.DragEvent) => void;
+}
+
 interface SceneTreeNodeProps {
   node: SceneNode;
   selectedId: string | undefined;
@@ -469,6 +622,7 @@ interface SceneTreeNodeProps {
   /** 折りたたまれているノードの id。絞り込み中は空集合が渡る。 */
   collapsed: ReadonlySet<string>;
   onToggleCollapsed: (id: string) => void;
+  drag: SceneTreeDrag;
 }
 
 function SceneTreeNode({
@@ -477,6 +631,7 @@ function SceneTreeNode({
   onSelect,
   collapsed,
   onToggleCollapsed,
+  drag,
 }: SceneTreeNodeProps): React.JSX.Element {
   const isSelected = node.id === selectedId;
   const children = node.children ?? [];
@@ -518,11 +673,20 @@ function SceneTreeNode({
         )}
         <button
           type="button"
-          className={`scene-node__row${isSelected ? ' scene-node__row--selected' : ''}`}
+          className={
+            `scene-node__row${isSelected ? ' scene-node__row--selected' : ''}` +
+            (drag.dropTargetId === node.id ? ' scene-node__row--drop' : '')
+          }
           aria-selected={isSelected}
           // キー操作が「いまどの行に居るか」を読み、移った先へ焦点を移すための目印。
           data-node-id={node.id}
+          draggable={drag.enabled}
           onClick={handleClick}
+          onDragStart={() => drag.onDragStart(node.id)}
+          onDragEnd={drag.onDragEnd}
+          onDragOver={(event) => drag.onDragOver(node.id, event)}
+          onDragLeave={() => drag.onDragLeave(node.id)}
+          onDrop={(event) => drag.onDrop(node.id, event)}
         >
           <span className="scene-node__name">{label}</span>
           {node.kind !== undefined && <span className="scene-node__kind">{node.kind}</span>}
@@ -538,6 +702,7 @@ function SceneTreeNode({
               onSelect={onSelect}
               collapsed={collapsed}
               onToggleCollapsed={onToggleCollapsed}
+              drag={drag}
             />
           ))}
         </ul>
