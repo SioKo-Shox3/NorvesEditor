@@ -167,6 +167,8 @@ for the full boundary contract.
 コンポーネント投影(`object.getSnapshot` の `components` とコンポーネント単位のプロパティ
 読み書き)を NorvesLib 側で結線する手順と受け入れ条件は
 [`docs/norveslib-component-projection-contract.md`](norveslib-component-projection-contract.md)。
+その上に乗るコンポーネントの追加/削除(`component.add` / `component.remove` と型名からの生成)は
+[`docs/norveslib-component-edit-contract.md`](norveslib-component-edit-contract.md)。
 
 ---
 
