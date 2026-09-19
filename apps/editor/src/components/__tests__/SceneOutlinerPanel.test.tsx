@@ -58,6 +58,7 @@ vi.mock('../../hooks/useBridge.js', () => ({
 import {
   SceneOutlinerPanel,
   filterSceneTree,
+  flattenVisibleRows,
   __resetOutlinerMemory,
 } from '../SceneOutlinerPanel.js';
 
@@ -600,5 +601,135 @@ describe('SceneOutlinerPanel — collapsing and remembered view state', () => {
     fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: '' } });
     expect(screen.queryByText('NodeB')).toBeNull();
     expect(screen.getByRole('button', { name: 'GroupNode を展開' })).toBeTruthy();
+  });
+});
+
+// -------------------------------------------------------------------------
+// キーボード操作
+// -------------------------------------------------------------------------
+
+describe('flattenVisibleRows', () => {
+  const none: ReadonlySet<string> = new Set<string>();
+
+  it('lists the rows in the order they appear on screen', () => {
+    expect(flattenVisibleRows(DEMO_TREE, none).map((r) => r.id)).toEqual([
+      'n-0',
+      'n-1',
+      'n-2',
+      'n-3',
+    ]);
+  });
+
+  it('leaves out the children of a collapsed node', () => {
+    // 見えない行へ矢印で飛べてはいけない。
+    expect(flattenVisibleRows(DEMO_TREE, new Set(['n-2'])).map((r) => r.id)).toEqual([
+      'n-0',
+      'n-1',
+      'n-2',
+    ]);
+    expect(flattenVisibleRows(DEMO_TREE, new Set(['n-0'])).map((r) => r.id)).toEqual(['n-0']);
+  });
+
+  it('records the parent and whether the row can be opened', () => {
+    const rows = flattenVisibleRows(DEMO_TREE, new Set(['n-2']));
+    expect(rows.find((r) => r.id === 'n-0')).toMatchObject({
+      parentId: undefined,
+      hasChildren: true,
+      isCollapsed: false,
+    });
+    expect(rows.find((r) => r.id === 'n-1')).toMatchObject({
+      parentId: 'n-0',
+      hasChildren: false,
+      isCollapsed: false,
+    });
+    expect(rows.find((r) => r.id === 'n-2')).toMatchObject({
+      parentId: 'n-0',
+      hasChildren: true,
+      isCollapsed: true,
+    });
+  });
+
+  it('never calls a childless node collapsed', () => {
+    const rows = flattenVisibleRows(DEMO_TREE, new Set(['n-1']));
+    expect(rows.map((r) => r.id)).toEqual(['n-0', 'n-1', 'n-2', 'n-3']);
+    expect(rows.find((r) => r.id === 'n-1')?.isCollapsed).toBe(false);
+  });
+});
+
+describe('SceneOutlinerPanel — keyboard navigation', () => {
+  function renderTree(): void {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+  }
+
+  function row(name: string): HTMLButtonElement {
+    return screen.getByText(name).closest('button') as HTMLButtonElement;
+  }
+
+  function press(key: string): void {
+    fireEvent.keyDown(document.activeElement ?? document.body, { key, bubbles: true });
+  }
+
+  it('moves down and up through the visible rows', () => {
+    renderTree();
+    row('Root').focus();
+    press('ArrowDown');
+    expect(selectObject).toHaveBeenLastCalledWith('n-1');
+    expect((document.activeElement as HTMLElement).dataset.nodeId).toBe('n-1');
+    press('ArrowDown');
+    expect(selectObject).toHaveBeenLastCalledWith('n-2');
+    press('ArrowUp');
+    expect(selectObject).toHaveBeenLastCalledWith('n-1');
+  });
+
+  it('stops at both ends instead of wrapping', () => {
+    renderTree();
+    row('Root').focus();
+    press('ArrowUp');
+    expect(selectObject).not.toHaveBeenCalled();
+    row('NodeB').focus();
+    press('ArrowDown');
+    expect(selectObject).not.toHaveBeenCalled();
+  });
+
+  it('opens with ArrowRight and then steps into the first child', () => {
+    renderTree();
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    row('GroupNode').focus();
+    press('ArrowRight');
+    expect(screen.getByText('NodeB')).toBeTruthy();
+    expect(selectObject).not.toHaveBeenCalled();  // 開くだけで選択は動かさない
+    press('ArrowRight');
+    expect(selectObject).toHaveBeenLastCalledWith('n-3');
+  });
+
+  it('closes with ArrowLeft and then steps out to the parent', () => {
+    renderTree();
+    row('GroupNode').focus();
+    press('ArrowLeft');
+    expect(screen.queryByText('NodeB')).toBeNull();
+    expect(selectObject).not.toHaveBeenCalled();
+    press('ArrowLeft');
+    expect(selectObject).toHaveBeenLastCalledWith('n-0');
+  });
+
+  it('steps out from a leaf with ArrowLeft', () => {
+    renderTree();
+    row('NodeB').focus();
+    press('ArrowLeft');
+    expect(selectObject).toHaveBeenLastCalledWith('n-2');
+  });
+
+  it('walks the filtered rows, not the whole tree', () => {
+    renderTree();
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'Group' } });
+    // 絞り込み後に見えるのは Root -> GroupNode -> NodeB。NodeA は飛ばされる。
+    row('Root').focus();
+    press('ArrowDown');
+    expect(selectObject).toHaveBeenLastCalledWith('n-2');
   });
 });

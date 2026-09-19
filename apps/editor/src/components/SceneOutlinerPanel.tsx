@@ -162,6 +162,87 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
   // Filtering is display-only: it never touches the selection or re-fetches.
   const visibleTree = hasTree ? filterSceneTree(sceneTree, filter) : undefined;
   const filtering = filter.trim() !== '';
+  // 絞り込み中は折りたたみを無視するので、キー操作が歩く並びも同じ集合で作る。
+  const effectiveCollapsed = filtering ? EMPTY_COLLAPSED : collapsed;
+
+  // -----------------------------------------------------------------------
+  // キーボード操作。上下で行を移り、左右で開閉する（ツリーの一般的な約束）。
+  // 選択は既存の selectObject に流し、焦点は移った行のボタンへ移す — 選択だけ動いて
+  // 焦点が置き去りになると、次の矢印が効かなくなる。
+  // -----------------------------------------------------------------------
+  const treeRef = useRef<HTMLUListElement>(null);
+
+  function focusRow(id: string): void {
+    // セレクタを組み立てない。id は engine が決める任意の文字列で（`component:12:3` のように
+    // 記号を含む）、属性セレクタへ埋めるとエスケープが要る。走査して比べるほうが安全で、
+    // 木の行数はいつも小さい。
+    const rows = treeRef.current?.querySelectorAll<HTMLButtonElement>('[data-node-id]') ?? [];
+    for (const row of rows) {
+      if (row.dataset.nodeId === id) {
+        row.focus();
+        return;
+      }
+    }
+  }
+
+  function moveTo(id: string): void {
+    actions.selectObject(id);
+    focusRow(id);
+  }
+
+  function handleTreeKeyDown(event: React.KeyboardEvent<HTMLUListElement>): void {
+    if (visibleTree === undefined) {
+      return;
+    }
+    const rows = flattenVisibleRows(visibleTree, effectiveCollapsed);
+    const focusedId =
+      (document.activeElement as HTMLElement | null)?.dataset?.nodeId ?? selectedObjectId;
+    const index = rows.findIndex((row) => row.id === focusedId);
+    if (index < 0) {
+      // どの行にも居ないときは、下方向のキーで先頭へ入る。
+      if (event.key === 'ArrowDown' && rows.length > 0) {
+        event.preventDefault();
+        moveTo(rows[0].id);
+      }
+      return;
+    }
+    const row = rows[index];
+
+    switch (event.key) {
+      case 'ArrowDown':
+        if (index + 1 < rows.length) {
+          event.preventDefault();
+          moveTo(rows[index + 1].id);
+        }
+        return;
+      case 'ArrowUp':
+        if (index > 0) {
+          event.preventDefault();
+          moveTo(rows[index - 1].id);
+        }
+        return;
+      case 'ArrowRight':
+        // 畳んでいれば開く。開いていれば最初の子へ。
+        event.preventDefault();
+        if (row.hasChildren && row.isCollapsed) {
+          toggleCollapsed(row.id);
+        } else if (row.hasChildren && index + 1 < rows.length) {
+          moveTo(rows[index + 1].id);
+        }
+        return;
+      case 'ArrowLeft':
+        // 開いていれば畳む。畳んでいる（または葉）なら親へ。
+        event.preventDefault();
+        if (row.hasChildren && !row.isCollapsed) {
+          toggleCollapsed(row.id);
+        } else if (row.parentId !== undefined) {
+          moveTo(row.parentId);
+        }
+        return;
+      default:
+        return;
+    }
+  }
 
   return (
     <div className="panel">
@@ -273,12 +354,12 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
             <span style={{ fontSize: 11 }}>No object matches the filter.</span>
           </div>
         ) : (
-          <ul className="scene-tree">
+          <ul className="scene-tree" ref={treeRef} onKeyDown={handleTreeKeyDown}>
             <SceneTreeNode
               node={visibleTree}
               selectedId={selectedObjectId}
               onSelect={handleSelect}
-              collapsed={filtering ? EMPTY_COLLAPSED : collapsed}
+              collapsed={effectiveCollapsed}
               onToggleCollapsed={toggleCollapsed}
             />
           </ul>
@@ -286,6 +367,43 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
       </div>
     </div>
   );
+}
+
+// -------------------------------------------------------------------------
+// Keyboard navigation
+// -------------------------------------------------------------------------
+
+/** 画面に出ている 1 行。キーボード移動はこの並びの上だけで起きる。 */
+export interface VisibleRow {
+  id: string;
+  parentId: string | undefined;
+  hasChildren: boolean;
+  isCollapsed: boolean;
+}
+
+/**
+ * 表示中のツリーを、画面に見えている順（上から下）の 1 次元配列にする。
+ * 折りたたまれたノードの子は入らない — 見えない行へ矢印で飛べてはいけない。
+ *
+ * @param node 表示中のツリー（絞り込み済みのもの）
+ * @param collapsed 折りたたまれた id（絞り込み中は空集合が渡る）
+ * @returns 画面順の行
+ */
+export function flattenVisibleRows(
+  node: SceneNode,
+  collapsed: ReadonlySet<string>,
+  parentId?: string,
+): VisibleRow[] {
+  const children = node.children ?? [];
+  const hasChildren = children.length > 0;
+  const isCollapsed = hasChildren && collapsed.has(node.id);
+  const rows: VisibleRow[] = [{ id: node.id, parentId, hasChildren, isCollapsed }];
+  if (!isCollapsed) {
+    for (const child of children) {
+      rows.push(...flattenVisibleRows(child, collapsed, node.id));
+    }
+  }
+  return rows;
 }
 
 // -------------------------------------------------------------------------
@@ -394,6 +512,8 @@ function SceneTreeNode({
           type="button"
           className={`scene-node__row${isSelected ? ' scene-node__row--selected' : ''}`}
           aria-selected={isSelected}
+          // キー操作が「いまどの行に居るか」を読み、移った先へ焦点を移すための目印。
+          data-node-id={node.id}
           onClick={handleClick}
         >
           <span className="scene-node__name">{label}</span>
