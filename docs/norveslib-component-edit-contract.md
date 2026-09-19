@@ -23,14 +23,26 @@ Linux では構築できないため、実装と検証は作業機で行う。
 ### 1. クラス名から Component を生成する factory を新設する
 
 `ClassRegistry` に登録済みのクラスのうち **`Component` 派生**について、型名から実体を生成できる
-入口を作る。実装形は NorvesLib 側の裁量(`TClass` の登録時に生成関数を持たせる、専用の
-`ComponentFactory` を `GEngine` のメンバとして持つ、など)。制約は3つ:
+入口を作る。
+
+**実測(2026-09-19)を踏まえた実装方針**: 生成そのものは `World::CreateComponent<T>(owner)` が既に
+持っている(`new T()` → `Entity::AddComponent`、失敗時 null)。足りないのは**型名 → `T` の対応**だけ
+なので、`Core` へ新しい公開 API を足さず、**アダプタ側(`Game/Bridge`)に「型名 → 生成関数」の
+明示テーブル**を置く。アダプタは NorvesLib を知ってよい層であり、`Core` の公開 API(危険地帯)を
+広げずに済む。`instantiable` の広告もこのテーブルを唯一の出典にする。
+
+シーン/プレハブの読み込みが将来同じ対応表を必要とするなら、そのときに `Core` 側へ引き上げる。
+現時点では `AddComponent` の呼び出し元は `World::CreateComponent` だけで、名前からの生成を要する
+のは Bridge だけ(実測)。
+
+制約は3つ:
 
 - **シングルトンを作らない**(`static Instance& Get()` を足さない)。所有権は既存の
   Outer/Inner モデルに従い、生成したコンポーネントは `AddComponent` で Entity の Inner になる。
 - **登録は明示的**にする。リフレクションに載っているという理由だけで、生成してよい型に
   してはならない(初期化に外部の前提を要する型が混ざる)。
-- 生成に失敗したら **null を返して呼び出し側で reject** する。例外や停止に落とさない。
+- 生成に失敗したら **null を返して呼び出し側で reject** する。例外や停止に落とさない
+  (`World::CreateComponent` は `new` の例外を捕らえて null を返す既存実装なので、それに乗る)。
 
 ### 2. 生成できる型だけを `instantiable: true` で広告する
 
@@ -57,6 +69,9 @@ component.remove params { objectId: "component:<entityObjectId>:<componentId>" }
   なければならない(エディタはこの文字列を解釈せず投げ返すだけ)。
 - `component.remove` は `RemoveComponent` を呼ぶ。破棄の寿命は NorvesLib の所有権モデルに従う
   (Inner の連鎖破棄)。外した後にエディタが同じ id を投げても `accepted:false` になること。
+  `Entity::RemoveComponent` は `void` で、Inner に無ければ黙って何もしない(実測)。したがって
+  受理判定は**呼ぶ前に所有関係を確かめる**こと。所有者は `Component::GetOuter()`(`IUnknown*`)を
+  `Entity` へ `CastTo` して得る。
 - 失敗(未知の型・生成できない型・親が消えた・エンジン状態が許さない)は**すべて `accepted:false`**。
   プロトコルエラーにしない。
 - **スレッド**: 生成と付け外しは GameThread で行う。Bridge のハンドラから直接 World を触らず、
