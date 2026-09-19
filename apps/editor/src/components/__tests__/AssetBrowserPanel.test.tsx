@@ -40,7 +40,7 @@ vi.mock('../../hooks/useBridge.js', () => ({
   }),
 }));
 
-import { AssetBrowserPanel } from '../AssetBrowserPanel.js';
+import { AssetBrowserPanel, filterAssets } from '../AssetBrowserPanel.js';
 import { AssetInspectorPanel } from '../AssetInspectorPanel.js';
 
 afterEach(cleanup);
@@ -446,5 +446,101 @@ describe('AssetBrowserPanel — live health column', () => {
     expect(screen.getByText('textures/hero.png')).toBeTruthy();
     expect(screen.getByText('materials/hero.mat')).toBeTruthy();
     expect(screen.getAllByText('未検証(未接続)')).toHaveLength(2);
+  });
+});
+
+// -------------------------------------------------------------------------
+// Filtering
+// -------------------------------------------------------------------------
+
+describe('filterAssets', () => {
+  const assets = DEMO_MANIFEST.assets;
+
+  it('returns the input array itself for a blank query', () => {
+    expect(filterAssets(assets, '')).toBe(assets);
+    expect(filterAssets(assets, '  ')).toBe(assets);
+  });
+
+  it('matches logical path, kind and variant, case-insensitively', () => {
+    expect(filterAssets(assets, 'HERO.PNG').map((a) => a.logicalPath)).toEqual([
+      'textures/hero.png',
+    ]);
+    expect(filterAssets(assets, 'material').map((a) => a.logicalPath)).toEqual([
+      'materials/hero.mat',
+    ]);
+    expect(filterAssets(assets, 'mobile').map((a) => a.logicalPath)).toEqual([
+      'materials/hero.mat',
+    ]);
+  });
+
+  it('treats the query as a literal, not a pattern', () => {
+    expect(filterAssets(assets, '.*')).toEqual([]);
+  });
+
+  it('returns an empty list when nothing matches', () => {
+    expect(filterAssets(assets, 'zzz')).toEqual([]);
+  });
+});
+
+describe('AssetBrowserPanel — filter input', () => {
+  function renderWithManifest(): void {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      assetManifest: DEMO_MANIFEST,
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+  }
+
+  it('narrows the list and drops the headings of emptied kinds', () => {
+    renderWithManifest();
+    expect(screen.getByText('texture')).toBeTruthy();
+    expect(screen.getByText('material')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('アセットを絞り込む'), {
+      target: { value: 'hero.png' },
+    });
+
+    expect(screen.getByText('textures/hero.png')).toBeTruthy();
+    expect(screen.queryByText('materials/hero.mat')).toBeNull();
+    // The heading of the kind that no longer has entries is gone too.
+    expect(screen.queryByText('material')).toBeNull();
+    expect(screen.getByText('texture')).toBeTruthy();
+  });
+
+  it('restores the full list when the query is cleared', () => {
+    renderWithManifest();
+    const input = screen.getByLabelText('アセットを絞り込む');
+    fireEvent.change(input, { target: { value: 'hero.png' } });
+    fireEvent.change(input, { target: { value: '' } });
+    expect(screen.getByText('materials/hero.mat')).toBeTruthy();
+  });
+
+  it('shows a no-match state distinct from the empty manifest state', () => {
+    renderWithManifest();
+    fireEvent.change(screen.getByLabelText('アセットを絞り込む'), { target: { value: 'zzz' } });
+    expect(screen.getByText(/一致するアセットがありません/)).toBeTruthy();
+    expect(screen.queryByText('この manifest にはアセットがありません。')).toBeNull();
+  });
+
+  it('does not change the selection while filtering', () => {
+    renderWithManifest();
+    fireEvent.change(screen.getByLabelText('アセットを絞り込む'), { target: { value: 'zzz' } });
+    expect(selectAsset).not.toHaveBeenCalled();
+  });
+
+  it('offers no filter input without a manifest or with an empty one', () => {
+    mockState = { ...INITIAL_STATE, connection: { status: 'connected' } };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+    expect(screen.queryByLabelText('アセットを絞り込む')).toBeNull();
+    cleanup();
+
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      assetManifest: { version: 1, manifestPath: 'C:/Project/manifest.json', assets: [] },
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+    expect(screen.queryByLabelText('アセットを絞り込む')).toBeNull();
   });
 });

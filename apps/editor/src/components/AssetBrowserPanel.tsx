@@ -35,7 +35,13 @@ export function AssetBrowserPanel(_props: IDockviewPanelProps): React.JSX.Elemen
   }, [defaultPath]);
 
   const assets = state.assetManifest?.assets ?? [];
-  const groupedAssets = useMemo(() => groupAssetsByKind(assets), [assets]);
+  // Panel-local, like the Outliner's: display-only state that would otherwise
+  // re-render every panel through the shared context on each keystroke.
+  const [filter, setFilter] = useState('');
+  const visibleAssets = useMemo(() => filterAssets(assets, filter), [assets, filter]);
+  // Grouping happens AFTER filtering, so a kind whose entries all dropped out
+  // leaves no empty heading behind.
+  const groupedAssets = useMemo(() => groupAssetsByKind(visibleAssets), [visibleAssets]);
   const selectedAssetKey = state.selectedAssetKey;
   const hasManifest = state.assetManifest !== undefined;
   const isConnected = state.connection.status === 'connected';
@@ -99,6 +105,18 @@ export function AssetBrowserPanel(_props: IDockviewPanelProps): React.JSX.Elemen
           </button>
         </div>
 
+        {hasManifest && assets.length > 0 && (
+          <div className="panel__filter">
+            <input
+              type="search"
+              aria-label="アセットを絞り込む"
+              placeholder="パス / 種別 / variant で絞り込む"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+          </div>
+        )}
+
         {assetError !== undefined && (
           <div className="error-banner" role="alert">
             <span className="error-banner__kind">{assetError.kind ?? 'asset'}</span>
@@ -144,6 +162,13 @@ export function AssetBrowserPanel(_props: IDockviewPanelProps): React.JSX.Elemen
           <div className="placeholder-box" style={{ flex: 1 }}>
             <span className="placeholder-box__title">アセット 0 件</span>
             <span>この manifest にはアセットがありません。</span>
+          </div>
+        ) : visibleAssets.length === 0 ? (
+          /* Filtered down to nothing — the manifest is fine, the query is not */
+          <div className="placeholder-box" style={{ flex: 1 }}>
+            <span className="placeholder-box__title">一致なし</span>
+            <span>一致するアセットがありません。</span>
+            <span style={{ fontSize: 11 }}>No asset matches the filter.</span>
           </div>
         ) : (
           <div className="col">
@@ -195,6 +220,28 @@ function defaultManifestPath(rootPath: string | undefined): string {
     return '';
   }
   return `${rootPath.replace(/[\\/]+$/, '')}/manifest.json`;
+}
+
+/**
+ * Narrow the asset list to the entries matching `query` (case-insensitive
+ * substring over logical path, kind and variant).
+ *
+ * Not a regular expression, for the same reason as the Outliner's filter: a
+ * stray metacharacter would silently empty the panel instead of narrowing it.
+ * A blank query returns the input array itself, so an unfiltered panel does no
+ * work and keeps its memoized grouping.
+ */
+export function filterAssets(assets: AssetEntry[], query: string): AssetEntry[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') {
+    return assets;
+  }
+  return assets.filter(
+    (asset) =>
+      asset.logicalPath.toLowerCase().includes(needle) ||
+      asset.kind.toLowerCase().includes(needle) ||
+      (asset.variant ?? '').toLowerCase().includes(needle),
+  );
 }
 
 function groupAssetsByKind(assets: AssetEntry[]): Array<[string, AssetEntry[]]> {
