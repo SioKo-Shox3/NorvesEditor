@@ -11,6 +11,10 @@ Linux では構築できないため、実装と検証は作業機で行う。
 
 ## いまの状態(実測)
 
+> **実装状況**: NorvesLib の `feature/bridge-component-edit` で実装済み
+> (`feature/bridge-component-projection` の上に乗る)。factory に登録したのは
+> CameraComponent / SpringArmComponent の 2 つ。**作業機でのビルドとテストは未実施。**
+
 - `Entity::AddComponent(Component::Component*)` と `Entity::RemoveComponent(Component::Component*)` は
   公開されている。ただし **`AddComponent` は構築済みのポインタを取る**。
 - `ClassRegistry::FindClass(Identity)` / `FindClass(uint64_t)` でクラスは引けるが、

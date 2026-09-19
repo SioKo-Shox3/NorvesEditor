@@ -11,6 +11,10 @@ TS の型と store、Property Inspector の一覧と編集は実装済み。`nor
 
 ## いまの状態(実測)
 
+> **実装状況**: NorvesLib の `feature/bridge-component-projection` で実装済み。
+> **作業機でのビルドとテストは未実施** — Linux では NorvesLib を構築できないため、
+> 下記「検証」の PowerShell 側は誰も回していない。
+
 - `sceneGetTree` は Entity だけを返す。コンポーネントはツリーに現れない。
 - `objectGetSnapshot` / `objectSetProperty` は、`objectId` が `component:<entityObjectId>:<componentId>`
   形式のときだけコンポーネントを解決する(`ResolveBridgeObjectTarget` が `GetComponents()` を走査)。
