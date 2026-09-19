@@ -43,6 +43,7 @@ vi.mock('../../hooks/useBridge.js', () => ({
 import {
   AssetBrowserPanel,
   filterAssets,
+  flattenAssetKeys,
   __resetAssetBrowserMemory,
 } from '../AssetBrowserPanel.js';
 import { AssetInspectorPanel } from '../AssetInspectorPanel.js';
@@ -581,5 +582,73 @@ describe('AssetBrowserPanel — remembered filter', () => {
     expect((screen.getByLabelText('アセットを絞り込む') as HTMLInputElement).value).toBe('material');
     expect(screen.queryByText('textures/hero.png')).toBeNull();
     expect(screen.getByText('materials/hero.mat')).toBeTruthy();
+  });
+});
+
+// -------------------------------------------------------------------------
+// キーボード操作
+// -------------------------------------------------------------------------
+
+describe('flattenAssetKeys', () => {
+  it('lists the keys in the order they appear on screen, skipping headings', () => {
+    const grouped: Array<[string, typeof DEMO_MANIFEST.assets]> = [
+      ['material', [DEMO_MANIFEST.assets[1]]],
+      ['texture', [DEMO_MANIFEST.assets[0]]],
+    ];
+    expect(flattenAssetKeys(grouped)).toEqual([
+      assetKeyForEntry(DEMO_MANIFEST.assets[1]),
+      assetKeyForEntry(DEMO_MANIFEST.assets[0]),
+    ]);
+  });
+
+  it('is empty for an empty list', () => {
+    expect(flattenAssetKeys([])).toEqual([]);
+    expect(flattenAssetKeys([['texture', []]])).toEqual([]);
+  });
+});
+
+describe('AssetBrowserPanel — keyboard navigation', () => {
+  function renderAssets(): void {
+    mockState = { ...INITIAL_STATE, assetManifest: DEMO_MANIFEST };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+  }
+
+  function row(path: string): HTMLButtonElement {
+    return screen.getByText(path).closest('button') as HTMLButtonElement;
+  }
+
+  // 種別で並ぶので materials(material) が texture より先。
+  const materialKey = assetKeyForEntry(DEMO_MANIFEST.assets[1]);
+  const textureKey = assetKeyForEntry(DEMO_MANIFEST.assets[0]);
+
+  it('moves down and up through the list', () => {
+    renderAssets();
+    row('materials/hero.mat').focus();
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown', bubbles: true });
+    expect(selectAsset).toHaveBeenLastCalledWith(textureKey);
+    expect((document.activeElement as HTMLElement).dataset.assetKey).toBe(textureKey);
+
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowUp', bubbles: true });
+    expect(selectAsset).toHaveBeenLastCalledWith(materialKey);
+  });
+
+  it('stops at both ends instead of wrapping', () => {
+    renderAssets();
+    row('materials/hero.mat').focus();
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowUp', bubbles: true });
+    expect(selectAsset).not.toHaveBeenCalled();
+
+    row('textures/hero.png').focus();
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown', bubbles: true });
+    expect(selectAsset).not.toHaveBeenCalled();
+  });
+
+  it('walks only the rows the filter left behind', () => {
+    renderAssets();
+    fireEvent.change(screen.getByLabelText('アセットを絞り込む'), { target: { value: 'material' } });
+    row('materials/hero.mat').focus();
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown', bubbles: true });
+    // 絞り込みで消えた texture へは進まない。
+    expect(selectAsset).not.toHaveBeenCalled();
   });
 });
