@@ -469,6 +469,33 @@ namespace
             }
         }
 
+        // 7. 組み込みのコンポーネントも、外したら解決できない --------------------
+        // 一覧から外れた id が object.getSnapshot でまだ引けると、契約(外した id は
+        // 拒否)と参照実装が食い違う。後から足した id だけでなく、初期状態から在る
+        // component:n-2:2 でも確かめる。
+        client->send(RequestFrame("req-remove-builtin", "component.remove",
+                                  R"({"objectId":"component:n-2:2"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                NORVES_CHECK(resp->find(R"("accepted":true)") != std::string::npos);
+            }
+        }
+        client->send(RequestFrame("req-builtin-after-remove", "object.getSnapshot",
+                                  R"({"objectId":"component:n-2:2"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                // 未知 id と同じ扱い: 空の propertyBag で、kind も名前も返さない。
+                NORVES_CHECK(resp->find(R"("properties":[])") != std::string::npos);
+                NORVES_CHECK(resp->find(R"("kind":"script")") == std::string::npos);
+            }
+        }
+
         // 順序ある終了: クライアントのアウトバウンド方向をクローズし、エンジンの
         // recv() が nullopt にドレインされてループが終了した後 join する（ハングなし）。
         client->close();

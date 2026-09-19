@@ -812,7 +812,9 @@ mod tests {
 
     #[test]
     fn parse_schema_snapshot_result_extracts_types() {
-        // Mirrors fixtures/methods/schema.getSnapshot/positive/response-valid.json result.
+        // The TypeA/TypeB shape of fixtures/methods/schema.getSnapshot/positive/
+        // response-valid.json. That fixture also carries an instantiable-bearing
+        // type now; instantiability has its own test below.
         let value = serde_json::json!({
             "types": [
                 {

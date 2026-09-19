@@ -519,7 +519,11 @@ namespace norves::mock
                 out += "}";
                 return out;
             }
-            if (id == "component:n-2:1")
+            // 組み込みのコンポーネントも、表から外されたら解決してはならない
+            // （component.remove の後に id が生き残ると、契約と食い違う）。表に
+            // 載っているものだけが以下の分岐へ進む。
+            const bool inTable = !kind_of_component(id).empty();
+            if (id == "component:n-2:1" && inTable)
             {
                 // fieldOfView は n-1 と同じく可変。objectSetProperty は objectId をキーに
                 // 同じマップを更新するので、コンポーネント宛ての編集も後続の getSnapshot と
@@ -540,7 +544,7 @@ namespace norves::mock
                     R"({"name":"isActive","value":true,"valueType":"boolean"}]})";
                 return out;
             }
-            if (id == "component:n-2:2")
+            if (id == "component:n-2:2" && inTable)
             {
                 return std::string(
                     R"({"objectId":"component:n-2:2","name":"Script","kind":"script","properties":[)"

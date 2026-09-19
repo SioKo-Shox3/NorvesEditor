@@ -96,7 +96,7 @@ cargo test --manifest-path apps/editor/src-tauri/Cargo.toml --test process_e2e -
 エディタ側の回帰(どのプラットフォームでも走る):
 
 ```bash
-python3 scripts/validate-bridge-fixtures.py          # OK: 163 fixture(s) validated.
+python3 scripts/validate-bridge-fixtures.py          # 現在の総数を表示する（追加のたびに増える）
 cargo test --workspace
 cargo test --manifest-path apps/editor/src-tauri/Cargo.toml
 pnpm -r --if-present typecheck

@@ -80,6 +80,8 @@ scene.duplicateObject
 object.getSnapshot
 object.setProperty
 schema.getSnapshot
+component.add
+component.remove
 asset.resolve
 asset.getManifest
 asset.reloadManifest

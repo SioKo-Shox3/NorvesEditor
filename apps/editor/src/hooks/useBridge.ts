@@ -53,6 +53,8 @@ import type {
   ObjectSnapshot,
   SchemaSnapshot,
   SetObjectPropertyResult,
+  AddComponentResult,
+  RemoveComponentResult,
   ViewportThumbnail,
 } from '@norves/bridge-ui';
 import { useBridgeDispatch, useBridgeState } from '../state/BridgeContext.js';
@@ -958,10 +960,7 @@ export function useBridgeActions(): BridgeActions {
     async (objectId: string, kind: string): Promise<boolean> =>
       editComponents(
         () =>
-          invokeCommand<{ accepted: boolean; componentId?: string }>(
-            BRIDGE_COMMANDS.componentAdd,
-            { objectId, kind },
-          ),
+          invokeCommand<AddComponentResult>(BRIDGE_COMMANDS.componentAdd, { objectId, kind }),
         objectId,
         'COMPONENT_ADD_FAILED',
       ),
@@ -972,17 +971,16 @@ export function useBridgeActions(): BridgeActions {
     async (componentId: string, ownerObjectId: string): Promise<boolean> => {
       const accepted = await editComponents(
         () =>
-          invokeCommand<{ accepted: boolean }>(BRIDGE_COMMANDS.componentRemove, {
+          invokeCommand<RemoveComponentResult>(BRIDGE_COMMANDS.componentRemove, {
             objectId: componentId,
           }),
         ownerObjectId,
         'COMPONENT_REMOVE_FAILED',
       );
-      if (accepted) {
-        // The removed component cannot stay selected; the entity's own
-        // properties come back into view.
-        dispatch({ type: 'componentSelected', id: undefined });
-      }
+      // Clearing the selection here would also unselect a DIFFERENT component
+      // when this one is detached. The re-read that editComponents performs on
+      // acceptance already drops a selection whose component is gone from the
+      // object's new snapshot, so nothing is needed here.
       return accepted;
     },
     [dispatch, editComponents],

@@ -96,6 +96,31 @@ export interface ObjectSnapshot {
  * be normalized from the requested value) — a plain JSON value, never a live
  * engine pointer. Absent `appliedValue` means the engine did not echo a value.
  */
+/**
+ * Result of the `component.add` method: whether the engine attached the
+ * component, and the identifier it assigned when it reports one.
+ *
+ * A refusal (a type the engine cannot build, an object that is gone, engine
+ * state that forbids it) is `accepted: false`, not an error. `componentId` is
+ * opaque and is not used to place the component in the list — the caller
+ * re-reads the object's snapshot instead.
+ */
+export interface AddComponentResult {
+  /** Whether the engine attached the component. */
+  accepted: boolean;
+  /** Identifier of the created component, when the engine reports one. */
+  componentId?: ObjectId;
+}
+
+/**
+ * Result of the `component.remove` method: whether the engine detached the
+ * component. A refusal is `accepted: false`, not an error.
+ */
+export interface RemoveComponentResult {
+  /** Whether the engine detached the component. */
+  accepted: boolean;
+}
+
 export interface SetObjectPropertyResult {
   /** Whether the engine accepted and applied the property change. */
   accepted: boolean;
