@@ -397,7 +397,16 @@ function ObjectProperties({ snapshot, schemaTypes }: ObjectPropertiesProps): Rea
 
       <ul className="inspector__props">
         {snapshot.properties.map((entry) => (
-          <li className="inspector-prop" key={entry.name}>
+          // 数値ベクトルは成分の入力欄が 2〜4 個並ぶので、name と同じ行に押し込むと
+          // Inspector の幅では 1 個ずつ折り返してしまう。行を分けて全幅を使う。
+          <li
+            className={
+              classifyValue(entry.value) === 'vector'
+                ? 'inspector-prop inspector-prop--stacked'
+                : 'inspector-prop'
+            }
+            key={entry.name}
+          >
             <span className="inspector-prop__name">{entry.name}</span>
             <span className="inspector-prop__value">
               {/*
@@ -762,7 +771,13 @@ function VectorEditor({
   }
 
   return (
-    <span className="prop-editor__vector">
+    <span
+      className={
+        committed.length === 4
+          ? 'prop-editor__vector prop-editor__vector--quad'
+          : 'prop-editor__vector'
+      }
+    >
       {committed.map((_component, index) => {
         const label = AXIS_LABELS[index] ?? String(index);
         return (

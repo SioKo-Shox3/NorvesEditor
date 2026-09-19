@@ -772,6 +772,27 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+/* 値の編集欄が横に広がる行（数値ベクトル）。name と型は 1 行目、編集欄は 2 行目で全幅。 */
+.inspector-prop--stacked {
+  grid-template-columns: 1fr auto;
+  row-gap: 3px;
+}
+
+.inspector-prop--stacked .inspector-prop__name {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+.inspector-prop--stacked .inspector-prop__type {
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.inspector-prop--stacked .inspector-prop__value {
+  grid-row: 2;
+  grid-column: 1 / -1;
+}
+
 .value--null {
   color: var(--color-text-muted);
   font-style: italic;
@@ -875,15 +896,22 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  align-items: flex-start;
+  align-items: stretch;
   min-width: 0;
 }
 
+/* 成分は等幅で並べ、幅が足りなければ列数を減らす（Inspector は狭いことがある）。 */
 .prop-editor__vector {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(58px, 1fr));
   gap: 4px;
   min-width: 0;
+}
+
+/* 成分 4 個は、幅が足りないときに 3 + 1 の半端な並びより 2 x 2 のほうが読める。
+   最小幅を広く取ると列数が 4 -> 2 へ落ちる（3 にならない）。 */
+.prop-editor__vector--quad {
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
 }
 
 .prop-editor__axis {
@@ -891,8 +919,6 @@ html, body, #root {
   align-items: center;
   gap: 3px;
   min-width: 0;
-  /* 成分が 2〜4 個なので、2 個並んでも折り返しても読める最小幅にする。 */
-  flex: 1 1 64px;
 }
 
 .prop-editor__axis-label {
