@@ -29,6 +29,24 @@ import type { SceneNode } from '@norves/bridge-ui';
 import { useBridgeState } from '../state/BridgeContext.js';
 import { useBridgeActions } from '../hooks/useBridge.js';
 
+/**
+ * パネルを離れても残す表示の状態。store には載せない — 他のパネルへ配る必要が無く、
+ * 1 文字ごとの dispatch で全パネルが再描画される。dockview はタブを離れるとパネルを
+ * アンマウントするので、モジュールスコープに置いて次に開いたときの初期値にする。
+ * セッション内だけの記憶で、永続化はしない。
+ */
+let rememberedFilter = '';
+let rememberedCollapsed: ReadonlySet<string> = new Set<string>();
+
+/** 絞り込み中に渡す空集合（毎描画で新しい Set を作らない）。 */
+const EMPTY_COLLAPSED: ReadonlySet<string> = new Set<string>();
+
+/** テスト用: パネルをまたいで残る表示状態を初期化する。 */
+export function __resetOutlinerMemory(): void {
+  rememberedFilter = '';
+  rememberedCollapsed = new Set<string>();
+}
+
 // IDockviewPanelProps is accepted but not currently used for data.
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Element {
@@ -115,8 +133,26 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
 
   // The filter text is panel-local: it changes nothing outside this view, and a
   // dispatch per keystroke would re-render every panel through the shared
-  // context (same reason the Inspector keeps edit drafts local).
-  const [filter, setFilter] = useState('');
+  // context (same reason the Inspector keeps edit drafts local). It is kept in
+  // module scope so leaving the panel (dockview unmounts the tab) and coming
+  // back restores what the user was looking at.
+  const [filter, setFilterState] = useState(rememberedFilter);
+  function setFilter(next: string): void {
+    rememberedFilter = next;
+    setFilterState(next);
+  }
+
+  // 折りたたんだノードの id。既定は展開。絞り込み中は無視して全部見せる — 絞り込みの結果が
+  // 畳まれた親の下に隠れると、探しているものが見つからない。
+  const [collapsed, setCollapsedState] = useState<ReadonlySet<string>>(rememberedCollapsed);
+  function toggleCollapsed(id: string): void {
+    const next = new Set(collapsed);
+    if (!next.delete(id)) {
+      next.add(id);
+    }
+    rememberedCollapsed = next;
+    setCollapsedState(next);
+  }
 
   const hasTree = sceneTree !== undefined;
   const editDisabled = !isConnected || sceneEditUnsupported;
@@ -125,64 +161,66 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
   const isEmptyScene = hasTree && (sceneTree.children?.length ?? 0) === 0;
   // Filtering is display-only: it never touches the selection or re-fetches.
   const visibleTree = hasTree ? filterSceneTree(sceneTree, filter) : undefined;
+  const filtering = filter.trim() !== '';
 
   return (
     <div className="panel">
       <div className="panel__header">
         <span>Scene Outliner</span>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+      </div>
+
+      {/*
+        操作ボタンはヘッダではなく本文側のツールバーに置く。ヘッダは高さが固定で折り返せず、
+        パネルを 345px 未満へ狭めるとボタンが右へはみ出して押せなくなっていた（dockview は
+        いくらでも狭められる）。ツールバーなら折り返せる。
+      */}
+      <div className="panel__toolbar">
+        <button
+          className="btn panel__toolbar-btn"
+          type="button"
+          onClick={handleCreate}
+          disabled={editDisabled}
+          title="Create a scene object"
+        >
+          追加
+        </button>
+        <button
+          className="btn panel__toolbar-btn"
+          type="button"
+          onClick={handleDelete}
+          disabled={selectionRequiredDisabled}
+          title="Delete the selected scene object"
+        >
+          削除
+        </button>
+        <button
+          className="btn panel__toolbar-btn"
+          type="button"
+          onClick={handleReparentToRoot}
+          disabled={selectionRequiredDisabled}
+          title="Move the selected scene object to root"
+        >
+          rootへ移動
+        </button>
+        <button
+          className="btn panel__toolbar-btn"
+          type="button"
+          onClick={handleDuplicate}
+          disabled={selectionRequiredDisabled}
+          title="Duplicate the selected scene object"
+        >
+          複製
+        </button>
+        {isConnected && (
           <button
-            className="btn"
+            className="btn panel__toolbar-btn"
             type="button"
-            onClick={handleCreate}
-            disabled={editDisabled}
-            title="Create a scene object"
-            style={{ padding: '2px 8px', fontSize: 11 }}
+            onClick={handleRefresh}
+            title="Re-fetch the scene tree (scene.getTree)"
           >
-            追加
+            更新
           </button>
-          <button
-            className="btn"
-            type="button"
-            onClick={handleDelete}
-            disabled={selectionRequiredDisabled}
-            title="Delete the selected scene object"
-            style={{ padding: '2px 8px', fontSize: 11 }}
-          >
-            削除
-          </button>
-          <button
-            className="btn"
-            type="button"
-            onClick={handleReparentToRoot}
-            disabled={selectionRequiredDisabled}
-            title="Move the selected scene object to root"
-            style={{ padding: '2px 8px', fontSize: 11 }}
-          >
-            rootへ移動
-          </button>
-          <button
-            className="btn"
-            type="button"
-            onClick={handleDuplicate}
-            disabled={selectionRequiredDisabled}
-            title="Duplicate the selected scene object"
-            style={{ padding: '2px 8px', fontSize: 11 }}
-          >
-            複製
-          </button>
-          {isConnected && (
-            <button
-              className="btn"
-              type="button"
-              onClick={handleRefresh}
-              title="Re-fetch the scene tree (scene.getTree)"
-              style={{ padding: '2px 8px', fontSize: 11 }}
-            >
-              更新
-            </button>
-          )}
-        </div>
+        )}
       </div>
 
       {isConnected && !sceneUnsupported && (
@@ -240,6 +278,8 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
               node={visibleTree}
               selectedId={selectedObjectId}
               onSelect={handleSelect}
+              collapsed={filtering ? EMPTY_COLLAPSED : collapsed}
+              onToggleCollapsed={toggleCollapsed}
             />
           </ul>
         )}
@@ -302,12 +342,23 @@ interface SceneTreeNodeProps {
   node: SceneNode;
   selectedId: string | undefined;
   onSelect: (id: string) => void;
+  /** 折りたたまれているノードの id。絞り込み中は空集合が渡る。 */
+  collapsed: ReadonlySet<string>;
+  onToggleCollapsed: (id: string) => void;
 }
 
-function SceneTreeNode({ node, selectedId, onSelect }: SceneTreeNodeProps): React.JSX.Element {
+function SceneTreeNode({
+  node,
+  selectedId,
+  onSelect,
+  collapsed,
+  onToggleCollapsed,
+}: SceneTreeNodeProps): React.JSX.Element {
   const isSelected = node.id === selectedId;
   const children = node.children ?? [];
   const label = node.name ?? node.id;
+  const hasChildren = children.length > 0;
+  const isCollapsed = hasChildren && collapsed.has(node.id);
 
   // Stop propagation so clicking a node row does not bubble to the body
   // deselect handler.
@@ -316,18 +367,40 @@ function SceneTreeNode({ node, selectedId, onSelect }: SceneTreeNodeProps): Reac
     onSelect(node.id);
   };
 
+  // 折りたたみは選択と別の操作。行のボタンとは分け、伝播も止める。
+  const handleToggle = (event: React.MouseEvent): void => {
+    event.stopPropagation();
+    onToggleCollapsed(node.id);
+  };
+
   return (
     <li className="scene-node">
-      <button
-        type="button"
-        className={`scene-node__row${isSelected ? ' scene-node__row--selected' : ''}`}
-        aria-selected={isSelected}
-        onClick={handleClick}
-      >
-        <span className="scene-node__name">{label}</span>
-        {node.kind !== undefined && <span className="scene-node__kind">{node.kind}</span>}
-      </button>
-      {children.length > 0 && (
+      <div className="scene-node__line">
+        {hasChildren ? (
+          <button
+            type="button"
+            className="scene-node__toggle"
+            aria-expanded={!isCollapsed}
+            aria-label={`${label} を${isCollapsed ? '展開' : '折りたたむ'}`}
+            onClick={handleToggle}
+          >
+            {isCollapsed ? '\u25B8' : '\u25BE'}
+          </button>
+        ) : (
+          /* 子が無い行も同じ量だけ字下げして、名前の左端を揃える。 */
+          <span className="scene-node__toggle scene-node__toggle--empty" aria-hidden="true" />
+        )}
+        <button
+          type="button"
+          className={`scene-node__row${isSelected ? ' scene-node__row--selected' : ''}`}
+          aria-selected={isSelected}
+          onClick={handleClick}
+        >
+          <span className="scene-node__name">{label}</span>
+          {node.kind !== undefined && <span className="scene-node__kind">{node.kind}</span>}
+        </button>
+      </div>
+      {hasChildren && !isCollapsed && (
         <ul className="scene-tree__children" style={{ marginLeft: 12 }}>
           {children.map((child) => (
             <SceneTreeNode
@@ -335,6 +408,8 @@ function SceneTreeNode({ node, selectedId, onSelect }: SceneTreeNodeProps): Reac
               node={child}
               selectedId={selectedId}
               onSelect={onSelect}
+              collapsed={collapsed}
+              onToggleCollapsed={onToggleCollapsed}
             />
           ))}
         </ul>

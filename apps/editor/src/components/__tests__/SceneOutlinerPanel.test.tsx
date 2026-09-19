@@ -55,7 +55,11 @@ vi.mock('../../hooks/useBridge.js', () => ({
   }),
 }));
 
-import { SceneOutlinerPanel, filterSceneTree } from '../SceneOutlinerPanel.js';
+import {
+  SceneOutlinerPanel,
+  filterSceneTree,
+  __resetOutlinerMemory,
+} from '../SceneOutlinerPanel.js';
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -66,6 +70,8 @@ beforeEach(() => {
   deleteObject.mockClear();
   reparentObject.mockClear();
   duplicateObject.mockClear();
+  // 絞り込みと折りたたみはパネルをまたいで残るので、テストごとに戻す。
+  __resetOutlinerMemory();
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -525,5 +531,74 @@ describe('SceneOutlinerPanel — filter input', () => {
     };
     render(<SceneOutlinerPanel {...makeDockviewProps()} />);
     expect(screen.queryByLabelText('シーンを絞り込む')).toBeNull();
+  });
+});
+
+// -------------------------------------------------------------------------
+// 折りたたみと、パネルをまたぐ表示状態の記憶
+// -------------------------------------------------------------------------
+
+describe('SceneOutlinerPanel — collapsing and remembered view state', () => {
+  function renderTree(): void {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+  }
+
+  it('collapses a node without changing the selection', () => {
+    renderTree();
+    expect(screen.getByText('NodeB')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    expect(screen.queryByText('NodeB')).toBeNull();
+    // 親自身は残り、選択は動かない。
+    expect(screen.getByText('GroupNode')).toBeTruthy();
+    expect(selectObject).not.toHaveBeenCalled();
+  });
+
+  it('expands again from the same control', () => {
+    renderTree();
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    const expand = screen.getByRole('button', { name: 'GroupNode を展開' });
+    expect(expand.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(expand);
+    expect(screen.getByText('NodeB')).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'GroupNode を折りたたむ' }).getAttribute('aria-expanded'),
+    ).toBe('true');
+  });
+
+  it('gives leaf nodes no toggle', () => {
+    renderTree();
+    expect(screen.queryByRole('button', { name: /NodeA を/ })).toBeNull();
+  });
+
+  it('ignores collapsing while a filter is active, so matches are never hidden', () => {
+    renderTree();
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    expect(screen.queryByText('NodeB')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'NodeB' } });
+    expect(screen.getByText('NodeB')).toBeTruthy();
+
+    // 絞り込みを消すと、畳んだままの状態に戻る。
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: '' } });
+    expect(screen.queryByText('NodeB')).toBeNull();
+  });
+
+  it('remembers the filter and the collapsed nodes across unmount', () => {
+    renderTree();
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'Node' } });
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    cleanup();
+
+    // dockview はタブを離れるとパネルをアンマウントする。開き直したら元の見え方に戻る。
+    renderTree();
+    expect((screen.getByLabelText('シーンを絞り込む') as HTMLInputElement).value).toBe('Node');
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: '' } });
+    expect(screen.queryByText('NodeB')).toBeNull();
+    expect(screen.getByRole('button', { name: 'GroupNode を展開' })).toBeTruthy();
   });
 });

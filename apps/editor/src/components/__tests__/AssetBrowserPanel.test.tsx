@@ -40,7 +40,11 @@ vi.mock('../../hooks/useBridge.js', () => ({
   }),
 }));
 
-import { AssetBrowserPanel, filterAssets } from '../AssetBrowserPanel.js';
+import {
+  AssetBrowserPanel,
+  filterAssets,
+  __resetAssetBrowserMemory,
+} from '../AssetBrowserPanel.js';
 import { AssetInspectorPanel } from '../AssetInspectorPanel.js';
 
 afterEach(cleanup);
@@ -53,6 +57,8 @@ beforeEach(() => {
   dismissAssetError.mockClear();
   reloadAssetRuntime.mockClear();
   dismissAssetReloadError.mockClear();
+  // 絞り込みはパネルをまたいで残るので、テストごとに戻す。
+  __resetAssetBrowserMemory();
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -542,5 +548,38 @@ describe('AssetBrowserPanel — filter input', () => {
     };
     render(<AssetBrowserPanel {...makeDockviewProps()} />);
     expect(screen.queryByLabelText('アセットを絞り込む')).toBeNull();
+  });
+});
+
+// -------------------------------------------------------------------------
+// パネルをまたぐ絞り込みの記憶
+// -------------------------------------------------------------------------
+
+describe('AssetBrowserPanel — remembered filter', () => {
+  function renderAssets(): void {
+    mockState = { ...INITIAL_STATE, assetManifest: DEMO_MANIFEST };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+  }
+
+  it('starts empty and shows every asset', () => {
+    renderAssets();
+    expect((screen.getByLabelText('アセットを絞り込む') as HTMLInputElement).value).toBe('');
+    expect(screen.getByText('textures/hero.png')).toBeTruthy();
+    expect(screen.getByText('materials/hero.mat')).toBeTruthy();
+  });
+
+  it('keeps the filter when the panel is closed and opened again', () => {
+    renderAssets();
+    fireEvent.change(screen.getByLabelText('アセットを絞り込む'), {
+      target: { value: 'material' },
+    });
+    expect(screen.queryByText('textures/hero.png')).toBeNull();
+    cleanup();
+
+    // dockview はタブを離れるとパネルをアンマウントする。開き直しても絞り込みは残る。
+    renderAssets();
+    expect((screen.getByLabelText('アセットを絞り込む') as HTMLInputElement).value).toBe('material');
+    expect(screen.queryByText('textures/hero.png')).toBeNull();
+    expect(screen.getByText('materials/hero.mat')).toBeTruthy();
   });
 });

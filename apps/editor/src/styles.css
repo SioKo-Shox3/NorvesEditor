@@ -538,6 +538,38 @@ html, body, #root {
   gap: 1px;
 }
 
+/* 折りたたみボタンと行を横に並べる。行だけが選択の当たり判定を持つ。 */
+.scene-node__line {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.scene-node__toggle {
+  flex: none;
+  width: 14px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.scene-node__toggle:hover {
+  color: var(--color-text);
+  background: var(--color-surface-alt);
+}
+
+/* 子が無い行も同じ幅を占めて、名前の左端を揃える。 */
+.scene-node__toggle--empty {
+  cursor: default;
+}
+
 .scene-node__row {
   display: flex;
   align-items: center;
@@ -580,6 +612,20 @@ html, body, #root {
 
 .scene-node__row--selected .scene-node__kind {
   color: rgba(255, 255, 255, 0.75);
+}
+
+/* ---- panel toolbar (actions that must stay reachable at any panel width) ---- */
+.panel__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px 0;
+  flex-shrink: 0;
+}
+
+.panel__toolbar-btn {
+  padding: 2px 8px;
+  font-size: 11px;
 }
 
 /* ---- panel filter (Outliner / Asset Browser) ---- */

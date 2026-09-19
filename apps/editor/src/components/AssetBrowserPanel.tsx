@@ -13,6 +13,19 @@ import { useBridgeState } from '../state/BridgeContext.js';
 import { useBridgeActions } from '../hooks/useBridge.js';
 import { assetKeyForEntry } from '../state/store.js';
 
+/**
+ * パネルを離れても残す絞り込み。store には載せない — 表示だけの状態で他パネルへ配る必要が
+ * 無く、1 文字ごとの dispatch で全パネルが再描画される。dockview はタブを離れるとパネルを
+ * アンマウントするので、モジュールスコープに置いて次に開いたときの初期値にする。
+ * セッション内だけの記憶で、永続化はしない。
+ */
+let rememberedFilter = '';
+
+/** テスト用: パネルをまたいで残る絞り込みを初期化する。 */
+export function __resetAssetBrowserMemory(): void {
+  rememberedFilter = '';
+}
+
 // IDockviewPanelProps is accepted but not currently used for data.
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export function AssetBrowserPanel(_props: IDockviewPanelProps): React.JSX.Element {
@@ -37,7 +50,12 @@ export function AssetBrowserPanel(_props: IDockviewPanelProps): React.JSX.Elemen
   const assets = state.assetManifest?.assets ?? [];
   // Panel-local, like the Outliner's: display-only state that would otherwise
   // re-render every panel through the shared context on each keystroke.
-  const [filter, setFilter] = useState('');
+  // 絞り込みはパネルローカルで、パネルを離れても残す（Scene Outliner と同じ理由・同じ作り）。
+  const [filter, setFilterState] = useState(rememberedFilter);
+  function setFilter(next: string): void {
+    rememberedFilter = next;
+    setFilterState(next);
+  }
   const visibleAssets = useMemo(() => filterAssets(assets, filter), [assets, filter]);
   // Grouping happens AFTER filtering, so a kind whose entries all dropped out
   // leaves no empty heading behind.
