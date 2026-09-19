@@ -886,6 +886,51 @@ pub async fn object_set_property(
     Ok(result)
 }
 
+/// `component_add`: `component.add` for one object and one advertised type.
+///
+/// The type must be one the engine reported as `instantiable` in
+/// `schema.getSnapshot`; this command does not re-check that, because the
+/// engine is the authority and answers `accepted:false` for anything it cannot
+/// build. The result shape is validated as a drift guard, and the ORIGINAL wire
+/// value is forwarded so the UI sees the engine's own `componentId`.
+#[tauri::command]
+pub async fn component_add(
+    state: State<'_, BridgeState>,
+    object_id: String,
+    kind: String,
+) -> Result<Value, BackendError> {
+    let mut params = serde_json::Map::new();
+    params.insert("objectId".to_owned(), Value::String(object_id));
+    params.insert("kind".to_owned(), Value::String(kind));
+    let result = send_method(state.inner(), "component.add", Some(params)).await?;
+    norves_bridge_editor_client::parse_component_add_result(&result).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed component.add result: {err}"),
+        }
+    })?;
+    Ok(result)
+}
+
+/// `component_remove`: `component.remove` for one component id.
+///
+/// The id is the opaque handle `object.getSnapshot` advertised; it is forwarded
+/// verbatim and never parsed here.
+#[tauri::command]
+pub async fn component_remove(
+    state: State<'_, BridgeState>,
+    object_id: String,
+) -> Result<Value, BackendError> {
+    let mut params = serde_json::Map::new();
+    params.insert("objectId".to_owned(), Value::String(object_id));
+    let result = send_method(state.inner(), "component.remove", Some(params)).await?;
+    norves_bridge_editor_client::parse_component_remove_result(&result).map_err(|err| {
+        BackendError::Request {
+            message: format!("malformed component.remove result: {err}"),
+        }
+    })?;
+    Ok(result)
+}
+
 /// `schema_get_snapshot`: `schema.getSnapshot` with an empty params object.
 /// Returns the raw wire-shaped `result` Value (UI types it as `SchemaSnapshot`).
 ///

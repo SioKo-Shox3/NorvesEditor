@@ -40,6 +40,8 @@ export const BRIDGE_COMMANDS = {
   objectGetSnapshot: 'object_get_snapshot',
   objectSetProperty: 'object_set_property',
   schemaGetSnapshot: 'schema_get_snapshot',
+  componentAdd: 'component_add',
+  componentRemove: 'component_remove',
   viewportGetThumbnail: 'viewport_get_thumbnail',
   runtimePlay: 'runtime_play',
   runtimePause: 'runtime_pause',
