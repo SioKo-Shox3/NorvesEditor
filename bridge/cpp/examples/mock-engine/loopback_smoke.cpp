@@ -366,6 +366,109 @@ namespace
             }
         }
 
+        // 6. component.add / component.remove ------------------------------------
+        // 生成できる型は schema が instantiable:true で広告している camera だけ。足した id が
+        // そのまま object.getSnapshot で解決でき、外すと親の一覧から消えることを確かめる。
+        client->send(RequestFrame("req-add-bad", "component.add",
+                                  R"({"objectId":"n-2","kind":"script"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                // instantiable:false の型は拒否される（プロトコルエラーではなく accepted:false）。
+                NORVES_CHECK(resp->find(R"("accepted":false)") != std::string::npos);
+            }
+        }
+
+        std::string addedId;
+        client->send(RequestFrame("req-add", "component.add",
+                                  R"({"objectId":"n-2","kind":"camera"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                const Envelope env = DecodeOrFail(*resp);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-add"});
+                NORVES_CHECK(resp->find(R"("accepted":true)") != std::string::npos);
+                const std::size_t at = resp->find(R"("componentId":")");
+                NORVES_CHECK(at != std::string::npos);
+                if (at != std::string::npos)
+                {
+                    const std::size_t begin = at + std::string(R"("componentId":")").size();
+                    const std::size_t end = resp->find('"', begin);
+                    NORVES_CHECK(end != std::string::npos);
+                    if (end != std::string::npos)
+                    {
+                        addedId = resp->substr(begin, end - begin);
+                    }
+                }
+            }
+        }
+        NORVES_CHECK(!addedId.empty());
+
+        if (!addedId.empty())
+        {
+            // 足した id が解決でき、親の一覧にも載っている。
+            client->send(RequestFrame("req-added-snap", "object.getSnapshot",
+                                      std::string(R"({"objectId":")") + addedId + R"("})"));
+            {
+                std::optional<std::string> resp = client->recv();
+                NORVES_CHECK(resp.has_value());
+                if (resp.has_value())
+                {
+                    NORVES_CHECK(resp->find(addedId) != std::string::npos);
+                    NORVES_CHECK(resp->find(R"("kind":"camera")") != std::string::npos);
+                }
+            }
+            client->send(RequestFrame("req-n2-after-add", "object.getSnapshot",
+                                      R"({"objectId":"n-2"})"));
+            {
+                std::optional<std::string> resp = client->recv();
+                NORVES_CHECK(resp.has_value());
+                if (resp.has_value())
+                {
+                    NORVES_CHECK(resp->find(addedId) != std::string::npos);
+                }
+            }
+
+            client->send(RequestFrame("req-remove", "component.remove",
+                                      std::string(R"({"objectId":")") + addedId + R"("})"));
+            {
+                std::optional<std::string> resp = client->recv();
+                NORVES_CHECK(resp.has_value());
+                if (resp.has_value())
+                {
+                    NORVES_CHECK(resp->find(R"("accepted":true)") != std::string::npos);
+                }
+            }
+            client->send(RequestFrame("req-n2-after-remove", "object.getSnapshot",
+                                      R"({"objectId":"n-2"})"));
+            {
+                std::optional<std::string> resp = client->recv();
+                NORVES_CHECK(resp.has_value());
+                if (resp.has_value())
+                {
+                    NORVES_CHECK(resp->find(addedId) == std::string::npos);
+                    // 元からある 2 件は残っている。
+                    NORVES_CHECK(resp->find(R"("objectId":"component:n-2:1")") !=
+                                 std::string::npos);
+                }
+            }
+            // 二度目の削除は拒否される。
+            client->send(RequestFrame("req-remove-again", "component.remove",
+                                      std::string(R"({"objectId":")") + addedId + R"("})"));
+            {
+                std::optional<std::string> resp = client->recv();
+                NORVES_CHECK(resp.has_value());
+                if (resp.has_value())
+                {
+                    NORVES_CHECK(resp->find(R"("accepted":false)") != std::string::npos);
+                }
+            }
+        }
+
         // 順序ある終了: クライアントのアウトバウンド方向をクローズし、エンジンの
         // recv() が nullopt にドレインされてループが終了した後 join する（ハングなし）。
         client->close();

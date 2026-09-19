@@ -25,6 +25,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace norves::mock
 {
@@ -79,7 +81,8 @@ namespace norves::mock
                     R"({"name":"object.query"},)"
                     R"({"name":"object.edit"},)"
                     R"({"name":"scene.liveUpdate"},)"
-                    R"({"name":"viewport.thumbnail"}]})"));
+                    R"({"name":"viewport.thumbnail"},)"
+                    R"({"name":"component.edit"}]})"));
         }
 
         Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError> getStatus(
@@ -246,6 +249,74 @@ namespace norves::mock
                                           Norves::Bridge::BridgeError>::ok(parse_or_die(ack));
         }
 
+        // @brief component.add。params.objectId のエンティティへ params.kind のコンポーネントを
+        // 足す。生成できるのは schema.getSnapshot が instantiable:true で広告している型だけで、
+        // それ以外・未知のエンティティ・欄の欠落はすべて accepted:false で返す（プロトコル
+        // エラーにしない）。
+        // @note object_components を書き換える。シングルスレッド recv ループ前提。
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        componentAdd(const Norves::Bridge::JsonValue& params) override
+        {
+            const std::string paramsText = params.dump();
+            const std::optional<std::string> objectId = extract_string_field(paramsText, "objectId");
+            const std::optional<std::string> kind = extract_string_field(paramsText, "kind");
+            if (!objectId.has_value() || !kind.has_value())
+            {
+                return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                              Norves::Bridge::BridgeError>::
+                    ok(parse_or_die(R"({"accepted":false})"));
+            }
+
+            // 生成可能な型は camera だけ（schema の instantiable と一致させる）。
+            const auto entry = object_components.find(objectId.value());
+            if (entry == object_components.end() || kind.value() != "camera")
+            {
+                return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                              Norves::Bridge::BridgeError>::
+                    ok(parse_or_die(R"({"accepted":false})"));
+            }
+
+            std::string componentId = "component:";
+            componentId += objectId.value();
+            componentId += ':';
+            componentId += std::to_string(next_component_ordinal++);
+            entry->second.emplace_back(componentId, kind.value());
+
+            std::string ack = R"({"accepted":true,"componentId":")";
+            ack += componentId;
+            ack += R"("})";
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
+                ok(parse_or_die(ack));
+        }
+
+        // @brief component.remove。params.objectId のコンポーネントを、それが属する
+        // エンティティの一覧から外す。見つからなければ accepted:false。
+        // @note object_components を書き換える。シングルスレッド recv ループ前提。
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        componentRemove(const Norves::Bridge::JsonValue& params) override
+        {
+            const std::string paramsText = params.dump();
+            const std::optional<std::string> objectId = extract_string_field(paramsText, "objectId");
+            if (objectId.has_value())
+            {
+                for (auto& [entityId, list] : object_components)
+                {
+                    for (auto it = list.begin(); it != list.end(); ++it)
+                    {
+                        if (it->first == objectId.value())
+                        {
+                            list.erase(it);
+                            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                                          Norves::Bridge::BridgeError>::
+                                ok(parse_or_die(R"({"accepted":true})"));
+                        }
+                    }
+                }
+            }
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
+                ok(parse_or_die(R"({"accepted":false})"));
+        }
+
         // @brief Phase 6: object.changed イベントの params を構築する。更新済みのインメモリ
         // マップから objectGetSnapshot を同スレッドで読み、{objectId, name, kind, properties} の
         // スナップショットをそのまま params とする（events/object.changed.params.schema.json と
@@ -281,7 +352,9 @@ namespace norves::mock
                     R"({"typeName":"TypeA","kind":"object","properties":[)"
                     R"({"name":"fieldOfView","valueType":"number"},)"
                     R"({"name":"enabled","valueType":"boolean"}]},)"
-                    R"({"typeName":"TypeB","kind":"component"}]})"));
+                    R"({"typeName":"TypeB","kind":"component","instantiable":false},)"
+                    R"({"typeName":"camera","kind":"component","instantiable":true,"properties":[)"
+                    R"({"name":"fieldOfView","valueType":"number"}]}]})"));
         }
 
         // @brief viewport.getThumbnail。小さなテスト用 PNG（2x2、base64 後でも 100 バイト程度
@@ -319,6 +392,18 @@ namespace norves::mock
         // @note 参照）。マルチスレッド化しないこと。
         std::map<std::string, std::string> object_field_of_view;
 
+        // @brief entityId -> [(componentId, kind)]。component.add / component.remove が
+        // 書き換え、objectGetSnapshot の components がここから綴られる。初期値は
+        // scene.getTree のデモツリーと整合する（n-2 が 2 件、n-3 は 0 件）。
+        // @note object_field_of_view と同じくシングルスレッド recv ループ前提。
+        std::map<std::string, std::vector<std::pair<std::string, std::string>>> object_components{
+            {"n-2", {{"component:n-2:1", "camera"}, {"component:n-2:2", "script"}}},
+            {"n-3", {}},
+        };
+
+        // @brief 次に作るコンポーネントの通し番号（component:<entity>:<n> の n）。
+        int next_component_ordinal = 3;
+
         // @brief Phase 6: 直近の objectSetProperty が対象とした objectId。object.changed の
         // params 構築時に同スレッドで読む。シングルスレッド recv ループ前提。
         std::string last_changed_object_id;
@@ -331,6 +416,51 @@ namespace norves::mock
         // object.changed の params はこの欄を持てない（上記 object_changed_params の注記）ので、
         // 同じ本文を偽で綴り直す。コンポーネント自身のスナップショットは components を持たない
         // （入れ子のコンポーネントは無い）。
+        // @brief entityId のコンポーネント一覧を `,"components":[...]` として綴る。
+        // 表に無いエンティティは欄ごと出さない（= このエンジンは投影しない、ではなく
+        // 「このノードは投影対象でない」を表す。n-0/n-1 が該当）。
+        std::string components_json(const std::string& entityId)
+        {
+            const auto it = object_components.find(entityId);
+            if (it == object_components.end())
+            {
+                return std::string();
+            }
+            std::string out(R"(,"components":[)");
+            bool first = true;
+            for (const auto& [componentId, kind] : it->second)
+            {
+                if (!first)
+                {
+                    out += ',';
+                }
+                first = false;
+                out += R"({"objectId":")";
+                out += componentId;
+                out += R"(","kind":")";
+                out += kind;
+                out += R"("})";
+            }
+            out += ']';
+            return out;
+        }
+
+        // @brief componentId の kind を表から引く。見つからなければ空。
+        std::string kind_of_component(const std::string& componentId)
+        {
+            for (const auto& [entityId, list] : object_components)
+            {
+                for (const auto& [id, kind] : list)
+                {
+                    if (id == componentId)
+                    {
+                        return kind;
+                    }
+                }
+            }
+            return std::string();
+        }
+
         std::string snapshot_text(const std::string& id, bool with_components)
         {
             if (id == "n-1")
@@ -371,10 +501,7 @@ namespace norves::mock
                     R"({"name":"childCount","value":1,"valueType":"number"}])");
                 if (with_components)
                 {
-                    out +=
-                        R"(,"components":[)"
-                        R"({"objectId":"component:n-2:1","kind":"camera"},)"
-                        R"({"objectId":"component:n-2:2","kind":"script"}])";
+                    out += components_json("n-2");
                 }
                 out += "}";
                 return out;
@@ -387,7 +514,7 @@ namespace norves::mock
                     R"({"name":"enabled","value":false,"valueType":"boolean"}])");
                 if (with_components)
                 {
-                    out += R"(,"components":[])";
+                    out += components_json("n-3");
                 }
                 out += "}";
                 return out;
@@ -419,6 +546,27 @@ namespace norves::mock
                     R"({"objectId":"component:n-2:2","name":"Script","kind":"script","properties":[)"
                     R"({"name":"scriptPath","value":"Scripts/Demo.as","valueType":"string"},)"
                     R"({"name":"scriptClassName","value":"DemoBehaviour","valueType":"string"}]})");
+            }
+
+            // component.add で後から足したコンポーネント: 表から kind を引き、その型の
+            // 初期プロパティを綴る（camera だけが生成可能なので実質 camera のみ）。
+            const std::string addedKind = kind_of_component(id);
+            if (!addedKind.empty())
+            {
+                std::string fieldOfView = "60";
+                const auto it = object_field_of_view.find(id);
+                if (it != object_field_of_view.end())
+                {
+                    fieldOfView = it->second;
+                }
+                std::string out = R"({"objectId":")";
+                out += id;
+                out += R"(","kind":")";
+                out += addedKind;
+                out += R"(","properties":[{"name":"fieldOfView","value":)";
+                out += fieldOfView;
+                out += R"(,"valueType":"number"}]})";
+                return out;
             }
 
             // 未知 id: 空の propertyBag（必須フィールドのみ）。

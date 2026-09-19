@@ -22,7 +22,19 @@
       },
       {
         "typeName": "TypeB",
-        "kind": "component"
+        "kind": "component",
+        "instantiable": false
+      },
+      {
+        "typeName": "camera",
+        "kind": "component",
+        "instantiable": true,
+        "properties": [
+          {
+            "name": "fieldOfView",
+            "valueType": "number"
+          }
+        ]
       }
     ]
   }
