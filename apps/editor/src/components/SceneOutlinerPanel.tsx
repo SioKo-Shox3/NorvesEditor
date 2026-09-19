@@ -22,7 +22,7 @@
  *       METHOD_NOT_SUPPORTED — works for any engine, not just the mock).
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import type { SceneNode } from '@norves/bridge-ui';
@@ -113,11 +113,18 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
     }
   };
 
+  // The filter text is panel-local: it changes nothing outside this view, and a
+  // dispatch per keystroke would re-render every panel through the shared
+  // context (same reason the Inspector keeps edit drafts local).
+  const [filter, setFilter] = useState('');
+
   const hasTree = sceneTree !== undefined;
   const editDisabled = !isConnected || sceneEditUnsupported;
   const selectionRequiredDisabled = editDisabled || selectedObjectId === undefined;
   // "Empty scene" = a root with no children (root itself is still selectable).
   const isEmptyScene = hasTree && (sceneTree.children?.length ?? 0) === 0;
+  // Filtering is display-only: it never touches the selection or re-fetches.
+  const visibleTree = hasTree ? filterSceneTree(sceneTree, filter) : undefined;
 
   return (
     <div className="panel">
@@ -178,6 +185,18 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
         </div>
       </div>
 
+      {isConnected && !sceneUnsupported && (
+        <div className="panel__filter">
+          <input
+            type="search"
+            aria-label="シーンを絞り込む"
+            placeholder="名前 / 種別 / id で絞り込む"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+        </div>
+      )}
+
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
       <div className="panel__body col" onClick={handleBodyClick}>
         {!isConnected ? (
@@ -208,10 +227,17 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
             <span>オブジェクトがありません。</span>
             <span style={{ fontSize: 11 }}>The scene has no objects.</span>
           </div>
+        ) : visibleTree === undefined ? (
+          /* Filtered down to nothing — the tree itself is fine, the query is not */
+          <div className="placeholder-box" style={{ flex: 1 }}>
+            <span className="placeholder-box__title">一致なし</span>
+            <span>一致するオブジェクトがありません。</span>
+            <span style={{ fontSize: 11 }}>No object matches the filter.</span>
+          </div>
         ) : (
           <ul className="scene-tree">
             <SceneTreeNode
-              node={sceneTree}
+              node={visibleTree}
               selectedId={selectedObjectId}
               onSelect={handleSelect}
             />
@@ -220,6 +246,52 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
       </div>
     </div>
   );
+}
+
+// -------------------------------------------------------------------------
+// Filtering
+// -------------------------------------------------------------------------
+
+/** Whether one node's own text matches the (already lower-cased) needle. */
+function nodeMatches(node: SceneNode, needle: string): boolean {
+  const label = node.name ?? node.id;
+  return (
+    label.toLowerCase().includes(needle) ||
+    node.id.toLowerCase().includes(needle) ||
+    (node.kind ?? '').toLowerCase().includes(needle)
+  );
+}
+
+/**
+ * Narrow a scene tree to the nodes worth showing for `query`, or `undefined`
+ * when nothing under `node` matches.
+ *
+ * Two rules, both about being able to act on the result:
+ *  - A node whose own text matches is kept WITH its whole subtree. The user
+ *    asked for that node; hiding what is inside it would be surprising.
+ *  - A node that does not match is kept only when a descendant does, and then
+ *    only with the matching branches. That keeps the path to a match visible —
+ *    without the ancestors the row could not be reached in a tree view.
+ *
+ * Matching is a case-insensitive substring over name (falling back to id), id
+ * and kind. Not a regular expression: a stray character in a pattern would
+ * silently empty the panel instead of narrowing it.
+ */
+export function filterSceneTree(node: SceneNode, query: string): SceneNode | undefined {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') {
+    return node;
+  }
+  if (nodeMatches(node, needle)) {
+    return node;
+  }
+  const keptChildren = (node.children ?? [])
+    .map((child) => filterSceneTree(child, query))
+    .filter((child): child is SceneNode => child !== undefined);
+  if (keptChildren.length === 0) {
+    return undefined;
+  }
+  return { ...node, children: keptChildren };
 }
 
 // -------------------------------------------------------------------------

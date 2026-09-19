@@ -55,7 +55,7 @@ vi.mock('../../hooks/useBridge.js', () => ({
   }),
 }));
 
-import { SceneOutlinerPanel } from '../SceneOutlinerPanel.js';
+import { SceneOutlinerPanel, filterSceneTree } from '../SceneOutlinerPanel.js';
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -413,5 +413,117 @@ describe('SceneOutlinerPanel — scene edit toolbar', () => {
     expect((screen.getByText('削除').closest('button') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByText('rootへ移動').closest('button') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByText('複製').closest('button') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+// -------------------------------------------------------------------------
+// Filtering
+// -------------------------------------------------------------------------
+
+describe('filterSceneTree', () => {
+  it('returns the tree unchanged for an empty or blank query', () => {
+    expect(filterSceneTree(DEMO_TREE, '')).toBe(DEMO_TREE);
+    expect(filterSceneTree(DEMO_TREE, '   ')).toBe(DEMO_TREE);
+  });
+
+  it('keeps a matching node with its whole subtree', () => {
+    // GroupNode matches; NodeB does not, but it lives inside the match.
+    const result = filterSceneTree(DEMO_TREE, 'groupnode');
+    expect(result?.id).toBe('n-0');
+    expect(result?.children).toHaveLength(1);
+    expect(result?.children?.[0]?.id).toBe('n-2');
+    expect(result?.children?.[0]?.children?.[0]?.id).toBe('n-3');
+  });
+
+  it('keeps the ancestors of a deep match and drops the other branches', () => {
+    const result = filterSceneTree(DEMO_TREE, 'NodeB');
+    // Root is kept as the path to the match, NodeA is gone.
+    expect(result?.children?.map((c) => c.id)).toEqual(['n-2']);
+    expect(result?.children?.[0]?.children?.map((c) => c.id)).toEqual(['n-3']);
+  });
+
+  it('matches id and kind, not just the name', () => {
+    expect(filterSceneTree(DEMO_TREE, 'n-1')?.children?.map((c) => c.id)).toEqual(['n-1']);
+    // Every demo node but NodeB declares kind "object".
+    expect(filterSceneTree(DEMO_TREE, 'object')?.id).toBe('n-0');
+  });
+
+  it('is case-insensitive and treats the query as a literal, not a pattern', () => {
+    expect(filterSceneTree(DEMO_TREE, 'NODEA')?.children?.map((c) => c.id)).toEqual(['n-1']);
+    // A regex metacharacter matches nothing rather than matching everything.
+    expect(filterSceneTree(DEMO_TREE, '.*')).toBeUndefined();
+  });
+
+  it('returns undefined when nothing matches', () => {
+    expect(filterSceneTree(DEMO_TREE, 'zzz')).toBeUndefined();
+  });
+
+  it('does not mutate the input tree', () => {
+    const before = JSON.stringify(DEMO_TREE);
+    filterSceneTree(DEMO_TREE, 'NodeB');
+    expect(JSON.stringify(DEMO_TREE)).toBe(before);
+  });
+});
+
+describe('SceneOutlinerPanel — filter input', () => {
+  function renderConnected(selectedObjectId?: string): void {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      selectedObjectId,
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+  }
+
+  it('narrows the tree as the user types and restores it when cleared', () => {
+    renderConnected();
+    expect(screen.getByText('NodeA')).toBeTruthy();
+
+    const input = screen.getByLabelText('シーンを絞り込む');
+    fireEvent.change(input, { target: { value: 'NodeB' } });
+    expect(screen.queryByText('NodeA')).toBeNull();
+    expect(screen.getByText('NodeB')).toBeTruthy();
+    // The path to the match stays reachable.
+    expect(screen.getByText('GroupNode')).toBeTruthy();
+
+    fireEvent.change(input, { target: { value: '' } });
+    expect(screen.getByText('NodeA')).toBeTruthy();
+  });
+
+  it('shows a no-match state instead of an empty tree', () => {
+    renderConnected();
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'zzz' } });
+    expect(screen.getByText(/一致するオブジェクトがありません/)).toBeTruthy();
+    // Not the "empty scene" copy: the scene is fine, the query is not.
+    // (Exact match — the no-match copy contains that string as a substring.)
+    expect(screen.queryByText('オブジェクトがありません。')).toBeNull();
+  });
+
+  it('never changes the selection or re-fetches while filtering', () => {
+    renderConnected('n-1');
+    // Mounting fetches the tree once (the connected edge); filtering must not
+    // add to that, so count from here.
+    selectObject.mockClear();
+    getSceneTree.mockClear();
+
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'zzz' } });
+    expect(selectObject).not.toHaveBeenCalled();
+    expect(getSceneTree).not.toHaveBeenCalled();
+  });
+
+  it('offers no filter input while disconnected or unsupported', () => {
+    mockState = { ...INITIAL_STATE, connection: { status: 'disconnected' } };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    expect(screen.queryByLabelText('シーンを絞り込む')).toBeNull();
+    cleanup();
+
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneUnsupported: true,
+    };
+    render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    expect(screen.queryByLabelText('シーンを絞り込む')).toBeNull();
   });
 });

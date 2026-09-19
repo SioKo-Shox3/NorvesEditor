@@ -582,6 +582,26 @@ html, body, #root {
   color: rgba(255, 255, 255, 0.75);
 }
 
+/* ---- panel filter (Outliner / Asset Browser) ---- */
+.panel__filter {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.panel__filter input {
+  width: 100%;
+  font-size: 11px;
+  padding: 3px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+}
+
+.panel__filter input::placeholder {
+  color: var(--color-text-muted);
+}
+
 /* ---- property inspector ---- */
 .inspector {
   display: flex;
