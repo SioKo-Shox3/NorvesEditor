@@ -808,6 +808,19 @@ describe('resolveDropTarget', () => {
     expect(resolveDropTarget(DEMO_TREE, 'n-0', 'n-2')).toEqual({ accepted: false });
   });
 
+  it('finds a cycle even when the same id appears twice in the tree', () => {
+    // sceneNode.id の契約は「非空の不透明な文字列」だけで、一意とは決まっていない。
+    // 最初の 1 個だけで判定すると、同じ id の別のノードの下へ落とせて輪ができる。
+    const dup: SceneNode = {
+      id: 'r',
+      children: [
+        { id: 'x' },
+        { id: 'y', children: [{ id: 'x', children: [{ id: 'z' }] }] },
+      ],
+    };
+    expect(resolveDropTarget(dup, 'x', 'z')).toEqual({ accepted: false });
+  });
+
   it('refuses ids that are not in the tree', () => {
     expect(resolveDropTarget(DEMO_TREE, 'missing', 'n-2')).toEqual({ accepted: false });
     expect(resolveDropTarget(DEMO_TREE, 'n-1', 'missing')).toEqual({ accepted: false });
@@ -865,6 +878,24 @@ describe('SceneOutlinerPanel — drag to reparent', () => {
     fireEvent.dragStart(row('NodeA'));
     fireEvent.drop(row('GroupNode'));
     expect(reparentObject).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing for a drag that did not come from the tree', () => {
+    // OS からのファイルのドロップなど。掴んだ id が残っていても処理しない。
+    renderTree();
+    fireEvent.dragStart(row('NodeA'));
+    const foreign = { types: ['Files'], setData: () => {}, getData: () => '' };
+    fireEvent.drop(row('GroupNode'), { dataTransfer: foreign });
+    expect(reparentObject).not.toHaveBeenCalled();
+    // 印のあるドラッグなら通る。
+    fireEvent.dragStart(row('NodeA'));
+    const own = {
+      types: ['application/x-norves-scene-node'],
+      setData: () => {},
+      getData: () => '',
+    };
+    fireEvent.drop(row('GroupNode'), { dataTransfer: own });
+    expect(reparentObject).toHaveBeenCalledWith('n-1', 'n-2');
   });
 
   it('sends nothing for a drop that never started as a drag', () => {

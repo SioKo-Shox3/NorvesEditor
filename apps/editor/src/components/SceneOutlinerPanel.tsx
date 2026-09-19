@@ -176,16 +176,22 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
   const draggedIdRef = useRef<string | undefined>(undefined);
   const [dropTargetId, setDropTargetId] = useState<string | undefined>(undefined);
 
-  function decideDrop(targetId: string): DropDecision {
+  function decideDrop(targetId: string, event: React.DragEvent): DropDecision {
     const dragged = draggedIdRef.current;
     if (dragged === undefined || sceneTree === undefined || editDisabled) {
+      return { accepted: false };
+    }
+    if (isForeignDrag(event)) {
       return { accepted: false };
     }
     return resolveDropTarget(sceneTree, dragged, targetId);
   }
 
-  const handleDragStart = (id: string): void => {
+  const handleDragStart = (id: string, event: React.DragEvent): void => {
     draggedIdRef.current = id;
+    // 印だけ置く。中身は使わない（付け替える id は ref が持つ）。ドラッグ中に行が作り直されて
+    // dragend を取りこぼしても、外から来たドラッグを古い id で処理しないための目印。
+    event.dataTransfer?.setData(INTERNAL_DRAG_TYPE, id);
   };
 
   const handleDragEnd = (): void => {
@@ -193,16 +199,15 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
     setDropTargetId(undefined);
   };
 
-  const handleDragOver = (id: string, event: React.DragEvent): boolean => {
-    if (!decideDrop(id).accepted) {
-      return false;
+  const handleDragOver = (id: string, event: React.DragEvent): void => {
+    if (!decideDrop(id, event).accepted) {
+      return;
     }
     // preventDefault を呼んだ要素だけがドロップを受け付ける（HTML の約束）。
     event.preventDefault();
     if (dropTargetId !== id) {
       setDropTargetId(id);
     }
-    return true;
   };
 
   const handleDragLeave = (id: string): void => {
@@ -213,7 +218,7 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
 
   const handleDrop = (id: string, event: React.DragEvent): void => {
     const draggedId = draggedIdRef.current;
-    const decision = decideDrop(id);
+    const decision = decideDrop(id, event);
     draggedIdRef.current = undefined;
     setDropTargetId(undefined);
     if (draggedId === undefined || !decision.accepted) {
@@ -255,6 +260,18 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
     if (visibleTree === undefined) {
       return;
     }
+    if (
+      event.key !== 'ArrowDown' &&
+      event.key !== 'ArrowUp' &&
+      event.key !== 'ArrowLeft' &&
+      event.key !== 'ArrowRight'
+    ) {
+      return;
+    }
+    // ツリーが受け取る矢印は、行が動かない場合でも既定動作を止める。止めないとパネル本文が
+    // 裏でスクロールして、選択は動いていないのに画面だけ動く（Asset Browser と同じ扱い）。
+    event.preventDefault();
+
     const rows = flattenVisibleRows(visibleTree, effectiveCollapsed);
     // 焦点がトグルにあっても、基準はその行。選択中の別の行を開閉してはならない。
     const active = document.activeElement as HTMLElement | null;
@@ -264,7 +281,6 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
     if (index < 0) {
       // どの行にも居ないときは、下方向のキーで先頭へ入る。
       if (event.key === 'ArrowDown' && rows.length > 0) {
-        event.preventDefault();
         moveTo(rows[0].id);
       }
       return;
@@ -273,22 +289,17 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
 
     switch (event.key) {
       case 'ArrowDown':
-        // 端でも既定動作は止める。止めないとパネル本文が裏でスクロールして、
-        // 行は動いていないのに画面だけ動く。
-        event.preventDefault();
         if (index + 1 < rows.length) {
           moveTo(rows[index + 1].id);
         }
         return;
       case 'ArrowUp':
-        event.preventDefault();
         if (index > 0) {
           moveTo(rows[index - 1].id);
         }
         return;
       case 'ArrowRight':
         // 畳んでいれば開く。開いていれば最初の子へ。
-        event.preventDefault();
         if (row.hasChildren && row.isCollapsed) {
           toggleCollapsed(row.id);
         } else if (row.hasChildren && index + 1 < rows.length) {
@@ -297,7 +308,6 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
         return;
       case 'ArrowLeft':
         // 開いていれば畳む。畳んでいる（または葉）なら親へ。
-        event.preventDefault();
         if (row.hasChildren && !row.isCollapsed) {
           toggleCollapsed(row.id);
         } else if (row.parentId !== undefined) {
@@ -447,6 +457,29 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
 // Drag and drop reparenting
 // -------------------------------------------------------------------------
 
+/**
+ * 自前のドラッグに付ける印。中身は使わず、有無だけを見る。
+ * これが無いドラッグ（OS のファイルなど）は、掴んだ id が残っていても処理しない。
+ */
+const INTERNAL_DRAG_TYPE = 'application/x-norves-scene-node';
+
+/**
+ * 外から来たドラッグか。
+ *
+ * `dataTransfer.types` が読めない環境（jsdom や一部の WebView）では判定しない — 読めないことを
+ * 「外から来た」の証拠にすると、まともなドラッグまで拒否してしまう。読めるときだけ印を確かめる。
+ *
+ * @param event ドラッグのイベント
+ * @returns 印の無いドラッグなら true
+ */
+function isForeignDrag(event: React.DragEvent): boolean {
+  const types = event.dataTransfer?.types;
+  if (types === undefined || types.length === 0) {
+    return false;
+  }
+  return !Array.from(types).includes(INTERNAL_DRAG_TYPE);
+}
+
 /** ドロップを受けるかどうかと、受けるなら渡す親。 */
 export type DropDecision =
   | { accepted: false }
@@ -458,6 +491,19 @@ function subtreeContains(node: SceneNode, id: string): boolean {
     return true;
   }
   return (node.children ?? []).some((child) => subtreeContains(child, id));
+}
+
+/**
+ * `draggedId` を持つノードの**いずれか**の部分木に `targetId` が入っているか。
+ *
+ * 木の中の id は一意だと決まっていない（`sceneNode.id` の契約は「非空の不透明な文字列」だけ）。
+ * 最初に見つかった 1 個だけで判定すると、同じ id の別のノードの下へ落とせてしまい輪ができる。
+ */
+function anySubtreeContains(node: SceneNode, draggedId: string, targetId: string): boolean {
+  if (node.id === draggedId && subtreeContains(node, targetId)) {
+    return true;
+  }
+  return (node.children ?? []).some((child) => anySubtreeContains(child, draggedId, targetId));
 }
 
 /** `root` の部分木から `id` のノードを探す。 */
@@ -500,13 +546,12 @@ export function resolveDropTarget(
     return { accepted: false };
   }
 
-  const dragged = findNode(root, draggedId);
-  if (dragged === undefined || findNode(root, targetId) === undefined) {
+  if (findNode(root, draggedId) === undefined || findNode(root, targetId) === undefined) {
     return { accepted: false };
   }
 
-  // 自分の中へは入れられない（輪ができる）。
-  if (subtreeContains(dragged, targetId)) {
+  // 自分の中へは入れられない（輪ができる）。同じ id のノードが複数あっても取りこぼさない。
+  if (anySubtreeContains(root, draggedId, targetId)) {
     return { accepted: false };
   }
 
@@ -610,9 +655,9 @@ interface SceneTreeDrag {
   enabled: boolean;
   /** いま受け入れ表示にする行。 */
   dropTargetId: string | undefined;
-  onDragStart: (id: string) => void;
+  onDragStart: (id: string, event: React.DragEvent) => void;
   onDragEnd: () => void;
-  onDragOver: (id: string, event: React.DragEvent) => boolean;
+  onDragOver: (id: string, event: React.DragEvent) => void;
   onDragLeave: (id: string) => void;
   onDrop: (id: string, event: React.DragEvent) => void;
 }
@@ -684,7 +729,7 @@ function SceneTreeNode({
           data-node-id={node.id}
           draggable={drag.enabled}
           onClick={handleClick}
-          onDragStart={() => drag.onDragStart(node.id)}
+          onDragStart={(event) => drag.onDragStart(node.id, event)}
           onDragEnd={drag.onDragEnd}
           onDragOver={(event) => drag.onDragOver(node.id, event)}
           onDragLeave={() => drag.onDragLeave(node.id)}
