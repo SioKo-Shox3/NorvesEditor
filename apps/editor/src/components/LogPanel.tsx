@@ -37,7 +37,10 @@ export function LogPanel(_props: IDockviewPanelProps): React.JSX.Element {
       <div className="panel__body">
         {entries.length === 0 ? (
           <ul className="log-list">
-            <li className="log-list__empty">No logs yet.</li>
+            <li className="log-list__empty">
+              ログはまだありません。
+              <span style={{ fontSize: 11, marginLeft: 6 }}>No logs yet.</span>
+            </li>
           </ul>
         ) : (
           <ul className="log-list">
