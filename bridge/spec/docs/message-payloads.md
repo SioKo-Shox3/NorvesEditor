@@ -355,6 +355,60 @@ generic type descriptors, not a reference into engine live memory. Schemas:
 | --- | --- | --- | --- |
 | `types` | array of `typeDescriptor` | yes | generic type descriptors the engine exposes; may be empty. |
 
+A descriptor may carry `instantiable: true` to say the engine can create a new
+instance of that type on request (`component.add`). An absent `instantiable` is
+not "no" — it means the engine does not report instantiability at all — but the
+editor treats both the same way and does not offer to create the type. Only a
+type the engine actually knows how to construct may report true.
+
+### component.add
+
+Attach a new component of the named type to one object. Component structure
+changes live behind the `component.edit` capability, not `object.edit`. Schemas:
+[params](../schema/methods/component.add.params.schema.json),
+[result](../schema/methods/component.add.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `objectId` | `objectId` | yes | object to attach the component to. |
+| `kind` | non-empty string | yes | generic type name to create, as advertised by `schema.getSnapshot`. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `accepted` | boolean | yes | whether the engine attached the component. |
+| `componentId` | `objectId` | no | identifier of the created component, when the engine reports one. |
+
+A refusal — unknown type, a type the engine cannot construct, an object that no
+longer exists, engine state that forbids it — is `accepted: false`, not a
+protocol error. The editor re-reads the object's snapshot after an accepted call
+rather than trusting `componentId` to place the component itself.
+
+### component.remove
+
+Detach one component from the object it belongs to. Schemas:
+[params](../schema/methods/component.remove.params.schema.json),
+[result](../schema/methods/component.remove.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `objectId` | `objectId` | yes | component to detach, named by the identifier `object.getSnapshot` advertised. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `accepted` | boolean | yes | whether the engine detached the component. |
+
+Detaching is not undoable through the protocol: the engine is not asked to keep
+the component's property values, so re-adding a type of the same name yields a
+freshly constructed component.
+
 ### asset.resolve
 
 Resolve one logical asset path and return health/source metadata. The result is a

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/component.add.result.schema.json",
+  "title": "component.add response result",
+  "description": "Whether the engine attached the component. A refusal (unknown type, engine state, object gone) is reported as accepted:false, not as a protocol error.",
+  "type": "object",
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "description": "Whether the engine attached the component.",
+      "type": "boolean"
+    },
+    "componentId": {
+      "description": "Identifier of the component the engine created, when it reports one. Opaque to the editor.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    }
+  }
+}
