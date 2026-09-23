@@ -18,13 +18,22 @@ import { useEffect, useState } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { useBridgeState } from '../state/BridgeContext.js';
 import { useBridgeActions } from '../hooks/useBridge.js';
+import { useEngineSettings } from '../hooks/useEngineSettings.js';
 import { requestLayoutReset } from '../shell/layoutReset.js';
+import type { EnginePathSource } from '@norves/bridge-ui';
+
+const ENGINE_PATH_SOURCE_LABELS: Record<EnginePathSource, string> = {
+  env: '環境変数 NORVES_ENGINE_PATH',
+  settings: '保存した設定',
+  default: '既定値',
+};
 
 // IDockviewPanelProps is accepted but not currently used for data.
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export function SettingsPanel(_props: IDockviewPanelProps): React.JSX.Element {
   const state = useBridgeState();
   const actions = useBridgeActions();
+  const engine = useEngineSettings();
   const [workspacePath, setWorkspacePath] = useState(state.workspace?.rootPath ?? '');
 
   // The Settings window mounts its own BridgeProvider, so the store starts empty
@@ -135,6 +144,77 @@ export function SettingsPanel(_props: IDockviewPanelProps): React.JSX.Element {
           )}
         </div>
 
+        <div className="divider" />
+        <section className="col settings-engine" aria-labelledby="settings-engine-title">
+          <span id="settings-engine-title" className="label">エンジン</span>
+          {engine.settings === undefined ? (
+            <span className="settings-engine__value">
+              {engine.busy ? '読み込み中…' : '設定を取得できません'}
+            </span>
+          ) : (
+            <div className="col settings-engine__details">
+              <div className="settings-engine__item">
+                <span className="label">実行ファイル:</span>
+                <span
+                  className="settings-engine__value settings-engine__path"
+                  data-testid="engine-effective-path"
+                >
+                  {engine.settings.effectivePath}
+                </span>
+              </div>
+              <div className="settings-engine__item">
+                <span className="label">出所:</span>
+                <span className="settings-engine__value" data-testid="engine-path-source">
+                  {ENGINE_PATH_SOURCE_LABELS[engine.settings.source]}
+                </span>
+              </div>
+              {engine.settings.source === 'env' && (
+                <p className="settings-engine__note" role="note">
+                  環境変数 NORVES_ENGINE_PATH が設定されているため、保存した設定よりも環境変数が優先されています。
+                  {engine.settings.savedPath !== null && (
+                    <>
+                      {' '}保存した設定:{' '}
+                      <span className="settings-engine__path">{engine.settings.savedPath}</span>
+                    </>
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+          {engine.error !== undefined && (
+            <div className="error-banner" role="alert">
+              <span className="error-banner__kind">{engine.error.kind ?? 'error'}</span>
+              <span className="error-banner__message">{engine.error.message}</span>
+              <button
+                className="error-banner__dismiss"
+                type="button"
+                onClick={engine.dismissError}
+                aria-label="エラーを閉じる"
+              >
+                ×
+              </button>
+            </div>
+          )}
+          <div className="row">
+            <button
+              className="btn"
+              type="button"
+              disabled={engine.busy}
+              onClick={engine.pick}
+            >
+              参照…
+            </button>
+            <button
+              className="btn"
+              type="button"
+              disabled={engine.busy || engine.settings?.savedPath == null}
+              onClick={engine.clear}
+              title="保存したパスを消し、既定の実行ファイルを使う"
+            >
+              既定に戻す
+            </button>
+          </div>
+        </section>
         {/* Layout reset — relays the request to the main window (P6). */}
         <div className="divider" />
         <div className="col" style={{ gap: 4 }}>

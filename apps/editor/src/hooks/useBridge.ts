@@ -83,7 +83,7 @@ interface BackendErrorPayload {
   [key: string]: unknown;
 }
 
-function extractBackendError(err: unknown): { kind?: string; message: string } {
+export function extractBackendError(err: unknown): { kind?: string; message: string } {
   if (err !== null && typeof err === 'object') {
     const e = err as BackendErrorPayload;
     return {

@@ -236,6 +236,43 @@ html, body, #root {
   margin: 8px 0;
 }
 
+/* ---- Settings のエンジン欄 ---- */
+/* 狭い幅ではラベルと値を折り返し、長いパスは任意の位置で改行して横にはみ出さない。 */
+.settings-engine {
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-engine__details {
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-engine__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  min-width: 0;
+}
+
+.settings-engine__value {
+  font-size: 12px;
+  min-width: 0;
+}
+
+.settings-engine__path {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.settings-engine__note {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
 /* ---- error banner ---- */
 .error-banner {
   display: flex;

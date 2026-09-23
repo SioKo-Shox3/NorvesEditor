@@ -48,7 +48,7 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - notes: 危険地帯(Tauri のプロセス/セキュリティ権限)なので評価者を必ず通す。ダイアログは `tauri-plugin-dialog` を Rust 側からだけ使う想定。依存を足すなら、Tauri 本体と揃う版を選び、packaging への影響をコミット本文に書く(`docs/agent-guide/tauri-security.md`)。起動引数はこのタスクでは扱わない(S-005)。
 
 ## S-004: Settings ウィンドウにエンジンの設定欄を出す
-- status: todo
+- status: done
 - done-when: Settings パネルに「エンジン」の欄がある。欄には次を置く:
   - 有効なパスとその出所の表示
   - `pick_engine_path` を呼ぶ「参照…」ボタンと、`clear_engine_path` を呼ぶ「既定に戻す」ボタン
