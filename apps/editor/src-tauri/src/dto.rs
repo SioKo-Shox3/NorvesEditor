@@ -50,6 +50,8 @@ pub struct EngineSettingsPayload {
     pub source: EnginePathSource,
     /// 保存済みのパス。未設定なら `None`。
     pub saved_path: Option<String>,
+    /// 保存済みの起動引数。未設定なら空。
+    pub saved_args: Vec<String>,
 }
 
 /// Payload returned by workspace management commands.

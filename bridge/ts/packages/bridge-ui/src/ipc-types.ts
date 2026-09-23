@@ -22,7 +22,7 @@ export interface ConnectionStatePayload {
 export type EnginePathSource = 'env' | 'settings' | 'default';
 
 /**
- * get_engine_settings / pick_engine_path / clear_engine_path が返す値。
+ * get_engine_settings / pick_engine_path / clear_engine_path / set_engine_args が返す値。
  *
  * // Mirrors apps/editor/src-tauri/src/dto.rs EngineSettingsPayload
  */
@@ -32,6 +32,8 @@ export interface EngineSettingsPayload {
   source: EnginePathSource;
   /** 保存済みのパス。未設定なら null。 */
   savedPath: string | null;
+  /** 保存済みの起動引数(1 要素 = 1 引数)。launch_engine は --bridge-port より前に渡す。 */
+  savedArgs: string[];
 }
 
 /**

@@ -41,6 +41,7 @@ pub mod commands {
     pub const GET_ENGINE_SETTINGS: &str = "get_engine_settings";
     pub const PICK_ENGINE_PATH: &str = "pick_engine_path";
     pub const CLEAR_ENGINE_PATH: &str = "clear_engine_path";
+    pub const SET_ENGINE_ARGS: &str = "set_engine_args";
     pub const WORKSPACE_OPEN: &str = "workspace_open";
     pub const WORKSPACE_GET: &str = "workspace_get";
     pub const WORKSPACE_CLOSE: &str = "workspace_close";
@@ -305,6 +306,7 @@ mod tests {
             commands::GET_ENGINE_SETTINGS,
             commands::PICK_ENGINE_PATH,
             commands::CLEAR_ENGINE_PATH,
+            commands::SET_ENGINE_ARGS,
             commands::WORKSPACE_OPEN,
             commands::WORKSPACE_GET,
             commands::WORKSPACE_CLOSE,

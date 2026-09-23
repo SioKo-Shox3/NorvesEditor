@@ -90,6 +90,75 @@ pub fn validate_engine_path(path: &Path) -> Result<(), BackendError> {
     }
 }
 
+/// エディタが自分で渡す、ユーザーの起動引数では使えない引数。
+pub const BRIDGE_PORT_ARG: &str = "--bridge-port";
+/// 保存できる起動引数の件数の上限。
+///
+/// 件数と長さの上限の積(16 KiB)に引用符やパスを足しても、Windows のコマンドラインの
+/// 上限(32767 文字)に収まるように選ぶ。
+pub const MAX_ENGINE_ARGS: usize = 32;
+/// 起動引数 1 件の長さ(UTF-8 のバイト数)の上限。
+pub const MAX_ENGINE_ARG_LEN: usize = 512;
+
+/// ユーザーが入力した起動引数(1 要素 = 1 引数)を確かめ、保存する形にする。
+///
+/// 空白だけの要素は空行として捨てる。それ以外の要素は手を加えずに残す(引数はシェルを介さずに
+/// そのまま渡すので、引用符や空白に特別な意味は無い)。次のどれかに当たると、何も捨てずにエラーを返す:
+/// エディタが渡す `--bridge-port` とぶつかる引数、NUL か改行を含む引数、上限を超える件数・長さ。
+pub fn normalize_engine_args(args: &[String]) -> Result<Vec<String>, BackendError> {
+    let args: Vec<String> = args
+        .iter()
+        .filter(|arg| !arg.trim().is_empty())
+        .cloned()
+        .collect();
+    if args.len() > MAX_ENGINE_ARGS {
+        return Err(invalid_args(format!(
+            "起動引数が多すぎます({} 件。上限は {MAX_ENGINE_ARGS} 件)",
+            args.len()
+        )));
+    }
+    for (index, arg) in args.iter().enumerate() {
+        let line = index + 1;
+        // 前後の空白を無視して比べる。空白を落としてから解釈するエンジンにも効かせるため。
+        let trimmed = arg.trim();
+        if trimmed == BRIDGE_PORT_ARG || trimmed.starts_with(&format!("{BRIDGE_PORT_ARG}=")) {
+            return Err(invalid_args(format!(
+                "{line} 件目: {BRIDGE_PORT_ARG} はエディタが渡すので指定できません"
+            )));
+        }
+        if arg.contains('\0') {
+            return Err(invalid_args(format!(
+                "{line} 件目: NUL 文字を含む引数は使えません"
+            )));
+        }
+        if arg.contains(['\n', '\r']) {
+            return Err(invalid_args(format!(
+                "{line} 件目: 改行を含む引数は使えません"
+            )));
+        }
+        if arg.len() > MAX_ENGINE_ARG_LEN {
+            return Err(invalid_args(format!(
+                "{line} 件目: 引数が長すぎます({} バイト。上限は {MAX_ENGINE_ARG_LEN} バイト)",
+                arg.len()
+            )));
+        }
+    }
+    Ok(args)
+}
+
+fn invalid_args(message: String) -> BackendError {
+    BackendError::Settings { message }
+}
+
+/// エンジンに渡す引数の並びを組み立てる。ユーザーの引数を先に、`--bridge-port <port>` を最後に置く。
+/// 引数はこの並びのまま `Command::args` に渡し、シェルは介さない。
+pub fn build_engine_args(user_args: &[String], port: u16) -> Vec<String> {
+    let mut argv = user_args.to_vec();
+    argv.push(BRIDGE_PORT_ARG.to_owned());
+    argv.push(port.to_string());
+    argv
+}
+
 /// Why a stdout handshake line failed to yield the expected READY port.
 ///
 /// Kept distinct from [`BackendError`] so tests can tell a malformed line apart
@@ -225,6 +294,89 @@ pub fn build_process_exited_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- 起動引数 -------------------------------------------------------------
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn settings_error(result: Result<Vec<String>, BackendError>) -> String {
+        match result {
+            Err(BackendError::Settings { message }) => message,
+            other => panic!("Settings エラーになるはず: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn engine_args_drop_blank_lines_and_keep_others_verbatim() {
+        let args = strings(&["", "--scene", "  ", "a b \"c\"", "\t", " --x=1 ", "$(rm)"]);
+        assert_eq!(
+            normalize_engine_args(&args).unwrap(),
+            strings(&["--scene", "a b \"c\"", " --x=1 ", "$(rm)"])
+        );
+        assert_eq!(normalize_engine_args(&[]).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn engine_args_reject_bridge_port() {
+        for bad in [
+            "--bridge-port",
+            "--bridge-port=9000",
+            "--bridge-port=",
+            " --bridge-port",
+            "\t--bridge-port=1 ",
+        ] {
+            let message = settings_error(normalize_engine_args(&strings(&["--ok", bad])));
+            assert!(message.contains("2 件目"), "{bad:?}: {message}");
+        }
+        // 似ているだけの引数は通す。
+        assert!(normalize_engine_args(&strings(&[
+            "--bridge-portx",
+            "-bridge-port",
+            "x=--bridge-port"
+        ]))
+        .is_ok());
+    }
+
+    #[test]
+    fn engine_args_reject_nul_and_line_breaks() {
+        for bad in ["a\0b", "\0", "a\nb", "a\rb"] {
+            settings_error(normalize_engine_args(&strings(&[bad])));
+        }
+    }
+
+    #[test]
+    fn engine_args_enforce_count_and_length_limits() {
+        let at_limit = vec!["x".to_owned(); MAX_ENGINE_ARGS];
+        assert_eq!(
+            normalize_engine_args(&at_limit).unwrap().len(),
+            MAX_ENGINE_ARGS
+        );
+        let over = vec!["x".to_owned(); MAX_ENGINE_ARGS + 1];
+        settings_error(normalize_engine_args(&over));
+
+        // 空行は件数に数えない。
+        let mut with_blanks = at_limit.clone();
+        with_blanks.extend(vec![String::new(); 10]);
+        assert!(normalize_engine_args(&with_blanks).is_ok());
+
+        let longest = "a".repeat(MAX_ENGINE_ARG_LEN);
+        assert!(normalize_engine_args(&[longest]).is_ok());
+        // 長さは文字数ではなくバイト数で数える。
+        let multibyte = "あ".repeat(MAX_ENGINE_ARG_LEN / 3 + 1);
+        settings_error(normalize_engine_args(&[multibyte]));
+        settings_error(normalize_engine_args(&["a".repeat(MAX_ENGINE_ARG_LEN + 1)]));
+    }
+
+    #[test]
+    fn engine_args_put_user_args_before_bridge_port() {
+        assert_eq!(
+            build_engine_args(&strings(&["--scene", "main.scene"]), 5123),
+            strings(&["--scene", "main.scene", "--bridge-port", "5123"])
+        );
+        assert_eq!(build_engine_args(&[], 1), strings(&["--bridge-port", "1"]));
+    }
 
     // --- resolve_engine_path -----------------------------------------------
 

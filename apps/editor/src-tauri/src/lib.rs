@@ -72,6 +72,7 @@ pub fn run() {
             engine_settings::get_engine_settings,
             engine_settings::pick_engine_path,
             engine_settings::clear_engine_path,
+            engine_settings::set_engine_args,
             workspace::workspace_open,
             workspace::workspace_get,
             workspace::workspace_close,

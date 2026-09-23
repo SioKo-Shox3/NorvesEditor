@@ -212,24 +212,26 @@ pub async fn launch_engine(
     // 2. パスはバックエンドだけで解決して確かめる(環境変数 > 保存済みの設定 > 既定値)。
     //    設定ファイルが無い・壊れているときは設定なしとして扱う。
     let env_value = std::env::var(ENGINE_PATH_ENV).ok();
-    let saved_path = crate::engine_settings::saved_engine_path(&app);
+    let saved = crate::engine_settings::saved_engine_settings(&app);
     let path = process::resolve_engine_path(
         env_value.as_deref(),
-        saved_path.as_deref(),
+        saved.engine_path.as_deref(),
         Path::new(DEFAULT_ENGINE_PATH),
     );
     process::validate_engine_path(&path)?;
+    // 保存済みの起動引数。設定ファイルは手で書き換えられるので、保存時と同じ検査をここでもかける。
+    let user_args = process::normalize_engine_args(&saved.engine_args)?;
 
     // 3. Pick a free loopback port for the engine to bind.
     let port = process::pick_free_port().map_err(|e| BackendError::Process {
         message: format!("failed to allocate a free port: {e}"),
     })?;
 
-    // 4. Spawn the child with stdout piped for the READY handshake. kill_on_drop
-    //    is the safety net; the explicit kill paths are preferred.
+    // 4. READY の受け取りのため stdout をパイプにして子を起動する。kill_on_drop は保険で、
+    //    明示的に止める経路を優先する。引数は保存済みの起動引数、最後に `--bridge-port <port>`。
+    //    シェルは介さない。
     let mut child = Command::new(&path)
-        .arg("--bridge-port")
-        .arg(port.to_string())
+        .args(process::build_engine_args(&user_args, port))
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)

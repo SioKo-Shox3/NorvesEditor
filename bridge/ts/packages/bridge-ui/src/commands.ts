@@ -53,6 +53,7 @@ export const BRIDGE_COMMANDS = {
   getEngineSettings: 'get_engine_settings',
   pickEnginePath: 'pick_engine_path',
   clearEnginePath: 'clear_engine_path',
+  setEngineArgs: 'set_engine_args',
   workspaceOpen: 'workspace_open',
   workspaceGet: 'workspace_get',
   workspaceClose: 'workspace_close',
@@ -116,6 +117,11 @@ export async function pickEnginePath(): Promise<EngineSettingsPayload> {
 
 export async function clearEnginePath(): Promise<EngineSettingsPayload> {
   return invoke<EngineSettingsPayload>(BRIDGE_COMMANDS.clearEnginePath);
+}
+
+/** 起動引数(1 要素 = 1 引数)を保存する。バックエンドが確かめ、空行を捨てた後の設定を返す。 */
+export async function setEngineArgs(args: string[]): Promise<EngineSettingsPayload> {
+  return invoke<EngineSettingsPayload>(BRIDGE_COMMANDS.setEngineArgs, { args });
 }
 
 export async function workspaceOpen(rootPath: string): Promise<WorkspacePayload> {

@@ -9,7 +9,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { SettingsPanel } from '../SettingsPanel.js';
 import type { IDockviewPanelProps } from 'dockview-react';
 import { LAYOUT_STORAGE_KEY } from '../shell/layoutKey.js';
@@ -51,12 +52,13 @@ const DEFAULT_ENGINE = {
   effectivePath: 'C:/Default/Engine.exe',
   source: 'default',
   savedPath: null,
+  savedArgs: [],
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // SettingsPanel rehydrates on mount via workspace_get; default it to "no
-  // workspace" so layout-reset tests are unaffected by the rehydrate call.
+  // SettingsPanel はマウント時に workspace_get で復元する。レイアウトのリセットのテストが
+  // その呼び出しに左右されないよう、既定は「ワークスペースなし」にする。
   (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
     if (cmd === 'workspace_get') return Promise.resolve(null);
     if (cmd === 'get_engine_settings') return Promise.resolve(DEFAULT_ENGINE);
@@ -69,12 +71,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderPanel(): void {
-  render(
+function renderPanel(options: { strict?: boolean } = {}): void {
+  const panel = (
     <BridgeProvider>
       <SettingsPanel {...({} as IDockviewPanelProps)} />
-    </BridgeProvider>,
+    </BridgeProvider>
   );
+  render(options.strict === true ? <StrictMode>{panel}</StrictMode> : panel);
 }
 
 describe('SettingsPanel layout reset (P6)', () => {
@@ -193,12 +196,14 @@ interface EnginePayload {
   effectivePath: string;
   source: 'env' | 'settings' | 'default';
   savedPath: string | null;
+  savedArgs: string[];
 }
 
 const SAVED_ENGINE: EnginePayload = {
   effectivePath: 'C:/Saved/Engine.exe',
   source: 'settings',
   savedPath: 'C:/Saved/Engine.exe',
+  savedArgs: [],
 };
 
 function mockEngineCommands(handlers: Record<string, () => Promise<unknown>>): void {
@@ -243,6 +248,7 @@ describe('SettingsPanel のエンジン欄', () => {
           effectivePath: 'D:/Env/Engine.exe',
           source: 'env',
           savedPath: 'C:/Saved/Engine.exe',
+          savedArgs: [],
         }),
     });
     renderPanel();
@@ -368,5 +374,221 @@ describe('SettingsPanel のエンジン欄', () => {
       expect(browse.disabled).toBe(false);
     });
     expect(reset.disabled).toBe(false);
+  });
+});
+
+// -------------------------------------------------------------------------
+// 応答の順序。StrictMode の二重マウントで初回の取得が2件出ても、古い応答で
+// 処理中を解除しない。
+// -------------------------------------------------------------------------
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+function deferredCommand(list: Deferred<EnginePayload>[]): () => Promise<EnginePayload> {
+  return () => {
+    const d = deferred<EnginePayload>();
+    list.push(d);
+    return d.promise;
+  };
+}
+
+function argsInput(): HTMLTextAreaElement {
+  return screen.getByLabelText('起動引数(1 行に 1 つ)') as HTMLTextAreaElement;
+}
+
+describe('SettingsPanel のエンジン欄の応答順序', () => {
+  it('古い取得の応答が後から届いても処理中を解除せず、pick_engine_path は1回だけ呼ばれる', async () => {
+    const gets: Deferred<EnginePayload>[] = [];
+    const picks: Deferred<EnginePayload>[] = [];
+    mockEngineCommands({
+      get_engine_settings: deferredCommand(gets),
+      pick_engine_path: deferredCommand(picks),
+    });
+    renderPanel({ strict: true });
+    await waitFor(() => {
+      expect(gets.length).toBe(2);
+    });
+
+    // 新しい取得が先に終わる。
+    await act(async () => {
+      gets[1]!.resolve(SAVED_ENGINE);
+    });
+    await waitFor(() => {
+      expect(button('参照…').disabled).toBe(false);
+    });
+    fireEvent.click(button('参照…'));
+    expect(commandCalls('pick_engine_path')).toBe(1);
+
+    // pick の途中で古い取得が終わっても、処理中のまま。
+    await act(async () => {
+      gets[0]!.resolve({ ...DEFAULT_ENGINE, savedArgs: ['--stale'] } as EnginePayload);
+    });
+    expect(button('参照…').disabled).toBe(true);
+    fireEvent.click(button('参照…'));
+    expect(commandCalls('pick_engine_path')).toBe(1);
+    // 古い応答の値は表示に出さない。
+    expect(screen.getByTestId('engine-effective-path').textContent).toBe('C:/Saved/Engine.exe');
+    expect(argsInput().value).toBe('');
+
+    await act(async () => {
+      picks[0]!.resolve(SAVED_ENGINE);
+    });
+    await waitFor(() => {
+      expect(button('参照…').disabled).toBe(false);
+    });
+  });
+
+  it('古い取得が先に終わっても、新しい取得が終わるまでは押せない', async () => {
+    const gets: Deferred<EnginePayload>[] = [];
+    mockEngineCommands({
+      get_engine_settings: deferredCommand(gets),
+      pick_engine_path: () => Promise.resolve(SAVED_ENGINE),
+    });
+    renderPanel({ strict: true });
+    await waitFor(() => {
+      expect(gets.length).toBe(2);
+    });
+
+    await act(async () => {
+      gets[0]!.resolve(DEFAULT_ENGINE as EnginePayload);
+    });
+    fireEvent.click(button('参照…'));
+    expect(commandCalls('pick_engine_path')).toBe(0);
+    expect(screen.queryByTestId('engine-effective-path')).toBeNull();
+
+    await act(async () => {
+      gets[1]!.resolve(SAVED_ENGINE);
+    });
+    await waitForEnginePath('C:/Saved/Engine.exe');
+    expect(button('参照…').disabled).toBe(false);
+  });
+});
+
+// -------------------------------------------------------------------------
+// 起動引数。入力欄の 1 行が 1 引数。確かめるのはバックエンド。
+// -------------------------------------------------------------------------
+
+describe('SettingsPanel の起動引数', () => {
+  it('保存済みの引数を 1 行 1 引数で入力欄に出す', async () => {
+    mockEngineCommands({
+      get_engine_settings: () =>
+        Promise.resolve({ ...SAVED_ENGINE, savedArgs: ['--scene', 'a b.scene'] }),
+    });
+    renderPanel();
+
+    await waitFor(() => {
+      expect(argsInput().value).toBe('--scene\na b.scene');
+    });
+  });
+
+  it('「引数を保存」で行ごとに分けて set_engine_args を呼び、保存後の値と結果を表示する', async () => {
+    mockEngineCommands({
+      get_engine_settings: () => Promise.resolve(SAVED_ENGINE),
+      set_engine_args: () =>
+        Promise.resolve({ ...SAVED_ENGINE, savedArgs: ['--scene', 'main.scene'] }),
+    });
+    renderPanel();
+    await waitForEnginePath('C:/Saved/Engine.exe');
+
+    fireEvent.change(argsInput(), { target: { value: '--scene\r\n\nmain.scene\n' } });
+    fireEvent.click(button('引数を保存'));
+
+    expect(tauriCore.invoke as Mock).toHaveBeenCalledWith('set_engine_args', {
+      args: ['--scene', '', 'main.scene', ''],
+    });
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toBe('起動引数を保存しました');
+    // 空行を捨てた後の、保存された並びに置き換わる。
+    expect(argsInput().value).toBe('--scene\nmain.scene');
+
+    // 入力し直したら結果の表示は消える。
+    fireEvent.change(argsInput(), { target: { value: '--other' } });
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('保存が拒否されたらエラーを表示し、入力欄の内容は残す', async () => {
+    mockEngineCommands({
+      get_engine_settings: () => Promise.resolve(SAVED_ENGINE),
+      set_engine_args: () =>
+        Promise.reject({
+          kind: 'settings',
+          message: '1 件目: --bridge-port はエディタが渡すので指定できません',
+        }),
+    });
+    renderPanel();
+    await waitForEnginePath('C:/Saved/Engine.exe');
+
+    fireEvent.change(argsInput(), { target: { value: '--bridge-port=1' } });
+    fireEvent.click(button('引数を保存'));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('--bridge-port はエディタが渡すので指定できません');
+    expect(argsInput().value).toBe('--bridge-port=1');
+    expect(screen.queryByRole('status')).toBeNull();
+    await waitFor(() => {
+      expect(button('引数を保存').disabled).toBe(false);
+    });
+  });
+
+  it('パスの操作では書きかけの引数を消さない', async () => {
+    mockEngineCommands({
+      get_engine_settings: () => Promise.resolve(DEFAULT_ENGINE),
+      pick_engine_path: () => Promise.resolve({ ...SAVED_ENGINE, savedArgs: ['--old'] }),
+    });
+    renderPanel();
+    await waitForEnginePath('C:/Default/Engine.exe');
+
+    fireEvent.change(argsInput(), { target: { value: '--draft' } });
+    fireEvent.click(button('参照…'));
+
+    await waitForEnginePath('C:/Saved/Engine.exe');
+    expect(argsInput().value).toBe('--draft');
+  });
+
+  it('処理中は保存できず、続けて押しても set_engine_args は1回しか呼ばれない', async () => {
+    const saves: Deferred<EnginePayload>[] = [];
+    mockEngineCommands({
+      get_engine_settings: () => Promise.resolve(SAVED_ENGINE),
+      set_engine_args: deferredCommand(saves),
+    });
+    renderPanel();
+    await waitForEnginePath('C:/Saved/Engine.exe');
+
+    fireEvent.change(argsInput(), { target: { value: '--a' } });
+    fireEvent.click(button('引数を保存'));
+    fireEvent.click(button('引数を保存'));
+    fireEvent.click(button('参照…'));
+    expect(button('引数を保存').disabled).toBe(true);
+    expect(commandCalls('set_engine_args')).toBe(1);
+    expect(commandCalls('pick_engine_path')).toBe(0);
+
+    await act(async () => {
+      saves[0]!.resolve({ ...SAVED_ENGINE, savedArgs: ['--a'] });
+    });
+    await waitFor(() => {
+      expect(button('引数を保存').disabled).toBe(false);
+    });
+  });
+
+  it('savedArgs の無い応答は不正な応答として扱う', async () => {
+    mockEngineCommands({
+      get_engine_settings: () =>
+        Promise.resolve({ effectivePath: 'C:/x.exe', source: 'default', savedPath: null }),
+    });
+    renderPanel();
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('エンジンの設定の応答が不正です');
   });
 });

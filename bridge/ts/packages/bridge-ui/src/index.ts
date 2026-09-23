@@ -63,6 +63,7 @@ export {
   getEngineSettings,
   pickEnginePath,
   clearEnginePath,
+  setEngineArgs,
   type BridgeCommandName,
 } from './commands.js';
 export {

@@ -60,7 +60,7 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - notes: S-003 のコマンドに依存する。Settings は別ウィンドウ(secondary-windows)で開くので、main 窓の store に頼らずに値を取得する。
 
 ## S-005: 起動引数を設定できるようにする
-- status: todo
+- status: done
 - done-when: 起動引数を 1 行 1 引数のリストとして保存するコマンド `set_engine_args` があり、`get_engine_settings` が保存済みの引数も返す。`launch_engine` は保存された引数を `--bridge-port <port>` より前に、シェルを介さず渡す。保存の前に検証し、次の引数を拒否してエラーを返す:
   - `--bridge-port` そのもの、または `--bridge-port=` で始まる引数
   - NUL を含む引数
@@ -93,3 +93,12 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - paths: apps/editor/src-tauri/src/**, apps/editor/src-tauri/Cargo.toml, apps/editor/src-tauri/Cargo.lock
 - notes: S-002 の評価で判明。今は `tracing_subscriber` が stderr にだけ出すので、配布版では失われる。出力先(ファイルの場所・ローテーション)は設計判断が要るので、決められなければ blocked に書く。評価者は「S-007 への切り出しだけでは S-002 の完了条件を満たさない」と判定しているので、S-002 の残りとして優先して扱う。あわせて `process_runtime.rs` の Job 関連の警告本文(英語)を日本語にする。
+
+## S-008: バッチファイルをエンジンとして起動させない
+- status: todo
+- done-when: `validate_engine_path` が `.bat` / `.cmd`(大文字小文字を問わない)を拒否してエラーを返し、ダイアログで選んでも保存されず、環境変数や設定ファイルで指定されても `launch_engine` が起動しない。Rust std は `.bat` / `.cmd` を cmd.exe 経由で起動するので、起動引数がシェルを通らない前提を守るため。拒否のユニットテストが通る。
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- paths: apps/editor/src-tauri/src/**
+- notes: S-005 の評価で判明(S-003 からの持ち越し)。ダイアログは「すべてのファイル」を許し、`validate_engine_path` は `is_file` しか見ていない。危険地帯(Tauri のプロセス起動)なので評価者を通す。

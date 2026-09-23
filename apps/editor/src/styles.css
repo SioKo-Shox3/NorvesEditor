@@ -273,6 +273,32 @@ html, body, #root {
   overflow-wrap: anywhere;
 }
 
+/* 起動引数は 1 行 1 引数なので折り返さず、長い行は入力欄の中で横に送る。 */
+.settings-engine__args {
+  gap: 4px;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.settings-engine__args-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  white-space: pre;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.settings-engine__args-actions {
+  gap: 4px 8px;
+}
+
+.settings-engine__saved {
+  font-size: 11px;
+  color: var(--color-success);
+}
+
 /* ---- error banner ---- */
 .error-banner {
   display: flex;

@@ -1,4 +1,4 @@
-//! エンジン設定(今は実行ファイルのパス)の保存・読み込みと、その Tauri コマンド。
+//! エンジン設定(実行ファイルのパスと起動引数)の保存・読み込みと、その Tauri コマンド。
 //!
 //! 設定は OS のアプリ設定ディレクトリ(`app_config_dir`)の [`SETTINGS_FILE_NAME`] に、マシン・ユーザー
 //! 単位で置く。ファイルが無い・壊れているときは既定の設定として扱い、エンジンの起動を妨げない。
@@ -7,6 +7,9 @@
 //! 実行ファイルのパスを変えられるのは、Rust 側で開く OS のファイル選択ダイアログ
 //! ([`pick_engine_path`])だけ。フロントエンドからパス文字列を受け取るコマンドは置かない。
 //! ダイアログは `rfd` を直接使い、webview にはダイアログの権限もコマンドも公開しない。
+//!
+//! フロントエンドが渡せるのは起動引数([`set_engine_args`])だけ。引数は保存の前に
+//! [`process::normalize_engine_args`] で確かめ、起動時も読み直した値をもう一度確かめる。
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -31,6 +34,9 @@ pub struct EngineSettings {
     /// ダイアログで選んだエンジンの実行ファイル。未設定なら `None`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engine_path: Option<String>,
+    /// エンジンに渡す起動引数(1 要素 = 1 引数)。`--bridge-port` より前に渡す。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub engine_args: Vec<String>,
     /// このビルドが知らないキー。新しいビルドが足した項目を古いビルドの保存で消さないために持ち回る。
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -76,6 +82,7 @@ pub fn build_payload(
         effective_path: path.to_string_lossy().into_owned(),
         source,
         saved_path: settings.engine_path.clone(),
+        saved_args: settings.engine_args.clone(),
     }
 }
 
@@ -114,13 +121,13 @@ fn settings_file(app: &AppHandle) -> Result<PathBuf, BackendError> {
         })
 }
 
-/// `launch_engine` が使う保存済みのパス。設定ファイルの場所が決められないときも起動は止めない。
-pub fn saved_engine_path(app: &AppHandle) -> Option<String> {
+/// `launch_engine` が使う保存済みの設定。設定ファイルの場所が決められないときも起動は止めない。
+pub fn saved_engine_settings(app: &AppHandle) -> EngineSettings {
     match settings_file(app) {
-        Ok(file) => load_settings(&file).engine_path,
+        Ok(file) => load_settings(&file),
         Err(e) => {
             tracing::warn!(error = %e, "エンジン設定の場所が決められないので設定を使わない");
-            None
+            EngineSettings::default()
         }
     }
 }
@@ -197,6 +204,20 @@ pub async fn clear_engine_path(
 ) -> Result<EngineSettingsPayload, BackendError> {
     let file = settings_file(&app)?;
     state.update(&file, |settings| settings.engine_path = None)?;
+    Ok(current_payload(&file))
+}
+
+/// `set_engine_args`: 起動引数を確かめてから保存し、その後の設定を返す。
+/// 空行は捨てる。確かめて通らなければ何も保存せずにエラーを返す。
+#[tauri::command]
+pub async fn set_engine_args(
+    app: AppHandle,
+    state: State<'_, EngineSettingsState>,
+    args: Vec<String>,
+) -> Result<EngineSettingsPayload, BackendError> {
+    let args = process::normalize_engine_args(&args)?;
+    let file = settings_file(&app)?;
+    state.update(&file, |settings| settings.engine_args = args)?;
     Ok(current_payload(&file))
 }
 
@@ -339,11 +360,42 @@ mod tests {
     }
 
     #[test]
+    fn engine_args_round_trip_and_are_omitted_when_empty() {
+        let (dir, file) = temp_settings_file();
+        let state = EngineSettingsState::default();
+        write_raw(&file, r#"{"enginePath": "e.exe", "futureKey": 1}"#);
+
+        state
+            .update(&file, |s| {
+                s.engine_args = vec!["--scene".to_owned(), "a b".to_owned()]
+            })
+            .expect("保存できる");
+        let saved = load_settings(&file);
+        assert_eq!(saved.engine_args, ["--scene", "a b"]);
+        assert_eq!(saved.engine_path.as_deref(), Some("e.exe"), "パスは残る");
+        assert_eq!(
+            build_payload(None, &saved, Path::new("d")).saved_args,
+            ["--scene", "a b"]
+        );
+
+        state
+            .update(&file, |s| s.engine_args.clear())
+            .expect("消せる");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(
+            raw,
+            serde_json::json!({"enginePath": "e.exe", "futureKey": 1})
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn payload_serializes_with_camel_case_source() {
         let p = build_payload(None, &EngineSettings::default(), Path::new("d"));
         assert_eq!(
             serde_json::to_value(&p).unwrap(),
-            serde_json::json!({"effectivePath": "d", "source": "default", "savedPath": null})
+            serde_json::json!({"effectivePath": "d", "source": "default", "savedPath": null, "savedArgs": []})
         );
     }
 }

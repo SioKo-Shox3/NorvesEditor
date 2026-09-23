@@ -214,6 +214,39 @@ export function SettingsPanel(_props: IDockviewPanelProps): React.JSX.Element {
               既定に戻す
             </button>
           </div>
+          <div className="col settings-engine__args">
+            <label className="label" htmlFor="settings-engine-args">
+              起動引数(1 行に 1 つ)
+            </label>
+            <textarea
+              id="settings-engine-args"
+              className="settings-engine__args-input"
+              rows={4}
+              spellCheck={false}
+              value={engine.argsDraft}
+              disabled={engine.settings === undefined}
+              onChange={(e) => engine.setArgsDraft(e.target.value)}
+            />
+            <p className="settings-engine__note">
+              シェルを介さず、1 行をそのまま 1 つの引数として --bridge-port より前に渡します。空行は捨てます。
+              --bridge-port はエディタが渡すので指定できません。
+            </p>
+            <div className="row settings-engine__args-actions">
+              <button
+                className="btn"
+                type="button"
+                disabled={engine.busy || engine.settings === undefined}
+                onClick={engine.saveArgs}
+              >
+                引数を保存
+              </button>
+              {engine.argsSaved && (
+                <span className="settings-engine__saved" role="status">
+                  起動引数を保存しました
+                </span>
+              )}
+            </div>
+          </div>
         </section>
         {/* Layout reset — relays the request to the main window (P6). */}
         <div className="divider" />
