@@ -14,12 +14,13 @@
 - S-005 指摘対応(反復 6、S-008 を兼ねる): `validate_engine_path` がパスの文字列の末尾(末尾の `.` と空白を落とした後)が `.bat` / `.cmd` なら大文字小文字を問わず拒否する。std の判定と同じく `.cmd` だけの名前も対象。保存(`pick_engine_path`)と起動(`launch_engine`)は同じ関数を通る。保存待ち中に編集した起動引数は、下書きの編集の世代で判定して応答で上書きしない(新テストは旧実装で落ちることを確認)。ipc-types の英語コメントを日本語に。fmt/clippy exit 0、cargo test 159 + 14、IPC 名一致、typecheck exit 0、vitest 649/649。評価者 2 周目の指摘(`.cmd` 単独名)は対応済み、3 周目は回していない。
 - S-006: `docs/norveslib-integration.md`(Step 3 と Known Limitations 3/5/6)、`docs/engine-profile.md`、`docs/build.md` を、Settings の「エンジン」欄・優先順位(環境変数 > 設定 > 既定値)・Windows の Job・バッチファイルの拒否に合わせて日本語で書き直す。NorvesLib アダプタは scene/object/schema を実装済み(ヘッダで確認)。`docs/engine-integration.md` は e2e テスト用の環境変数の記述だけで直す箇所が無かった。verify exit 0(変更前の文書では exit 1)。
 - S-007: `src/backend_log.rs` で WARN 以上を stderr と `app_log_dir`(Windows は `%LOCALAPPDATA%\com.norves.editor\logs`)の `backend.log` の両方へ出す。追記で開き 1 件ごとに書く(強制終了でも残る)。起動時に 1 MiB を超えていれば `backend.log.1` へ移す(最大 2 世代)。依存は足していない(自前の `MakeWriter`)。初期化は `setup` で行う。Job の警告 2 件を日本語にし、割り当ての警告を `assign_or_warn` に切り出して、不正なハンドルでの失敗がログファイルへ届くテストを追加。fmt/clippy exit 0、cargo test 164 + 14。
+- S-009: README の happy path 2、ステップ 4 の注記、Known Limitations 3 を、Settings の「エンジン」欄と優先順位(`NORVES_ENGINE_PATH` > 保存したパス > 既定値)に触れる形に直し、`docs/engine-profile.md` へ案内する。verify exit 0(変更前は exit 1)。Known Limitations 2 と 5 も古いので S-010 に切り出した。
 
 ## In progress
 - なし
 
 ## Next
-- S-006 の評価(NEEDS_WORK、`NEXT_FINDINGS.md`): Known Limitations 6 の終了保証を「Job への割り当て成功後」に限る。docs/** は S-007 の paths 外なので未対応。次に S-009(README の同じ記述)。
+- S-006 の評価(NEEDS_WORK、`NEXT_FINDINGS.md`): Known Limitations 6 の終了保証を「Job への割り当て成功後」に限る。docs/** は S-007 の paths 外なので未対応。次に S-010(README の Known Limitations 2 と 5)。
 - S-007 の実機確認: 配布版を起動し、ログディレクトリに `backend.log` ができることを全タスク後の手動確認に含める。
 - ダイアログの見た目・起動引数の実際の受け渡し・強制終了後にエンジンが残らないことは、自動テストでは確かめられない。全タスクの完了後に Tauri アプリを実機で起動して確かめる。
 
