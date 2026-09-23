@@ -100,6 +100,23 @@ namespace
                     }
                 }
             }
+            // setProperty の ack 後のライブ更新イベント（main.cpp の常駐ループと同じ順序・
+            // 同じ構築方法。params は更新済みのインメモリ状態に依存するので実行時に綴る）。
+            if (adapter.emit_object_changed.exchange(false))
+            {
+                if (!engine.send(server.emitEvent("object.changed", adapter.object_changed_params())))
+                {
+                    return;
+                }
+            }
+            if (adapter.emit_scene_tree_changed.exchange(false))
+            {
+                if (!engine.send(
+                        server.emitEvent("scene.treeChanged", MockAdapter::scene_tree_changed_params())))
+                {
+                    return;
+                }
+            }
         }
     }
 
@@ -227,6 +244,255 @@ namespace
                         }
                     }
                 }
+            }
+        }
+
+        // 4. n-1 の setProperty 後の object.changed --------------------------------
+        // イベントの params はスナップショット本文を components 抜きで綴り直したもの。
+        // 本文をイベント側とメソッド側で別々に持つと、片方だけ直したときにイベントが
+        // 空の propertyBag を運ぶ（実際に一度そうなった）。中身まで検査して固定する。
+        client->send(RequestFrame(
+            "req-set-n1", "object.setProperty",
+            R"({"objectId":"n-1","property":"fieldOfView","value":75})"));
+        {
+            std::optional<std::string> ack = client->recv();
+            NORVES_CHECK(ack.has_value());
+            if (ack.has_value())
+            {
+                const Envelope env = DecodeOrFail(*ack);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-set-n1"});
+            }
+            // イベントが来たときの中身だけを見ると、object.changed が別のイベントへ
+            // すり替わった場合に検査が 1 つも走らない。発行の有無を立ててループの後で
+            // 確かめる。なお発行そのものが消えた場合は recv() が塞がるので、失敗は
+            // 断言ではなく CTest のタイムアウトとして出る(ループバックの recv に
+            // 期限が無いため。実測で確認済み)。
+            bool sawObjectChanged = false;
+            for (int i = 0; i < 2; ++i)
+            {
+                std::optional<std::string> event = client->recv();
+                NORVES_CHECK(event.has_value());
+                if (!event.has_value())
+                {
+                    break;
+                }
+                const Envelope env = DecodeOrFail(*event);
+                NORVES_CHECK(env.kind == Kind::Event);
+                if (env.event == std::optional<std::string>{"object.changed"})
+                {
+                    sawObjectChanged = true;
+                    NORVES_CHECK(event->find(R"("objectId":"n-1")") != std::string::npos);
+                    NORVES_CHECK(event->find(R"("name":"label")") != std::string::npos);
+                    NORVES_CHECK(event->find(R"("value":75)") != std::string::npos);
+                    NORVES_CHECK(event->find(R"("components")") == std::string::npos);
+                }
+            }
+            NORVES_CHECK(sawObjectChanged);
+        }
+
+        // 5. object.getSnapshot のコンポーネント経路 --------------------------------
+        // エディタは components の objectId をそのままキーとして投げ返す（中身は解釈しない）。
+        // ここでは wire テキストで確かめる: n-2 が2件を広告し、その id が解決でき、
+        // コンポーネント宛ての setProperty が受理されて後続の読みに反映されること。
+        client->send(RequestFrame("req-snap-n2", "object.getSnapshot", R"({"objectId":"n-2"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                const Envelope env = DecodeOrFail(*resp);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-snap-n2"});
+                NORVES_CHECK(resp->find(R"("objectId":"component:n-2:1")") != std::string::npos);
+                NORVES_CHECK(resp->find(R"("kind":"camera")") != std::string::npos);
+                NORVES_CHECK(resp->find(R"("objectId":"component:n-2:2")") != std::string::npos);
+            }
+        }
+        client->send(RequestFrame("req-snap-comp", "object.getSnapshot",
+                                  R"({"objectId":"component:n-2:1"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                const Envelope env = DecodeOrFail(*resp);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-snap-comp"});
+                NORVES_CHECK(resp->find(R"("fieldOfView")") != std::string::npos);
+                NORVES_CHECK(resp->find(R"("value":50)") != std::string::npos);
+                // コンポーネント自身のスナップショットは components を持たない。
+                NORVES_CHECK(resp->find(R"("components")") == std::string::npos);
+            }
+        }
+        client->send(RequestFrame(
+            "req-set-comp", "object.setProperty",
+            R"({"objectId":"component:n-2:1","property":"fieldOfView","value":33})"));
+        {
+            std::optional<std::string> ack = client->recv();
+            NORVES_CHECK(ack.has_value());
+            if (ack.has_value())
+            {
+                const Envelope env = DecodeOrFail(*ack);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-set-comp"});
+                NORVES_CHECK(env.result.has_value());
+            }
+            // ack の後に object.changed と scene.treeChanged が 1 回ずつ流れる。
+            // object.changed は components を持たない（イベントのスキーマが許さない）。
+            bool sawComponentChanged = false;
+            for (int i = 0; i < 2; ++i)
+            {
+                std::optional<std::string> event = client->recv();
+                NORVES_CHECK(event.has_value());
+                if (event.has_value())
+                {
+                    const Envelope env = DecodeOrFail(*event);
+                    NORVES_CHECK(env.kind == Kind::Event);
+                    if (env.event == std::optional<std::string>{"object.changed"})
+                    {
+                        sawComponentChanged = true;
+                        NORVES_CHECK(event->find(R"("value":33)") != std::string::npos);
+                        NORVES_CHECK(event->find(R"("components")") == std::string::npos);
+                    }
+                }
+            }
+            NORVES_CHECK(sawComponentChanged);
+        }
+        client->send(RequestFrame("req-snap-comp-2", "object.getSnapshot",
+                                  R"({"objectId":"component:n-2:1"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                NORVES_CHECK(resp->find(R"("value":33)") != std::string::npos);
+            }
+        }
+
+        // 6. component.add / component.remove ------------------------------------
+        // 生成できる型は schema が instantiable:true で広告している camera だけ。足した id が
+        // そのまま object.getSnapshot で解決でき、外すと親の一覧から消えることを確かめる。
+        client->send(RequestFrame("req-add-bad", "component.add",
+                                  R"({"objectId":"n-2","kind":"script"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                // instantiable:false の型は拒否される（プロトコルエラーではなく accepted:false）。
+                NORVES_CHECK(resp->find(R"("accepted":false)") != std::string::npos);
+            }
+        }
+
+        std::string addedId;
+        client->send(RequestFrame("req-add", "component.add",
+                                  R"({"objectId":"n-2","kind":"camera"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                const Envelope env = DecodeOrFail(*resp);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"req-add"});
+                NORVES_CHECK(resp->find(R"("accepted":true)") != std::string::npos);
+                const std::size_t at = resp->find(R"("componentId":")");
+                NORVES_CHECK(at != std::string::npos);
+                if (at != std::string::npos)
+                {
+                    const std::size_t begin = at + std::string(R"("componentId":")").size();
+                    const std::size_t end = resp->find('"', begin);
+                    NORVES_CHECK(end != std::string::npos);
+                    if (end != std::string::npos)
+                    {
+                        addedId = resp->substr(begin, end - begin);
+                    }
+                }
+            }
+        }
+        NORVES_CHECK(!addedId.empty());
+
+        if (!addedId.empty())
+        {
+            // 足した id が解決でき、親の一覧にも載っている。
+            client->send(RequestFrame("req-added-snap", "object.getSnapshot",
+                                      std::string(R"({"objectId":")") + addedId + R"("})"));
+            {
+                std::optional<std::string> resp = client->recv();
+                NORVES_CHECK(resp.has_value());
+                if (resp.has_value())
+                {
+                    NORVES_CHECK(resp->find(addedId) != std::string::npos);
+                    NORVES_CHECK(resp->find(R"("kind":"camera")") != std::string::npos);
+                }
+            }
+            client->send(RequestFrame("req-n2-after-add", "object.getSnapshot",
+                                      R"({"objectId":"n-2"})"));
+            {
+                std::optional<std::string> resp = client->recv();
+                NORVES_CHECK(resp.has_value());
+                if (resp.has_value())
+                {
+                    NORVES_CHECK(resp->find(addedId) != std::string::npos);
+                }
+            }
+
+            client->send(RequestFrame("req-remove", "component.remove",
+                                      std::string(R"({"objectId":")") + addedId + R"("})"));
+            {
+                std::optional<std::string> resp = client->recv();
+                NORVES_CHECK(resp.has_value());
+                if (resp.has_value())
+                {
+                    NORVES_CHECK(resp->find(R"("accepted":true)") != std::string::npos);
+                }
+            }
+            client->send(RequestFrame("req-n2-after-remove", "object.getSnapshot",
+                                      R"({"objectId":"n-2"})"));
+            {
+                std::optional<std::string> resp = client->recv();
+                NORVES_CHECK(resp.has_value());
+                if (resp.has_value())
+                {
+                    NORVES_CHECK(resp->find(addedId) == std::string::npos);
+                    // 元からある 2 件は残っている。
+                    NORVES_CHECK(resp->find(R"("objectId":"component:n-2:1")") !=
+                                 std::string::npos);
+                }
+            }
+            // 二度目の削除は拒否される。
+            client->send(RequestFrame("req-remove-again", "component.remove",
+                                      std::string(R"({"objectId":")") + addedId + R"("})"));
+            {
+                std::optional<std::string> resp = client->recv();
+                NORVES_CHECK(resp.has_value());
+                if (resp.has_value())
+                {
+                    NORVES_CHECK(resp->find(R"("accepted":false)") != std::string::npos);
+                }
+            }
+        }
+
+        // 7. 組み込みのコンポーネントも、外したら解決できない --------------------
+        // 一覧から外れた id が object.getSnapshot でまだ引けると、契約(外した id は
+        // 拒否)と参照実装が食い違う。後から足した id だけでなく、初期状態から在る
+        // component:n-2:2 でも確かめる。
+        client->send(RequestFrame("req-remove-builtin", "component.remove",
+                                  R"({"objectId":"component:n-2:2"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                NORVES_CHECK(resp->find(R"("accepted":true)") != std::string::npos);
+            }
+        }
+        client->send(RequestFrame("req-builtin-after-remove", "object.getSnapshot",
+                                  R"({"objectId":"component:n-2:2"})"));
+        {
+            std::optional<std::string> resp = client->recv();
+            NORVES_CHECK(resp.has_value());
+            if (resp.has_value())
+            {
+                // 未知 id と同じ扱い: 空の propertyBag で、kind も名前も返さない。
+                NORVES_CHECK(resp->find(R"("properties":[])") != std::string::npos);
+                NORVES_CHECK(resp->find(R"("kind":"script")") == std::string::npos);
             }
         }
 

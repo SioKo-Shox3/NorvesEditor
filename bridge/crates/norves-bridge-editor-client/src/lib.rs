@@ -41,9 +41,10 @@ pub use handshake::{
 };
 pub use log::{parse_log_message, LogError, LogMessage};
 pub use object::{
-    parse_object_snapshot_result, parse_schema_snapshot_result, parse_set_property_result,
-    ObjectError, ObjectSnapshot, PropertyDefinition, PropertyEntry, SchemaSnapshot, SetPropertyAck,
-    TypeDescriptor,
+    parse_component_add_result, parse_component_remove_result, parse_object_snapshot_result,
+    parse_schema_snapshot_result, parse_set_property_result, ComponentAddAck, ComponentRef,
+    ComponentRemoveAck, ObjectError, ObjectSnapshot, PropertyDefinition, PropertyEntry,
+    SchemaSnapshot, SetPropertyAck, TypeDescriptor,
 };
 pub use reconnect::{connect_with_retry, ConnectError, ReconnectManager, RetryConfig};
 pub use scene::{

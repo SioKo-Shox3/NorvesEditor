@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/component.remove.params.schema.json",
+  "title": "component.remove.params",
+  "description": "Detach one component from the object it belongs to. The component is named by the same opaque identifier object.getSnapshot advertised.",
+  "type": "object",
+  "required": [
+    "objectId"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "objectId": {
+      "description": "Component to detach.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    }
+  }
+}

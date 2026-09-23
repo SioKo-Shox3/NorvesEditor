@@ -178,6 +178,32 @@ namespace
         int m_AssetReloadManifestCallCount = 0;
     };
 
+    // @brief component.add / component.remove を実装する偽アダプタ。params がそのまま
+    // アダプタへ渡ること（SDK は検証を挟まない）を、受け取った params の控えで確かめる。
+    class ComponentEditAdapter : public FakeAdapter
+    {
+    public:
+        Result<JsonValue, BridgeError> componentAdd(const JsonValue& params) override
+        {
+            m_LastAddParams = params.dump();
+            ++m_AddCallCount;
+            return Result<JsonValue, BridgeError>::ok(
+                ParseOrFail(R"({"accepted":true,"componentId":"component:n-2:9"})"));
+        }
+
+        Result<JsonValue, BridgeError> componentRemove(const JsonValue& params) override
+        {
+            m_LastRemoveParams = params.dump();
+            ++m_RemoveCallCount;
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"accepted":false})"));
+        }
+
+        std::string m_LastAddParams;
+        std::string m_LastRemoveParams;
+        int m_AddCallCount = 0;
+        int m_RemoveCallCount = 0;
+    };
+
     // ワイヤーフレームビルダー -----------------------------------------------------------
 
     std::string RequestFrame(std::string_view id, std::string_view method,
@@ -345,7 +371,8 @@ namespace
         const std::string methods[] = {"scene.getTree",         "scene.createObject",
                                        "scene.deleteObject",    "scene.reparentObject",
                                        "scene.duplicateObject", "asset.resolve",
-                                       "asset.getManifest"};
+                                       "asset.getManifest",     "component.add",
+                                       "component.remove"};
         for (std::string_view method : methods)
         {
             const std::string frame = RequestFrame("o-1", method, "");
@@ -361,6 +388,49 @@ namespace
             if (env.error.has_value())
             {
                 NORVES_CHECK_EQ(env.error->code, std::string{"METHOD_NOT_SUPPORTED"});
+            }
+        }
+    }
+
+    // component.add / component.remove は SDK 側で params を検証しない（object.setProperty と
+    // 同じ作法。検証はアダプタが行い、拒否は accepted:false で返す）。ここで固定するのは
+    // 「params がそのまま渡る」「結果がそのまま返る」「id が保たれる」の 3 点。
+    void TestComponentEditPassesParamsThrough()
+    {
+        ComponentEditAdapter adapter;
+        BridgeEngineServer server(adapter);
+
+        {
+            const std::string frame =
+                RequestFrame("c-1", "component.add", R"({"objectId":"n-2","kind":"camera"})");
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (response.has_value())
+            {
+                const Envelope env = DecodeOrFail(*response);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"c-1"});
+                NORVES_CHECK(env.result.has_value());
+                NORVES_CHECK_EQ(adapter.m_AddCallCount, 1);
+                NORVES_CHECK(adapter.m_LastAddParams.find(R"("kind":"camera")") !=
+                             std::string::npos);
+                NORVES_CHECK(response->find(R"("componentId":"component:n-2:9")") !=
+                             std::string::npos);
+            }
+        }
+
+        {
+            // 必須欄を欠いた params も SDK は素通しする（アダプタの領分）。
+            const std::string frame = RequestFrame("c-2", "component.remove", R"({})");
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (response.has_value())
+            {
+                const Envelope env = DecodeOrFail(*response);
+                NORVES_CHECK_EQ(env.id, std::optional<std::string>{"c-2"});
+                NORVES_CHECK(env.result.has_value());
+                NORVES_CHECK(!env.error.has_value());
+                NORVES_CHECK_EQ(adapter.m_RemoveCallCount, 1);
+                NORVES_CHECK(response->find(R"("accepted":false)") != std::string::npos);
             }
         }
     }
@@ -633,6 +703,7 @@ int main()
     TestUnknownMethodIsMethodNotSupported();
     TestUnimplementedOptionalMethodsAreMethodNotSupported();
     TestOptionalMethodPassesAdapterResult();
+    TestComponentEditPassesParamsThrough();
     TestAssetReloadManifestDispatchesPresentEmptyObject();
     TestAssetReloadManifestDefaultIsMethodNotSupported();
     TestAssetReloadManifestRejectsInvalidParamsWithoutDispatch();

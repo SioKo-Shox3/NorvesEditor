@@ -47,11 +47,29 @@ export interface PropertyEntry {
 }
 
 /**
+ * One component attached to an object, as advertised by `object.getSnapshot`.
+ *
+ * `objectId` is an opaque handle: the editor passes it straight back to
+ * `object.getSnapshot` / `object.setProperty` to read and edit that component
+ * and never parses it. `kind` is a free-form classification for display.
+ */
+export interface ComponentRef {
+  /** Identifier of this component as a scene object. */
+  objectId: ObjectId;
+  /** Generic component classification (free-form, not an engine type name). */
+  kind: string;
+}
+
+/**
  * Result of the `object.getSnapshot` method: one object's serialized property
  * snapshot. A DTO copy of generic values, never a live engine pointer.
  *
- * `objectId` and `properties` are required (`properties` may be empty); `name`
- * and `kind` are optional.
+ * `objectId` and `properties` are required (`properties` may be empty); `name`,
+ * `kind` and `components` are optional.
+ *
+ * An absent `components` means the engine does not project components at all;
+ * an empty array means it does and this object has none. The two differ in the
+ * UI (no section versus an empty section), so callers must not collapse them.
  */
 export interface ObjectSnapshot {
   /** Object this snapshot describes. */
@@ -62,6 +80,8 @@ export interface ObjectSnapshot {
   kind?: string;
   /** Serialized property entries for this object; may be empty. */
   properties: PropertyEntry[];
+  /** Components attached to this object, when the engine projects them. */
+  components?: ComponentRef[];
 }
 
 /**
@@ -76,6 +96,31 @@ export interface ObjectSnapshot {
  * be normalized from the requested value) — a plain JSON value, never a live
  * engine pointer. Absent `appliedValue` means the engine did not echo a value.
  */
+/**
+ * Result of the `component.add` method: whether the engine attached the
+ * component, and the identifier it assigned when it reports one.
+ *
+ * A refusal (a type the engine cannot build, an object that is gone, engine
+ * state that forbids it) is `accepted: false`, not an error. `componentId` is
+ * opaque and is not used to place the component in the list — the caller
+ * re-reads the object's snapshot instead.
+ */
+export interface AddComponentResult {
+  /** Whether the engine attached the component. */
+  accepted: boolean;
+  /** Identifier of the created component, when the engine reports one. */
+  componentId?: ObjectId;
+}
+
+/**
+ * Result of the `component.remove` method: whether the engine detached the
+ * component. A refusal is `accepted: false`, not an error.
+ */
+export interface RemoveComponentResult {
+  /** Whether the engine detached the component. */
+  accepted: boolean;
+}
+
 export interface SetObjectPropertyResult {
   /** Whether the engine accepted and applied the property change. */
   accepted: boolean;

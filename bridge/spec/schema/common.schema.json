@@ -130,6 +130,10 @@
           "type": "string",
           "minLength": 1
         },
+        "instantiable": {
+          "description": "Optional: whether the engine can create a new instance of this type on request (component.add). Absent means the engine does not report instantiability, and the editor must not offer to create it.",
+          "type": "boolean"
+        },
         "properties": {
           "description": "Optional property definitions for this type.",
           "type": "array",

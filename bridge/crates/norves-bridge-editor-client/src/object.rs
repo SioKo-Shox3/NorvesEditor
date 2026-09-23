@@ -34,6 +34,26 @@ pub struct ObjectSnapshot {
     pub kind: Option<String>,
     /// Serialized property entries for this object; empty when there are none.
     pub properties: Vec<PropertyEntry>,
+    /// Components attached to this object, when the engine projects them.
+    ///
+    /// `None` means the engine omitted the field (it does not project
+    /// components at all); `Some(vec![])` means it projected them and the
+    /// object has none. The editor must be able to tell those apart, so this
+    /// is an `Option<Vec<_>>` and not a plain `Vec`.
+    pub components: Option<Vec<ComponentRef>>,
+}
+
+/// One entry of an object snapshot's `components` list.
+///
+/// `object_id` is an opaque handle the editor passes back to
+/// `object.getSnapshot` / `object.setProperty` to read and edit that component;
+/// it is never parsed here. `kind` is a free-form classification for display.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentRef {
+    /// Identifier of this component as a scene object (non-empty on the wire).
+    pub object_id: String,
+    /// Generic component classification (non-empty on the wire, free-form).
+    pub kind: String,
 }
 
 /// One generic `name -> value` entry in an object property snapshot.
@@ -86,6 +106,13 @@ pub struct TypeDescriptor {
     pub kind: Option<String>,
     /// Optional property definitions for this type.
     pub properties: Vec<PropertyDefinition>,
+    /// Whether the engine can create an instance of this type on request
+    /// (`component.add`).
+    ///
+    /// `None` means the engine did not report instantiability at all. That is
+    /// not the same as `Some(false)` on the wire, but callers must treat both
+    /// as "do not offer to create this": only an explicit `true` is a promise.
+    pub instantiable: Option<bool>,
 }
 
 /// One generic property definition: a `name` and a `valueType`. Describes a
@@ -96,6 +123,27 @@ pub struct PropertyDefinition {
     pub name: String,
     /// Free-form generic type label for this property's value.
     pub value_type: String,
+}
+
+/// Acknowledgement extracted from a `component.add` result.
+///
+/// `accepted` reports whether the engine attached the component. `component_id`
+/// is the identifier it assigned, when it reports one; the editor treats it as
+/// opaque and re-reads the object's snapshot rather than placing the component
+/// itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentAddAck {
+    /// Whether the engine attached the component.
+    pub accepted: bool,
+    /// Optional identifier of the created component.
+    pub component_id: Option<String>,
+}
+
+/// Acknowledgement extracted from a `component.remove` result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentRemoveAck {
+    /// Whether the engine detached the component.
+    pub accepted: bool,
 }
 
 /// Failure while extracting an [`ObjectSnapshot`] or [`SchemaSnapshot`] from a
@@ -128,13 +176,65 @@ pub fn parse_object_snapshot_result(result: &Value) -> Result<ObjectSnapshot, Ob
     let name = optional_str(obj, "name", "result")?.map(str::to_owned);
     let kind = optional_str(obj, "kind", "result")?.map(str::to_owned);
     let properties = parse_property_bag(obj)?;
+    let components = parse_components(obj)?;
 
     Ok(ObjectSnapshot {
         object_id,
         name,
         kind,
         properties,
+        components,
     })
+}
+
+/// Parses the optional `components` array. Absence is `None` (the engine does
+/// not project components); an empty array is `Some(vec![])`.
+///
+/// Entries are validated strictly — both fields required and non-empty, and no
+/// unknown field — because `object.getSnapshot.result.schema.json` declares the
+/// entry with `additionalProperties: false`. A component the editor cannot
+/// address is worse than no component list at all, so a malformed entry fails
+/// the whole snapshot at the boundary instead of being dropped silently.
+fn parse_components(obj: &Map<String, Value>) -> Result<Option<Vec<ComponentRef>>, ObjectError> {
+    let value = match obj.get("components") {
+        None => return Ok(None),
+        Some(value) => value,
+    };
+    let items = value
+        .as_array()
+        .ok_or_else(|| ObjectError::InvalidField("result.components".to_owned()))?;
+
+    let mut components = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let path = format!("result.components[{index}]");
+        let entry = item
+            .as_object()
+            .ok_or_else(|| ObjectError::InvalidField(format!("{path} is not an object")))?;
+        for key in entry.keys() {
+            if key != "objectId" && key != "kind" {
+                return Err(ObjectError::InvalidField(format!(
+                    "{path}.{key} is unknown"
+                )));
+            }
+        }
+        let object_id = required_str(entry, "objectId", &path)?;
+        let kind = required_str(entry, "kind", &path)?;
+        // The schema gives both `minLength: 1`; an empty handle cannot address
+        // anything and an empty kind cannot be displayed.
+        if object_id.is_empty() {
+            return Err(ObjectError::InvalidField(format!(
+                "{path}.objectId is empty"
+            )));
+        }
+        if kind.is_empty() {
+            return Err(ObjectError::InvalidField(format!("{path}.kind is empty")));
+        }
+        components.push(ComponentRef {
+            object_id: object_id.to_owned(),
+            kind: kind.to_owned(),
+        });
+    }
+    Ok(Some(components))
 }
 
 /// Extracts a [`SetPropertyAck`] from an `object.setProperty` `result` value.
@@ -242,12 +342,64 @@ fn parse_type_descriptor(value: &Value, path: &str) -> Result<TypeDescriptor, Ob
     let type_name = required_str(obj, "typeName", path)?.to_owned();
     let kind = optional_str(obj, "kind", path)?.map(str::to_owned);
     let properties = parse_property_definitions(obj, path)?;
+    let instantiable = match obj.get("instantiable") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_bool()
+                .ok_or_else(|| ObjectError::InvalidField(format!("{path}.instantiable")))?,
+        ),
+    };
 
     Ok(TypeDescriptor {
         type_name,
         kind,
         properties,
+        instantiable,
     })
+}
+
+/// Extracts a [`ComponentAddAck`] from a `component.add` `result` value.
+///
+/// Required: `accepted` (a boolean). Optional: `componentId` (a non-empty
+/// string). A malformed ack is rejected at the boundary so the caller never
+/// treats a non-conforming result as a successful attach.
+pub fn parse_component_add_result(result: &Value) -> Result<ComponentAddAck, ObjectError> {
+    let obj = result.as_object().ok_or_else(|| {
+        ObjectError::UnexpectedShape("component.add result is not an object".to_owned())
+    })?;
+    let accepted = match obj.get("accepted") {
+        None => return Err(ObjectError::MissingField("result.accepted".to_owned())),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| ObjectError::InvalidField("result.accepted".to_owned()))?,
+    };
+    let component_id = optional_str(obj, "componentId", "result")?.map(str::to_owned);
+    if component_id.as_deref() == Some("") {
+        return Err(ObjectError::InvalidField(
+            "result.componentId is empty".to_owned(),
+        ));
+    }
+    Ok(ComponentAddAck {
+        accepted,
+        component_id,
+    })
+}
+
+/// Extracts a [`ComponentRemoveAck`] from a `component.remove` `result` value.
+///
+/// Required: `accepted` (a boolean).
+pub fn parse_component_remove_result(result: &Value) -> Result<ComponentRemoveAck, ObjectError> {
+    let obj = result.as_object().ok_or_else(|| {
+        ObjectError::UnexpectedShape("component.remove result is not an object".to_owned())
+    })?;
+    let accepted = match obj.get("accepted") {
+        None => return Err(ObjectError::MissingField("result.accepted".to_owned())),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| ObjectError::InvalidField("result.accepted".to_owned()))?,
+    };
+    Ok(ComponentRemoveAck { accepted })
 }
 
 /// Parses the optional `properties` array of `propertyDefinition`s.
@@ -370,6 +522,166 @@ mod tests {
         assert_eq!(snapshot.name, None);
         assert_eq!(snapshot.kind, None);
         assert!(snapshot.properties.is_empty());
+    }
+
+    #[test]
+    fn parse_object_snapshot_result_reads_components() {
+        // Mirrors fixtures/methods/object.getSnapshot/positive/response-with-components.json.
+        let value = serde_json::json!({
+            "objectId": "n-1",
+            "properties": [],
+            "components": [
+                { "objectId": "component:n-1:1", "kind": "camera" },
+                { "objectId": "component:n-1:2", "kind": "script" }
+            ]
+        });
+        let snapshot = parse_object_snapshot_result(&value).expect("parses");
+        let components = snapshot.components.expect("components present");
+        assert_eq!(components.len(), 2);
+        assert_eq!(components[0].object_id, "component:n-1:1");
+        assert_eq!(components[0].kind, "camera");
+        assert_eq!(components[1].object_id, "component:n-1:2");
+    }
+
+    #[test]
+    fn parse_object_snapshot_result_absent_components_is_none() {
+        // An engine that does not project components omits the field entirely.
+        // That must stay distinguishable from "projected, but none attached".
+        let value = serde_json::json!({ "objectId": "n-9", "properties": [] });
+        assert_eq!(
+            parse_object_snapshot_result(&value)
+                .expect("parses")
+                .components,
+            None
+        );
+
+        let value = serde_json::json!({ "objectId": "n-9", "properties": [], "components": [] });
+        assert_eq!(
+            parse_object_snapshot_result(&value)
+                .expect("parses")
+                .components,
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn parse_object_snapshot_result_rejects_malformed_components() {
+        // Not an array.
+        let value = serde_json::json!({ "objectId": "n-1", "properties": [], "components": {} });
+        assert!(matches!(
+            parse_object_snapshot_result(&value),
+            Err(ObjectError::InvalidField(f)) if f == "result.components"
+        ));
+
+        // Entry missing `kind`.
+        let value = serde_json::json!({
+            "objectId": "n-1",
+            "properties": [],
+            "components": [{ "objectId": "component:n-1:1" }]
+        });
+        assert!(matches!(
+            parse_object_snapshot_result(&value),
+            Err(ObjectError::MissingField(f)) if f == "result.components[0].kind"
+        ));
+
+        // Entry missing `objectId`.
+        let value = serde_json::json!({
+            "objectId": "n-1",
+            "properties": [],
+            "components": [{ "kind": "camera" }]
+        });
+        assert!(matches!(
+            parse_object_snapshot_result(&value),
+            Err(ObjectError::MissingField(f)) if f == "result.components[0].objectId"
+        ));
+
+        // Entry is not an object.
+        let value = serde_json::json!({
+            "objectId": "n-1",
+            "properties": [],
+            "components": ["component:n-1:1"]
+        });
+        assert!(matches!(
+            parse_object_snapshot_result(&value),
+            Err(ObjectError::InvalidField(_))
+        ));
+
+        // Empty `kind` / `objectId` are rejected (schema requires minLength 1).
+        let value = serde_json::json!({
+            "objectId": "n-1",
+            "properties": [],
+            "components": [{ "objectId": "component:n-1:1", "kind": "" }]
+        });
+        assert!(matches!(
+            parse_object_snapshot_result(&value),
+            Err(ObjectError::InvalidField(_))
+        ));
+    }
+
+    #[test]
+    fn parse_component_add_result_reads_ack() {
+        let v = serde_json::json!({ "accepted": true, "componentId": "component:n-2:9" });
+        let ack = parse_component_add_result(&v).expect("parses");
+        assert!(ack.accepted);
+        assert_eq!(ack.component_id.as_deref(), Some("component:n-2:9"));
+
+        // A refusal is a normal result, not an error, and carries no id.
+        let v = serde_json::json!({ "accepted": false });
+        let ack = parse_component_add_result(&v).expect("parses");
+        assert!(!ack.accepted);
+        assert_eq!(ack.component_id, None);
+    }
+
+    #[test]
+    fn parse_component_add_result_rejects_malformed() {
+        assert!(matches!(
+            parse_component_add_result(&serde_json::json!({ "componentId": "c" })),
+            Err(ObjectError::MissingField(f)) if f == "result.accepted"
+        ));
+        assert!(matches!(
+            parse_component_add_result(&serde_json::json!({ "accepted": "yes" })),
+            Err(ObjectError::InvalidField(_))
+        ));
+        // An empty handle cannot address anything.
+        assert!(matches!(
+            parse_component_add_result(&serde_json::json!({ "accepted": true, "componentId": "" })),
+            Err(ObjectError::InvalidField(_))
+        ));
+    }
+
+    #[test]
+    fn parse_component_remove_result_reads_ack() {
+        assert!(
+            parse_component_remove_result(&serde_json::json!({ "accepted": true }))
+                .expect("parses")
+                .accepted
+        );
+        assert!(matches!(
+            parse_component_remove_result(&serde_json::json!({})),
+            Err(ObjectError::MissingField(f)) if f == "result.accepted"
+        ));
+    }
+
+    #[test]
+    fn parse_schema_snapshot_result_reads_instantiable() {
+        let v = serde_json::json!({ "types": [
+            { "typeName": "camera", "kind": "component", "instantiable": true },
+            { "typeName": "script", "kind": "component", "instantiable": false },
+            { "typeName": "object", "kind": "object" }
+        ]});
+        let snapshot = parse_schema_snapshot_result(&v).expect("parses");
+        assert_eq!(snapshot.types[0].instantiable, Some(true));
+        assert_eq!(snapshot.types[1].instantiable, Some(false));
+        // Absent stays absent: "did not say" is not "said no".
+        assert_eq!(snapshot.types[2].instantiable, None);
+
+        let v = serde_json::json!({ "types": [
+            { "typeName": "camera", "instantiable": "yes" }
+        ]});
+        assert!(matches!(
+            parse_schema_snapshot_result(&v),
+            Err(ObjectError::InvalidField(_))
+        ));
     }
 
     #[test]
@@ -500,7 +812,9 @@ mod tests {
 
     #[test]
     fn parse_schema_snapshot_result_extracts_types() {
-        // Mirrors fixtures/methods/schema.getSnapshot/positive/response-valid.json result.
+        // The TypeA/TypeB shape of fixtures/methods/schema.getSnapshot/positive/
+        // response-valid.json. That fixture also carries an instantiable-bearing
+        // type now; instantiability has its own test below.
         let value = serde_json::json!({
             "types": [
                 {

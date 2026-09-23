@@ -538,6 +538,38 @@ html, body, #root {
   gap: 1px;
 }
 
+/* 折りたたみボタンと行を横に並べる。行だけが選択の当たり判定を持つ。 */
+.scene-node__line {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.scene-node__toggle {
+  flex: none;
+  width: 14px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.scene-node__toggle:hover {
+  color: var(--color-text);
+  background: var(--color-surface-alt);
+}
+
+/* 子が無い行も同じ幅を占めて、名前の左端を揃える。 */
+.scene-node__toggle--empty {
+  cursor: default;
+}
+
 .scene-node__row {
   display: flex;
   align-items: center;
@@ -556,6 +588,12 @@ html, body, #root {
 
 .scene-node__row:hover {
   background: var(--color-surface-alt);
+}
+
+/* ドロップを受け付ける行。選択（塗りつぶし）と紛れないよう、枠で示す。 */
+.scene-node__row--drop {
+  outline: 2px dashed var(--color-accent);
+  outline-offset: -2px;
 }
 
 .scene-node__row--selected {
@@ -580,6 +618,40 @@ html, body, #root {
 
 .scene-node__row--selected .scene-node__kind {
   color: rgba(255, 255, 255, 0.75);
+}
+
+/* ---- panel toolbar (actions that must stay reachable at any panel width) ---- */
+.panel__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px 0;
+  flex-shrink: 0;
+}
+
+.panel__toolbar-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+/* ---- panel filter (Outliner / Asset Browser) ---- */
+.panel__filter {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.panel__filter input {
+  width: 100%;
+  font-size: 11px;
+  padding: 3px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+}
+
+.panel__filter input::placeholder {
+  color: var(--color-text-muted);
 }
 
 /* ---- property inspector ---- */
@@ -620,6 +692,101 @@ html, body, #root {
   font-family: var(--font-mono, monospace);
 }
 
+/* component list: the entity row plus one row per component of the selection */
+.inspector__components {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.inspector__section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.inspector__empty {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.inspector__component-list {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.inspector__component {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.inspector__component:hover {
+  background: var(--color-surface-alt);
+}
+
+.inspector__component[aria-pressed='true'] {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+  background: var(--color-surface-alt);
+}
+
+.inspector__component-list li {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.inspector__component-remove {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.inspector__component-remove:hover {
+  color: var(--color-text);
+  background: var(--color-surface-alt);
+}
+
+.inspector__component-add {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.inspector__component-add select,
+.inspector__component-add button {
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+}
+
+.inspector__component-add button {
+  cursor: pointer;
+}
+
+.inspector__component-add button:hover {
+  background: var(--color-surface-alt);
+}
+
 .inspector__props {
   list-style: none;
   display: flex;
@@ -657,6 +824,27 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+/* 値の編集欄が横に広がる行（数値ベクトル）。name と型は 1 行目、編集欄は 2 行目で全幅。 */
+.inspector-prop--stacked {
+  grid-template-columns: 1fr auto;
+  row-gap: 3px;
+}
+
+.inspector-prop--stacked .inspector-prop__name {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+.inspector-prop--stacked .inspector-prop__type {
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.inspector-prop--stacked .inspector-prop__value {
+  grid-row: 2;
+  grid-column: 1 / -1;
+}
+
 .value--null {
   color: var(--color-text-muted);
   font-style: italic;
@@ -687,6 +875,13 @@ html, body, #root {
   word-break: break-word;
   max-height: 240px;
   overflow: auto;
+}
+
+.inspector__empty-filter {
+  margin: 0;
+  padding: 10px;
+  color: var(--color-text-muted);
+  font-size: 12px;
 }
 
 /* ---- property editor (Phase 5: object.setProperty write path) ---- */
@@ -751,6 +946,75 @@ html, body, #root {
 }
 
 .prop-editor__apply:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 数値ベクトル: 成分入力を横に並べ、幅が足りなければ折り返す（Inspector は狭い）。 */
+.prop-editor__vector-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+/* 成分は等幅で並べ、幅が足りなければ列数を減らす（Inspector は狭いことがある）。 */
+.prop-editor__vector {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(58px, 1fr));
+  gap: 4px;
+  min-width: 0;
+}
+
+/* 成分 4 個は、幅が足りないときに 3 + 1 の半端な並びより 2 x 2 のほうが読める。
+   最小幅を広く取ると列数が 4 -> 2 へ落ちる（3 にならない）。 */
+.prop-editor__vector--quad {
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+}
+
+.prop-editor__axis {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.prop-editor__axis-label {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  /* X / Y / Z / W で幅が揺れないように固定する。 */
+  width: 9px;
+  flex: none;
+}
+
+.prop-editor__input--axis {
+  /* number 入力の既定の最小幅より狭くできるようにする。 */
+  min-width: 0;
+}
+
+/* 送信中は disabled ではなく readOnly にしている（フォーカスを保つため）ので、
+   同じ「触れない」見え方をここで与える。 */
+.prop-editor__input--axis:read-only {
+  opacity: 0.6;
+}
+
+.prop-editor__mode {
+  align-self: flex-start;
+  padding: 1px 8px;
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.prop-editor__mode:hover:not(:disabled) {
+  color: var(--color-text);
+}
+
+.prop-editor__mode:disabled {
   opacity: 0.5;
   cursor: default;
 }

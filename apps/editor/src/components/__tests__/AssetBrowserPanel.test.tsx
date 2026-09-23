@@ -40,7 +40,12 @@ vi.mock('../../hooks/useBridge.js', () => ({
   }),
 }));
 
-import { AssetBrowserPanel } from '../AssetBrowserPanel.js';
+import {
+  AssetBrowserPanel,
+  filterAssets,
+  flattenAssetKeys,
+  __resetAssetBrowserMemory,
+} from '../AssetBrowserPanel.js';
 import { AssetInspectorPanel } from '../AssetInspectorPanel.js';
 
 afterEach(cleanup);
@@ -53,6 +58,8 @@ beforeEach(() => {
   dismissAssetError.mockClear();
   reloadAssetRuntime.mockClear();
   dismissAssetReloadError.mockClear();
+  // 絞り込みはパネルをまたいで残るので、テストごとに戻す。
+  __resetAssetBrowserMemory();
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -446,5 +453,202 @@ describe('AssetBrowserPanel — live health column', () => {
     expect(screen.getByText('textures/hero.png')).toBeTruthy();
     expect(screen.getByText('materials/hero.mat')).toBeTruthy();
     expect(screen.getAllByText('未検証(未接続)')).toHaveLength(2);
+  });
+});
+
+// -------------------------------------------------------------------------
+// Filtering
+// -------------------------------------------------------------------------
+
+describe('filterAssets', () => {
+  const assets = DEMO_MANIFEST.assets;
+
+  it('returns the input array itself for a blank query', () => {
+    expect(filterAssets(assets, '')).toBe(assets);
+    expect(filterAssets(assets, '  ')).toBe(assets);
+  });
+
+  it('matches logical path, kind and variant, case-insensitively', () => {
+    expect(filterAssets(assets, 'HERO.PNG').map((a) => a.logicalPath)).toEqual([
+      'textures/hero.png',
+    ]);
+    expect(filterAssets(assets, 'material').map((a) => a.logicalPath)).toEqual([
+      'materials/hero.mat',
+    ]);
+    expect(filterAssets(assets, 'mobile').map((a) => a.logicalPath)).toEqual([
+      'materials/hero.mat',
+    ]);
+  });
+
+  it('treats the query as a literal, not a pattern', () => {
+    expect(filterAssets(assets, '.*')).toEqual([]);
+  });
+
+  it('returns an empty list when nothing matches', () => {
+    expect(filterAssets(assets, 'zzz')).toEqual([]);
+  });
+});
+
+describe('AssetBrowserPanel — filter input', () => {
+  function renderWithManifest(): void {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      assetManifest: DEMO_MANIFEST,
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+  }
+
+  it('narrows the list and drops the headings of emptied kinds', () => {
+    renderWithManifest();
+    expect(screen.getByText('texture')).toBeTruthy();
+    expect(screen.getByText('material')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('アセットを絞り込む'), {
+      target: { value: 'hero.png' },
+    });
+
+    expect(screen.getByText('textures/hero.png')).toBeTruthy();
+    expect(screen.queryByText('materials/hero.mat')).toBeNull();
+    // The heading of the kind that no longer has entries is gone too.
+    expect(screen.queryByText('material')).toBeNull();
+    expect(screen.getByText('texture')).toBeTruthy();
+  });
+
+  it('restores the full list when the query is cleared', () => {
+    renderWithManifest();
+    const input = screen.getByLabelText('アセットを絞り込む');
+    fireEvent.change(input, { target: { value: 'hero.png' } });
+    fireEvent.change(input, { target: { value: '' } });
+    expect(screen.getByText('materials/hero.mat')).toBeTruthy();
+  });
+
+  it('shows a no-match state distinct from the empty manifest state', () => {
+    renderWithManifest();
+    fireEvent.change(screen.getByLabelText('アセットを絞り込む'), { target: { value: 'zzz' } });
+    expect(screen.getByText(/一致するアセットがありません/)).toBeTruthy();
+    expect(screen.queryByText('この manifest にはアセットがありません。')).toBeNull();
+  });
+
+  it('does not change the selection while filtering', () => {
+    renderWithManifest();
+    fireEvent.change(screen.getByLabelText('アセットを絞り込む'), { target: { value: 'zzz' } });
+    expect(selectAsset).not.toHaveBeenCalled();
+  });
+
+  it('offers no filter input without a manifest or with an empty one', () => {
+    mockState = { ...INITIAL_STATE, connection: { status: 'connected' } };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+    expect(screen.queryByLabelText('アセットを絞り込む')).toBeNull();
+    cleanup();
+
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      assetManifest: { version: 1, manifestPath: 'C:/Project/manifest.json', assets: [] },
+    };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+    expect(screen.queryByLabelText('アセットを絞り込む')).toBeNull();
+  });
+});
+
+// -------------------------------------------------------------------------
+// パネルをまたぐ絞り込みの記憶
+// -------------------------------------------------------------------------
+
+describe('AssetBrowserPanel — remembered filter', () => {
+  function renderAssets(): void {
+    mockState = { ...INITIAL_STATE, assetManifest: DEMO_MANIFEST };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+  }
+
+  it('starts empty and shows every asset', () => {
+    renderAssets();
+    expect((screen.getByLabelText('アセットを絞り込む') as HTMLInputElement).value).toBe('');
+    expect(screen.getByText('textures/hero.png')).toBeTruthy();
+    expect(screen.getByText('materials/hero.mat')).toBeTruthy();
+  });
+
+  it('keeps the filter when the panel is closed and opened again', () => {
+    renderAssets();
+    fireEvent.change(screen.getByLabelText('アセットを絞り込む'), {
+      target: { value: 'material' },
+    });
+    expect(screen.queryByText('textures/hero.png')).toBeNull();
+    cleanup();
+
+    // dockview はタブを離れるとパネルをアンマウントする。開き直しても絞り込みは残る。
+    renderAssets();
+    expect((screen.getByLabelText('アセットを絞り込む') as HTMLInputElement).value).toBe('material');
+    expect(screen.queryByText('textures/hero.png')).toBeNull();
+    expect(screen.getByText('materials/hero.mat')).toBeTruthy();
+  });
+});
+
+// -------------------------------------------------------------------------
+// キーボード操作
+// -------------------------------------------------------------------------
+
+describe('flattenAssetKeys', () => {
+  it('lists the keys in the order they appear on screen, skipping headings', () => {
+    const grouped: Array<[string, typeof DEMO_MANIFEST.assets]> = [
+      ['material', [DEMO_MANIFEST.assets[1]]],
+      ['texture', [DEMO_MANIFEST.assets[0]]],
+    ];
+    expect(flattenAssetKeys(grouped)).toEqual([
+      assetKeyForEntry(DEMO_MANIFEST.assets[1]),
+      assetKeyForEntry(DEMO_MANIFEST.assets[0]),
+    ]);
+  });
+
+  it('is empty for an empty list', () => {
+    expect(flattenAssetKeys([])).toEqual([]);
+    expect(flattenAssetKeys([['texture', []]])).toEqual([]);
+  });
+});
+
+describe('AssetBrowserPanel — keyboard navigation', () => {
+  function renderAssets(): void {
+    mockState = { ...INITIAL_STATE, assetManifest: DEMO_MANIFEST };
+    render(<AssetBrowserPanel {...makeDockviewProps()} />);
+  }
+
+  function row(path: string): HTMLButtonElement {
+    return screen.getByText(path).closest('button') as HTMLButtonElement;
+  }
+
+  // 種別で並ぶので materials(material) が texture より先。
+  const materialKey = assetKeyForEntry(DEMO_MANIFEST.assets[1]);
+  const textureKey = assetKeyForEntry(DEMO_MANIFEST.assets[0]);
+
+  it('moves down and up through the list', () => {
+    renderAssets();
+    row('materials/hero.mat').focus();
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown', bubbles: true });
+    expect(selectAsset).toHaveBeenLastCalledWith(textureKey);
+    expect((document.activeElement as HTMLElement).dataset.assetKey).toBe(textureKey);
+
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowUp', bubbles: true });
+    expect(selectAsset).toHaveBeenLastCalledWith(materialKey);
+  });
+
+  it('stops at both ends instead of wrapping', () => {
+    renderAssets();
+    row('materials/hero.mat').focus();
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowUp', bubbles: true });
+    expect(selectAsset).not.toHaveBeenCalled();
+
+    row('textures/hero.png').focus();
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown', bubbles: true });
+    expect(selectAsset).not.toHaveBeenCalled();
+  });
+
+  it('walks only the rows the filter left behind', () => {
+    renderAssets();
+    fireEvent.change(screen.getByLabelText('アセットを絞り込む'), { target: { value: 'material' } });
+    row('materials/hero.mat').focus();
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown', bubbles: true });
+    // 絞り込みで消えた texture へは進まない。
+    expect(selectAsset).not.toHaveBeenCalled();
   });
 });

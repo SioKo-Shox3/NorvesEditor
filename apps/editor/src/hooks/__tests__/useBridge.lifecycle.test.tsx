@@ -2177,3 +2177,179 @@ describe('useBridgeActions — setProperty undo/redo execution (Phase U2)', () =
     expect(result.current.state.redoStack).toEqual([]);
   });
 });
+
+// -------------------------------------------------------------------------
+// (f) useBridgeActions: component structure edits (component.add / remove)
+// -------------------------------------------------------------------------
+
+describe('useBridgeActions — component structure edits', () => {
+  // The invoke spy is shared across this file, so reset it per test: these
+  // assertions count calls rather than only inspecting the last one.
+  beforeEach(() => {
+    (tauriCore.invoke as Mock).mockReset();
+  });
+
+  const wrapper = ({ children }: { children: React.ReactNode }): React.JSX.Element =>
+    React.createElement(BridgeProvider, null, children);
+
+  function useEditHook(): {
+    actions: ReturnType<typeof useBridgeActions>;
+    dispatch: ReturnType<typeof useBridgeDispatch>;
+    state: ReturnType<typeof useBridgeState>;
+  } {
+    const actions = useBridgeActions();
+    const dispatch = useBridgeDispatch();
+    const state = useBridgeState();
+    return { actions, dispatch, state };
+  }
+
+  /** Connect with the given capability tokens. */
+  function connectWith(
+    dispatch: ReturnType<typeof useBridgeDispatch>,
+    names: string[],
+    sessionId = 's1',
+  ): void {
+    dispatch({
+      type: 'connectionStateChanged',
+      payload: { connected: true, sessionId, capabilities: names.map((name) => ({ name })) },
+    });
+  }
+
+  it('never invokes the engine without the component.edit capability', async () => {
+    const { result } = renderHook(() => useEditHook(), { wrapper });
+    // Disconnected.
+    await act(async () => {
+      expect(await result.current.actions.addComponent('n-2', 'camera')).toBe(false);
+    });
+    // Connected, but the engine did not advertise component.edit.
+    act(() => connectWith(result.current.dispatch, ['object.edit']));
+    await act(async () => {
+      expect(await result.current.actions.addComponent('n-2', 'camera')).toBe(false);
+      expect(await result.current.actions.removeComponent('component:n-2:1', 'n-2')).toBe(false);
+    });
+
+    expect(tauriCore.invoke).not.toHaveBeenCalled();
+  });
+
+  it('adds through component_add and re-reads the object from the engine', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'component_add') {
+        return Promise.resolve({ accepted: true, componentId: 'component:n-2:9' });
+      }
+      if (cmd === 'object_get_snapshot') {
+        return Promise.resolve({
+          objectId: 'n-2',
+          properties: [],
+          components: [{ objectId: 'component:n-2:9', kind: 'camera' }],
+        });
+      }
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+    const { result } = renderHook(() => useEditHook(), { wrapper });
+    act(() => connectWith(result.current.dispatch, ['component.edit']));
+
+    await act(async () => {
+      expect(await result.current.actions.addComponent('n-2', 'camera')).toBe(true);
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledWith('component_add', {
+      objectId: 'n-2',
+      kind: 'camera',
+    });
+    // The list comes from the engine's snapshot, not from the ack.
+    expect(tauriCore.invoke).toHaveBeenCalledWith('object_get_snapshot', { objectId: 'n-2' });
+    expect(result.current.state.objectSnapshot?.components).toHaveLength(1);
+  });
+
+  it('does not re-read when the engine refuses', async () => {
+    (tauriCore.invoke as Mock).mockResolvedValue({ accepted: false });
+    const { result } = renderHook(() => useEditHook(), { wrapper });
+    act(() => connectWith(result.current.dispatch, ['component.edit']));
+
+    await act(async () => {
+      expect(await result.current.actions.addComponent('n-2', 'camera')).toBe(false);
+    });
+
+    expect(tauriCore.invoke).toHaveBeenCalledOnce();
+    expect(tauriCore.invoke).toHaveBeenCalledWith('component_add', {
+      objectId: 'n-2',
+      kind: 'camera',
+    });
+  });
+
+  it('keeps a different component selected when one is detached', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'component_remove') return Promise.resolve({ accepted: true });
+      if (cmd === 'object_get_snapshot') {
+        return Promise.resolve({
+          objectId: 'n-2',
+          properties: [],
+          // The detached one (…:2) is gone; the selected one (…:1) stays.
+          components: [{ objectId: 'component:n-2:1', kind: 'camera' }],
+        });
+      }
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+    const { result } = renderHook(() => useEditHook(), { wrapper });
+    act(() => {
+      connectWith(result.current.dispatch, ['component.edit']);
+      result.current.dispatch({ type: 'objectSelected', id: 'n-2' });
+      result.current.dispatch({ type: 'componentSelected', id: 'component:n-2:1' });
+    });
+
+    await act(async () => {
+      expect(await result.current.actions.removeComponent('component:n-2:2', 'n-2')).toBe(true);
+    });
+
+    expect(result.current.state.selectedComponentId).toBe('component:n-2:1');
+  });
+
+  it('drops the selection when the detached component was the selected one', async () => {
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'component_remove') return Promise.resolve({ accepted: true });
+      if (cmd === 'object_get_snapshot') {
+        return Promise.resolve({ objectId: 'n-2', properties: [], components: [] });
+      }
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+    const { result } = renderHook(() => useEditHook(), { wrapper });
+    act(() => {
+      connectWith(result.current.dispatch, ['component.edit']);
+      result.current.dispatch({ type: 'objectSelected', id: 'n-2' });
+      result.current.dispatch({ type: 'componentSelected', id: 'component:n-2:1' });
+    });
+
+    await act(async () => {
+      expect(await result.current.actions.removeComponent('component:n-2:1', 'n-2')).toBe(true);
+    });
+
+    expect(result.current.state.selectedComponentId).toBeUndefined();
+  });
+
+  it('discards a result that lands after the session changed', async () => {
+    let resolveAdd: ((v: unknown) => void) | undefined;
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === 'component_add') {
+        return new Promise((resolve) => {
+          resolveAdd = resolve;
+        });
+      }
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+    const { result } = renderHook(() => useEditHook(), { wrapper });
+    act(() => connectWith(result.current.dispatch, ['component.edit'], 's1'));
+
+    let pending: Promise<boolean> | undefined;
+    act(() => {
+      pending = result.current.actions.addComponent('n-2', 'camera');
+    });
+    act(() => connectWith(result.current.dispatch, ['component.edit'], 's2'));
+    await act(async () => {
+      resolveAdd?.({ accepted: true, componentId: 'component:n-2:9' });
+      expect(await pending).toBe(false);
+    });
+
+    // No snapshot re-read for a result belonging to the previous session.
+    expect(tauriCore.invoke).not.toHaveBeenCalledWith('object_get_snapshot', expect.anything());
+  });
+});

@@ -43,6 +43,8 @@ pub fn run() {
             bridge_state::scene_duplicate_object,
             bridge_state::object_get_snapshot,
             bridge_state::object_set_property,
+            bridge_state::component_add,
+            bridge_state::component_remove,
             bridge_state::schema_get_snapshot,
             bridge_state::viewport_get_thumbnail,
             bridge_state::asset_resolve,

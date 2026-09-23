@@ -1,0 +1,29 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-62",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "objectId": "n-1",
+    "name": "NodeA",
+    "kind": "object",
+    "properties": [
+      {
+        "name": "label",
+        "value": "Example Name",
+        "valueType": "string"
+      }
+    ],
+    "components": [
+      {
+        "objectId": "component:n-1:1",
+        "kind": "camera"
+      },
+      {
+        "objectId": "component:n-1:2",
+        "kind": "script"
+      }
+    ]
+  }
+}

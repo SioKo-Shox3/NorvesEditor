@@ -39,12 +39,22 @@
  *      (store.objectUnsupported, set when object/schema query answers
  *       METHOD_NOT_SUPPORTED — works for any engine, not just the mock).
  *  (d) empty property bag        → "プロパティがありません"
+ *
+ * Components (protocol 0.2 additive):
+ * The entity snapshot may carry a `components` list. Absent means the engine
+ * does not project components at all (no section at all); an empty array means
+ * it does and this object has none (section with a note). Choosing a component
+ * fetches ITS snapshot with the same object.getSnapshot method on the
+ * component's opaque id and shows its properties in place of the entity's,
+ * while the list stays on screen so the user can switch back. Edits go through
+ * the same object.setProperty path addressed by that component id.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import type {
+  ComponentRef,
   ObjectSnapshot,
   PropertyEntry,
   PropertyValue,
@@ -100,6 +110,38 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
       ? objectSnapshot
       : undefined;
 
+  // -----------------------------------------------------------------------
+  // Component drill-down. The entity snapshot carries the component list; a
+  // selected component's own properties come from a second object.getSnapshot
+  // on its opaque id. Same race guard as above: the stored component snapshot
+  // is only rendered while its objectId matches the current component
+  // selection, so a late response for a previously selected component is
+  // discarded at render time.
+  // -----------------------------------------------------------------------
+  const selectedComponentId = state.selectedComponentId;
+  const getComponentSnapshot = actions.getComponentSnapshot;
+  useEffect(() => {
+    if (isConnected && selectedComponentId !== undefined) {
+      void getComponentSnapshot(selectedComponentId);
+    }
+  }, [isConnected, selectedComponentId, getComponentSnapshot]);
+
+  // Structure edits are per-connection: only an engine that advertises
+  // component.edit gets the controls. The set of types it can build is a
+  // separate statement, carried by schema.getSnapshot — a type may be described
+  // without being creatable, and one that says nothing about instantiability is
+  // not an invitation to try.
+  const componentEditSupported = state.connection.capabilityNames?.has('component.edit') === true;
+  const creatableKinds = (schemaTypes ?? [])
+    .filter((t) => t.kind === 'component' && t.instantiable === true)
+    .map((t) => t.typeName);
+
+  const currentComponentSnapshot =
+    state.componentSnapshot !== undefined &&
+    state.componentSnapshot.objectId === selectedComponentId
+      ? state.componentSnapshot
+      : undefined;
+
   return (
     <div className="panel">
       <div className="panel__header">
@@ -137,15 +179,63 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
             <span>プロパティを読み込み中...</span>
             <span style={{ fontSize: 11 }}>Loading properties...</span>
           </div>
-        ) : currentSnapshot.properties.length === 0 ? (
-          /* (d) Empty property bag */
-          <div className="placeholder-box" style={{ flex: 1 }}>
-            <span className="placeholder-box__title">{snapshotTitle(currentSnapshot)}</span>
-            <span>プロパティがありません。</span>
-            <span style={{ fontSize: 11 }}>This object has no properties.</span>
-          </div>
         ) : (
-          <ObjectProperties snapshot={currentSnapshot} schemaTypes={schemaTypes} />
+          <>
+            {/*
+              The component list comes before the property branches on purpose:
+              an object with no reflected properties of its own can still carry
+              components, and the empty-bag notice must not hide the only way to
+              reach them.
+            */}
+            {currentSnapshot.components !== undefined && (
+              <ComponentList
+                snapshot={currentSnapshot}
+                components={currentSnapshot.components}
+                selectedComponentId={selectedComponentId}
+                onSelect={actions.selectComponent}
+                creatableKinds={creatableKinds}
+                onAdd={
+                  componentEditSupported
+                    ? (kind) => void actions.addComponent(currentSnapshot.objectId, kind)
+                    : undefined
+                }
+                onRemove={
+                  componentEditSupported
+                    ? (componentId) =>
+                        void actions.removeComponent(componentId, currentSnapshot.objectId)
+                    : undefined
+                }
+              />
+            )}
+            {selectedComponentId === undefined ? (
+              currentSnapshot.properties.length === 0 ? (
+                /* (d) Empty property bag */
+                <div className="placeholder-box" style={{ flex: 1 }}>
+                  <span className="placeholder-box__title">{snapshotTitle(currentSnapshot)}</span>
+                  <span>プロパティがありません。</span>
+                  <span style={{ fontSize: 11 }}>This object has no properties.</span>
+                </div>
+              ) : (
+                <ObjectProperties snapshot={currentSnapshot} schemaTypes={schemaTypes} />
+              )
+            ) : currentComponentSnapshot === undefined ? (
+              <div className="placeholder-box" style={{ flex: 1 }}>
+                <span className="placeholder-box__title">{selectedComponentId}</span>
+                <span>プロパティを読み込み中...</span>
+                <span style={{ fontSize: 11 }}>Loading properties...</span>
+              </div>
+            ) : currentComponentSnapshot.properties.length === 0 ? (
+              <div className="placeholder-box" style={{ flex: 1 }}>
+                <span className="placeholder-box__title">
+                  {snapshotTitle(currentComponentSnapshot)}
+                </span>
+                <span>プロパティがありません。</span>
+                <span style={{ fontSize: 11 }}>This component has no properties.</span>
+              </div>
+            ) : (
+              <ObjectProperties snapshot={currentComponentSnapshot} schemaTypes={schemaTypes} />
+            )}
+          </>
         )}
       </div>
     </div>
@@ -155,6 +245,121 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
 /** Header label for an object: prefer name, fall back to objectId. */
 function snapshotTitle(snapshot: ObjectSnapshot): string {
   return snapshot.name ?? snapshot.objectId;
+}
+
+// -------------------------------------------------------------------------
+// Component list
+// -------------------------------------------------------------------------
+
+interface ComponentListProps {
+  snapshot: ObjectSnapshot;
+  components: ComponentRef[];
+  selectedComponentId: string | undefined;
+  onSelect: (id: string | undefined) => void;
+  /** Types the engine said it can create, already filtered to components. */
+  creatableKinds: string[];
+  /** Absent when the engine does not advertise component.edit (read-only list). */
+  onAdd: ((kind: string) => void) | undefined;
+  onRemove: ((componentId: string) => void) | undefined;
+}
+
+/**
+ * The selected object's components, plus a row for the object itself so the
+ * user can go back to its own properties. Rendered only when the engine
+ * projected a list at all: an absent `components` means "this engine does not
+ * do components" (no section), while an empty array means "it does, and this
+ * object has none" (section with a note).
+ *
+ * A component's `objectId` is opaque here — it is passed back verbatim; only
+ * `kind` is displayed (falling back to the id when an engine sends an empty
+ * one is not needed: the wire requires a non-empty kind).
+ */
+function ComponentList({
+  snapshot,
+  components,
+  selectedComponentId,
+  onSelect,
+  creatableKinds,
+  onAdd,
+  onRemove,
+}: ComponentListProps): React.JSX.Element {
+  // The chosen type is local: picking one in the select must not re-render the
+  // other panels (same reason property edits keep their draft state local).
+  const [kindToAdd, setKindToAdd] = useState(creatableKinds[0] ?? '');
+  const selectedKind = creatableKinds.includes(kindToAdd) ? kindToAdd : (creatableKinds[0] ?? '');
+
+  return (
+    <div className="inspector__components">
+      <span className="inspector__section-title">コンポーネント</span>
+      {components.length === 0 ? (
+        <span className="inspector__empty">コンポーネントがありません。</span>
+      ) : (
+        <ul className="inspector__component-list">
+          <li>
+            <button
+              type="button"
+              className="inspector__component"
+              aria-pressed={selectedComponentId === undefined}
+              onClick={() => onSelect(undefined)}
+            >
+              {snapshotTitle(snapshot)}
+            </button>
+          </li>
+          {components.map((component) => (
+            <li key={component.objectId}>
+              <button
+                type="button"
+                className="inspector__component"
+                aria-pressed={selectedComponentId === component.objectId}
+                onClick={() => onSelect(component.objectId)}
+              >
+                {component.kind}
+              </button>
+              {onRemove !== undefined && (
+                <button
+                  type="button"
+                  className="inspector__component-remove"
+                  aria-label={`${component.kind} を外す`}
+                  title={`${component.kind} を外す`}
+                  onClick={() => {
+                    // Detaching cannot be undone through the protocol (the engine
+                    // is not asked to keep the property values), so ask first.
+                    if (
+                      window.confirm(
+                        `${component.kind} を外します。プロパティの値は元に戻せません。`,
+                      )
+                    ) {
+                      onRemove(component.objectId);
+                    }
+                  }}
+                >
+                  ×
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {onAdd !== undefined && creatableKinds.length > 0 && (
+        <div className="inspector__component-add">
+          <select
+            aria-label="追加するコンポーネントの種類"
+            value={selectedKind}
+            onChange={(e) => setKindToAdd(e.target.value)}
+          >
+            {creatableKinds.map((kind) => (
+              <option key={kind} value={kind}>
+                {kind}
+              </option>
+            ))}
+          </select>
+          <button type="button" onClick={() => onAdd(selectedKind)}>
+            コンポーネントを追加
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // -------------------------------------------------------------------------
@@ -180,6 +385,22 @@ function ObjectProperties({ snapshot, schemaTypes }: ObjectPropertiesProps): Rea
     return descriptor?.properties?.find((p) => p.name === entry.name)?.valueType;
   }
 
+  // 絞り込みは他のパネルと同じ作り: パネルローカルで、パネルを離れても残す。1 文字ごとの
+  // dispatch で全パネルが再描画されるのを避けるため store には載せない。
+  const [filter, setFilterState] = useState(rememberedPropertyFilter);
+  function setFilter(next: string): void {
+    rememberedPropertyFilter = next;
+    setFilterState(next);
+  }
+
+  // 表示に使う型名まで解決してから絞り込む。画面に出ていない型名に当たって残る/消えるのは
+  // 利用者から見て説明がつかない。
+  const rows: PropertyEntry[] = snapshot.properties.map((entry) => ({
+    ...entry,
+    valueType: valueTypeFor(entry),
+  }));
+  const visibleRows = filterPropertyRows(rows, filter);
+
   return (
     <div className="inspector">
       <div className="inspector__header">
@@ -190,31 +411,85 @@ function ObjectProperties({ snapshot, schemaTypes }: ObjectPropertiesProps): Rea
         <span className="inspector__id">{snapshot.objectId}</span>
       </div>
 
+      <div className="panel__filter">
+        <input
+          type="search"
+          aria-label="プロパティを絞り込む"
+          placeholder="名前 / 型 で絞り込む"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+      </div>
+
+      {visibleRows.length === 0 ? (
+        <p className="inspector__empty-filter">一致するプロパティがありません。</p>
+      ) : (
       <ul className="inspector__props">
-        {snapshot.properties.map((entry) => (
-          <li className="inspector-prop" key={entry.name}>
+        {visibleRows.map((entry) => (
+          // 数値ベクトルは成分の入力欄が 2〜4 個並ぶので、name と同じ行に押し込むと
+          // Inspector の幅では 1 個ずつ折り返してしまう。行を分けて全幅を使う。
+          <li
+            className={
+              classifyValue(entry.value) === 'vector'
+                ? 'inspector-prop inspector-prop--stacked'
+                : 'inspector-prop'
+            }
+            key={entry.name}
+          >
             <span className="inspector-prop__name">{entry.name}</span>
             <span className="inspector-prop__value">
               {/*
-                Key the editor by objectId + property + a serialization of the
-                committed value so that when the store snapshot is replaced (a
-                fresh fetch or an applied write) the editor re-seeds its local
-                state from the new value instead of keeping stale local edits.
+                Key the editor by objectId + property only. Re-seeding on a new
+                committed value is decided inside the row, which knows whether
+                the user is currently typing in it (see PropertyEditor).
               */}
               <PropertyEditor
-                key={`${snapshot.objectId}:${entry.name}:${stableValueKey(entry.value)}`}
+                key={`${snapshot.objectId}:${entry.name}`}
                 objectId={snapshot.objectId}
                 property={entry.name}
                 value={entry.value}
               />
             </span>
-            {valueTypeFor(entry) !== undefined && (
-              <span className="inspector-prop__type">{valueTypeFor(entry)}</span>
+            {entry.valueType !== undefined && (
+              <span className="inspector-prop__type">{entry.valueType}</span>
             )}
           </li>
         ))}
       </ul>
+      )}
     </div>
+  );
+}
+
+/**
+ * パネルを離れても残す絞り込み。Outliner / Asset Browser と同じ理由で store に載せない。
+ * Entity のプロパティとコンポーネントのプロパティで 1 つを共有する — 絞り込みの文字は
+ * 入力欄に出ているので、意図せず隠れることはない。
+ */
+let rememberedPropertyFilter = '';
+
+/** テスト用: パネルをまたいで残る絞り込みを初期化する。 */
+export function __resetPropertyFilterMemory(): void {
+  rememberedPropertyFilter = '';
+}
+
+/**
+ * プロパティ行を `query` で絞り込む。名前か型名のどちらかに、大小を無視した部分一致。
+ * 正規表現にしない — 打ち間違いが黙って「0 件」に化ける。空の query は素通し。
+ *
+ * @param rows 表示に使う型名まで解決済みの行
+ * @param query 絞り込み文字列
+ * @returns 残る行（入力順のまま）
+ */
+export function filterPropertyRows(rows: PropertyEntry[], query: string): PropertyEntry[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') {
+    return rows;
+  }
+  return rows.filter(
+    (row) =>
+      row.name.toLowerCase().includes(needle) ||
+      (row.valueType?.toLowerCase().includes(needle) ?? false),
   );
 }
 
@@ -223,11 +498,38 @@ function ObjectProperties({ snapshot, schemaTypes }: ObjectPropertiesProps): Rea
 // -------------------------------------------------------------------------
 
 /** Coarse classification of a PropertyValue for type-driven rendering. */
-type ValueKind = 'string' | 'number' | 'boolean' | 'null' | 'array' | 'object';
+export type ValueKind =
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'null'
+  | 'vector'
+  | 'array'
+  | 'object';
 
-function classifyValue(value: PropertyValue): ValueKind {
+/** 成分ごとに編集できる配列の長さ。2 = XY / 3 = XYZ / 4 = XYZW。 */
+const VECTOR_MIN_LENGTH = 2;
+const VECTOR_MAX_LENGTH = 4;
+
+/**
+ * 有限な数値だけが 2〜4 個並んだ配列か。
+ *
+ * 判定に `valueType` の名前は使わない。型名は engine ごとに違い(`Vector3` / `Float3` / …)、
+ * 汎用ブリッジが特定エンジンの綴りを知ってはならない。値の形だけで決めるので、どの engine が
+ * 返した数値ベクトルにも同じように効く。
+ *
+ * NaN / Infinity を含むものは対象外。JSON にできない値なので成分エディタから送れず、
+ * JSON エディタ側で見えたほうがよい。
+ */
+export function isNumericVector(value: PropertyValue): value is number[] {
+  if (!Array.isArray(value)) return false;
+  if (value.length < VECTOR_MIN_LENGTH || value.length > VECTOR_MAX_LENGTH) return false;
+  return value.every((component) => typeof component === 'number' && Number.isFinite(component));
+}
+
+export function classifyValue(value: PropertyValue): ValueKind {
   if (value === null) return 'null';
-  if (Array.isArray(value)) return 'array';
+  if (Array.isArray(value)) return isNumericVector(value) ? 'vector' : 'array';
   switch (typeof value) {
     case 'string':
       return 'string';
@@ -267,16 +569,48 @@ type RowFeedback =
  * One editable property row. Holds the in-progress edit in LOCAL state so a
  * keystroke never dispatches (no per-keystroke全パネル re-render). Commits via
  * setObjectProperty only on blur / Enter (scalars), toggle (boolean), or Apply
- * (JSON for null / array / object). On a successful accepted write the store
- * snapshot is updated by the action; this row's key changes and it re-seeds.
+ * (JSON for null / array / object).
+ *
+ * 再シード: 確定値が変わったら（取得し直し・書き込みの反映・engine 発の object.changed）
+ * 下書きを作り直す。ただし**この行が焦点を持つ間は作り直さない** — 入力の途中で値が届いた
+ * だけで打った文字が黙って消えるのは、編集の取りこぼしになる。焦点が外れた時点で最新の
+ * 確定値へ揃える。
+ *
+ * 据え置き中は**確定値が 2 つある**ので、使い分けを間違えない:
+ *   - `seededValue`: 下書きの元。**「触ったか」の判定はこちらと比べる。** 最新値と比べると、
+ *     1 文字も打っていない行が「変化あり」に化けて、engine の更新を古い値で上書きし返す。
+ *   - `value`: 最新。**送る中身を組むのはこちら。** ベクトルの 1 成分を編集している間に別の
+ *     成分が動いたら、送るのは「編集した成分は下書き、他は最新」。
  */
 function PropertyEditor({ objectId, property, value }: PropertyEditorProps): React.JSX.Element {
   const actions = useBridgeActions();
-  const kind = classifyValue(value);
 
   // Whether a commit is in flight (disables the control + shows a hint).
   const [pending, setPending] = useState(false);
   const [feedback, setFeedback] = useState<RowFeedback>({ kind: 'none' });
+
+  // 下書きの元になっている確定値。焦点がある間は据え置かれ、最新の value と食い違う。
+  const rowRef = useRef<HTMLSpanElement>(null);
+  const [seededValue, setSeededValue] = useState<PropertyValue>(value);
+
+  // 種類は**下書きの元**から決める。最新値から決めると、据え置き中に engine が値の種類を
+  // 変えたとき（null -> 配列など）、下書きと噛み合わないコントロールが描かれて落ちる。
+  // 描くものと下書きの元は常に同じ値から作る。
+  const kind = classifyValue(seededValue);
+  const liveKey = stableValueKey(value);
+  const seedKey = stableValueKey(seededValue);
+
+  function hasFocus(): boolean {
+    const row = rowRef.current;
+    return row !== null && row.contains(document.activeElement);
+  }
+
+  // 焦点が無いときに届いた新しい確定値は、その場で下書きへ反映する。
+  useEffect(() => {
+    if (liveKey !== seedKey && !hasFocus()) {
+      setSeededValue(value);
+    }
+  });
 
   // Submit a committed value to the engine. Centralizes the pending / feedback
   // lifecycle for every editor kind. The value here is already a real
@@ -300,10 +634,23 @@ function PropertyEditor({ objectId, property, value }: PropertyEditorProps): Rea
   }
 
   return (
-    <span className="prop-editor">
+    <span
+      className="prop-editor"
+      ref={rowRef}
+      onBlur={(event) => {
+        // focusout は行の中で焦点が移っただけでも起きる（ベクトルの X -> Tab -> Y）。
+        // 行の外へ出たときだけ揃える — 中で移るたびに作り直すと、移った先の焦点が飛ぶ。
+        if (!rowRef.current?.contains(event.relatedTarget as Node | null)) {
+          setSeededValue(value);
+        }
+      }}
+    >
       <PropertyEditorControl
+        key={seedKey}
         kind={kind}
+        property={property}
         value={value}
+        seededValue={seededValue}
         pending={pending}
         onCommitValue={(next) => void commit(next)}
         onInvalidJson={(message) => setFeedback({ kind: 'invalidJson', message })}
@@ -316,7 +663,12 @@ function PropertyEditor({ objectId, property, value }: PropertyEditorProps): Rea
 
 interface PropertyEditorControlProps {
   kind: ValueKind;
+  /** The property name — used to give each control a unique accessible name. */
+  property: string;
+  /** 最新の確定値。**送る中身を組むのはこちら。** */
   value: PropertyValue;
+  /** 下書きの元になった確定値。**「触ったか」の判定はこちらと比べる。** */
+  seededValue: PropertyValue;
   pending: boolean;
   /** Commit a parsed/coerced PropertyValue to the engine. */
   onCommitValue: (next: PropertyValue) => void;
@@ -335,6 +687,9 @@ function PropertyEditorControl(props: PropertyEditorControlProps): React.JSX.Ele
       return <NumberEditor {...props} />;
     case 'boolean':
       return <BooleanEditor {...props} />;
+    case 'vector':
+      // 数値ベクトルは成分ごとの入力欄。JSON 編集へ戻す道も残す（下記 VectorOrJsonEditor）。
+      return <VectorOrJsonEditor {...props} />;
     case 'null':
     case 'array':
     case 'object':
@@ -352,15 +707,17 @@ function PropertyEditorControl(props: PropertyEditorControlProps): React.JSX.Ele
 // ---- scalar editors -------------------------------------------------------
 
 function StringEditor({
-  value,
+  seededValue,
   pending,
   onCommitValue,
   onClearFeedback,
 }: PropertyEditorControlProps): React.JSX.Element {
-  const [draft, setDraft] = useState<string>(value as string);
+  const [draft, setDraft] = useState<string>(seededValue as string);
 
   function commitIfChanged(): void {
-    if (draft !== (value as string)) {
+    // 比べる相手は下書きの元（最新値ではない）。据え置き中に最新と比べると、1 文字も
+    // 打っていない行が「変化あり」に化けて engine の更新を古い値で上書きし返す。
+    if (draft !== (seededValue as string)) {
       onCommitValue(draft);
     }
   }
@@ -386,16 +743,17 @@ function StringEditor({
 }
 
 function NumberEditor({
-  value,
+  seededValue,
   pending,
   onCommitValue,
   onInvalidJson,
   onClearFeedback,
 }: PropertyEditorControlProps): React.JSX.Element {
-  const [draft, setDraft] = useState<string>(String(value as number));
+  const [draft, setDraft] = useState<string>(String(seededValue as number));
 
   function commitIfChanged(): void {
-    if (draft === String(value as number)) return;
+    // 比べる相手は下書きの元（StringEditor と同じ理由）。
+    if (draft === String(seededValue as number)) return;
     const parsed = Number(draft);
     if (draft.trim() === '' || Number.isNaN(parsed)) {
       // Reuse the invalid-feedback channel for a non-numeric entry.
@@ -449,10 +807,152 @@ function BooleanEditor({
   );
 }
 
+// ---- vector editor (numeric array of length 2..4) --------------------------
+
+/** 成分ラベル。長さ 4 はクォータニオンにも RGBA にもなり得るので中立な綴りにする。 */
+const AXIS_LABELS = ['X', 'Y', 'Z', 'W'] as const;
+
+/**
+ * 数値ベクトル行。成分ごとの入力欄と、JSON 編集へ戻す切り替えを持つ。
+ *
+ * 切り替えを残すのは、この変更の前は**あらゆる配列が JSON で編集でき、長さも変えられた**ため。
+ * 成分エディタがその能力を奪ってはならない。
+ *
+ * 切り替えの状態は行のローカル state で、確定値が変わると行ごと再生成されて既定（成分編集）へ
+ * 戻る。書き込みが通ったあとも JSON のままにしておく理由が無く、状態を持ち越す仕掛けを足す
+ * ほうが読みにくいので、そのままにする。
+ */
+function VectorOrJsonEditor(props: PropertyEditorControlProps): React.JSX.Element {
+  const [useJson, setUseJson] = useState(false);
+
+  return (
+    <span className="prop-editor__vector-wrap">
+      {useJson ? <JsonEditor {...props} /> : <VectorEditor {...props} />}
+      <button
+        type="button"
+        className="prop-editor__mode"
+        disabled={props.pending}
+        aria-label={useJson ? `${props.property} を成分で編集` : `${props.property} を JSON で編集`}
+        onClick={() => {
+          props.onClearFeedback();
+          setUseJson((previous) => !previous);
+        }}
+      >
+        {useJson ? '成分で編集' : 'JSON で編集'}
+      </button>
+    </span>
+  );
+}
+
+/**
+ * 成分ごとの number 入力。blur / Enter で**配列全体**を送る（プロトコルは配列全体を運ぶので、
+ * 成分単位の書き込みという概念が無い）。編集していない成分は確定値から取る。
+ *
+ * 空欄は送らず、行内にエラーを出す。`type="number"` の入力欄は数値として読めない文字列を
+ * 空文字へ正規化するので、UI から届く不正値は実質これだけ。`Number.isFinite` の判定はその
+ * 先の防御で、JSON にできない値（NaN / Infinity）をエンジンへ渡さないために残す。
+ */
+function VectorEditor({
+  property,
+  value,
+  seededValue,
+  pending,
+  onCommitValue,
+  onInvalidJson,
+  onClearFeedback,
+}: PropertyEditorControlProps): React.JSX.Element {
+  // 入力欄は下書きの元に対応する（据え置き中に成分の数が変わっても並びが崩れない）。
+  const seeded = seededValue as number[];
+  const [drafts, setDrafts] = useState<string[]>(() => seeded.map((component) => String(component)));
+
+  function commitIndex(index: number, input: HTMLInputElement): void {
+    if (pending) {
+      return;  // 送信中は読み取り専用。Enter の二重送信を止める。
+    }
+
+    // `type="number"` は数値として読めない入力を value から落とすが、打った文字は画面に残り、
+    // validity.badInput が立つ。空欄として扱うと「数値を入力してください」が画面と食い違うので
+    // 分けて言う。
+    if (input.validity.badInput) {
+      onInvalidJson('数値として読めません。');
+      return;
+    }
+
+    const text = (drafts[index] ?? '').trim();
+    if (text === '') {
+      onInvalidJson('数値を入力してください。');
+      return;
+    }
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed)) {
+      // 入力欄が先に正規化するので通常は届かない。届いたら JSON にできないので送らない。
+      onInvalidJson(`数値として読めません: ${text}`);
+      return;
+    }
+    if (parsed === seeded[index]) {
+      return;  // 触っていない。往復を増やさない（比べる相手は下書きの元）。
+    }
+
+    // 送る中身は最新の確定値から組む。編集した成分だけ下書きで置き換える。
+    // 据え置き中に engine 側が値の種類ごと変えている場合があるので、数値ベクトルのままか
+    // 確かめてから使う。外れていたら、どこへ入れるべきか決められないので送らない
+    // （焦点が外れれば新しい形で作り直される）。
+    if (!isNumericVector(value) || index >= value.length) {
+      onInvalidJson('この成分は engine 側で無くなりました。');
+      return;
+    }
+    onCommitValue(value.map((component, at) => (at === index ? parsed : component)));
+  }
+
+  return (
+    <span
+      className={
+        seeded.length === 4
+          ? 'prop-editor__vector prop-editor__vector--quad'
+          : 'prop-editor__vector'
+      }
+    >
+      {seeded.map((_component, index) => {
+        const label = AXIS_LABELS[index] ?? String(index);
+        return (
+          <label className="prop-editor__axis" key={index}>
+            <span className="prop-editor__axis-label">{label}</span>
+            <input
+              className="value value--number prop-editor__input prop-editor__input--axis"
+              type="number"
+              aria-label={`${property} ${label}`}
+              value={drafts[index] ?? ''}
+              /*
+                送信中も disabled にしない。フォーカス中の要素を disable すると Chromium が
+                そこでフォーカスを捨て、X -> Tab -> Y と続けて打てなくなる（成分が 2〜4 個
+                あるベクトルではこれが編集の主経路）。readOnly なら焦点は残り、入力だけ止まる。
+              */
+              readOnly={pending}
+              aria-busy={pending}
+              onChange={(e) => {
+                const next = e.target.value;
+                setDrafts((previous) => previous.map((draft, at) => (at === index ? next : draft)));
+                onClearFeedback();
+              }}
+              onBlur={(e) => commitIndex(index, e.currentTarget)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  commitIndex(index, e.currentTarget);
+                }
+              }}
+            />
+          </label>
+        );
+      })}
+    </span>
+  );
+}
+
 // ---- JSON editor (null / array / object) ----------------------------------
 
 function JsonEditor({
-  value,
+  seededValue,
   pending,
   onCommitValue,
   onInvalidJson,
@@ -460,7 +960,9 @@ function JsonEditor({
 }: PropertyEditorControlProps): React.JSX.Element {
   // Seed from a pretty-printed serialization of the committed value. The user
   // edits raw JSON text; nothing is dispatched until Apply (JSON.parse here).
-  const initial = JSON.stringify(value, null, 2) ?? 'null';
+  // 下書きの元を使う — 最新値を使うと、据え置き中に engine 側が動いただけで dirty が立ち、
+  // 1 文字も打っていないのに Apply が押せてしまう（押すと更新を巻き戻す）。
+  const initial = JSON.stringify(seededValue, null, 2) ?? 'null';
   const [draft, setDraft] = useState<string>(initial);
 
   function apply(): void {

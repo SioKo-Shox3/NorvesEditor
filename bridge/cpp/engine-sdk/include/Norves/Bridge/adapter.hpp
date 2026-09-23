@@ -183,6 +183,27 @@ namespace Norves::Bridge
             return not_supported(params);
         }
 
+        /// @brief component.add。params.kind の型のコンポーネントを params.objectId の
+        /// オブジェクトへ付ける。生成できない型・消えたオブジェクト等は result の
+        /// accepted:false で返す（プロトコルエラーにしない）。既定は未対応。
+        ///
+        /// @param params { objectId, kind }
+        /// @return { accepted, componentId? }
+        virtual Result<JsonValue, BridgeError> componentAdd(const JsonValue& params)
+        {
+            return not_supported(params);
+        }
+
+        /// @brief component.remove。params.objectId のコンポーネントを、それが属する
+        /// オブジェクトから外す。拒否は accepted:false で返す。既定は未対応。
+        ///
+        /// @param params { objectId }
+        /// @return { accepted }
+        virtual Result<JsonValue, BridgeError> componentRemove(const JsonValue& params)
+        {
+            return not_supported(params);
+        }
+
     protected:
         IBridgeEngineAdapter() = default;
         IBridgeEngineAdapter(const IBridgeEngineAdapter&) = default;

@@ -1,0 +1,28 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "response",
+  "id": "req-72",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "types": [
+      {
+        "typeName": "camera",
+        "kind": "component",
+        "instantiable": true,
+        "properties": [
+          { "name": "fieldOfView", "valueType": "number" }
+        ]
+      },
+      {
+        "typeName": "script",
+        "kind": "component",
+        "instantiable": false
+      },
+      {
+        "typeName": "object",
+        "kind": "object"
+      }
+    ]
+  }
+}

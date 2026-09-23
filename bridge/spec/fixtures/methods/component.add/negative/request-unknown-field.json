@@ -1,0 +1,13 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.1",
+  "kind": "request",
+  "id": "req-70",
+  "method": "component.add",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "objectId": "n-2",
+    "kind": "camera",
+    "index": 0
+  }
+}

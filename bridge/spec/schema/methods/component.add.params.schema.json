@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/component.add.params.schema.json",
+  "title": "component.add.params",
+  "description": "Attach a new component of the named type to one object. The type must be one the engine advertised as instantiable in schema.getSnapshot.",
+  "type": "object",
+  "required": [
+    "objectId",
+    "kind"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "objectId": {
+      "description": "Object to attach the component to.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/objectId"
+    },
+    "kind": {
+      "description": "Generic type name of the component to create, as advertised by schema.getSnapshot.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

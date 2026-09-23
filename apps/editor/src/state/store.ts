@@ -308,6 +308,21 @@ export interface BridgeState {
    */
   objectSnapshot?: ObjectSnapshot;
   /**
+   * ID of the component currently selected inside the Inspector, or undefined
+   * when the entity's own properties are shown. The id comes from the entity
+   * snapshot's `components` list and is opaque — the editor passes it straight
+   * back to object.getSnapshot / object.setProperty. Cleared whenever the
+   * selected object changes, on disconnect, and on process exit.
+   */
+  selectedComponentId?: string;
+  /**
+   * Snapshot of the selected component (object.getSnapshot on the component id),
+   * kept separately from objectSnapshot so selecting a component does not lose
+   * the entity's own snapshot — the component list lives on that snapshot and
+   * must stay on screen.
+   */
+  componentSnapshot?: ObjectSnapshot;
+  /**
    * Generic type descriptors from schema.getSnapshot, fetched once per
    * connection. Used as an auxiliary hint when rendering property valueTypes.
    * Undefined before any schema has been fetched (or after disconnect).
@@ -343,6 +358,8 @@ export const INITIAL_STATE: BridgeState = {
   connection: { status: 'disconnected' },
   logs: [],
   selectedObjectId: undefined,
+  selectedComponentId: undefined,
+  componentSnapshot: undefined,
   selectedAssetKey: undefined,
   assetResolveByKey: undefined,
   assetResolveErrorByKey: undefined,
@@ -427,6 +444,17 @@ export type BridgeAction =
    * Engine-agnostic: a generic property bag, not mock-specific.
    */
   | { type: 'objectSnapshotLoaded'; snapshot: ObjectSnapshot }
+  /**
+   * Select (or clear, with undefined) a component of the selected object. The
+   * id comes from the entity snapshot's `components` list and is opaque.
+   */
+  | { type: 'componentSelected'; id: string | undefined }
+  /**
+   * Store a freshly fetched object.getSnapshot taken on a component id. Kept
+   * apart from objectSnapshotLoaded so the entity's snapshot (which carries the
+   * component list) survives.
+   */
+  | { type: 'componentSnapshotLoaded'; snapshot: ObjectSnapshot }
   /**
    * Store the type descriptors from a schema.getSnapshot fetch.
    */
@@ -752,6 +780,10 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         // Inspector data is per-object / per-engine: a fresh connection re-probes
         // both, and a disconnect drops the stale snapshot + schema + verdict.
         objectSnapshot: p.connected ? state.objectSnapshot : undefined,
+        // The component selection is part of the Inspector's per-engine state:
+        // its id only means something to the engine that issued it.
+        selectedComponentId: p.connected ? state.selectedComponentId : undefined,
+        componentSnapshot: p.connected ? state.componentSnapshot : undefined,
         schemaTypes: p.connected ? state.schemaTypes : undefined,
         objectUnsupported: p.connected ? false : state.objectUnsupported,
         // The viewport thumbnail is per-connection: a fresh connection re-probes
@@ -829,6 +861,8 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         redoStack: [],
         // The Inspector data is likewise invalid once the engine dies.
         objectSnapshot: undefined,
+        selectedComponentId: undefined,
+        componentSnapshot: undefined,
         schemaTypes: undefined,
         objectUnsupported: undefined,
         // The viewport thumbnail (and its verdict) is invalid once the engine dies.
@@ -882,6 +916,21 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       // change to any other object is ignored (the connect/selection fetch is the
       // primary guarantee).
       const p = action.payload;
+      // The event may address the selected component rather than the entity;
+      // both are plain objectIds on the wire. A component's snapshot carries no
+      // component list, so it merges the same way minus that carry-over.
+      const component = state.componentSnapshot;
+      if (component !== undefined && component.objectId === p.objectId) {
+        return {
+          ...state,
+          componentSnapshot: {
+            objectId: p.objectId,
+            name: p.name ?? component.name,
+            kind: p.kind ?? component.kind,
+            properties: p.properties,
+          },
+        };
+      }
       const snapshot = state.objectSnapshot;
       if (snapshot === undefined || snapshot.objectId !== p.objectId) {
         return state;
@@ -893,6 +942,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
           name: p.name ?? snapshot.name,
           kind: p.kind ?? snapshot.kind,
           properties: p.properties,
+          // The event carries no component list (its schema has no such field),
+          // so the one the snapshot fetch established must be carried over.
+          components: snapshot.components,
         },
       };
     }
@@ -910,7 +962,13 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         // Re-selecting the same id is a no-op for the snapshot.
         return { ...state, selectedObjectId: action.id };
       }
-      return { ...state, selectedObjectId: action.id, objectSnapshot: undefined };
+      return {
+        ...state,
+        selectedObjectId: action.id,
+        objectSnapshot: undefined,
+        selectedComponentId: undefined,
+        componentSnapshot: undefined,
+      };
     }
 
     case 'sceneTreeLoaded': {
@@ -944,12 +1002,50 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       if (!action.accepted) {
         return state;
       }
-      return { ...state, selectedObjectId: undefined, objectSnapshot: undefined };
+      return {
+        ...state,
+        selectedObjectId: undefined,
+        objectSnapshot: undefined,
+        selectedComponentId: undefined,
+        componentSnapshot: undefined,
+      };
     }
 
     case 'objectSnapshotLoaded': {
-      // A successful snapshot clears any prior "unsupported" marker.
-      return { ...state, objectSnapshot: action.snapshot, objectUnsupported: false };
+      // A successful snapshot clears any prior "unsupported" marker. A snapshot
+      // for the entity also invalidates a component selection whose component is
+      // no longer advertised (the engine may have dropped it between fetches).
+      const components = action.snapshot.components;
+      const stillThere =
+        state.selectedComponentId !== undefined &&
+        components?.some((c) => c.objectId === state.selectedComponentId) === true;
+      return {
+        ...state,
+        objectSnapshot: action.snapshot,
+        objectUnsupported: false,
+        selectedComponentId: stillThere ? state.selectedComponentId : undefined,
+        componentSnapshot: stillThere ? state.componentSnapshot : undefined,
+      };
+    }
+
+    case 'componentSelected': {
+      if (action.id === state.selectedComponentId) {
+        return state;
+      }
+      // A new component invalidates the previously fetched component snapshot;
+      // the Inspector's fetch effect loads the new one.
+      return { ...state, selectedComponentId: action.id, componentSnapshot: undefined };
+    }
+
+    case 'componentSnapshotLoaded': {
+      // Ignore a late snapshot for a component that is no longer selected —
+      // including the case where the selection was cleared entirely (back to the
+      // object's own properties). Storing it would leave a hidden snapshot that
+      // objectPropertyApplied keeps writing to.
+      if (action.snapshot.objectId !== state.selectedComponentId) {
+        return state;
+      }
+      return { ...state, componentSnapshot: action.snapshot };
     }
 
     case 'schemaSnapshotLoaded': {
@@ -958,7 +1054,15 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
 
     case 'objectSnapshotUnsupported': {
       // No snapshot to show; record the engine's degradation for the Inspector.
-      return { ...state, objectSnapshot: undefined, objectUnsupported: true };
+      // The component selection came from a snapshot this engine cannot serve,
+      // so it goes with it.
+      return {
+        ...state,
+        objectSnapshot: undefined,
+        selectedComponentId: undefined,
+        componentSnapshot: undefined,
+        objectUnsupported: true,
+      };
     }
 
     case 'objectPropertyApplied': {
@@ -967,7 +1071,10 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       // late ack for a different object cannot clobber the current snapshot; if
       // the snapshot is gone (deselect/disconnect) or the property is absent,
       // leave state unchanged.
-      const snapshot = state.objectSnapshot;
+      // The write may target the entity or the selected component; both are
+      // addressed by objectId, so pick the snapshot whose id matches.
+      const isComponent = state.componentSnapshot?.objectId === action.objectId;
+      const snapshot = isComponent ? state.componentSnapshot : state.objectSnapshot;
       if (snapshot === undefined || snapshot.objectId !== action.objectId) {
         return state;
       }
@@ -982,7 +1089,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       if (!changed) {
         return state;
       }
-      return { ...state, objectSnapshot: { ...snapshot, properties } };
+      return isComponent
+        ? { ...state, componentSnapshot: { ...snapshot, properties } }
+        : { ...state, objectSnapshot: { ...snapshot, properties } };
     }
 
     case 'viewportThumbnailLoaded': {

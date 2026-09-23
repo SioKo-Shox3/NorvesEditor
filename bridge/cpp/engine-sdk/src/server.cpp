@@ -278,6 +278,14 @@ namespace Norves::Bridge
             {
                 return finish(id, m_Adapter.schemaGetSnapshot(params));
             }
+            if (method == "component.add")
+            {
+                return finish(id, m_Adapter.componentAdd(params));
+            }
+            if (method == "component.remove")
+            {
+                return finish(id, m_Adapter.componentRemove(params));
+            }
             if (method == "asset.resolve")
             {
                 return finish(id, m_Adapter.assetResolve(params));

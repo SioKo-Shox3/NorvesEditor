@@ -19,10 +19,10 @@
  */
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import type { BridgeState } from '../../state/store.js';
 import { INITIAL_STATE } from '../../state/store.js';
-import type { ObjectSnapshot, SetObjectPropertyResult } from '@norves/bridge-ui';
+import type { ObjectSnapshot, PropertyValue, SetObjectPropertyResult } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Mock dockview-react
@@ -49,11 +49,30 @@ const setObjectProperty = vi.fn<
   (objectId: string, property: string, value: unknown) => Promise<SetObjectPropertyResult>
 >();
 
+const getComponentSnapshot = vi.fn();
+const selectComponent = vi.fn();
+const addComponent = vi.fn<(objectId: string, kind: string) => Promise<boolean>>();
+const removeComponent = vi.fn<(componentId: string, ownerObjectId: string) => Promise<boolean>>();
+
 vi.mock('../../hooks/useBridge.js', () => ({
-  useBridgeActions: () => ({ getObjectSnapshot, getSchemaSnapshot, setObjectProperty }),
+  useBridgeActions: () => ({
+    getObjectSnapshot,
+    getSchemaSnapshot,
+    setObjectProperty,
+    getComponentSnapshot,
+    selectComponent,
+    addComponent,
+    removeComponent,
+  }),
 }));
 
-import { PropertyInspectorPanel } from '../PropertyInspectorPanel.js';
+import {
+  PropertyInspectorPanel,
+  classifyValue,
+  filterPropertyRows,
+  isNumericVector,
+  __resetPropertyFilterMemory,
+} from '../PropertyInspectorPanel.js';
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -61,6 +80,14 @@ beforeEach(() => {
   getObjectSnapshot.mockClear();
   getSchemaSnapshot.mockClear();
   setObjectProperty.mockReset();
+  getComponentSnapshot.mockClear();
+  selectComponent.mockClear();
+  addComponent.mockReset();
+  addComponent.mockResolvedValue(true);
+  removeComponent.mockReset();
+  removeComponent.mockResolvedValue(true);
+  // 絞り込みはパネルをまたいで残るので、テストごとに戻す。
+  __resetPropertyFilterMemory();
   // Default: every write is accepted with the requested value echoed.
   setObjectProperty.mockImplementation((_id, _prop, value) =>
     Promise.resolve({ accepted: true, appliedValue: value as SetObjectPropertyResult['appliedValue'] }),
@@ -80,6 +107,8 @@ const DEMO_SNAPSHOT: ObjectSnapshot = {
     { name: 'enabled', value: true, valueType: 'boolean' },
     { name: 'parent', value: null },
     { name: 'position', value: [0, 1.5, -10], valueType: 'vector3' },
+    // 成分編集の対象にならない配列（長さ 5）。JSON エディタの経路をここで押さえる。
+    { name: 'samples', value: [1, 1.5, 2, 3, 4], valueType: 'array' },
     { name: 'metadata', value: { locked: false, tag: 'primary' } },
   ],
 };
@@ -165,7 +194,15 @@ describe('PropertyInspectorPanel — editor controls', () => {
 
   it('renders all property names', () => {
     renderSelected(DEMO_SNAPSHOT);
-    for (const name of ['label', 'fieldOfView', 'enabled', 'parent', 'position', 'metadata']) {
+    for (const name of [
+      'label',
+      'fieldOfView',
+      'enabled',
+      'parent',
+      'position',
+      'samples',
+      'metadata',
+    ]) {
       expect(screen.getByText(name)).toBeTruthy();
     }
   });
@@ -283,7 +320,7 @@ describe('PropertyInspectorPanel — JSON editor', () => {
     fireEvent.change(textarea, { target: { value: '[9, 8, 7]' } });
     const apply = textarea.parentElement?.querySelector('button') as HTMLButtonElement;
     fireEvent.click(apply);
-    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [9, 8, 7]);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'samples', [9, 8, 7]);
   });
 
   it('lets a null value be edited to a scalar via the JSON editor', () => {
@@ -300,6 +337,409 @@ describe('PropertyInspectorPanel — JSON editor', () => {
     ) as HTMLButtonElement;
     fireEvent.click(apply);
     expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'parent', 'now-a-string');
+  });
+});
+
+// -------------------------------------------------------------------------
+// 数値ベクトルの成分エディタ
+// -------------------------------------------------------------------------
+
+const VECTOR_SNAPSHOT: ObjectSnapshot = {
+  objectId: 'n-1',
+  name: 'NodeV',
+  kind: 'object',
+  properties: [
+    { name: 'position', value: [0, 1.5, -10], valueType: 'vector3' },
+    { name: 'rotation', value: [0, 0, 0, 1], valueType: 'quat' },
+    { name: 'uv', value: [0.25, 0.75] },
+  ],
+};
+
+describe('PropertyInspectorPanel — vector editor', () => {
+  function axis(property: string, label: string): HTMLInputElement {
+    return screen.getByLabelText(`${property} ${label}`) as HTMLInputElement;
+  }
+
+  it('renders one number input per component, seeded and labelled', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    expect(axis('position', 'X').value).toBe('0');
+    expect(axis('position', 'Y').value).toBe('1.5');
+    expect(axis('position', 'Z').value).toBe('-10');
+    expect(axis('position', 'X').type).toBe('number');
+    // 長さ 4 は W まで、長さ 2 は Y まで。
+    expect(axis('rotation', 'W').value).toBe('1');
+    expect(axis('uv', 'Y').value).toBe('0.75');
+    expect(screen.queryByLabelText('uv Z')).toBeNull();
+    expect(screen.queryByLabelText('position W')).toBeNull();
+  });
+
+  it('commits the whole array on blur, changing only the edited component', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    const y = axis('position', 'Y');
+    fireEvent.change(y, { target: { value: '4' } });
+    // 打鍵では送らない（編集は行ローカル）。
+    expect(setObjectProperty).not.toHaveBeenCalled();
+    fireEvent.blur(y);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [0, 4, -10]);
+  });
+
+  it('commits on Enter as well', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    const z = axis('position', 'Z');
+    fireEvent.change(z, { target: { value: '-2.5' } });
+    fireEvent.keyDown(z, { key: 'Enter' });
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [0, 1.5, -2.5]);
+  });
+
+  it('does not commit when the component is unchanged', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    const x = axis('position', 'X');
+    fireEvent.blur(x);
+    // 表記が違っても値が同じなら送らない。
+    fireEvent.change(x, { target: { value: '0.0' } });
+    fireEvent.blur(x);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+  });
+
+  it('refuses an empty component and says so inline', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    const x = axis('position', 'X');
+    fireEvent.change(x, { target: { value: '' } });
+    fireEvent.blur(x);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+    expect(screen.getByText(/数値を入力してください/)).toBeTruthy();
+  });
+
+  it('never sends a value JSON cannot carry', () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    const x = axis('position', 'X');
+    // type="number" の入力欄は数値として読めない文字列を空文字へ正規化する。したがって
+    // 溢れる値も読めない文字列も、成分エディタからは出ていかない。
+    for (const candidate of ['1e999', 'abc', '--3', '1.2.3']) {
+      fireEvent.change(x, { target: { value: candidate } });
+      expect(x.value).toBe('');
+      fireEvent.blur(x);
+    }
+    expect(setObjectProperty).not.toHaveBeenCalled();
+  });
+
+  it('keeps a JSON escape hatch so the array can still be reshaped', async () => {
+    renderSelected(VECTOR_SNAPSHOT);
+    expect(screen.queryByRole('textbox')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'position を JSON で編集' }));
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    expect(textarea.tagName).toBe('TEXTAREA');
+    // 成分エディタでは作れない長さへ変えられる。
+    fireEvent.change(textarea, { target: { value: '[1, 2, 3, 4, 5]' } });
+    fireEvent.click(textarea.parentElement?.querySelector('button') as HTMLButtonElement);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [1, 2, 3, 4, 5]);
+
+    // 戻せる。送信中は切り替えを止めているので、確定してから押す。
+    const backToAxes = screen.getByRole('button', { name: 'position を成分で編集' });
+    await waitFor(() => expect((backToAxes as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(backToAxes);
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(axis('position', 'X')).toBeTruthy();
+  });
+
+  it('leaves a non-vector array on the JSON editor', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    // samples は長さ 5 なので成分編集にならない。
+    expect(screen.queryByLabelText('samples X')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'samples を JSON で編集' })).toBeNull();
+  });
+
+  it('keeps focus reachable while a write is in flight', () => {
+    // 送信中に disabled にすると、Chromium はフォーカス中の要素から焦点を捨てる。成分が
+    // 2〜4 個あるベクトルでは X -> Tab -> Y が編集の主経路なので、readOnly で止める。
+    let settle: (result: SetObjectPropertyResult) => void = () => {};
+    setObjectProperty.mockImplementation(
+      () => new Promise<SetObjectPropertyResult>((resolve) => { settle = resolve; }),
+    );
+    renderSelected(VECTOR_SNAPSHOT);
+    const x = axis('position', 'X');
+    const y = axis('position', 'Y');
+    fireEvent.change(x, { target: { value: '3' } });
+    fireEvent.blur(x);
+
+    expect(x.disabled).toBe(false);
+    expect(x.readOnly).toBe(true);
+    expect(y.disabled).toBe(false);
+    expect(y.readOnly).toBe(true);
+    settle({ accepted: true });
+  });
+
+  it('does not send a second write while one is in flight', () => {
+    let settle: (result: SetObjectPropertyResult) => void = () => {};
+    setObjectProperty.mockImplementation(
+      () => new Promise<SetObjectPropertyResult>((resolve) => { settle = resolve; }),
+    );
+    renderSelected(VECTOR_SNAPSHOT);
+    const y = axis('position', 'Y');
+    fireEvent.change(y, { target: { value: '4' } });
+    fireEvent.keyDown(y, { key: 'Enter' });
+    expect(setObjectProperty).toHaveBeenCalledTimes(1);
+    // readOnly なので値は変えられないが、Enter は届く。送信中は無視する。
+    fireEvent.keyDown(y, { key: 'Enter' });
+    fireEvent.blur(y);
+    expect(setObjectProperty).toHaveBeenCalledTimes(1);
+    settle({ accepted: true });
+  });
+
+  it('says the input is unreadable when the browser reports bad input', () => {
+    // type="number" は読めない入力を value から落とすが、打った文字は画面に残り
+    // validity.badInput が立つ。空欄扱いの文言だと画面と食い違う。
+    renderSelected(VECTOR_SNAPSHOT);
+    const x = axis('position', 'X');
+    Object.defineProperty(x, 'validity', { value: { badInput: true }, configurable: true });
+    fireEvent.change(x, { target: { value: '' } });
+    fireEvent.blur(x);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+    expect(screen.getByText('数値として読めません。')).toBeTruthy();
+    expect(screen.queryByText(/数値を入力してください/)).toBeNull();
+  });
+
+  it('reports a rejected vector write inline', async () => {
+    setObjectProperty.mockResolvedValue({ accepted: false });
+    renderSelected(VECTOR_SNAPSHOT);
+    const y = axis('position', 'Y');
+    fireEvent.change(y, { target: { value: '9' } });
+    fireEvent.blur(y);
+    expect(await screen.findByText(/エンジンが変更を拒否しました/)).toBeTruthy();
+  });
+});
+
+// -------------------------------------------------------------------------
+// 入力中に届いた確定値の扱い（再シード）
+// -------------------------------------------------------------------------
+
+describe('PropertyInspectorPanel — re-seeding while editing', () => {
+  function renderWith(snapshot: ObjectSnapshot) {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: snapshot.objectId,
+      objectSnapshot: snapshot,
+    };
+    return render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+  }
+
+  function withProperty(name: string, value: PropertyValue): ObjectSnapshot {
+    return {
+      ...VECTOR_SNAPSHOT,
+      properties: VECTOR_SNAPSHOT.properties.map((entry) =>
+        entry.name === name ? { ...entry, value } : entry,
+      ),
+    };
+  }
+
+  it('keeps the in-progress draft when a live update lands on the focused row', () => {
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    y.focus();
+    fireEvent.change(y, { target: { value: '9' } });
+
+    // engine 発の object.changed 相当。行は焦点を持っているので下書きは消えない。
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [0, 100, -10]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect((screen.getByLabelText('position Y') as HTMLInputElement).value).toBe('9');
+  });
+
+  it('re-seeds a row the user is not editing', () => {
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    // どこにも焦点を置かない。
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [0, 100, -10]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect((screen.getByLabelText('position Y') as HTMLInputElement).value).toBe('100');
+  });
+
+  it('catches up to the latest value once the row loses focus', () => {
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    y.focus();
+    fireEvent.change(y, { target: { value: '9' } });
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [0, 100, -10]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+
+    // 打った 9 を送ったあと（blur でコミット）、据え置いていた確定値へ揃う。
+    y.blur();
+    fireEvent.blur(y);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [0, 9, -10]);
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect((screen.getByLabelText('position Y') as HTMLInputElement).value).toBe('100');
+  });
+
+  it('sends the latest sibling components, not the ones seen when editing started', () => {
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    y.focus();
+    fireEvent.change(y, { target: { value: '9' } });
+    // X が engine 側で動いた。送るのは「編集した成分は下書き、他は最新」。
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [7, 1.5, -10]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.blur(y);
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [7, 9, -10]);
+  });
+
+  it('sends nothing when the row is merely focused and the engine moves', () => {
+    // 1 文字も打っていない行が、engine の更新を古い値で上書きし返してはならない。
+    // ゲームエディタで最も普通の状況（入力欄をクリックしたまま再生中のオブジェクトが動く）。
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    y.focus();
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [7, 100, -10]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.blur(y);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing for a focused number the engine moves', () => {
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const num = screen.getByDisplayValue('60') as HTMLInputElement;
+    num.focus();
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'fieldOfView' ? { ...entry, value: 90 } : entry,
+        ),
+      },
+    };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.blur(num);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing for a focused string the engine moves', () => {
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const text = screen.getByDisplayValue('Example Name') as HTMLInputElement;
+    text.focus();
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'label' ? { ...entry, value: 'from engine' } : entry,
+        ),
+      },
+    };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.blur(text);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+  });
+
+  it('does not arm Apply on a focused JSON editor the engine moves', () => {
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const textarea = screen
+      .getAllByRole('textbox')
+      .filter((el): el is HTMLTextAreaElement => el.tagName === 'TEXTAREA')
+      .find((t) => t.value.includes('locked')) as HTMLTextAreaElement;
+    textarea.focus();
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'metadata' ? { ...entry, value: { locked: true, tag: 'primary' } } : entry,
+        ),
+      },
+    };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    const apply = textarea.parentElement?.querySelector('button') as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+  });
+
+  it('keeps focus inside the row when moving between vector components', () => {
+    // 行の中の focusout で作り直すと、X -> Tab -> Y の移動先から焦点が飛ぶ。
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const x = screen.getByLabelText('position X') as HTMLInputElement;
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    x.focus();
+    fireEvent.change(x, { target: { value: '5' } });
+    mockState = { ...mockState, objectSnapshot: withProperty('position', [0, 1.5, -99]) };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+
+    // 行の中へ移る（relatedTarget が同じ行）。
+    fireEvent.blur(x, { relatedTarget: y });
+    y.focus();
+    expect((document.activeElement as HTMLElement).getAttribute('aria-label')).toBe('position Y');
+    // 送る中身は「編集した成分は下書き、他は最新」。
+    expect(setObjectProperty).toHaveBeenCalledWith('n-1', 'position', [5, 1.5, -99]);
+  });
+
+  it('survives the engine changing the kind of a focused value', () => {
+    // 種類を最新値から決め、入力欄を下書きの元から描くと、焦点中に種類が変わった行で
+    // 噛み合わないコントロールが描かれて落ちる。error boundary は無いので画面ごと白くなる。
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const text = screen.getByDisplayValue('Example Name') as HTMLInputElement;
+    text.focus();
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'label' ? { ...entry, value: [1, 2, 3] } : entry,
+        ),
+      },
+    };
+    expect(() => rerender(<PropertyInspectorPanel {...makeDockviewProps()} />)).not.toThrow();
+    // 据え置き中は元の姿のまま。焦点が外れてから新しい形になる。
+    expect(screen.getByDisplayValue('Example Name')).toBeTruthy();
+    fireEvent.blur(text);
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect(screen.getByLabelText('label X')).toBeTruthy();
+  });
+
+  it('survives the same change on a JSON row', () => {
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const nullEditor = screen
+      .getAllByRole('textbox')
+      .filter((el): el is HTMLTextAreaElement => el.tagName === 'TEXTAREA')
+      .find((t) => t.value === 'null') as HTMLTextAreaElement;
+    nullEditor.focus();
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'parent' ? { ...entry, value: [1, 2, 3] } : entry,
+        ),
+      },
+    };
+    expect(() => rerender(<PropertyInspectorPanel {...makeDockviewProps()} />)).not.toThrow();
+  });
+
+  it('refuses to send when the engine changed the value out of vector shape', () => {
+    const { rerender } = renderWith(VECTOR_SNAPSHOT);
+    const y = screen.getByLabelText('position Y') as HTMLInputElement;
+    y.focus();
+    fireEvent.change(y, { target: { value: '9' } });
+    mockState = { ...mockState, objectSnapshot: withProperty('position', 'not a vector') };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.blur(y);
+    expect(setObjectProperty).not.toHaveBeenCalled();
+    expect(screen.getByText(/engine 側で無くなりました/)).toBeTruthy();
+  });
+
+  it('keeps a string draft too', () => {
+    const { rerender } = renderWith(DEMO_SNAPSHOT);
+    const input = screen.getByDisplayValue('Example Name') as HTMLInputElement;
+    input.focus();
+    fireEvent.change(input, { target: { value: 'typing...' } });
+    mockState = {
+      ...mockState,
+      objectSnapshot: {
+        ...DEMO_SNAPSHOT,
+        properties: DEMO_SNAPSHOT.properties.map((entry) =>
+          entry.name === 'label' ? { ...entry, value: 'from engine' } : entry,
+        ),
+      },
+    };
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect(screen.getByDisplayValue('typing...')).toBeTruthy();
+    expect(screen.queryByDisplayValue('from engine')).toBeNull();
   });
 });
 
@@ -381,5 +821,371 @@ describe('PropertyInspectorPanel — race guard', () => {
   it('renders the snapshot when its objectId matches the current selection', () => {
     renderSelected(DEMO_SNAPSHOT);
     expect(screen.getByDisplayValue('Example Name')).toBeTruthy();
+  });
+});
+
+// -------------------------------------------------------------------------
+// Components section (entity -> component drill-down)
+// -------------------------------------------------------------------------
+
+const ENTITY_WITH_COMPONENTS: ObjectSnapshot = {
+  objectId: 'n-2',
+  name: 'GroupNode',
+  kind: 'object',
+  properties: [{ name: 'label', value: 'Group', valueType: 'string' }],
+  components: [
+    { objectId: 'component:n-2:1', kind: 'camera' },
+    { objectId: 'component:n-2:2', kind: 'script' },
+  ],
+};
+
+const CAMERA_SNAPSHOT: ObjectSnapshot = {
+  objectId: 'component:n-2:1',
+  kind: 'camera',
+  properties: [{ name: 'fieldOfView', value: 50, valueType: 'number' }],
+};
+
+describe('PropertyInspectorPanel — components', () => {
+  it('lists the components of the selected object', () => {
+    renderSelected(ENTITY_WITH_COMPONENTS);
+    expect(screen.getByRole('button', { name: 'camera' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'script' })).toBeTruthy();
+  });
+
+  it('shows no components section when the engine omits the field', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    expect(screen.queryByText('コンポーネント')).toBeNull();
+  });
+
+  it('shows the section with an empty note when the object has none', () => {
+    renderSelected({ ...ENTITY_WITH_COMPONENTS, components: [] });
+    expect(screen.getByText('コンポーネント')).toBeTruthy();
+    expect(screen.getByText(/コンポーネントがありません/)).toBeTruthy();
+  });
+
+  it('still lists components when the object itself has no properties', () => {
+    // Legal on the wire: an entity with no reflected properties of its own can
+    // still carry components. The empty-bag notice must not hide the list.
+    renderSelected({ ...ENTITY_WITH_COMPONENTS, properties: [] });
+    expect(screen.getByText('コンポーネント')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'camera' })).toBeTruthy();
+    expect(screen.getByText(/プロパティがありません/)).toBeTruthy();
+  });
+
+  it('selects a component on click', () => {
+    renderSelected(ENTITY_WITH_COMPONENTS);
+    fireEvent.click(screen.getByRole('button', { name: 'camera' }));
+    expect(selectComponent).toHaveBeenCalledWith('component:n-2:1');
+    // The fetch is driven by the selection state, not by the click itself, so
+    // an out-of-band selection (e.g. restored state) fetches just the same.
+    expect(getComponentSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('fetches the snapshot of whatever component is selected', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      selectedComponentId: 'component:n-2:1',
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect(getComponentSnapshot).toHaveBeenCalledWith('component:n-2:1');
+    // Until it arrives the panel shows a loading state, not the entity's bag.
+    expect(screen.getByText(/プロパティを読み込み中/)).toBeTruthy();
+  });
+
+  it('shows the component properties while keeping the component list', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      selectedComponentId: 'component:n-2:1',
+      componentSnapshot: CAMERA_SNAPSHOT,
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    // The component's own property is shown...
+    expect(screen.getByDisplayValue('50')).toBeTruthy();
+    // ...the entity's property is not...
+    expect(screen.queryByDisplayValue('Group')).toBeNull();
+    // ...and the list is still there to switch back.
+    expect(screen.getByRole('button', { name: 'camera' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /GroupNode/ })).toBeTruthy();
+  });
+
+  it('writes to the component id when editing a component property', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      selectedComponentId: 'component:n-2:1',
+      componentSnapshot: CAMERA_SNAPSHOT,
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    const input = screen.getByDisplayValue('50');
+    fireEvent.change(input, { target: { value: '42' } });
+    fireEvent.blur(input);
+    expect(setObjectProperty).toHaveBeenCalledWith('component:n-2:1', 'fieldOfView', 42);
+  });
+
+  it('returns to the entity properties when the object row is clicked', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      selectedComponentId: 'component:n-2:1',
+      componentSnapshot: CAMERA_SNAPSHOT,
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.click(screen.getByRole('button', { name: /GroupNode/ }));
+    expect(selectComponent).toHaveBeenCalledWith(undefined);
+  });
+});
+
+// -------------------------------------------------------------------------
+// Attaching and detaching components
+// -------------------------------------------------------------------------
+
+const CAPABLE_CONNECTION = {
+  status: 'connected' as const,
+  capabilityNames: new Set(['component.edit']),
+};
+
+const SCHEMA_TYPES = [
+  { typeName: 'camera', kind: 'component', instantiable: true },
+  { typeName: 'script', kind: 'component', instantiable: false },
+  { typeName: 'rigidBody', kind: 'component' },
+  { typeName: 'GroupNode', kind: 'object', instantiable: true },
+];
+
+function renderEditable(snapshot: ObjectSnapshot = ENTITY_WITH_COMPONENTS): void {
+  mockState = {
+    ...INITIAL_STATE,
+    connection: CAPABLE_CONNECTION,
+    selectedObjectId: snapshot.objectId,
+    objectSnapshot: snapshot,
+    schemaTypes: SCHEMA_TYPES,
+  };
+  render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+}
+
+describe('PropertyInspectorPanel — component structure edits', () => {
+  it('offers only the types the engine said it can create', () => {
+    renderEditable();
+    const select = screen.getByLabelText('追加するコンポーネントの種類') as HTMLSelectElement;
+    const offered = Array.from(select.options).map((o) => o.value);
+    // camera is instantiable; script said false; rigidBody said nothing at all;
+    // GroupNode is instantiable but is not a component.
+    expect(offered).toEqual(['camera']);
+  });
+
+  it('adds the chosen type to the selected object', async () => {
+    renderEditable();
+    fireEvent.click(screen.getByRole('button', { name: 'コンポーネントを追加' }));
+    expect(addComponent).toHaveBeenCalledWith('n-2', 'camera');
+  });
+
+  it('asks before detaching and passes the owning object', () => {
+    renderEditable();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fireEvent.click(screen.getByRole('button', { name: 'camera を外す' }));
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(removeComponent).toHaveBeenCalledWith('component:n-2:1', 'n-2');
+    confirmSpy.mockRestore();
+  });
+
+  it('does not detach when the confirmation is declined', () => {
+    renderEditable();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    fireEvent.click(screen.getByRole('button', { name: 'camera を外す' }));
+    expect(removeComponent).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it('stays read-only when the engine does not advertise component.edit', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected', capabilityNames: new Set(['object.edit']) },
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      schemaTypes: SCHEMA_TYPES,
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect(screen.queryByRole('button', { name: 'コンポーネントを追加' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'camera を外す' })).toBeNull();
+    // The list itself is still there to read.
+    expect(screen.getByRole('button', { name: 'camera' })).toBeTruthy();
+  });
+
+  it('hides the add control when no type is creatable', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: CAPABLE_CONNECTION,
+      selectedObjectId: 'n-2',
+      objectSnapshot: ENTITY_WITH_COMPONENTS,
+      schemaTypes: [{ typeName: 'script', kind: 'component', instantiable: false }],
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    expect(screen.queryByRole('button', { name: 'コンポーネントを追加' })).toBeNull();
+  });
+});
+
+// -------------------------------------------------------------------------
+// 数値ベクトルの判定（純粋関数）
+// -------------------------------------------------------------------------
+
+describe('isNumericVector / classifyValue', () => {
+  it('treats a finite numeric array of length 2..4 as a vector', () => {
+    expect(isNumericVector([0, 0])).toBe(true);
+    expect(isNumericVector([1.5, -2, 0])).toBe(true);
+    expect(isNumericVector([0, 0, 0, 1])).toBe(true);
+    expect(classifyValue([1, 2, 3])).toBe('vector');
+  });
+
+  it('leaves every other array as a plain array', () => {
+    // 長さの境界（1 は成分編集の意味が薄く、5 以上はラベルを決められない）。
+    expect(isNumericVector([])).toBe(false);
+    expect(isNumericVector([1])).toBe(false);
+    expect(isNumericVector([1, 2, 3, 4, 5])).toBe(false);
+    // 数値以外が 1 つでも混ざれば成分編集できない。
+    expect(isNumericVector([1, '2', 3])).toBe(false);
+    expect(isNumericVector([1, null, 3])).toBe(false);
+    expect(isNumericVector([1, true, 3])).toBe(false);
+    expect(isNumericVector([1, [2], 3])).toBe(false);
+    expect(isNumericVector([1, { x: 2 }, 3])).toBe(false);
+    for (const value of [[], [1], [1, 2, 3, 4, 5], [1, '2', 3]] as PropertyValue[]) {
+      expect(classifyValue(value)).toBe('array');
+    }
+  });
+
+  it('rejects values JSON cannot carry', () => {
+    // NaN / Infinity は JSON.stringify で null になる。成分エディタから送らせない。
+    expect(isNumericVector([Number.NaN, 0, 0])).toBe(false);
+    expect(isNumericVector([0, Number.POSITIVE_INFINITY, 0])).toBe(false);
+    expect(isNumericVector([0, 0, Number.NEGATIVE_INFINITY])).toBe(false);
+    expect(classifyValue([Number.NaN, 0, 0])).toBe('array');
+  });
+
+  it('does not reclassify non-array values', () => {
+    expect(isNumericVector(null)).toBe(false);
+    expect(isNumericVector(3)).toBe(false);
+    expect(isNumericVector('1,2,3')).toBe(false);
+    expect(classifyValue(null)).toBe('null');
+    expect(classifyValue(3)).toBe('number');
+    expect(classifyValue('x')).toBe('string');
+    expect(classifyValue(true)).toBe('boolean');
+    expect(classifyValue({ x: 1, y: 2 })).toBe('object');
+  });
+});
+
+// -------------------------------------------------------------------------
+// プロパティの絞り込み
+// -------------------------------------------------------------------------
+
+describe('filterPropertyRows', () => {
+  const rows = [
+    { name: 'Position', value: [0, 0, 0], valueType: 'Vector3' },
+    { name: 'FieldOfView', value: 60, valueType: 'Float' },
+    { name: 'bEnabled', value: true, valueType: 'Bool' },
+    { name: 'Tag', value: 'hero' },
+  ];
+
+  it('passes everything through for an empty query', () => {
+    expect(filterPropertyRows(rows, '').map((r) => r.name)).toEqual([
+      'Position',
+      'FieldOfView',
+      'bEnabled',
+      'Tag',
+    ]);
+    expect(filterPropertyRows(rows, '   ').map((r) => r.name)).toHaveLength(4);
+  });
+
+  it('matches the name regardless of case, as a substring', () => {
+    expect(filterPropertyRows(rows, 'pos').map((r) => r.name)).toEqual(['Position']);
+    expect(filterPropertyRows(rows, 'OF').map((r) => r.name)).toEqual(['FieldOfView']);
+  });
+
+  it('matches the type name as well', () => {
+    expect(filterPropertyRows(rows, 'vector').map((r) => r.name)).toEqual(['Position']);
+    expect(filterPropertyRows(rows, 'bool').map((r) => r.name)).toEqual(['bEnabled']);
+  });
+
+  it('does not crash on a row without a type name', () => {
+    expect(filterPropertyRows(rows, 'tag').map((r) => r.name)).toEqual(['Tag']);
+    expect(filterPropertyRows(rows, 'float').map((r) => r.name)).toEqual(['FieldOfView']);
+  });
+
+  it('treats the query literally, not as a regular expression', () => {
+    // 打ち間違いが黙って 0 件に化けないこと。
+    expect(filterPropertyRows(rows, '.*')).toHaveLength(0);
+    expect(filterPropertyRows(rows, 'Position|Tag')).toHaveLength(0);
+  });
+
+  it('keeps the original order', () => {
+    // 'e' は Position の型名 Vector3 にも当たる（名前か型名のどちらかで残る）。
+    expect(filterPropertyRows(rows, 'e').map((r) => r.name)).toEqual([
+      'Position',
+      'FieldOfView',
+      'bEnabled',
+    ]);
+  });
+});
+
+describe('PropertyInspectorPanel — property filter', () => {
+  it('narrows the list and says so when nothing matches', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    const input = screen.getByLabelText('プロパティを絞り込む');
+    fireEvent.change(input, { target: { value: 'label' } });
+    expect(screen.getByText('label')).toBeTruthy();
+    expect(screen.queryByText('fieldOfView')).toBeNull();
+
+    fireEvent.change(input, { target: { value: 'nothing-here' } });
+    expect(screen.getByText(/一致するプロパティがありません/)).toBeTruthy();
+
+    fireEvent.change(input, { target: { value: '' } });
+    expect(screen.getByText('fieldOfView')).toBeTruthy();
+  });
+
+  it('matches the type name shown on the row, including one filled in from the schema', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: 'n-9',
+      objectSnapshot: {
+        objectId: 'n-9',
+        kind: 'TypeA',
+        properties: [{ name: 'fieldOfView', value: 60 }, { name: 'other', value: 1 }],
+      },
+      // valueType はスナップショットに無く、schema 由来で画面に出る。
+      schemaTypes: [
+        { typeName: 'TypeA', properties: [{ name: 'fieldOfView', valueType: 'number' }] },
+      ],
+    };
+    render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+    fireEvent.change(screen.getByLabelText('プロパティを絞り込む'), {
+      target: { value: 'number' },
+    });
+    expect(screen.getByText('fieldOfView')).toBeTruthy();
+    expect(screen.queryByText('other')).toBeNull();
+  });
+
+  it('does not touch the selection or re-fetch', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    getObjectSnapshot.mockClear();
+    fireEvent.change(screen.getByLabelText('プロパティを絞り込む'), { target: { value: 'label' } });
+    expect(selectComponent).not.toHaveBeenCalled();
+    expect(getObjectSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('keeps the filter when the panel is closed and opened again', () => {
+    renderSelected(DEMO_SNAPSHOT);
+    fireEvent.change(screen.getByLabelText('プロパティを絞り込む'), { target: { value: 'label' } });
+    cleanup();
+    renderSelected(DEMO_SNAPSHOT);
+    expect((screen.getByLabelText('プロパティを絞り込む') as HTMLInputElement).value).toBe('label');
+    expect(screen.queryByText('fieldOfView')).toBeNull();
   });
 });

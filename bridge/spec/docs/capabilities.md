@@ -49,6 +49,8 @@ asset.read          read asset resolution health and loaded manifest snapshots
                     overlay surface, protocol 0.2)
 asset.reload        reload the manifest path configured at engine startup via
                     asset.reloadManifest (protocol 0.2)
+component.edit      attach/detach components on an object via component.add and
+                    component.remove (protocol 0.2)
 ```
 
 The `scene.query` token advertises that an engine can answer `scene.getTree`
@@ -73,6 +75,15 @@ an engine that does not implement object editing omits the token and answers
 `object.setProperty` with `METHOD_NOT_SUPPORTED`, which the editor degrades on
 gracefully (a read-only Inspector). The token is independent of protocol version
 negotiation.
+
+The `component.edit` token advertises that an engine can attach and detach
+components: `component.add` and `component.remove`. It is separate from
+`object.edit` because writing a property and changing what an object is made of
+are different capabilities — an engine may well allow the first and not the
+second. The set of types `component.add` accepts is not carried by the token;
+it comes from `schema.getSnapshot`, where a type the engine can create reports
+`instantiable: true`. An engine that omits the token answers both methods with
+`METHOD_NOT_SUPPORTED`, and the editor shows the component list read-only.
 
 The `scene.edit` token advertises that an engine can edit scene structure. In
 this protocol slice it covers `scene.createObject`, `scene.deleteObject`,

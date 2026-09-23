@@ -29,6 +29,8 @@ pub mod commands {
     pub const OBJECT_GET_SNAPSHOT: &str = "object_get_snapshot";
     pub const OBJECT_SET_PROPERTY: &str = "object_set_property";
     pub const SCHEMA_GET_SNAPSHOT: &str = "schema_get_snapshot";
+    pub const COMPONENT_ADD: &str = "component_add";
+    pub const COMPONENT_REMOVE: &str = "component_remove";
     pub const VIEWPORT_GET_THUMBNAIL: &str = "viewport_get_thumbnail";
     pub const RUNTIME_PLAY: &str = "runtime_play";
     pub const RUNTIME_PAUSE: &str = "runtime_pause";
@@ -288,6 +290,8 @@ mod tests {
             commands::OBJECT_GET_SNAPSHOT,
             commands::OBJECT_SET_PROPERTY,
             commands::SCHEMA_GET_SNAPSHOT,
+            commands::COMPONENT_ADD,
+            commands::COMPONENT_REMOVE,
             commands::VIEWPORT_GET_THUMBNAIL,
             commands::RUNTIME_PLAY,
             commands::RUNTIME_PAUSE,

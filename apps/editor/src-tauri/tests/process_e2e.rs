@@ -52,7 +52,8 @@ use norves_bridge_core::{
 };
 use norves_bridge_editor_client::{
     connect_with_retry, parse_asset_reload_manifest_result, parse_capabilities_result,
-    parse_hello_result, parse_log_message, parse_object_snapshot_result, parse_scene_tree_result,
+    parse_component_add_result, parse_component_remove_result, parse_hello_result,
+    parse_log_message, parse_object_snapshot_result, parse_scene_tree_result,
     parse_schema_snapshot_result, parse_set_property_result, parse_status_result,
     parse_thumbnail_result, HelloParams, RequestError, RetryConfig,
 };
@@ -1359,6 +1360,195 @@ async fn engine_object_set_property_contract() {
     eprintln!(
         "[PASS] object.getSnapshot n-2: per-node bag with {} properties",
         group.properties.len()
+    );
+
+    // 4. components: n-2 advertises them, n-1 omits the field entirely, and a
+    // component id round-trips through getSnapshot and setProperty. The editor
+    // treats the id as opaque, so this asserts addressability, not its shape.
+    let components = group
+        .components
+        .clone()
+        .unwrap_or_else(|| panic!("[object.getSnapshot n-2] expected a components list"));
+    assert_eq!(
+        components.len(),
+        2,
+        "[object.getSnapshot n-2] expected two components"
+    );
+    assert!(
+        snapshot.components.is_none(),
+        "[object.getSnapshot n-1] an engine that omits components must stay distinguishable"
+    );
+    let camera = components
+        .iter()
+        .find(|c| c.kind == "camera")
+        .unwrap_or_else(|| panic!("[object.getSnapshot n-2] camera component missing"));
+
+    let mut comp_params = serde_json::Map::new();
+    comp_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String(camera.object_id.clone()),
+    );
+    let comp_value = send_and_expect_result(
+        &handle,
+        request_envelope("obj-comp", "object.getSnapshot", Some(comp_params)),
+        "object.getSnapshot",
+    )
+    .await;
+    let comp = parse_object_snapshot_result(&comp_value)
+        .unwrap_or_else(|e| panic!("[object.getSnapshot component] parse failed: {e}"));
+    assert_eq!(comp.object_id, camera.object_id);
+    assert!(
+        comp.components.is_none(),
+        "[object.getSnapshot component] a component snapshot carries no nested components"
+    );
+
+    let mut comp_set = serde_json::Map::new();
+    comp_set.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String(camera.object_id.clone()),
+    );
+    comp_set.insert(
+        "property".to_owned(),
+        serde_json::Value::String("fieldOfView".to_owned()),
+    );
+    comp_set.insert("value".to_owned(), serde_json::Value::from(42));
+    let comp_ack_value = send_and_expect_result(
+        &handle,
+        request_envelope("obj-comp-set", "object.setProperty", Some(comp_set)),
+        "object.setProperty",
+    )
+    .await;
+    let comp_ack = parse_set_property_result(&comp_ack_value)
+        .unwrap_or_else(|e| panic!("[object.setProperty component] parse failed: {e}"));
+    assert!(
+        comp_ack.accepted,
+        "[object.setProperty component] engine rejected a component-addressed edit"
+    );
+    eprintln!(
+        "[PASS] object.getSnapshot components: {} on n-2, {} addressable",
+        components.len(),
+        camera.object_id
+    );
+
+    // 5. component.add / component.remove: only a type the engine advertised as
+    // instantiable can be attached, the new id is addressable, and detaching it
+    // takes it off the object again.
+    let schema_value = send_and_expect_result(
+        &handle,
+        request_envelope(
+            "obj-schema",
+            "schema.getSnapshot",
+            Some(serde_json::Map::new()),
+        ),
+        "schema.getSnapshot",
+    )
+    .await;
+    let schema = parse_schema_snapshot_result(&schema_value)
+        .unwrap_or_else(|e| panic!("[schema.getSnapshot] parse failed: {e}"));
+    let creatable: Vec<&str> = schema
+        .types
+        .iter()
+        .filter(|t| t.instantiable == Some(true))
+        .map(|t| t.type_name.as_str())
+        .collect();
+    assert!(
+        !creatable.is_empty(),
+        "[schema.getSnapshot] expected at least one instantiable type"
+    );
+    assert!(
+        schema.types.iter().any(|t| t.instantiable.is_none()),
+        "[schema.getSnapshot] expected a type that does not report instantiability at all"
+    );
+
+    let mut add_params = serde_json::Map::new();
+    add_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String("n-2".to_owned()),
+    );
+    add_params.insert(
+        "kind".to_owned(),
+        serde_json::Value::String(creatable[0].to_owned()),
+    );
+    let add_value = send_and_expect_result(
+        &handle,
+        request_envelope("comp-add", "component.add", Some(add_params)),
+        "component.add",
+    )
+    .await;
+    let add = parse_component_add_result(&add_value)
+        .unwrap_or_else(|e| panic!("[component.add] parse failed: {e}"));
+    assert!(
+        add.accepted,
+        "[component.add] engine refused an advertised type"
+    );
+    let added_id = add
+        .component_id
+        .clone()
+        .unwrap_or_else(|| panic!("[component.add] engine reported no componentId"));
+
+    let mut snap_params = serde_json::Map::new();
+    snap_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String("n-2".to_owned()),
+    );
+    let after_add = send_and_expect_result(
+        &handle,
+        request_envelope("comp-after-add", "object.getSnapshot", Some(snap_params)),
+        "object.getSnapshot",
+    )
+    .await;
+    let after_add = parse_object_snapshot_result(&after_add)
+        .unwrap_or_else(|e| panic!("[object.getSnapshot after add] parse failed: {e}"));
+    assert!(
+        after_add
+            .components
+            .as_ref()
+            .is_some_and(|c| c.iter().any(|x| x.object_id == added_id)),
+        "[object.getSnapshot after add] the new component is not on the object"
+    );
+
+    let mut remove_params = serde_json::Map::new();
+    remove_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String(added_id.clone()),
+    );
+    let remove_value = send_and_expect_result(
+        &handle,
+        request_envelope("comp-remove", "component.remove", Some(remove_params)),
+        "component.remove",
+    )
+    .await;
+    let removed = parse_component_remove_result(&remove_value)
+        .unwrap_or_else(|e| panic!("[component.remove] parse failed: {e}"));
+    assert!(
+        removed.accepted,
+        "[component.remove] engine refused to detach"
+    );
+
+    let mut snap_params = serde_json::Map::new();
+    snap_params.insert(
+        "objectId".to_owned(),
+        serde_json::Value::String("n-2".to_owned()),
+    );
+    let after_remove = send_and_expect_result(
+        &handle,
+        request_envelope("comp-after-remove", "object.getSnapshot", Some(snap_params)),
+        "object.getSnapshot",
+    )
+    .await;
+    let after_remove = parse_object_snapshot_result(&after_remove)
+        .unwrap_or_else(|e| panic!("[object.getSnapshot after remove] parse failed: {e}"));
+    assert!(
+        after_remove
+            .components
+            .as_ref()
+            .is_some_and(|c| c.iter().all(|x| x.object_id != added_id)),
+        "[object.getSnapshot after remove] the detached component is still on the object"
+    );
+    eprintln!(
+        "[PASS] component.add/remove: {} attached and detached ({} instantiable type(s) advertised)",
+        added_id,
+        creatable.len()
     );
 
     handle.shutdown().await;
