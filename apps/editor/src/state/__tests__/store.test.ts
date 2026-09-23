@@ -464,6 +464,28 @@ describe('asset runtime reload state', () => {
     expect(disconnected.assetReloadUnsupported).toBe(false);
   });
 
+  it('接続に入るたびに世代番号を進め、同じ接続の通知では進めない', () => {
+    const connect = (sessionId: string): BridgeAction => ({
+      type: 'connectionStateChanged',
+      payload: { connected: true, sessionId },
+    });
+    const first = applyAction(connect('sess-1'));
+    const sameSession = applyAction(connect('sess-1'), first);
+    const disconnected = applyAction(
+      { type: 'connectionStateChanged', payload: { connected: false, reason: 'closed' } },
+      sameSession,
+    );
+    // 同じ sessionId で繋ぎ直しても別の世代になる。
+    const reconnected = applyAction(connect('sess-1'), disconnected);
+    const otherSession = applyAction(connect('sess-2'), reconnected);
+
+    expect(first.connection.generation).toBe(1);
+    expect(sameSession.connection.generation).toBe(1);
+    expect(disconnected.connection.generation).toBe(1);
+    expect(reconnected.connection.generation).toBe(2);
+    expect(otherSession.connection.generation).toBe(3);
+  });
+
   it('resets runtime reload state when the engine process exits', () => {
     const next = applyAction(
       { type: 'engineProcessExited', payload: { exitCode: 0 } },

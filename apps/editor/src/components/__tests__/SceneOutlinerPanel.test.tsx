@@ -606,11 +606,11 @@ describe('SceneOutlinerPanel — collapsing and remembered view state', () => {
   });
 });
 
-describe('SceneOutlinerPanel — collapsed nodes belong to one connection', () => {
-  function connectedState(sessionId: string): BridgeState {
+describe('SceneOutlinerPanel — 折りたたみの記憶は 1 つの接続のもの', () => {
+  function connectedState(sessionId: string, generation = 1): BridgeState {
     return {
       ...INITIAL_STATE,
-      connection: { status: 'connected', sessionId },
+      connection: { status: 'connected', sessionId, generation },
       sceneTree: DEMO_TREE,
     };
   }
@@ -619,7 +619,7 @@ describe('SceneOutlinerPanel — collapsed nodes belong to one connection', () =
     return <SceneOutlinerPanel {...makeDockviewProps()} />;
   }
 
-  it('drops the collapsed nodes when the connection is lost while mounted', () => {
+  it('マウント中に切断されたら折りたたみを捨てる', () => {
     mockState = connectedState('s-1');
     const { rerender } = render(panel());
     fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
@@ -628,23 +628,23 @@ describe('SceneOutlinerPanel — collapsed nodes belong to one connection', () =
     // 切断して、同じ sessionId で繋ぎ直す。connected から外れた時点で世代が変わる。
     mockState = { ...INITIAL_STATE, connection: { status: 'disconnected' } };
     rerender(panel());
-    mockState = connectedState('s-1');
+    mockState = connectedState('s-1', 2);
     rerender(panel());
     expect(screen.getByText('NodeB')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'GroupNode を折りたたむ' })).toBeTruthy();
   });
 
-  it('drops the collapsed nodes when the session changes while mounted', () => {
+  it('マウント中にセッションが変わったら折りたたみを捨てる', () => {
     mockState = connectedState('s-1');
     const { rerender } = render(panel());
     fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
 
-    mockState = connectedState('s-2');
+    mockState = connectedState('s-2', 2);
     rerender(panel());
     expect(screen.getByText('NodeB')).toBeTruthy();
   });
 
-  it('drops the collapsed nodes when reconnected while the panel was away', () => {
+  it('パネル不在の間に別のセッションへ繋ぎ直されたら折りたたみを捨てる', () => {
     mockState = connectedState('s-1');
     render(panel());
     fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'Node' } });
@@ -652,7 +652,7 @@ describe('SceneOutlinerPanel — collapsed nodes belong to one connection', () =
     cleanup();
 
     // タブを離れている間に切断・再接続された。パネルはその間の変化を見ていない。
-    mockState = connectedState('s-2');
+    mockState = connectedState('s-2', 2);
     render(panel());
     // 絞り込みは接続に依らないので残る。
     expect((screen.getByLabelText('シーンを絞り込む') as HTMLInputElement).value).toBe('Node');
@@ -661,13 +661,26 @@ describe('SceneOutlinerPanel — collapsed nodes belong to one connection', () =
     expect(screen.getByRole('button', { name: 'GroupNode を折りたたむ' })).toBeTruthy();
   });
 
-  it('keeps the dropped state after coming back within the new connection', () => {
+  it('パネル不在の間に同じセッションへ繋ぎ直されても折りたたみを捨てる', () => {
+    mockState = connectedState('s-1', 1);
+    render(panel());
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    cleanup();
+
+    // 切断 → 同じ sessionId で再接続。パネルは遷移を見ていないが、store の世代番号は進んでいる。
+    mockState = connectedState('s-1', 2);
+    render(panel());
+    expect(screen.getByText('NodeB')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'GroupNode を折りたたむ' })).toBeTruthy();
+  });
+
+  it('新しい接続の中でタブを往復しても古い折りたたみは蘇らない', () => {
     mockState = connectedState('s-1');
     render(panel());
     fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
     cleanup();
 
-    mockState = connectedState('s-2');
+    mockState = connectedState('s-2', 2);
     render(panel());
     cleanup();
     // 古い接続の記憶が、新しい接続の中でタブを往復して蘇ってはいけない。
@@ -675,7 +688,7 @@ describe('SceneOutlinerPanel — collapsed nodes belong to one connection', () =
     expect(screen.getByText('NodeB')).toBeTruthy();
   });
 
-  it('keeps the collapsed nodes when leaving and returning within the same connection', () => {
+  it('同じ接続の中でタブを往復したら折りたたみが残る', () => {
     mockState = connectedState('s-1');
     render(panel());
     fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
@@ -687,13 +700,13 @@ describe('SceneOutlinerPanel — collapsed nodes belong to one connection', () =
     expect(screen.getByRole('button', { name: 'GroupNode を展開' })).toBeTruthy();
   });
 
-  it('keeps the filter across a disconnect while mounted', () => {
+  it('切断をまたいでも絞り込みは残る', () => {
     mockState = connectedState('s-1');
     const { rerender } = render(panel());
     fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'Node' } });
     mockState = { ...INITIAL_STATE, connection: { status: 'disconnected' } };
     rerender(panel());
-    mockState = connectedState('s-2');
+    mockState = connectedState('s-2', 2);
     rerender(panel());
     expect((screen.getByLabelText('シーンを絞り込む') as HTMLInputElement).value).toBe('Node');
   });

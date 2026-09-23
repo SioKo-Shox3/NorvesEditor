@@ -54,11 +54,16 @@ interface CollapsedMemory {
 let rememberedCollapsed: CollapsedMemory = { owner: null, ids: EMPTY_COLLAPSED };
 
 /**
- * 接続の世代を表す鍵。connected の間だけ sessionId から作り、それ以外は null。
- * connected から外れると鍵が変わるので、同じ sessionId で繋ぎ直しても(マウント中なら)記憶は消える。
+ * 接続の世代を表す鍵。connected の間だけ sessionId と store の世代番号から作り、それ以外は null。
+ * 世代番号は store がパネルの有無に関わらず数えるので、アンマウント中に同じ sessionId で
+ * 繋ぎ直されても鍵が変わる。
  */
-function connectionKeyOf(status: string, sessionId: string | undefined): string | null {
-  return status === 'connected' ? `session:${sessionId ?? ''}` : null;
+function connectionKeyOf(
+  status: string,
+  sessionId: string | undefined,
+  generation: number | undefined,
+): string | null {
+  return status === 'connected' ? `session:${sessionId ?? ''}#${generation ?? 0}` : null;
 }
 
 /** テスト用: パネルをまたいで残る表示状態を初期化する。 */
@@ -165,7 +170,11 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
   // 折りたたんだノードの id。既定は展開。絞り込み中は無視して全部見せる — 絞り込みの結果が
   // 畳まれた親の下に隠れると、探しているものが見つからない。
   // 記憶は接続ごと。別の接続の記憶は描画の時点で無いものとして扱い、effect で捨てる。
-  const connectionKey = connectionKeyOf(state.connection.status, state.connection.sessionId);
+  const connectionKey = connectionKeyOf(
+    state.connection.status,
+    state.connection.sessionId,
+    state.connection.generation,
+  );
   const [collapsedMemory, setCollapsedMemory] = useState<CollapsedMemory>(rememberedCollapsed);
   const collapsed =
     collapsedMemory.owner === connectionKey ? collapsedMemory.ids : EMPTY_COLLAPSED;

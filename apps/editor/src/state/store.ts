@@ -236,6 +236,11 @@ export interface BridgeState {
     endpoint?: string;
     capabilityNames?: ReadonlySet<string>;
     reason?: string;
+    /**
+     * 接続の世代番号。connected へ新しく入るたび(状態か sessionId が変わったとき)に 1 増える。
+     * 同じ sessionId で繋ぎ直しても変わるので、パネルが遷移を見ていなくても別の接続だと分かる。
+     */
+    generation?: number;
   };
   engineState?: EngineState;
   runtimeState?: RuntimeState;
@@ -745,6 +750,10 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
           endpoint: p.endpoint,
           capabilityNames,
           reason: p.reason,
+          generation:
+            p.connected && connectionChanged
+              ? (state.connection.generation ?? 0) + 1
+              : state.connection.generation,
         },
         // Clear lastError on successful connection
         lastError: p.connected ? undefined : state.lastError,
