@@ -111,7 +111,7 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - notes: S-006 で見つけた(S-006 の paths は docs/** のみで README を触れなかった)。
 
 ## S-010: README の Known Limitations 2 と 5 を実装に合わせる
-- status: todo
+- status: done
 - done-when: `README.md` の Known Limitations 5「Windows Job Object は post-alpha」を、Windows では起動したエンジンを Job に入れて強制終了時に終わらせる(割り当て成功後に限る。Windows 以外は対象外)形に直す。Known Limitations 2(scene/object/schema は `not_supported`)を、NorvesLib アダプタの実装状況に合わせて確認し、違っていれば直す。
 - verify: `node -e "const s=require('fs').readFileSync('README.md','utf8');if(/Windows Job Object は post-alpha/.test(s))process.exit(1)"`
 - paths: README.md

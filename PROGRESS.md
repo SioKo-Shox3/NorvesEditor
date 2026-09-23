@@ -15,12 +15,13 @@
 - S-006: `docs/norveslib-integration.md`(Step 3 と Known Limitations 3/5/6)、`docs/engine-profile.md`、`docs/build.md` を、Settings の「エンジン」欄・優先順位(環境変数 > 設定 > 既定値)・Windows の Job・バッチファイルの拒否に合わせて日本語で書き直す。NorvesLib アダプタは scene/object/schema を実装済み(ヘッダで確認)。`docs/engine-integration.md` は e2e テスト用の環境変数の記述だけで直す箇所が無かった。verify exit 0(変更前の文書では exit 1)。
 - S-007: `src/backend_log.rs` で WARN 以上を stderr と `app_log_dir`(Windows は `%LOCALAPPDATA%\com.norves.editor\logs`)の `backend.log` の両方へ出す。追記で開き 1 件ごとに書く(強制終了でも残る)。起動時に 1 MiB を超えていれば `backend.log.1` へ移す(最大 2 世代)。依存は足していない(自前の `MakeWriter`)。初期化は `setup` で行う。Job の警告 2 件を日本語にし、割り当ての警告を `assign_or_warn` に切り出して、不正なハンドルでの失敗がログファイルへ届くテストを追加。fmt/clippy exit 0、cargo test 164 + 14。
 - S-009: README の happy path 2、ステップ 4 の注記、Known Limitations 3 を、Settings の「エンジン」欄と優先順位(`NORVES_ENGINE_PATH` > 保存したパス > 既定値)に触れる形に直し、`docs/engine-profile.md` へ案内する。verify exit 0(変更前は exit 1)。Known Limitations 2 と 5 も古いので S-010 に切り出した。
+- S-010: README の Known Limitations 5 を「Windows では Job に入れて強制終了時に終わらせる(割り当て成功後に限る。起動直後の子孫と Windows 以外は対象外)」に直す。Known Limitations 2 は古かった(`not_supported` と書いていた)ので、NorvesLib アダプタのヘッダ(`../NorvesLib/Game/Bridge/NorvesLibBridgeAdapter.h`)の override と mock engine(`mock_adapter.hpp`)を確かめて書き直した。mock はシーン編集(`scene.createObject` など)を実装していない。verify exit 0(変更前は exit 1)。
 
 ## In progress
 - なし
 
 ## Next
-- S-006 の評価(NEEDS_WORK、`NEXT_FINDINGS.md`): Known Limitations 6 の終了保証を「Job への割り当て成功後」に限る。docs/** は S-007 の paths 外なので未対応。次に S-010(README の Known Limitations 2 と 5)。
+- S-006 の評価(NEEDS_WORK、`NEXT_FINDINGS.md`): Known Limitations 6 の終了保証を「Job への割り当て成功後」に限る。docs/** は S-007 の paths 外なので未対応。
 - S-007 の実機確認: 配布版を起動し、ログディレクトリに `backend.log` ができることを全タスク後の手動確認に含める。
 - ダイアログの見た目・起動引数の実際の受け渡し・強制終了後にエンジンが残らないことは、自動テストでは確かめられない。全タスクの完了後に Tauri アプリを実機で起動して確かめる。
 
