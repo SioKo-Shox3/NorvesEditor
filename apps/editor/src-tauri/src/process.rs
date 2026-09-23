@@ -81,6 +81,18 @@ fn first_non_blank<const N: usize>(candidates: [Option<&str>; N]) -> Option<&str
 /// misconfigured / missing engine binary before J3 attempts to spawn it. The
 /// error message intentionally leaks nothing beyond the path itself.
 pub fn validate_engine_path(path: &Path) -> Result<(), BackendError> {
+    // Windows の Rust std は `.bat` / `.cmd` を cmd.exe 経由で起動する。起動引数をシェルに
+    // 通さない前提を守るため、先に拒否する。std はパスの文字列の末尾で判定する(`.cmd` のような
+    // 拡張子の無い名前も含む)ので、`Path::extension` ではなく同じく末尾を見る。Win32 はパスの
+    // 末尾の `.` と空白を落とすので、それも落としてから比べる。
+    if is_batch_file_path(path) {
+        return Err(BackendError::Process {
+            message: format!(
+                "バッチファイルはエンジンとして起動できません: {}",
+                path.display()
+            ),
+        });
+    }
     if path.is_file() {
         Ok(())
     } else {
@@ -88,6 +100,13 @@ pub fn validate_engine_path(path: &Path) -> Result<(), BackendError> {
             message: format!("engine executable not found: {}", path.display()),
         })
     }
+}
+
+/// パスの文字列が `.bat` / `.cmd`(大文字小文字を問わない)で終わるなら true。
+fn is_batch_file_path(path: &Path) -> bool {
+    let text = path.as_os_str().to_string_lossy().to_ascii_lowercase();
+    let text = text.trim_end_matches(['.', ' ']);
+    text.ends_with(".bat") || text.ends_with(".cmd")
 }
 
 /// エディタが自分で渡す、ユーザーの起動引数では使えない引数。
@@ -487,6 +506,55 @@ mod tests {
         // A directory exists but is not a regular file -> rejected.
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         assert!(validate_engine_path(dir).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_existing_batch_files_case_insensitively() {
+        // 実在する通常ファイルでも、拡張子が .bat / .cmd なら拒否する。
+        let dir =
+            std::env::temp_dir().join(format!("norves-editor-batch-reject-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        for name in [
+            "engine.bat",
+            "engine.BAT",
+            "engine.cmd",
+            "engine.Cmd",
+            ".cmd",
+            ".BAT",
+        ] {
+            let path = dir.join(name);
+            std::fs::write(
+                &path,
+                "@echo off
+",
+            )
+            .expect("write batch file");
+            assert!(path.is_file());
+            match validate_engine_path(&path) {
+                Err(BackendError::Process { message }) => {
+                    assert!(message.contains(name), "{message}");
+                }
+                other => panic!("{name} must be rejected, got {other:?}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_detection_matches_std_suffix_rule() {
+        // std と同じく文字列の末尾で判定し、Win32 が落とす末尾の `.` と空白も無視する。
+        for text in [
+            "C:/e/.cmd",
+            "C:/e/x.CMD",
+            "C:/e/x.bat.",
+            "C:/e/x.bat ",
+            "C:/e/x.cmd. .",
+        ] {
+            assert!(is_batch_file_path(Path::new(text)), "{text}");
+        }
+        for text in ["C:/e/x.exe", "C:/e/x.bat.exe", "C:/e/xbat", "C:/e/cmd"] {
+            assert!(!is_batch_file_path(Path::new(text)), "{text}");
+        }
     }
 
     // --- parse_ready_line ---------------------------------------------------

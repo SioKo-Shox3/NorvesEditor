@@ -581,6 +581,30 @@ describe('SettingsPanel の起動引数', () => {
     });
   });
 
+  it('保存の応答待ちの間に編集した引数は、応答で上書きしない', async () => {
+    const saves: Deferred<EnginePayload>[] = [];
+    mockEngineCommands({
+      get_engine_settings: () => Promise.resolve(SAVED_ENGINE),
+      set_engine_args: deferredCommand(saves),
+    });
+    renderPanel();
+    await waitForEnginePath('C:/Saved/Engine.exe');
+
+    fireEvent.change(argsInput(), { target: { value: '--first' } });
+    fireEvent.click(button('引数を保存'));
+    fireEvent.change(argsInput(), { target: { value: '--newer' } });
+
+    await act(async () => {
+      saves[0]!.resolve({ ...SAVED_ENGINE, savedArgs: ['--first'] });
+    });
+    await waitFor(() => {
+      expect(button('引数を保存').disabled).toBe(false);
+    });
+    expect(argsInput().value).toBe('--newer');
+    // 入力欄は保存した値と違うので「保存しました」は出さない。
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
   it('savedArgs の無い応答は不正な応答として扱う', async () => {
     mockEngineCommands({
       get_engine_settings: () =>

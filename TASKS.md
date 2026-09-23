@@ -76,7 +76,7 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - notes: 危険地帯(Tauri のプロセス起動)なので評価者を必ず通す。フロントエンドが渡せるのは引数だけで、実行ファイルはダイアログで選んだものに固定される。この前提をコミット本文に書く。
 
 ## S-006: 古いドキュメントを実装に合わせる
-- status: todo
+- status: done
 - done-when: `docs/norveslib-integration.md` の Known Limitations を実装に合わせる。
   - 3「scene / object / schema methods not supported in alpha」は、NorvesLib アダプタの結線状況に合わせて削除するか書き換える。
   - 5「Engine path Settings UI not implemented」と 6「Orphan risk on editor force-quit」は、S-002〜S-005 の実装に合わせて更新する。
@@ -95,10 +95,17 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - notes: S-002 の評価で判明。今は `tracing_subscriber` が stderr にだけ出すので、配布版では失われる。出力先(ファイルの場所・ローテーション)は設計判断が要るので、決められなければ blocked に書く。評価者は「S-007 への切り出しだけでは S-002 の完了条件を満たさない」と判定しているので、S-002 の残りとして優先して扱う。あわせて `process_runtime.rs` の Job 関連の警告本文(英語)を日本語にする。
 
 ## S-008: バッチファイルをエンジンとして起動させない
-- status: todo
+- status: done
 - done-when: `validate_engine_path` が `.bat` / `.cmd`(大文字小文字を問わない)を拒否してエラーを返し、ダイアログで選んでも保存されず、環境変数や設定ファイルで指定されても `launch_engine` が起動しない。Rust std は `.bat` / `.cmd` を cmd.exe 経由で起動するので、起動引数がシェルを通らない前提を守るため。拒否のユニットテストが通る。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - paths: apps/editor/src-tauri/src/**
 - notes: S-005 の評価で判明(S-003 からの持ち越し)。ダイアログは「すべてのファイル」を許し、`validate_engine_path` は `is_file` しか見ていない。危険地帯(Tauri のプロセス起動)なので評価者を通す。
+
+## S-009: README のエンジン指定の記述を実装に合わせる
+- status: todo
+- done-when: `README.md` の「NORVES_ENGINE_PATH でエンジン実行ファイルを指定する」「エンジンパスの Settings UI は alpha 未実装」「エンジンパスの Settings UI 未実装」の箇所を、Settings の「エンジン」欄と優先順位(環境変数 > 設定 > 既定値)に触れる形に直す。
+- verify: `node -e "const s=require('fs').readFileSync('README.md','utf8');if(/Settings UI は alpha 未実装|Settings UI 未実装/.test(s))process.exit(1)"`
+- paths: README.md
+- notes: S-006 で見つけた(S-006 の paths は docs/** のみで README を触れなかった)。

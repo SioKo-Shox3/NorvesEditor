@@ -8,7 +8,8 @@
  *
  * 起動引数は入力欄の下書き(1 行 1 引数)をこのフックが持ち、保存でバックエンドへ送る。
  * 下書きを保存済みの値で置き換えるのは、初回の取得と保存の成功のときだけ
- * (パスの操作で書きかけの引数を消さない)。
+ * (パスの操作で書きかけの引数を消さない)。保存の応答待ちの間に下書きを編集したときは、
+ * 応答で置き換えず新しい下書きを残す(下書きの編集の世代で判定する)。
  *
  * 応答は要求ごとの世代番号で照合し、最後に出した要求の応答だけを反映する。StrictMode の
  * 二重マウントなどで古い要求の応答が後から届いても、表示の上書きや処理中の解除はしない。
@@ -81,6 +82,8 @@ export function useEngineSettings(): EngineSettingsState {
   const mountedRef = useRef(true);
   // 最後に出した要求の世代。これと一致しない応答は古いので捨てる。
   const requestRef = useRef(0);
+  // 下書きを編集するたびに進める世代。保存の応答が来たとき、送った後に編集されたかを見る。
+  const draftEditRef = useRef(0);
 
   const run = useCallback(
     (command: Command, onApplied?: (next: EngineSettingsPayload) => void): void => {
@@ -135,9 +138,12 @@ export function useEngineSettings(): EngineSettingsState {
   const saveArgs = useCallback((): void => {
     if (busyRef.current) return;
     const args = splitArgsDraft(argsDraft);
+    const sentEdit = draftEditRef.current;
     run(
       () => setEngineArgs(args),
       (next) => {
+        // 応答待ちの間に編集されていたら、新しい下書きを残し「保存しました」も出さない。
+        if (draftEditRef.current !== sentEdit) return;
         // 空行を捨てた後の、実際に保存された並びを見せる。
         setArgsDraft(joinArgs(next.savedArgs));
         setArgsSaved(true);
@@ -146,6 +152,7 @@ export function useEngineSettings(): EngineSettingsState {
   }, [run, argsDraft]);
 
   const editArgsDraft = useCallback((text: string): void => {
+    draftEditRef.current += 1;
     setArgsDraft(text);
     setArgsSaved(false);
   }, []);

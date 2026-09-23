@@ -69,26 +69,26 @@ build/Game/Debug/Game.exe
 
 ## Step 3 — Launch NorvesLib from NorvesEditor
 
-Set the `NORVES_NORVESLIB_ENGINE_PATH` environment variable to the absolute path
-of `Game.exe` and then start NorvesEditor (or set `NORVES_ENGINE_PATH` to the
-same path if you want the editor's default engine resolution to pick it up):
+NorvesEditor を起動し、Settings ウィンドウの「エンジン」欄の「参照…」で `Game.exe` を選ぶ。
+選んだパスは保存され、次回以降の起動でも使われる。環境変数で指定することもできる:
 
 ```powershell
-# Option A — tell the editor to use NorvesLib as the default engine
+# 環境変数で指定する場合(保存したパスより優先される)
 $env:NORVES_ENGINE_PATH = "<absolute path>\build\Game\Debug\Game.exe"
 cd apps/editor
 pnpm tauri dev
 ```
 
-Engine path resolution in `apps/editor/src-tauri`:
+エディタが起動するエンジンのパスは、次の順に最初に見つかったものを使う:
 
-1. `NORVES_ENGINE_PATH` environment variable (absolute path).
-2. Persisted settings (alpha — **not yet implemented**).
-3. Default fallback: `norves_mock_engine` (bare name, resolved against the
-   working directory).
+1. 環境変数 `NORVES_ENGINE_PATH`(絶対パス)。
+2. Settings ウィンドウの「エンジン」欄で保存したパス(「参照…」で選ぶ。
+   アプリの設定ディレクトリの `engine-settings.json` に保存される)。
+3. 既定値 `norves_mock_engine`(拡張子なしの名前。作業ディレクトリ基準で解決)。
 
-For the alpha, the only supported path is option 1 (`NORVES_ENGINE_PATH`). A
-Settings UI for the engine path is a post-alpha feature.
+環境変数が設定されているときは保存したパスより優先され、「エンジン」欄にもその旨が表示される。
+同じ欄で起動引数(1 行 1 引数)も保存でき、`--bridge-port <port>` より前にシェルを介さず渡される。
+`NORVES_NORVESLIB_ENGINE_PATH` はテスト専用の変数で、エディタ本体は読まない(Step 4 を参照)。
 
 > `pnpm tauri dev` is the documented dev-mode launch command. Confirm it works
 > on your machine before running the full integration scenario; local Vulkan /
@@ -183,23 +183,27 @@ for the full boundary contract.
    CMake `FetchContent` to download `libwebsockets` v4.3.3. Subsequent builds
    use the cached download.
 
-3. **scene / object / schema methods not supported in alpha.**
-   `scene.getTree`, `object.*`, and `schema.*` are out of scope for the alpha
-   (see `docs/alpha-project-plan.md` §3 and Workstream C4 / L5 optional items).
-   Calling these methods returns a `not_supported` error.
+3. **シーン・オブジェクト・スキーマの操作は、エンジンが実装している範囲だけ使える。**
+   NorvesLib アダプタ(`Game/Bridge/NorvesLibBridgeAdapter`)は `scene.getTree`、
+   `scene.createObject` / `deleteObject` / `reparentObject` / `duplicateObject`、
+   `object.getSnapshot` / `setProperty`、`schema.getSnapshot` を実装している。
+   エンジンが実装していないメソッドには `not_supported` が返り、エディタはその接続の間、
+   その操作を使えないものとして扱う(編集操作なら無効化する)。
 
 4. **No native viewport embedding.** The engine runs its own native window;
    NorvesEditor does not embed GPU output inside the Tauri WebView. See
    [`docs/viewport-strategy.md`](viewport-strategy.md) for the alpha viewport
    approach and post-alpha research directions.
 
-5. **Engine path Settings UI not implemented.** The engine executable path must
-   be provided via the `NORVES_ENGINE_PATH` environment variable. A Settings UI
-   for persistent path configuration is a post-alpha feature.
+5. **エンジンのパスと起動引数は Settings の「エンジン」欄で保存できる。** パスは
+   環境変数 `NORVES_ENGINE_PATH` > 保存した設定 > 既定値 の順に決まる(Step 3)。
+   パスはダイアログで選んだファイルだけを保存でき、`.bat` / `.cmd` は起動しない
+   (Windows ではバッチファイルが cmd.exe 経由で起動され、引数がシェルを通るため)。
 
-6. **Orphan risk on editor force-quit.** If NorvesEditor is force-terminated,
-   the engine process may be left running. Windows Job Object integration to
-   guarantee cleanup is a post-alpha item.
+6. **エディタの強制終了時にエンジンが残る可能性(Windows 以外)。** Windows では、起動した
+   エンジンを `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 付きの Job に入れるので、エディタが
+   強制終了してもエンジンは終わる。ただし起動から Job への割り当てまでの短い間にエンジンが
+   起動した子孫プロセスと、Windows 以外の OS は対象外。
 
 7. **localhost only.** The Bridge transport binds to `ws://127.0.0.1:<port>`.
    Remote or cross-machine connections are not supported.

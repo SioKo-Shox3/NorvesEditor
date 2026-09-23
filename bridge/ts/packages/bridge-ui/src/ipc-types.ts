@@ -24,7 +24,7 @@ export type EnginePathSource = 'env' | 'settings' | 'default';
 /**
  * get_engine_settings / pick_engine_path / clear_engine_path / set_engine_args が返す値。
  *
- * // Mirrors apps/editor/src-tauri/src/dto.rs EngineSettingsPayload
+ * // apps/editor/src-tauri/src/dto.rs の EngineSettingsPayload と同じ形
  */
 export interface EngineSettingsPayload {
   /** launch_engine が次に使うパス。 */
