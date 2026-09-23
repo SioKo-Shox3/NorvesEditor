@@ -11,6 +11,9 @@ mod bridge_state;
 mod dto;
 mod error;
 mod events_map;
+// Windows 限定: 起動したエンジンをエディタの寿命に縛る Job Object。
+#[cfg(windows)]
+mod job_object;
 mod process;
 // J3: the LOAD-BEARING process runtime (spawn / READY / monitor / kill).
 mod process_runtime;
@@ -22,6 +25,11 @@ use workspace::WorkspaceState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WARN 以上を stderr へ出す。既に初期化済み(テスト等)なら何もしない。
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(std::io::stderr)
+        .try_init();
     let app = tauri::Builder::default()
         // The backend owns the connection state for the whole app lifetime.
         .manage(BridgeState::default())

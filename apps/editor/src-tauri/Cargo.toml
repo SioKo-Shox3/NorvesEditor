@@ -42,3 +42,15 @@ norves-bridge-core = { path = "../../../bridge/crates/norves-bridge-core" }
 # process (Workstream J).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
 tracing = "0.1"
+# バックエンドの警告(Job への割り当て失敗など)を stderr へ出す。bridge ワークスペースと同じ 0.3 系。
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+
+# エディタが強制終了してもエンジンが残らないよう、起動した子を Job Object に入れる
+# (`src/job_object.rs`)。依存木に既にある 0.61 系に揃える。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

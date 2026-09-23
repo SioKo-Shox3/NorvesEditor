@@ -42,12 +42,21 @@
 //! handle, drops it, then performs spawn / READY-wait / connect awaits with no
 //! guard held. See the per-function comments marking each lock scope.
 //!
-//! ## Residual orphan risk
+//! ## 孤児プロセスの残りうる経路(Residual orphan risk)
 //!
-//! `kill_on_drop(true)` is a safety net, not a guarantee: on an abrupt abort
-//! (SIGKILL of the editor, power loss) neither the explicit app-exit hook nor the
-//! drop runs, so the engine child can be orphaned. Hardening this with a Windows
-//! Job Object / POSIX process group is deferred post-alpha.
+//! 通常の終了では app-exit フックが明示的に kill し、`kill_on_drop(true)` がその安全網になる。
+//! ただしエディタが強制終了されると(タスクマネージャ・SIGKILL・クラッシュ)どちらも走らない。
+//!
+//! * **Windows**: 起動した子を `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 付きの Job Object
+//!   ([`crate::job_object::KillOnCloseJob`])に割り当てる。Job はエディタ 1 プロセスに 1 つで、
+//!   初回の起動で作って [`ProcessState`] がエディタの寿命いっぱい保持する。エディタが強制終了しても
+//!   OS がハンドルを閉じるので、エンジン(とそれが起動した子孫)は終了する。残る経路は次のとおり:
+//!   - Job の生成や割り当てに失敗したとき(警告ログを出して起動は続ける)。
+//!   - spawn から割り当てまでの短い間にエディタが落ちたとき、またはその間にエンジンが起動した子孫。
+//!   - 電源断など OS ごと止まる場合(このときはエンジンも止まる)。
+//! * **Windows 以外**: 対策は無く、強制終了でエンジンが残りうる(プロセスグループ等は未実装)。
+//!
+//! アタッチ接続(エディタが起動していないエンジン)は対象外で、エディタの終了に巻き込まない。
 
 use std::path::Path;
 use std::process::Stdio;
@@ -105,6 +114,10 @@ pub struct ProcessState {
     inner: Mutex<Option<ProcessHandle>>,
     /// Monotonic source of PROCESS generation ids, bumped per successful launch.
     next_process_gen: AtomicU64,
+    /// 起動したエンジンを入れる Job。初回の起動で 1 度だけ作り、以後エディタが終わるまで持ち続ける
+    /// (閉じると中のエンジンが終了する)。作れなかったときは `None` を記憶し、作り直さない。
+    #[cfg(windows)]
+    job: std::sync::OnceLock<Option<crate::job_object::KillOnCloseJob>>,
 }
 
 impl Default for ProcessState {
@@ -112,6 +125,8 @@ impl Default for ProcessState {
         ProcessState {
             inner: Mutex::new(None),
             next_process_gen: AtomicU64::new(0),
+            #[cfg(windows)]
+            job: std::sync::OnceLock::new(),
         }
     }
 }
@@ -120,6 +135,29 @@ impl ProcessState {
     /// Allocates a unique generation id for a newly launched process.
     fn alloc_process_gen(&self) -> u64 {
         self.next_process_gen.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// 起動した子をエディタの Job に割り当てる。失敗しても起動は止めず、警告ログだけ出す —
+    /// 割り当てが無くても通常の停止・終了の経路は従来どおり働く。
+    #[cfg(windows)]
+    fn assign_to_job(&self, child: &Child) {
+        let job = self.job.get_or_init(|| {
+            crate::job_object::KillOnCloseJob::new()
+                .inspect_err(|e| {
+                    tracing::warn!(error = %e, "failed to create engine job object; a force-quit editor may leave the engine running");
+                })
+                .ok()
+        });
+        let Some(job) = job else {
+            return;
+        };
+        let Some(process) = child.raw_handle() else {
+            // 既に回収済み(= 終了済み)なので割り当てるものが無い。
+            return;
+        };
+        if let Err(e) = job.assign(process) {
+            tracing::warn!(error = %e, "failed to assign engine process to job object; a force-quit editor may leave the engine running");
+        }
     }
 }
 
@@ -198,6 +236,10 @@ pub async fn launch_engine(
         .map_err(|e| BackendError::Process {
             message: format!("failed to spawn engine process: {e}"),
         })?;
+
+    // 4b. Windows: エディタが強制終了してもエンジンが残らないよう、すぐに Job へ入れる。
+    #[cfg(windows)]
+    process_state.assign_to_job(&child);
 
     let stdout = match child.stdout.take() {
         Some(stdout) => stdout,

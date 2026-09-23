@@ -25,7 +25,7 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - notes: 記憶はモジュールスコープの `rememberedCollapsed`(SceneOutlinerPanel.tsx:40)。アンマウント中は effect が走らないので、記憶に「どの接続の記憶か」を持たせ、描画時に今の接続と照合する形が素直。
 
 ## S-002: エディタが強制終了してもエンジンが残らないようにする(Windows Job Object)
-- status: todo
+- status: done
 - done-when: Windows で `launch_engine` が起動した子プロセスを、`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` を設定した Job に割り当てる。Job のハンドルはエディタのプロセスが生きている間ずっと保持される(`ProcessState` か、それと同じ寿命の所有者)。割り当てに失敗しても起動は失敗させず、警告ログを出して続ける。Windows 限定のテストが、長く生きる子プロセスを Job に割り当ててから Job のハンドルを閉じると、子が数秒以内に終了することを確かめて通る。Windows 以外の挙動は変わらない。`process_runtime.rs` のモジュール文書の「Residual orphan risk」を、実装に合わせて日本語で書き直す。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
@@ -84,3 +84,12 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - verify: `node -e "const s=require('fs').readFileSync('docs/norveslib-integration.md','utf8');if(/Settings UI not implemented|not supported in alpha/.test(s))process.exit(1)"`
 - paths: docs/**
 - notes: 触ったブロックだけ日本語にしてよい(既存の英語文書を一括翻訳しない)。S-002〜S-005 の完了後に着手する。
+
+## S-007: バックエンドの警告を配布版でも残す
+- status: todo
+- done-when: Windows の配布版(`windows_subsystem = "windows"` でコンソールが無い)でも、バックエンドの `tracing` の WARN 以上がどこかに残る(例: アプリのログディレクトリのファイル)。出力先と保持方針を決め、Job への割り当て失敗などの警告がそこへ出ることを確かめるテストが通る。
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- paths: apps/editor/src-tauri/src/**, apps/editor/src-tauri/Cargo.toml, apps/editor/src-tauri/Cargo.lock
+- notes: S-002 の評価で判明。今は `tracing_subscriber` が stderr にだけ出すので、配布版では失われる。出力先(ファイルの場所・ローテーション)は設計判断が要るので、決められなければ blocked に書く。
