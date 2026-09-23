@@ -17,6 +17,7 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import type { BridgeState } from '../../state/store.js';
 import { INITIAL_STATE } from '../../state/store.js';
 import type { SceneNode } from '@norves/bridge-ui';
+import type React from 'react';
 
 // -------------------------------------------------------------------------
 // Mock dockview-react
@@ -602,6 +603,99 @@ describe('SceneOutlinerPanel — collapsing and remembered view state', () => {
     fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: '' } });
     expect(screen.queryByText('NodeB')).toBeNull();
     expect(screen.getByRole('button', { name: 'GroupNode を展開' })).toBeTruthy();
+  });
+});
+
+describe('SceneOutlinerPanel — collapsed nodes belong to one connection', () => {
+  function connectedState(sessionId: string): BridgeState {
+    return {
+      ...INITIAL_STATE,
+      connection: { status: 'connected', sessionId },
+      sceneTree: DEMO_TREE,
+    };
+  }
+
+  function panel(): React.JSX.Element {
+    return <SceneOutlinerPanel {...makeDockviewProps()} />;
+  }
+
+  it('drops the collapsed nodes when the connection is lost while mounted', () => {
+    mockState = connectedState('s-1');
+    const { rerender } = render(panel());
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    expect(screen.queryByText('NodeB')).toBeNull();
+
+    // 切断して、同じ sessionId で繋ぎ直す。connected から外れた時点で世代が変わる。
+    mockState = { ...INITIAL_STATE, connection: { status: 'disconnected' } };
+    rerender(panel());
+    mockState = connectedState('s-1');
+    rerender(panel());
+    expect(screen.getByText('NodeB')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'GroupNode を折りたたむ' })).toBeTruthy();
+  });
+
+  it('drops the collapsed nodes when the session changes while mounted', () => {
+    mockState = connectedState('s-1');
+    const { rerender } = render(panel());
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+
+    mockState = connectedState('s-2');
+    rerender(panel());
+    expect(screen.getByText('NodeB')).toBeTruthy();
+  });
+
+  it('drops the collapsed nodes when reconnected while the panel was away', () => {
+    mockState = connectedState('s-1');
+    render(panel());
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'Node' } });
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    cleanup();
+
+    // タブを離れている間に切断・再接続された。パネルはその間の変化を見ていない。
+    mockState = connectedState('s-2');
+    render(panel());
+    // 絞り込みは接続に依らないので残る。
+    expect((screen.getByLabelText('シーンを絞り込む') as HTMLInputElement).value).toBe('Node');
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: '' } });
+    expect(screen.getByText('NodeB')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'GroupNode を折りたたむ' })).toBeTruthy();
+  });
+
+  it('keeps the dropped state after coming back within the new connection', () => {
+    mockState = connectedState('s-1');
+    render(panel());
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    cleanup();
+
+    mockState = connectedState('s-2');
+    render(panel());
+    cleanup();
+    // 古い接続の記憶が、新しい接続の中でタブを往復して蘇ってはいけない。
+    render(panel());
+    expect(screen.getByText('NodeB')).toBeTruthy();
+  });
+
+  it('keeps the collapsed nodes when leaving and returning within the same connection', () => {
+    mockState = connectedState('s-1');
+    render(panel());
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    cleanup();
+
+    mockState = connectedState('s-1');
+    render(panel());
+    expect(screen.queryByText('NodeB')).toBeNull();
+    expect(screen.getByRole('button', { name: 'GroupNode を展開' })).toBeTruthy();
+  });
+
+  it('keeps the filter across a disconnect while mounted', () => {
+    mockState = connectedState('s-1');
+    const { rerender } = render(panel());
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'Node' } });
+    mockState = { ...INITIAL_STATE, connection: { status: 'disconnected' } };
+    rerender(panel());
+    mockState = connectedState('s-2');
+    rerender(panel());
+    expect((screen.getByLabelText('シーンを絞り込む') as HTMLInputElement).value).toBe('Node');
   });
 });
 

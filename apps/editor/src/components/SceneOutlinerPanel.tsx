@@ -37,15 +37,34 @@ import { useBridgeActions } from '../hooks/useBridge.js';
  * セッション内だけの記憶で、永続化はしない。
  */
 let rememberedFilter = '';
-let rememberedCollapsed: ReadonlySet<string> = new Set<string>();
 
 /** 絞り込み中に渡す空集合（毎描画で新しい Set を作らない）。 */
 const EMPTY_COLLAPSED: ReadonlySet<string> = new Set<string>();
 
+/**
+ * 折りたたみの記憶と、それを作った接続の鍵。ノードの id は接続ごとのエンジンが振るので、
+ * 別の接続へ持ち越すと無関係なノードが畳まれる。描画時に今の接続の鍵と照合し、違えば捨てる —
+ * パネルがアンマウントされている間の切断・再接続は effect では拾えないため。
+ */
+interface CollapsedMemory {
+  owner: string | null;
+  ids: ReadonlySet<string>;
+}
+
+let rememberedCollapsed: CollapsedMemory = { owner: null, ids: EMPTY_COLLAPSED };
+
+/**
+ * 接続の世代を表す鍵。connected の間だけ sessionId から作り、それ以外は null。
+ * connected から外れると鍵が変わるので、同じ sessionId で繋ぎ直しても(マウント中なら)記憶は消える。
+ */
+function connectionKeyOf(status: string, sessionId: string | undefined): string | null {
+  return status === 'connected' ? `session:${sessionId ?? ''}` : null;
+}
+
 /** テスト用: パネルをまたいで残る表示状態を初期化する。 */
 export function __resetOutlinerMemory(): void {
   rememberedFilter = '';
-  rememberedCollapsed = new Set<string>();
+  rememberedCollapsed = { owner: null, ids: EMPTY_COLLAPSED };
 }
 
 // IDockviewPanelProps is accepted but not currently used for data.
@@ -145,14 +164,24 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
 
   // 折りたたんだノードの id。既定は展開。絞り込み中は無視して全部見せる — 絞り込みの結果が
   // 畳まれた親の下に隠れると、探しているものが見つからない。
-  const [collapsed, setCollapsedState] = useState<ReadonlySet<string>>(rememberedCollapsed);
+  // 記憶は接続ごと。別の接続の記憶は描画の時点で無いものとして扱い、effect で捨てる。
+  const connectionKey = connectionKeyOf(state.connection.status, state.connection.sessionId);
+  const [collapsedMemory, setCollapsedMemory] = useState<CollapsedMemory>(rememberedCollapsed);
+  const collapsed =
+    collapsedMemory.owner === connectionKey ? collapsedMemory.ids : EMPTY_COLLAPSED;
+  useEffect(() => {
+    if (rememberedCollapsed.owner !== connectionKey) {
+      rememberedCollapsed = { owner: connectionKey, ids: EMPTY_COLLAPSED };
+      setCollapsedMemory(rememberedCollapsed);
+    }
+  }, [connectionKey]);
   function toggleCollapsed(id: string): void {
     const next = new Set(collapsed);
     if (!next.delete(id)) {
       next.add(id);
     }
-    rememberedCollapsed = next;
-    setCollapsedState(next);
+    rememberedCollapsed = { owner: connectionKey, ids: next };
+    setCollapsedMemory(rememberedCollapsed);
   }
 
   const hasTree = sceneTree !== undefined;

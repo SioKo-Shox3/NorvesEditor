@@ -17,7 +17,7 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - Outliner の折りたたみ記憶は、接続が切れたら捨てる。
 
 ## S-001: Outliner の折りたたみ記憶を切断で捨てる
-- status: todo
+- status: done
 - done-when: 接続の世代(`state.connection.sessionId` の変化、または接続状態が connected から外れたこと)が変わったあとに描画される Outliner では、前の接続で折りたたんだノードが折りたたまれていない。Outliner がアンマウントされている間(dockview でタブを離れている間)に切断・再接続しても同じ。同じ接続の中でタブを離れて戻ったときは、従来どおり折りたたみが残る。絞り込み文字列(`rememberedFilter`)は切断で消さない。これらを確かめる vitest が `apps/editor/src/components/__tests__/` にあり、既存のテストと合わせて全件通る。
 - verify: `pnpm -C apps/editor typecheck`
 - verify: `pnpm -C apps/editor test`
