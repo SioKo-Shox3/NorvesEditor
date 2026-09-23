@@ -42,7 +42,7 @@ norves-bridge-core = { path = "../../../bridge/crates/norves-bridge-core" }
 # process (Workstream J).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
 tracing = "0.1"
-# バックエンドの警告(Job への割り当て失敗など)を stderr へ出す。bridge ワークスペースと同じ 0.3 系。
+# バックエンドの警告(Job への割り当て失敗など)を stderr とログファイルへ出す(`src/backend_log.rs`)。bridge ワークスペースと同じ 0.3 系。
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # エンジンの実行ファイルを選ぶ OS のファイル選択ダイアログ(`src/engine_settings.rs`)。Rust 側からだけ開く。
 # tauri-plugin-dialog は webview の window.alert / window.confirm を差し替える初期化スクリプトと JS 向け

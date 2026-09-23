@@ -13,12 +13,14 @@
 - S-005: `set_engine_args` で起動引数(1 要素 = 1 引数)を保存し、`get_engine_settings` 系は `savedArgs` も返す。検査は `process::normalize_engine_args`(空白だけの行を捨てる。`--bridge-port` / `--bridge-port=`(前後の空白を無視)・NUL・改行・32 件超・512 バイト超を拒否)で、`launch_engine` は読み直した値にも同じ検査をかけ、`build_engine_args` でユーザーの引数 → `--bridge-port <port>` の順に `Command::args` へ渡す。Settings に複数行の入力欄・「引数を保存」・保存結果の表示。あわせて S-004 の指摘1(StrictMode の古い応答で busy が外れる)を要求の世代番号で直し、順序のテスト2件(ガードを外すと落ちることを確認)を追加。fmt/clippy exit 0、cargo test 157 + 14、IPC 名 commands 32 / events 11、typecheck exit 0、vitest 648/648。評価者 PASS。
 - S-005 指摘対応(反復 6、S-008 を兼ねる): `validate_engine_path` がパスの文字列の末尾(末尾の `.` と空白を落とした後)が `.bat` / `.cmd` なら大文字小文字を問わず拒否する。std の判定と同じく `.cmd` だけの名前も対象。保存(`pick_engine_path`)と起動(`launch_engine`)は同じ関数を通る。保存待ち中に編集した起動引数は、下書きの編集の世代で判定して応答で上書きしない(新テストは旧実装で落ちることを確認)。ipc-types の英語コメントを日本語に。fmt/clippy exit 0、cargo test 159 + 14、IPC 名一致、typecheck exit 0、vitest 649/649。評価者 2 周目の指摘(`.cmd` 単独名)は対応済み、3 周目は回していない。
 - S-006: `docs/norveslib-integration.md`(Step 3 と Known Limitations 3/5/6)、`docs/engine-profile.md`、`docs/build.md` を、Settings の「エンジン」欄・優先順位(環境変数 > 設定 > 既定値)・Windows の Job・バッチファイルの拒否に合わせて日本語で書き直す。NorvesLib アダプタは scene/object/schema を実装済み(ヘッダで確認)。`docs/engine-integration.md` は e2e テスト用の環境変数の記述だけで直す箇所が無かった。verify exit 0(変更前の文書では exit 1)。
+- S-007: `src/backend_log.rs` で WARN 以上を stderr と `app_log_dir`(Windows は `%LOCALAPPDATA%\com.norves.editor\logs`)の `backend.log` の両方へ出す。追記で開き 1 件ごとに書く(強制終了でも残る)。起動時に 1 MiB を超えていれば `backend.log.1` へ移す(最大 2 世代)。依存は足していない(自前の `MakeWriter`)。初期化は `setup` で行う。Job の警告 2 件を日本語にし、割り当ての警告を `assign_or_warn` に切り出して、不正なハンドルでの失敗がログファイルへ届くテストを追加。fmt/clippy exit 0、cargo test 164 + 14。
 
 ## In progress
 - なし
 
 ## Next
-- S-007(評価者は S-002 の残りと判定)。その後 S-009(README の同じ記述。S-006 の paths 外だった)。
+- S-006 の評価(NEEDS_WORK、`NEXT_FINDINGS.md`): Known Limitations 6 の終了保証を「Job への割り当て成功後」に限る。docs/** は S-007 の paths 外なので未対応。次に S-009(README の同じ記述)。
+- S-007 の実機確認: 配布版を起動し、ログディレクトリに `backend.log` ができることを全タスク後の手動確認に含める。
 - ダイアログの見た目・起動引数の実際の受け渡し・強制終了後にエンジンが残らないことは、自動テストでは確かめられない。全タスクの完了後に Tauri アプリを実機で起動して確かめる。
 
 ## Notes

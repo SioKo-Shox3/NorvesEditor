@@ -7,6 +7,8 @@
 mod protocol_names;
 
 mod asset_manifest;
+// バックエンドの警告を stderr とアプリのログディレクトリのファイルへ出す。
+mod backend_log;
 mod bridge_state;
 mod dto;
 // エンジン設定(実行ファイルのパス)の保存と、Rust 側で開くファイル選択ダイアログ。
@@ -24,16 +26,18 @@ mod workspace;
 use bridge_state::BridgeState;
 use engine_settings::EngineSettingsState;
 use process_runtime::ProcessState;
+use tauri::Manager;
 use workspace::WorkspaceState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WARN 以上を stderr へ出す。既に初期化済み(テスト等)なら何もしない。
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
-        .with_writer(std::io::stderr)
-        .try_init();
     let app = tauri::Builder::default()
+        // WARN 以上を stderr と `app_log_dir` のログファイルへ出す(配布版にはコンソールが無い)。
+        // ログディレクトリはアプリの識別子から決まるので、AppHandle ができる setup で初期化する。
+        .setup(|app| {
+            backend_log::init(app.path().app_log_dir().ok());
+            Ok(())
+        })
         // The backend owns the connection state for the whole app lifetime.
         .manage(BridgeState::default())
         // J3: the (at most one) running engine process, separate from the

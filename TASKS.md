@@ -86,7 +86,7 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - notes: 触ったブロックだけ日本語にしてよい(既存の英語文書を一括翻訳しない)。S-002〜S-005 の完了後に着手する。
 
 ## S-007: バックエンドの警告を配布版でも残す
-- status: todo
+- status: done
 - done-when: Windows の配布版(`windows_subsystem = "windows"` でコンソールが無い)でも、バックエンドの `tracing` の WARN 以上がどこかに残る(例: アプリのログディレクトリのファイル)。出力先と保持方針を決め、Job への割り当て失敗などの警告がそこへ出ることを確かめるテストが通る。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

@@ -141,7 +141,7 @@ impl ProcessState {
         let job = self.job.get_or_init(|| {
             crate::job_object::KillOnCloseJob::new()
                 .inspect_err(|e| {
-                    tracing::warn!(error = %e, "failed to create engine job object; a force-quit editor may leave the engine running");
+                    tracing::warn!(error = %e, "{JOB_CREATE_FAILED_WARNING}");
                 })
                 .ok()
         });
@@ -152,9 +152,27 @@ impl ProcessState {
             // 既に回収済み(= 終了済み)なので割り当てるものが無い。
             return;
         };
-        if let Err(e) = job.assign(process) {
-            tracing::warn!(error = %e, "failed to assign engine process to job object; a force-quit editor may leave the engine running");
-        }
+        assign_or_warn(job, process);
+    }
+}
+
+/// Job を作れなかったときの警告。
+#[cfg(windows)]
+const JOB_CREATE_FAILED_WARNING: &str =
+    "エンジン用の Job を作れない。エディタが強制終了するとエンジンが残ることがある";
+/// 起動した子を Job に割り当てられなかったときの警告。
+#[cfg(windows)]
+const JOB_ASSIGN_FAILED_WARNING: &str =
+    "エンジンのプロセスを Job に割り当てられない。エディタが強制終了するとエンジンが残ることがある";
+
+/// `process` を `job` に割り当て、失敗したら警告ログを出す(起動は止めない)。
+#[cfg(windows)]
+fn assign_or_warn(
+    job: &crate::job_object::KillOnCloseJob,
+    process: std::os::windows::io::RawHandle,
+) {
+    if let Err(e) = job.assign(process) {
+        tracing::warn!(error = %e, "{JOB_ASSIGN_FAILED_WARNING}");
     }
 }
 
@@ -491,6 +509,22 @@ pub fn kill_engine_on_exit(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn job_assignment_failure_warning_reaches_the_log_file() {
+        // 配布版(コンソール無し)でも残るよう、割り当て失敗の警告はログファイルへ届く。
+        let dir =
+            std::env::temp_dir().join(format!("norves-job-warning-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let job = crate::job_object::KillOnCloseJob::new().expect("Job を作れない");
+        let log = crate::backend_log::capture_warnings(&dir, || {
+            assign_or_warn(&job, std::ptr::null_mut());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(log.contains("WARN"), "{log}");
+        assert!(log.contains(JOB_ASSIGN_FAILED_WARNING), "{log}");
+    }
 
     #[test]
     fn default_engine_path_is_a_bare_relative_name() {
