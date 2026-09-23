@@ -306,7 +306,7 @@ Engine SDK:
 Alpha の既知の制限事項（詳細は各ドキュメントを参照）:
 
 1. **Native viewport 非対応** — エンジンが外部ネイティブウィンドウを持つ。Tauri 内への埋め込みは post-alpha（[`docs/viewport-strategy.md`](docs/viewport-strategy.md)）。
-2. **scene/object/schema 系はエンジンが実装している範囲だけ使える** — NorvesLib アダプタは `scene.getTree`、`scene.createObject` / `deleteObject` / `reparentObject` / `duplicateObject`、`object.getSnapshot` / `setProperty`、`schema.getSnapshot` を実装している。mock engine は `scene.getTree`、`object.getSnapshot` / `setProperty`、`schema.getSnapshot` だけで、`scene.createObject` などのシーン編集は実装していない。実装していないエンジンには `not_supported` が返り、エディタはその接続の間その操作を使えないものとして扱う([`docs/norveslib-integration.md`](docs/norveslib-integration.md))。
+2. **scene/object/schema 系はエンジンが実装している範囲だけ使える** — NorvesLib アダプタは `scene.getTree`、`scene.createObject` / `deleteObject` / `reparentObject` / `duplicateObject`、`object.getSnapshot` / `setProperty`、`schema.getSnapshot` を実装している。mock engine は `scene.getTree`、`object.getSnapshot` / `setProperty`、`schema.getSnapshot` だけで、`scene.createObject` などのシーン編集は実装していない。実装していないメソッドは `METHOD_NOT_SUPPORTED` を返す([`docs/norveslib-integration.md`](docs/norveslib-integration.md))。
 3. **エンジンパスの優先順位** — `NORVES_ENGINE_PATH` > Settings の「エンジン」欄で保存したパス > 既定値。環境変数があると保存したパスは使われない([`docs/engine-profile.md`](docs/engine-profile.md))。
 4. **log フィルタ未対応** — サーバー側フィルタなし、クライアント側フィルタのみ、単一購読のみ。
 5. **オーファンリスク(Windows 以外)** — Windows では起動したエンジンを `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 付きの Job に入れ、エディターが強制終了してもエンジンを終わらせる。これが効くのは Job への割り当てに成功した後だけで、起動から割り当てまでの短い間にエンジンが起動した子孫プロセスと、Windows 以外の OS は対象外([`docs/norveslib-integration.md`](docs/norveslib-integration.md))。

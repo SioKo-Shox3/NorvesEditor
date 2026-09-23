@@ -26,8 +26,8 @@ Rules applied by `resolve_engine_path`:
 - A value that is present but blank or whitespace-only is treated as **absent**
   and the resolver falls through to the next source.
 - The first non-blank source wins.
-- The default is the bare string `norves_mock_engine`, resolved against the
-  process working directory. 実際に使うときは、Settings で実行ファイルを選ぶか
+- 既定値は `norves_mock_engine` という名前だけの文字列で、プロセスの作業ディレクトリを
+  基準に解決される。実際に使うときは、Settings で実行ファイルを選ぶか
   `NORVES_ENGINE_PATH` に絶対パスを設定する。
 
 The resolver itself is pure (no filesystem access). After resolution,
@@ -180,9 +180,10 @@ Settings ウィンドウの「エンジン」欄で、エンジンのパスと�
 - **C++ configure requires network on first run.** `libwebsockets` (v4.3.3) is
   fetched via CMake FetchContent on the first configure.
 - **強制終了時のエンジンの後始末は Windows だけ。** Windows では起動したエンジンを
-  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 付きの Job に入れるので、エディタが強制終了しても
-  エンジンは終わる。起動から Job への割り当てまでの間にエンジンが起動した子孫と、
-  Windows 以外の OS は対象外。
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 付きの Job に入れる。Job への割り当てに成功した
+  あとなら、エディタが強制終了してもエンジンは終わる。Job の作成か割り当てに失敗したとき
+  (警告をバックエンドのログに残し、起動は続ける)、起動から割り当てまでの間にエディタが
+  終了したとき、その間にエンジンが起動した子孫、Windows 以外の OS は対象外。
 
 ---
 

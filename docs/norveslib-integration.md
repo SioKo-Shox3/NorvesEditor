@@ -200,10 +200,13 @@ for the full boundary contract.
    パスはダイアログで選んだファイルだけを保存でき、`.bat` / `.cmd` は起動しない
    (Windows ではバッチファイルが cmd.exe 経由で起動され、引数がシェルを通るため)。
 
-6. **エディタの強制終了時にエンジンが残る可能性(Windows 以外)。** Windows では、起動した
-   エンジンを `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 付きの Job に入れるので、エディタが
-   強制終了してもエンジンは終わる。ただし起動から Job への割り当てまでの短い間にエンジンが
-   起動した子孫プロセスと、Windows 以外の OS は対象外。
+6. **エディタの強制終了時にエンジンが残る可能性。** Windows では、起動したエンジンを
+   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 付きの Job に入れる。Job への割り当てに成功した
+   あとなら、エディタが強制終了してもエンジンは終わる。次の場合はエンジンが残りうる:
+   - Job の作成か割り当てに失敗したとき(警告をバックエンドのログに残し、起動はそのまま続ける)
+   - 起動から Job への割り当てまでの短い間に、エディタが終了したとき
+   - 起動から割り当てまでの間に、エンジンが子孫プロセスを起動したとき(その子孫は Job の外)
+   - Windows 以外の OS
 
 7. **localhost only.** The Bridge transport binds to `ws://127.0.0.1:<port>`.
    Remote or cross-machine connections are not supported.

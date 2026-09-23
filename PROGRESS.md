@@ -17,11 +17,12 @@
 - S-009: README の happy path 2、ステップ 4 の注記、Known Limitations 3 を、Settings の「エンジン」欄と優先順位(`NORVES_ENGINE_PATH` > 保存したパス > 既定値)に触れる形に直し、`docs/engine-profile.md` へ案内する。verify exit 0(変更前は exit 1)。Known Limitations 2 と 5 も古いので S-010 に切り出した。
 - S-010: README の Known Limitations 5 を「Windows では Job に入れて強制終了時に終わらせる(割り当て成功後に限る。起動直後の子孫と Windows 以外は対象外)」に直す。Known Limitations 2 は古かった(`not_supported` と書いていた)ので、NorvesLib アダプタのヘッダ(`../NorvesLib/Game/Bridge/NorvesLibBridgeAdapter.h`)の override と mock engine(`mock_adapter.hpp`)を確かめて書き直した。mock はシーン編集(`scene.createObject` など)を実装していない。verify exit 0(変更前は exit 1)。
 
+- S-006 / S-010 指摘対応: `docs/norveslib-integration.md` の Known Limitations 6 と `docs/engine-profile.md` の後始末の項を「Job への割り当て成功後」に限り、残りうる条件(作成・割り当ての失敗、割り当て前のエディタ終了、割り当て前の子孫、Windows 以外)を書く。`engine-profile.md` の既定値の説明に残っていた英語を日本語に。README の Known Limitations 2 の末尾を「実装していないメソッドは `METHOD_NOT_SUPPORTED` を返す」に直す(コードは `bridge/spec/docs/capabilities.md` で確認)。S-001 / S-004 のテスト説明とコメントの英語は、既に日本語になっていた。
+
 ## In progress
 - なし
 
 ## Next
-- S-006 の評価(NEEDS_WORK、`NEXT_FINDINGS.md`): Known Limitations 6 の終了保証を「Job への割り当て成功後」に限る。docs/** は S-007 の paths 外なので未対応。
 - S-007 の実機確認: 配布版を起動し、ログディレクトリに `backend.log` ができることを全タスク後の手動確認に含める。
 - ダイアログの見た目・起動引数の実際の受け渡し・強制終了後にエンジンが残らないことは、自動テストでは確かめられない。全タスクの完了後に Tauri アプリを実機で起動して確かめる。
 
