@@ -19,12 +19,18 @@
 
 - S-006 / S-010 指摘対応: `docs/norveslib-integration.md` の Known Limitations 6 と `docs/engine-profile.md` の後始末の項を「Job への割り当て成功後」に限り、残りうる条件(作成・割り当ての失敗、割り当て前のエディタ終了、割り当て前の子孫、Windows 以外)を書く。`engine-profile.md` の既定値の説明に残っていた英語を日本語に。README の Known Limitations 2 の末尾を「実装していないメソッドは `METHOD_NOT_SUPPORTED` を返す」に直す(コードは `bridge/spec/docs/capabilities.md` で確認)。S-001 / S-004 のテスト説明とコメントの英語は、既に日本語になっていた。
 
+- 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
+
 ## In progress
 - なし
 
 ## Next
-- S-007 の実機確認: 配布版を起動し、ログディレクトリに `backend.log` ができることを全タスク後の手動確認に含める。
-- ダイアログの見た目・起動引数の実際の受け渡し・強制終了後にエンジンが残らないことは、自動テストでは確かめられない。全タスクの完了後に Tauri アプリを実機で起動して確かめる。
+- 画面操作が要る確認が残っている:
+  - Settings の「参照…」で OS のファイル選択ダイアログが開き、選んだパスが表示される
+  - 保存した起動引数が、エンジンのコマンドラインに `--bridge-port` より前で渡る(`Get-CimInstance Win32_Process` の CommandLine で確かめられる)
+  - エンジン起動中にエディタを `taskkill /F` で終わらせると、エンジンも終わる
+  - Settings の「エンジン」欄を狭い幅にしても崩れない
+  - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
 - S-005: 上限は 32 件 × 512 バイト(Windows のコマンドライン上限 32767 文字に収めるため)。S-004 の指摘2(狭い幅での見た目の証拠)はこの環境で GUI を起動できず未対応のまま。起動引数の入力欄も含めて、全タスク後の実機確認で幅を狭めて確かめ、スクリーンショットを残す。`.bat` / `.cmd` を選べる問題は S-008 に切り出した。
