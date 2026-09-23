@@ -41,6 +41,9 @@ pub enum BackendError {
     /// or the READY-handshake) before or around launching the engine.
     #[serde(rename_all = "camelCase")]
     Process { message: String },
+    /// エンジン設定の保存やファイル選択ダイアログの失敗。
+    #[serde(rename_all = "camelCase")]
+    Settings { message: String },
 }
 
 impl std::fmt::Display for BackendError {
@@ -57,6 +60,7 @@ impl std::fmt::Display for BackendError {
             }
             BackendError::Handshake { message } => write!(f, "handshake failed: {message}"),
             BackendError::Process { message } => write!(f, "{message}"),
+            BackendError::Settings { message } => write!(f, "{message}"),
         }
     }
 }

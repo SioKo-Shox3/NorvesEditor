@@ -34,7 +34,7 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - notes: 危険地帯(プロセス寿命)なので評価者を必ず通す。`windows-sys` は既に依存木にあるので、新しく足すなら同じ系列に合わせる。Job の生成を `launch_engine` のたびに行うか 1 度だけにするかは実装で決めてよいが、エディタ 1 プロセスに Job 1 つを保つ。
 
 ## S-003: エンジン設定を保存し、パスの解決に使う(バックエンド)
-- status: todo
+- status: done
 - done-when: エンジン設定を OS のアプリ設定ディレクトリの JSON に読み書きするモジュールがある。ファイルが無い・壊れている場合は既定の設定として扱い、起動を妨げない。今後の項目追加に備えて、未知のキーや欠けたキーを許す。`launch_engine` は 環境変数 > 設定 > 既定値 の順でパスを解決する(`resolve_engine_path` の `config` 引数に設定値を渡す)。Tauri コマンドを 3 つ足す:
   - `get_engine_settings`: 有効なパス、その出所(env / settings / default)、保存済みのパスを返す。
   - `pick_engine_path`: Rust 側で OS のファイル選択ダイアログを開く。選ばれたファイルを `validate_engine_path` で確かめてから保存する。キャンセルなら何も変えない。
@@ -92,4 +92,4 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - paths: apps/editor/src-tauri/src/**, apps/editor/src-tauri/Cargo.toml, apps/editor/src-tauri/Cargo.lock
-- notes: S-002 の評価で判明。今は `tracing_subscriber` が stderr にだけ出すので、配布版では失われる。出力先(ファイルの場所・ローテーション)は設計判断が要るので、決められなければ blocked に書く。
+- notes: S-002 の評価で判明。今は `tracing_subscriber` が stderr にだけ出すので、配布版では失われる。出力先(ファイルの場所・ローテーション)は設計判断が要るので、決められなければ blocked に書く。評価者は「S-007 への切り出しだけでは S-002 の完了条件を満たさない」と判定しているので、S-002 の残りとして優先して扱う。あわせて `process_runtime.rs` の Job 関連の警告本文(英語)を日本語にする。

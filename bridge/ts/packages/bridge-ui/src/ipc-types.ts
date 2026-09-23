@@ -18,6 +18,22 @@ export interface ConnectionStatePayload {
   reason?: string;
 }
 
+/** エンジンのパスの出所。環境変数 > 保存済みの設定 > 既定値 の順に採用される。 */
+export type EnginePathSource = 'env' | 'settings' | 'default';
+
+/**
+ * get_engine_settings / pick_engine_path / clear_engine_path が返す値。
+ *
+ * // Mirrors apps/editor/src-tauri/src/dto.rs EngineSettingsPayload
+ */
+export interface EngineSettingsPayload {
+  /** launch_engine が次に使うパス。 */
+  effectivePath: string;
+  source: EnginePathSource;
+  /** 保存済みのパス。未設定なら null。 */
+  savedPath: string | null;
+}
+
 /**
  * Payload returned by workspace_open / workspace_get.
  *

@@ -8,6 +8,8 @@
 use norves_bridge_core::CapabilityDescriptor;
 use serde::Serialize;
 
+use crate::process::EnginePathSource;
+
 /// Payload of the `bridge:connection-state` event AND the value returned by
 /// `bridge_connect` / `bridge_reconnect`.
 ///
@@ -35,6 +37,19 @@ pub struct ConnectionStatePayload {
     /// Human-readable reason for a disconnect (disconnected only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// エンジン設定のコマンド(`get_engine_settings` / `pick_engine_path` / `clear_engine_path`)が返す値。
+// bridge-ui/src/ipc-types.ts の EngineSettingsPayload と形を揃える。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineSettingsPayload {
+    /// `launch_engine` が次に使うパス(環境変数 > 設定 > 既定値 で解決したもの)。
+    pub effective_path: String,
+    /// `effective_path` の出所。
+    pub source: EnginePathSource,
+    /// 保存済みのパス。未設定なら `None`。
+    pub saved_path: Option<String>,
 }
 
 /// Payload returned by workspace management commands.

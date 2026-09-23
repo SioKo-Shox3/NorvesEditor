@@ -30,10 +30,34 @@ use crate::error::BackendError;
 /// pure: J3 reads the environment / config and passes the values in; this code
 /// never reads `std::env` itself.
 pub fn resolve_engine_path(env: Option<&str>, config: Option<&str>, default: &Path) -> PathBuf {
-    if let Some(value) = first_non_blank([env, config]) {
-        return PathBuf::from(value);
+    resolve_engine_path_with_source(env, config, default).0
+}
+
+/// 解決したエンジンのパスがどこから来たか。設定欄に出所として見せる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EnginePathSource {
+    /// 環境変数 `NORVES_ENGINE_PATH`。
+    Env,
+    /// 保存済みのエンジン設定。
+    Settings,
+    /// 組み込みの既定値。
+    Default,
+}
+
+/// [`resolve_engine_path`] と同じ優先順位で解決し、採用した出所も返す。
+pub fn resolve_engine_path_with_source(
+    env: Option<&str>,
+    config: Option<&str>,
+    default: &Path,
+) -> (PathBuf, EnginePathSource) {
+    if let Some(value) = first_non_blank([env]) {
+        return (PathBuf::from(value), EnginePathSource::Env);
     }
-    default.to_path_buf()
+    if let Some(value) = first_non_blank([config]) {
+        return (PathBuf::from(value), EnginePathSource::Settings);
+    }
+    (default.to_path_buf(), EnginePathSource::Default)
 }
 
 /// Returns the first candidate that is `Some` and not blank (i.e. contains at
@@ -247,6 +271,41 @@ mod tests {
             resolve_engine_path(Some("  env.exe  "), None, default),
             PathBuf::from("env.exe")
         );
+    }
+
+    #[test]
+    fn resolve_with_source_reports_env_settings_and_default() {
+        let default = Path::new("default.exe");
+        assert_eq!(
+            resolve_engine_path_with_source(Some("env.exe"), Some("config.exe"), default),
+            (PathBuf::from("env.exe"), EnginePathSource::Env)
+        );
+        assert_eq!(
+            resolve_engine_path_with_source(Some("  "), Some("config.exe"), default),
+            (PathBuf::from("config.exe"), EnginePathSource::Settings)
+        );
+        assert_eq!(
+            resolve_engine_path_with_source(None, Some(" "), default),
+            (PathBuf::from("default.exe"), EnginePathSource::Default)
+        );
+    }
+
+    #[test]
+    fn resolve_with_source_agrees_with_resolve() {
+        // launch_engine と get_engine_settings が同じパスを指すこと。
+        let default = Path::new("default.exe");
+        let cases = [
+            (Some("env.exe"), Some("config.exe")),
+            (None, Some("config.exe")),
+            (Some(""), None),
+            (None, None),
+        ];
+        for (env, config) in cases {
+            assert_eq!(
+                resolve_engine_path(env, config, default),
+                resolve_engine_path_with_source(env, config, default).0
+            );
+        }
     }
 
     // --- validate_engine_path ----------------------------------------------

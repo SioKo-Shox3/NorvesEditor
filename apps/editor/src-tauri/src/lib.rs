@@ -9,6 +9,8 @@ mod protocol_names;
 mod asset_manifest;
 mod bridge_state;
 mod dto;
+// エンジン設定(実行ファイルのパス)の保存と、Rust 側で開くファイル選択ダイアログ。
+mod engine_settings;
 mod error;
 mod events_map;
 // Windows 限定: 起動したエンジンをエディタの寿命に縛る Job Object。
@@ -20,6 +22,7 @@ mod process_runtime;
 mod workspace;
 
 use bridge_state::BridgeState;
+use engine_settings::EngineSettingsState;
 use process_runtime::ProcessState;
 use workspace::WorkspaceState;
 
@@ -39,6 +42,8 @@ pub fn run() {
         // Phase A: workspace root state is a pure editor concern, independent
         // from the Bridge connection and engine process lifecycle.
         .manage(WorkspaceState::default())
+        // 設定ファイルの読み替え・書き戻しを直列にする。
+        .manage(EngineSettingsState::default())
         .invoke_handler(tauri::generate_handler![
             bridge_state::bridge_connect,
             bridge_state::bridge_disconnect,
@@ -64,6 +69,9 @@ pub fn run() {
             bridge_state::focus_viewport,
             process_runtime::launch_engine,
             process_runtime::stop_engine,
+            engine_settings::get_engine_settings,
+            engine_settings::pick_engine_path,
+            engine_settings::clear_engine_path,
             workspace::workspace_open,
             workspace::workspace_get,
             workspace::workspace_close,

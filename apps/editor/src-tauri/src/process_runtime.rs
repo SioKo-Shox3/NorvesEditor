@@ -75,17 +75,14 @@ use crate::error::BackendError;
 use crate::process;
 use crate::protocol_names::events;
 
-/// Default engine executable, used when `NORVES_ENGINE_PATH` is unset/blank.
+/// 環境変数 `NORVES_ENGINE_PATH` も保存済みの設定も無いときに使うエンジンの実行ファイル。
 ///
-/// The supported override is the `NORVES_ENGINE_PATH` environment variable (read
-/// in [`launch_engine`]); the built mock-engine location varies per build tree,
-/// so this default is a bare relative name resolved against the process working
-/// directory. Operators are expected to set `NORVES_ENGINE_PATH` to the absolute
-/// path of the engine binary for the alpha.
-const DEFAULT_ENGINE_PATH: &str = "norves_mock_engine";
+/// mock エンジンの置き場所はビルドツリーごとに違うので、プロセスの作業ディレクトリから解決する
+/// 相対名にしてある。実際のパスは設定欄のファイル選択(`crate::engine_settings`)か環境変数で指定する。
+pub(crate) const DEFAULT_ENGINE_PATH: &str = "norves_mock_engine";
 
-/// Environment variable that overrides the engine executable path.
-const ENGINE_PATH_ENV: &str = "NORVES_ENGINE_PATH";
+/// エンジンの実行ファイルのパスを上書きする環境変数。保存済みの設定より優先する。
+pub(crate) const ENGINE_PATH_ENV: &str = "NORVES_ENGINE_PATH";
 
 /// How long to wait for the engine's `READY <port>` stdout line before giving up
 /// and killing the child.
@@ -212,11 +209,15 @@ pub async fn launch_engine(
         }
     } // guard dropped: all spawn / READY / connect I/O runs WITHOUT the lock.
 
-    // 2. Resolve + validate the engine path entirely backend-side. The env read
-    //    is the impure J3 side of the pure J1 resolver; config is None for alpha.
+    // 2. パスはバックエンドだけで解決して確かめる(環境変数 > 保存済みの設定 > 既定値)。
+    //    設定ファイルが無い・壊れているときは設定なしとして扱う。
     let env_value = std::env::var(ENGINE_PATH_ENV).ok();
-    let path =
-        process::resolve_engine_path(env_value.as_deref(), None, Path::new(DEFAULT_ENGINE_PATH));
+    let saved_path = crate::engine_settings::saved_engine_path(&app);
+    let path = process::resolve_engine_path(
+        env_value.as_deref(),
+        saved_path.as_deref(),
+        Path::new(DEFAULT_ENGINE_PATH),
+    );
     process::validate_engine_path(&path)?;
 
     // 3. Pick a free loopback port for the engine to bind.

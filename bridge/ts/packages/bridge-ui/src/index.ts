@@ -60,6 +60,9 @@ export {
   assetResolve,
   assetGetManifest,
   assetReloadManifest,
+  getEngineSettings,
+  pickEnginePath,
+  clearEnginePath,
   type BridgeCommandName,
 } from './commands.js';
 export {
@@ -76,5 +79,7 @@ export type {
   AssetResolveSource,
   AssetResolveStatus,
   ConnectionStatePayload,
+  EnginePathSource,
+  EngineSettingsPayload,
   WorkspacePayload,
 } from './ipc-types.js';

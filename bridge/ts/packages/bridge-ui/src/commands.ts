@@ -14,6 +14,7 @@ import type {
   AssetManifestPayload,
   AssetManifestResult,
   AssetResolveResult,
+  EngineSettingsPayload,
   WorkspacePayload,
 } from './ipc-types.js';
 
@@ -49,6 +50,9 @@ export const BRIDGE_COMMANDS = {
   focusViewport: 'focus_viewport',
   launchEngine: 'launch_engine',
   stopEngine: 'stop_engine',
+  getEngineSettings: 'get_engine_settings',
+  pickEnginePath: 'pick_engine_path',
+  clearEnginePath: 'clear_engine_path',
   workspaceOpen: 'workspace_open',
   workspaceGet: 'workspace_get',
   workspaceClose: 'workspace_close',
@@ -100,6 +104,20 @@ export async function sceneDuplicateObject(
   }
   return invoke<SceneDuplicateObjectResult>(BRIDGE_COMMANDS.sceneDuplicateObject, args);
 }
+// エンジンのパスは Rust 側のファイル選択ダイアログでだけ変わる。パス文字列を渡すコマンドは無い。
+export async function getEngineSettings(): Promise<EngineSettingsPayload> {
+  return invoke<EngineSettingsPayload>(BRIDGE_COMMANDS.getEngineSettings);
+}
+
+/** ダイアログを開いて選ばせる。キャンセルなら何も変えず、その時点の設定を返す。 */
+export async function pickEnginePath(): Promise<EngineSettingsPayload> {
+  return invoke<EngineSettingsPayload>(BRIDGE_COMMANDS.pickEnginePath);
+}
+
+export async function clearEnginePath(): Promise<EngineSettingsPayload> {
+  return invoke<EngineSettingsPayload>(BRIDGE_COMMANDS.clearEnginePath);
+}
+
 export async function workspaceOpen(rootPath: string): Promise<WorkspacePayload> {
   return invoke<WorkspacePayload>(BRIDGE_COMMANDS.workspaceOpen, { rootPath });
 }
