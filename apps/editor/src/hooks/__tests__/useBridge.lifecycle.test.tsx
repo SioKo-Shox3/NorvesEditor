@@ -38,14 +38,21 @@ import * as tauriEvent from '@tauri-apps/api/event';
 import { useBridgeSubscriptions, useBridgeActions } from '../useBridge.js';
 import { BridgeProvider, useBridgeDispatch, useBridgeState } from '../../state/BridgeContext.js';
 import { assetKeyForEntry } from '../../state/store.js';
-import { BRIDGE_COMMANDS } from '@norves/bridge-ui';
-import type { AssetResolveResult, ConnectionStatePayload } from '@norves/bridge-ui';
+import { BRIDGE_COMMANDS, BRIDGE_EVENTS } from '@norves/bridge-ui';
+import type {
+  AssetResolveResult,
+  ConnectionStatePayload,
+  EditAppliedPayload,
+  EditHistorySummary,
+  ObjectSnapshot,
+  SceneGetTreeResult,
+} from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Helpers
 // -------------------------------------------------------------------------
 
-/** Total event subscriptions that useBridgeSubscriptions registers (must equal BRIDGE_EVENTS entries). */
+/** 未接続時に登録するBridgeイベント購読数。編集サービス購読は接続時に加わる。 */
 const EXPECTED_SUBSCRIPTION_COUNT = 11;
 
 /**
@@ -93,6 +100,15 @@ function createDeferred<T>(): {
   return { promise, resolve, reject };
 }
 
+function emitBridgeEvent(name: string, payload: unknown): void {
+  const call = (tauriEvent.listen as Mock).mock.calls.find((entry) => entry[0] === name);
+  const handler = call?.[1] as ((event: { payload: unknown }) => void) | undefined;
+  if (handler === undefined) {
+    throw new Error(`イベント購読が見つかりません: ${name}`);
+  }
+  handler({ payload });
+}
+
 // -------------------------------------------------------------------------
 // (a) Unmount cleanup: all UnlistenFns are called
 // -------------------------------------------------------------------------
@@ -124,6 +140,131 @@ describe('useBridgeSubscriptions lifecycle — unmount cleanup', () => {
     // Every unlisten fn must be called exactly once
     for (const fn of unlistenFns) {
       expect(fn).toHaveBeenCalledOnce();
+    }
+  });
+});
+
+describe('useBridgeSubscriptions — 編集サービスイベント', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('購読開始時に履歴を取得し、改訂が古いイベントを捨て、欠落時に再同期する', async () => {
+    const unlistenFns = setupListenMock();
+    const summary0: EditHistorySummary = {
+      generation: 7,
+      historyRevision: 0,
+      appliedRevision: 0,
+      canUndo: false,
+      canRedo: false,
+      undoHeadId: null,
+      undoRevision: 0,
+      undoGroup: null,
+      redoHeadId: null,
+      redoRevision: 0,
+      redoGroup: null,
+      pending: false,
+    };
+    const summary3: EditHistorySummary = {
+      ...summary0,
+      historyRevision: 3,
+      appliedRevision: 3,
+      canUndo: true,
+      undoHeadId: 3,
+      undoRevision: 3,
+    };
+    let historyCallCount = 0;
+    (tauriCore.invoke as Mock).mockImplementation((command: string) => {
+      if (command === BRIDGE_COMMANDS.editGetHistory) {
+        historyCallCount += 1;
+        return Promise.resolve(historyCallCount === 1 ? summary0 : summary3);
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    function useTestHook() {
+      useBridgeSubscriptions();
+      const dispatch = useBridgeDispatch();
+      const state = useBridgeState();
+      return { dispatch, state };
+    }
+
+    const { result, unmount } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      emitBridgeEvent(BRIDGE_EVENTS.connectionState, {
+        connected: true,
+        sessionId: 'session-1',
+      } satisfies ConnectionStatePayload);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect((tauriEvent.listen as Mock).mock.calls).toHaveLength(13);
+    expect(historyCallCount).toBe(1);
+    expect(result.current.state.editHistorySummary?.appliedRevision).toBe(0);
+
+    await act(async () => {
+      result.current.dispatch({ type: 'objectSelected', id: 'n-1' });
+      result.current.dispatch({
+        type: 'sceneTreeLoaded',
+        root: { id: 'root', children: [{ id: 'n-1', name: 'Old' }] },
+        editServiceGeneration: 7,
+        appliedRevision: 0,
+      });
+      result.current.dispatch({
+        type: 'objectSnapshotLoaded',
+        snapshot: { objectId: 'n-1', properties: [{ name: 'Name', value: 'Old' }] },
+        editServiceGeneration: 7,
+        appliedRevision: 0,
+      });
+    });
+
+    const rename: EditAppliedPayload = {
+      operation: 'setProperty',
+      objectId: 'n-1',
+      property: 'Name',
+      value: 'New',
+      newId: null,
+      source: 'mcp',
+      groupId: 'mcp-7-1',
+      generation: 7,
+      sequence: 1,
+      historyRevision: 1,
+      appliedRevision: 1,
+    };
+    await act(async () => { emitBridgeEvent(BRIDGE_EVENTS.editApplied, rename); });
+    expect(result.current.state.sceneTree?.children?.[0]?.name).toBe('New');
+    expect(result.current.state.objectSnapshot?.properties[0]?.value).toBe('New');
+
+    const staleGeneration = { ...rename, generation: 6, sequence: 99, appliedRevision: 99 };
+    await act(async () => { emitBridgeEvent(BRIDGE_EVENTS.editApplied, staleGeneration); });
+    const staleRevision = { ...rename, sequence: 0, value: 'Stale' };
+    await act(async () => { emitBridgeEvent(BRIDGE_EVENTS.editApplied, staleRevision); });
+    expect(result.current.state.editAppliedRevision).toBe(1);
+    expect(result.current.state.objectSnapshot?.properties[0]?.value).toBe('New');
+
+    historyCallCount = 1;
+    const missingRevision = {
+      ...rename,
+      groupId: 'mcp-7-3',
+      sequence: 3,
+      historyRevision: 3,
+      appliedRevision: 3,
+      value: 'Latest',
+    };
+    await act(async () => {
+      emitBridgeEvent(BRIDGE_EVENTS.editApplied, missingRevision);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(historyCallCount).toBe(2);
+    expect(result.current.state.editHistorySummary?.appliedRevision).toBe(3);
+    expect(result.current.state.sceneRefreshRequired).toBe(true);
+    expect(result.current.state.objectSnapshotRefreshVersion).toBeGreaterThan(0);
+    expect(result.current.state.undoStack).toEqual([{ kind: 'serviceProjection' }]);
+    unmount();
+    for (const unlisten of unlistenFns) {
+      expect(unlisten).toHaveBeenCalledOnce();
     }
   });
 });
@@ -2175,6 +2316,116 @@ describe('useBridgeActions — setProperty undo/redo execution (Phase U2)', () =
 
     expect(result.current.state.undoStack).toEqual([]);
     expect(result.current.state.redoStack).toEqual([]);
+  });
+});
+
+describe('useBridgeActions — snapshot取得の世代管理', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('同じ接続内でも後から開始した取得を優先し、StrictMode相当の古い応答を捨てる', async () => {
+    const firstTree = createDeferred<SceneGetTreeResult>();
+    const secondTree = createDeferred<SceneGetTreeResult>();
+    const firstSnapshot = createDeferred<ObjectSnapshot>();
+    const secondSnapshot = createDeferred<ObjectSnapshot>();
+    const staleTree = createDeferred<SceneGetTreeResult>();
+    const staleSnapshot = createDeferred<ObjectSnapshot>();
+    const trees = [firstTree, secondTree, staleTree];
+    const snapshots = [firstSnapshot, secondSnapshot, staleSnapshot];
+    (tauriCore.invoke as Mock).mockImplementation((command: string) => {
+      if (command === BRIDGE_COMMANDS.sceneGetTree) {
+        return trees.shift()!.promise;
+      }
+      if (command === BRIDGE_COMMANDS.objectGetSnapshot) {
+        return snapshots.shift()!.promise;
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    function useTestHook() {
+      const dispatch = useBridgeDispatch();
+      const actions = useBridgeActions();
+      const state = useBridgeState();
+      return { actions, dispatch, state };
+    }
+
+    const { result } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => {
+      result.current.dispatch({
+        type: 'connectionStateChanged',
+        payload: { connected: true, sessionId: 'session-1' },
+      });
+      result.current.dispatch({ type: 'objectSelected', id: 'n-1' });
+    });
+
+    let oldTree!: Promise<void>;
+    let newTree!: Promise<void>;
+    let oldSnapshot!: Promise<void>;
+    let newSnapshot!: Promise<void>;
+    act(() => {
+      oldTree = result.current.actions.getSceneTree();
+      newTree = result.current.actions.getSceneTree();
+      oldSnapshot = result.current.actions.getObjectSnapshot('n-1');
+      newSnapshot = result.current.actions.getObjectSnapshot('n-1');
+    });
+
+    await act(async () => {
+      secondTree.resolve({ root: { id: 'root', name: '最新' } });
+      secondSnapshot.resolve({
+        objectId: 'n-1',
+        properties: [{ name: 'label', value: '最新' }],
+      });
+      await Promise.all([newTree, newSnapshot]);
+    });
+    await act(async () => {
+      firstTree.resolve({ root: { id: 'root', name: '古い取得' } });
+      firstSnapshot.resolve({
+        objectId: 'n-1',
+        properties: [{ name: 'label', value: '古い取得' }],
+      });
+      await Promise.all([oldTree, oldSnapshot]);
+    });
+
+    expect(result.current.state.sceneTree?.name).toBe('最新');
+    expect(result.current.state.objectSnapshot?.properties[0]?.value).toBe('最新');
+
+    let oldRevisionTree!: Promise<void>;
+    let oldRevisionSnapshot!: Promise<void>;
+    act(() => {
+      oldRevisionTree = result.current.actions.getSceneTree();
+      oldRevisionSnapshot = result.current.actions.getObjectSnapshot('n-1');
+    });
+    await act(async () => {
+      result.current.dispatch({
+        type: 'editApplied',
+        payload: {
+          operation: 'setProperty',
+          objectId: 'n-1',
+          property: 'label',
+          value: 'イベント値',
+          newId: null,
+          source: 'mcp',
+          groupId: 'mcp-1-1',
+          generation: 1,
+          sequence: 1,
+          historyRevision: 1,
+          appliedRevision: 1,
+        },
+      });
+    });
+    await act(async () => {
+      staleTree.resolve({ root: { id: 'root', name: '古い改訂' } });
+      staleSnapshot.resolve({
+        objectId: 'n-1',
+        properties: [{ name: 'label', value: '古い改訂' }],
+      });
+      await Promise.all([oldRevisionTree, oldRevisionSnapshot]);
+    });
+
+    expect(result.current.state.sceneTree?.name).toBe('最新');
+    expect(result.current.state.sceneTreeAppliedRevision).toBe(1);
+    expect(result.current.state.objectSnapshot?.properties[0]?.value).toBe('イベント値');
+    expect(result.current.state.objectSnapshotAppliedRevision).toBe(1);
   });
 });
 

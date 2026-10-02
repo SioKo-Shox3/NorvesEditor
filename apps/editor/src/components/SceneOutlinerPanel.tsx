@@ -85,12 +85,8 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
   const selectedObjectId = state.selectedObjectId;
   const sceneRefreshRequired = state.sceneRefreshRequired === true;
 
-  // -----------------------------------------------------------------------
-  // Fetch the tree once each time we (re)enter the connected state. A ref
-  // tracks the previous connection status so we only fetch on the
-  // disconnected/connecting -> connected edge, not on every re-render. The
-  // store clears sceneTree on disconnect, so this re-probes a fresh engine.
-  // -----------------------------------------------------------------------
+  // 接続状態へ入ったときにツリーを取得する。前回の接続状態を記録し、
+  // 再描画ごとの取得を避ける。
   const wasConnectedRef = useRef(false);
   useEffect(() => {
     if (isConnected && !wasConnectedRef.current) {
@@ -99,24 +95,22 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
     wasConnectedRef.current = isConnected;
   }, [isConnected, actions]);
 
-  // -----------------------------------------------------------------------
-  // Consume a live-refresh request. A scene.treeChanged event with
-  // fullRefreshRequired:true sets store.sceneRefreshRequired; here we issue one
-  // getSceneTree() while connected. The resulting sceneTreeLoaded/
-  // sceneTreeUnsupported reducer clears the flag (-> false), so a single fetch is
-  // issued per set flag and the effect cannot loop. A ref guards against firing a
-  // second fetch in the render(s) between dispatch and the flag clearing.
-  // -----------------------------------------------------------------------
-  const refreshInFlightRef = useRef(false);
+  // 完全再取得の要求は版番号で消費する。同じ要求の再描画では重複せず、
+  // 取得中に新しい編集が届いた場合は次の版を取得する。
+  const sceneRefreshVersion = state.sceneRefreshVersion;
+  const lastRefreshVersionRef = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (isConnected && sceneRefreshRequired && !refreshInFlightRef.current) {
-      refreshInFlightRef.current = true;
+    if (
+      isConnected &&
+      sceneRefreshRequired &&
+      lastRefreshVersionRef.current !== sceneRefreshVersion
+    ) {
+      lastRefreshVersionRef.current = sceneRefreshVersion;
       void actions.getSceneTree();
     } else if (!sceneRefreshRequired) {
-      // Flag was consumed (or never set): re-arm for the next live request.
-      refreshInFlightRef.current = false;
+      lastRefreshVersionRef.current = undefined;
     }
-  }, [isConnected, sceneRefreshRequired, actions]);
+  }, [isConnected, sceneRefreshRequired, sceneRefreshVersion, actions]);
 
   const handleRefresh = (): void => {
     void actions.getSceneTree();

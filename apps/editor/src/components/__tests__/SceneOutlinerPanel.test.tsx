@@ -15,7 +15,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import type { BridgeState } from '../../state/store.js';
-import { INITIAL_STATE } from '../../state/store.js';
+import { bridgeReducer, INITIAL_STATE } from '../../state/store.js';
 import type { SceneNode } from '@norves/bridge-ui';
 import type React from 'react';
 
@@ -1041,5 +1041,84 @@ describe('SceneOutlinerPanel — drag to reparent', () => {
     expect(row('NodeA').className).not.toContain('scene-node__row--drop');
     fireEvent.dragEnd(row('NodeA'));
     expect(row('GroupNode').className).not.toContain('scene-node__row--drop');
+  });
+});
+
+describe('SceneOutlinerPanel — 編集サービスイベント', () => {
+  it('Nameの値設定でノード名を更新する', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      editServiceGeneration: 7,
+      editAppliedRevision: 0,
+      sceneTreeAppliedGeneration: 7,
+      sceneTreeAppliedRevision: 0,
+    };
+    const { rerender } = render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    mockState = bridgeReducer(mockState, {
+      type: 'editApplied',
+      payload: {
+        operation: 'setProperty',
+        objectId: 'n-1',
+        property: 'Name',
+        value: '外部で改名',
+        newId: null,
+        source: 'mcp',
+        groupId: 'mcp-7-1',
+        generation: 7,
+        sequence: 1,
+        historyRevision: 1,
+        appliedRevision: 1,
+      },
+    });
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    expect(screen.getByText('外部で改名')).toBeTruthy();
+    expect(screen.queryByText('NodeA')).toBeNull();
+  });
+
+  it('構造編集後にツリーを取り直して追加ノードを表示する', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      editServiceGeneration: 7,
+      editAppliedRevision: 0,
+      sceneTreeAppliedGeneration: 7,
+      sceneTreeAppliedRevision: 0,
+    };
+    const { rerender } = render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    getSceneTree.mockClear();
+
+    mockState = bridgeReducer(mockState, {
+      type: 'editApplied',
+      payload: {
+        operation: 'createObject',
+        objectId: null,
+        property: null,
+        value: null,
+        newId: 'n-new',
+        source: 'mcp',
+        groupId: 'mcp-7-2',
+        generation: 7,
+        sequence: 2,
+        historyRevision: 1,
+        appliedRevision: 1,
+      },
+    });
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    expect(getSceneTree).toHaveBeenCalledTimes(1);
+
+    mockState = bridgeReducer(mockState, {
+      type: 'sceneTreeLoaded',
+      root: { ...DEMO_TREE, children: [...(DEMO_TREE.children ?? []), { id: 'n-new', name: 'NewNode' }] },
+      editServiceGeneration: 7,
+      appliedRevision: 1,
+    });
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    expect(screen.getByText('NewNode')).toBeTruthy();
   });
 });

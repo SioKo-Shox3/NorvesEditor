@@ -34,6 +34,8 @@ import type {
   AssetManifestPayload,
   AssetResolveResult,
   ConnectionStatePayload,
+  EditAppliedPayload,
+  EditHistorySummary,
   WorkspacePayload,
 } from '@norves/bridge-ui';
 export type { AssetEntry, AssetManifestPayload } from '@norves/bridge-ui';
@@ -118,6 +120,233 @@ export type SceneEditCommand =
       oldValue: PropertyValue;
       newValue: PropertyValue;
     };
+
+/** MCP-007 中の表示互換用。実際の履歴は編集サービスが保持する。 */
+export interface ServiceHistoryProjection {
+  kind: 'serviceProjection';
+}
+
+export type SceneEditStackEntry = SceneEditCommand | ServiceHistoryProjection;
+
+const SERVICE_HISTORY_PROJECTION: ServiceHistoryProjection = {
+  kind: 'serviceProjection',
+};
+
+function historyProjection(summary: EditHistorySummary): {
+  undoStack: SceneEditStackEntry[];
+  redoStack: SceneEditStackEntry[];
+} {
+  return {
+    undoStack: summary.canUndo && !summary.pending ? [SERVICE_HISTORY_PROJECTION] : [],
+    redoStack: summary.canRedo && !summary.pending ? [SERVICE_HISTORY_PROJECTION] : [],
+  };
+}
+
+function isObjectNameProperty(property: string): boolean {
+  return property.toLowerCase() === 'name';
+}
+
+function renameTreeNode(
+  root: SceneNode,
+  objectId: string,
+  name: string,
+): { root: SceneNode; found: boolean } {
+  if (root.id === objectId) {
+    return { root: { ...root, name }, found: true };
+  }
+  let found = false;
+  const children = root.children?.map((child) => {
+    const updated = renameTreeNode(child, objectId, name);
+    found ||= updated.found;
+    return updated.root;
+  });
+  return found ? { root: { ...root, children }, found } : { root, found };
+}
+
+function refreshSceneTree(state: BridgeState): Pick<BridgeState, 'sceneRefreshRequired' | 'sceneRefreshVersion'> {
+  return {
+    sceneRefreshRequired: true,
+    sceneRefreshVersion: (state.sceneRefreshVersion ?? 0) + 1,
+  };
+}
+
+function refreshObjectSnapshot(state: BridgeState): Pick<BridgeState, 'objectSnapshotRefreshVersion'> {
+  return { objectSnapshotRefreshVersion: (state.objectSnapshotRefreshVersion ?? 0) + 1 };
+}
+
+function refreshComponentSnapshot(
+  state: BridgeState,
+): Pick<BridgeState, 'componentSnapshotRefreshVersion'> {
+  return { componentSnapshotRefreshVersion: (state.componentSnapshotRefreshVersion ?? 0) + 1 };
+}
+
+function applyServiceEdit(state: BridgeState, payload: EditAppliedPayload): BridgeState {
+  const currentGeneration = state.editServiceGeneration;
+  if (currentGeneration !== undefined && payload.generation < currentGeneration) {
+    return state;
+  }
+  const sameGeneration = currentGeneration === payload.generation;
+  const previousRevision = sameGeneration ? state.editAppliedRevision : undefined;
+  const generationChanged = currentGeneration !== undefined && !sameGeneration;
+  const gap =
+    generationChanged ||
+    (sameGeneration && payload.appliedRevision > (previousRevision ?? 0) + 1) ||
+    (!sameGeneration && currentGeneration === undefined && payload.appliedRevision > 1);
+  if (
+    sameGeneration &&
+    ((previousRevision !== undefined && payload.appliedRevision <= previousRevision) ||
+      (state.editSequence !== undefined && payload.sequence <= state.editSequence) ||
+      (state.editHistorySummary !== undefined &&
+        state.editHistorySummary.generation === payload.generation &&
+        payload.historyRevision < state.editHistorySummary.historyRevision))
+  ) {
+    return state;
+  }
+
+  let sceneTree = generationChanged ? undefined : state.sceneTree;
+  let objectSnapshot = generationChanged ? undefined : state.objectSnapshot;
+  let componentSnapshot = generationChanged ? undefined : state.componentSnapshot;
+  let needsSceneRefresh = gap;
+  let needsObjectRefresh = gap && state.selectedObjectId !== undefined;
+  let needsComponentRefresh = gap && state.selectedComponentId !== undefined;
+  const propertyChange =
+    payload.property !== null &&
+    (payload.operation === 'setProperty' ||
+      payload.operation === 'undo' ||
+      payload.operation === 'redo') &&
+    payload.property.toLowerCase() !== 'parentid';
+
+  if (!gap && propertyChange && payload.objectId !== null) {
+    const property = payload.property!;
+    const value = payload.value as PropertyValue;
+    const updateSnapshot = (snapshot: ObjectSnapshot | undefined): ObjectSnapshot | undefined => {
+      if (snapshot === undefined || snapshot.objectId !== payload.objectId) {
+        return snapshot;
+      }
+      let found = false;
+      const properties = snapshot.properties.map((entry) => {
+        if (entry.name !== property) {
+          return entry;
+        }
+        found = true;
+        return { ...entry, value };
+      });
+      if (!found) {
+        properties.push({ name: property, value });
+      }
+      return isObjectNameProperty(property) && typeof value === 'string'
+        ? { ...snapshot, name: value, properties }
+        : { ...snapshot, properties };
+    };
+    objectSnapshot = updateSnapshot(objectSnapshot);
+    componentSnapshot = updateSnapshot(componentSnapshot);
+
+    if (isObjectNameProperty(property) && typeof value === 'string') {
+      if (sceneTree !== undefined) {
+        const renamed = renameTreeNode(sceneTree, payload.objectId, value);
+        sceneTree = renamed.root;
+        needsSceneRefresh = !renamed.found;
+      } else {
+        needsSceneRefresh = true;
+      }
+    }
+    if (
+      (payload.objectId === state.selectedObjectId && objectSnapshot === undefined) ||
+      (payload.objectId === state.selectedComponentId && componentSnapshot === undefined)
+    ) {
+      needsObjectRefresh = payload.objectId === state.selectedObjectId;
+      needsComponentRefresh = payload.objectId === state.selectedComponentId;
+    }
+  }
+
+  const structureChanged =
+    payload.operation === 'createObject' ||
+    payload.operation === 'deleteObject' ||
+    payload.operation === 'duplicateObject' ||
+    payload.operation === 'reparentObject' ||
+    ((payload.operation === 'undo' || payload.operation === 'redo') &&
+      (payload.property === null || payload.property.toLowerCase() === 'parentid'));
+  needsSceneRefresh ||= structureChanged;
+  if (payload.operation === 'componentAdd' || payload.operation === 'componentRemove') {
+    needsObjectRefresh ||= state.selectedObjectId !== undefined;
+  }
+
+  if (
+    !gap &&
+    payload.operation === 'deleteObject' &&
+    payload.objectId !== null &&
+    payload.objectId === state.selectedObjectId
+  ) {
+    objectSnapshot = undefined;
+    componentSnapshot = undefined;
+  }
+
+  const summary =
+    !generationChanged && state.editHistorySummary?.generation === payload.generation
+      ? {
+          ...state.editHistorySummary,
+          historyRevision: Math.max(state.editHistorySummary.historyRevision, payload.historyRevision),
+          appliedRevision: Math.max(state.editHistorySummary.appliedRevision, payload.appliedRevision),
+        }
+      : undefined;
+  const projected = summary === undefined ? {} : historyProjection(summary);
+  const treeRefresh = needsSceneRefresh ? refreshSceneTree(state) : {};
+  const objectRefresh = needsObjectRefresh ? refreshObjectSnapshot(state) : {};
+  const componentRefresh = needsComponentRefresh ? refreshComponentSnapshot(state) : {};
+
+  return {
+    ...state,
+    ...projected,
+    ...treeRefresh,
+    ...objectRefresh,
+    ...componentRefresh,
+    sceneTree,
+    sceneTreeAppliedRevision: needsSceneRefresh
+      ? state.sceneTreeAppliedRevision
+      : sceneTree === undefined
+        ? undefined
+        : payload.appliedRevision,
+    sceneTreeAppliedGeneration: needsSceneRefresh
+      ? state.sceneTreeAppliedGeneration
+      : sceneTree === undefined
+        ? undefined
+        : payload.generation,
+    objectSnapshot,
+    objectSnapshotAppliedRevision: needsObjectRefresh
+      ? state.objectSnapshotAppliedRevision
+      : objectSnapshot === undefined
+        ? undefined
+        : payload.appliedRevision,
+    objectSnapshotAppliedGeneration: needsObjectRefresh
+      ? state.objectSnapshotAppliedGeneration
+      : objectSnapshot === undefined
+        ? undefined
+        : payload.generation,
+    componentSnapshot,
+    componentSnapshotAppliedRevision: needsComponentRefresh
+      ? state.componentSnapshotAppliedRevision
+      : componentSnapshot === undefined
+        ? undefined
+        : payload.appliedRevision,
+    componentSnapshotAppliedGeneration: needsComponentRefresh
+      ? state.componentSnapshotAppliedGeneration
+      : componentSnapshot === undefined
+        ? undefined
+        : payload.generation,
+    selectedObjectId:
+      payload.operation === 'deleteObject' && payload.objectId === state.selectedObjectId
+        ? undefined
+        : state.selectedObjectId,
+    selectedComponentId:
+      payload.operation === 'deleteObject' && payload.objectId === state.selectedObjectId
+        ? undefined
+        : state.selectedComponentId,
+    editHistorySummary: summary,
+    editServiceGeneration: payload.generation,
+    editAppliedRevision: payload.appliedRevision,
+    editSequence: payload.sequence,
+  };
+}
 
 /**
  * Structural equality for PropertyValue (JSON-ish: scalar/array/object).
@@ -264,6 +493,11 @@ export interface BridgeState {
    * Generic — carries no engine-specific assumptions.
    */
   sceneTree?: SceneNode;
+  /** 表示中のシーンツリーが反映している編集サービスの改訂。 */
+  sceneTreeAppliedRevision?: number;
+  sceneTreeAppliedGeneration?: number;
+  /** 最後に開始したシーンツリー取得の識別子。 */
+  sceneTreeRequestId?: number;
   /**
    * True when the connected engine answered scene.getTree with
    * METHOD_NOT_SUPPORTED — i.e. it does not implement scene query. This is the
@@ -286,14 +520,14 @@ export interface BridgeState {
    * non-undoable delete. Preserved across workspaceClosed (the Bridge connection
    * persists).
    */
-  undoStack: SceneEditCommand[];
+  undoStack: SceneEditStackEntry[];
   /**
    * Redo history for scene-structure edits (Phase U1). Populated by undo (a
    * popped undoStack entry moves here) and drained by redo. A fresh recorded
    * edit clears it (the classic "new edit invalidates the redo branch" rule).
    * Cleared on the same events as undoStack.
    */
-  redoStack: SceneEditCommand[];
+  redoStack: SceneEditStackEntry[];
   /**
    * Set by a scene.treeChanged live event carrying fullRefreshRequired:true:
    * the incremental changedNodes are insufficient and the Outliner should
@@ -305,6 +539,8 @@ export interface BridgeState {
    * guarantee. Engine-agnostic.
    */
   sceneRefreshRequired?: boolean;
+  /** 同じ再取得要求が重なっても、各要求をパネルから消費できる版番号。 */
+  sceneRefreshVersion: number;
   /**
    * Snapshot of the currently selected object's properties (object.getSnapshot),
    * or undefined when nothing is selected / no snapshot has arrived yet. Cleared
@@ -312,6 +548,13 @@ export interface BridgeState {
    * Generic — carries no engine-specific assumptions.
    */
   objectSnapshot?: ObjectSnapshot;
+  /** Inspector の表示snapshotが反映している編集サービスの改訂。 */
+  objectSnapshotAppliedRevision?: number;
+  objectSnapshotAppliedGeneration?: number;
+  /** 最後に開始したオブジェクトsnapshot取得の識別子。 */
+  objectSnapshotRequestId?: number;
+  /** 選択中オブジェクトの再取得要求版番号。 */
+  objectSnapshotRefreshVersion: number;
   /**
    * ID of the component currently selected inside the Inspector, or undefined
    * when the entity's own properties are shown. The id comes from the entity
@@ -327,6 +570,13 @@ export interface BridgeState {
    * must stay on screen.
    */
   componentSnapshot?: ObjectSnapshot;
+  /** 選択中コンポーネントsnapshotが反映している編集サービスの改訂。 */
+  componentSnapshotAppliedRevision?: number;
+  componentSnapshotAppliedGeneration?: number;
+  /** 最後に開始したコンポーネントsnapshot取得の識別子。 */
+  componentSnapshotRequestId?: number;
+  /** 選択中コンポーネントの再取得要求版番号。 */
+  componentSnapshotRefreshVersion: number;
   /**
    * Generic type descriptors from schema.getSnapshot, fetched once per
    * connection. Used as an auxiliary hint when rendering property valueTypes.
@@ -355,6 +605,14 @@ export interface BridgeState {
    * notice instead of showing a thumbnail. Reset on (re)connect.
    */
   viewportThumbnailUnsupported?: boolean;
+  /** 編集サービスが保持する履歴要約。undoStack/redoStackは一時的な表示投影。 */
+  editHistorySummary?: EditHistorySummary;
+  /** 編集サービスが発行した世代。Bridge UI の世代とは別。 */
+  editServiceGeneration?: number;
+  /** 画面に観測済みの最新の適用改訂。 */
+  editAppliedRevision?: number;
+  /** 画面に観測済みの最新の編集サービスイベントsequence。 */
+  editSequence?: number;
 }
 
 export const INITIAL_STATE: BridgeState = {
@@ -372,6 +630,9 @@ export const INITIAL_STATE: BridgeState = {
   assetReloadUnsupported: false,
   undoStack: [],
   redoStack: [],
+  sceneRefreshVersion: 0,
+  objectSnapshotRefreshVersion: 0,
+  componentSnapshotRefreshVersion: 0,
 };
 
 // -------------------------------------------------------------------------
@@ -411,6 +672,8 @@ export type BridgeAction =
   | { type: 'errorReported'; payload: ErrorReportedEvent }
   | { type: 'engineProcessExited'; payload: EngineProcessExitedEvent }
   | { type: 'viewportStateChanged'; payload: ViewportStateChangedEvent }
+  | { type: 'editApplied'; payload: EditAppliedPayload }
+  | { type: 'editHistorySummaryReceived'; summary: EditHistorySummary }
   /**
    * A scene.treeChanged live event arrived (protocol 0.2, engine-emitted).
    * Best-effort: when fullRefreshRequired is set the store records a refetch
@@ -434,12 +697,26 @@ export type BridgeAction =
    * Store the root of a freshly fetched scene.getTree snapshot.
    * `root` is the single root SceneNode from the wire result { root }.
    */
-  | { type: 'sceneTreeLoaded'; root: SceneNode }
+  | { type: 'sceneTreeFetchStarted'; requestId: number }
+  | {
+      type: 'sceneTreeLoaded';
+      root: SceneNode;
+      requestId?: number;
+      connectionGeneration?: number;
+      editServiceGeneration?: number;
+      appliedRevision?: number;
+    }
   /**
    * Mark scene query as unsupported by the connected engine (scene.getTree
    * answered METHOD_NOT_SUPPORTED). Engine-agnostic degradation signal.
    */
-  | { type: 'sceneTreeUnsupported' }
+  | {
+      type: 'sceneTreeUnsupported';
+      requestId?: number;
+      connectionGeneration?: number;
+      editServiceGeneration?: number;
+      appliedRevision?: number;
+    }
   /** Mark scene edit methods as unsupported by the connected engine. */
   | { type: 'sceneEditUnsupported' }
   /** Clear selected object state after an accepted scene.deleteObject result. */
@@ -448,7 +725,15 @@ export type BridgeAction =
    * Store a freshly fetched object.getSnapshot for the selected object.
    * Engine-agnostic: a generic property bag, not mock-specific.
    */
-  | { type: 'objectSnapshotLoaded'; snapshot: ObjectSnapshot }
+  | { type: 'objectSnapshotFetchStarted'; requestId: number; objectId: string }
+  | {
+      type: 'objectSnapshotLoaded';
+      snapshot: ObjectSnapshot;
+      requestId?: number;
+      connectionGeneration?: number;
+      editServiceGeneration?: number;
+      appliedRevision?: number;
+    }
   /**
    * Select (or clear, with undefined) a component of the selected object. The
    * id comes from the entity snapshot's `components` list and is opaque.
@@ -459,7 +744,15 @@ export type BridgeAction =
    * apart from objectSnapshotLoaded so the entity's snapshot (which carries the
    * component list) survives.
    */
-  | { type: 'componentSnapshotLoaded'; snapshot: ObjectSnapshot }
+  | { type: 'componentSnapshotFetchStarted'; requestId: number; componentId: string }
+  | {
+      type: 'componentSnapshotLoaded';
+      snapshot: ObjectSnapshot;
+      requestId?: number;
+      connectionGeneration?: number;
+      editServiceGeneration?: number;
+      appliedRevision?: number;
+    }
   /**
    * Store the type descriptors from a schema.getSnapshot fetch.
    */
@@ -469,7 +762,14 @@ export type BridgeAction =
    * (object.getSnapshot or schema.getSnapshot answered METHOD_NOT_SUPPORTED).
    * Engine-agnostic degradation signal.
    */
-  | { type: 'objectSnapshotUnsupported' }
+  | {
+      type: 'objectSnapshotUnsupported';
+      requestId?: number;
+      objectId?: string;
+      connectionGeneration?: number;
+      editServiceGeneration?: number;
+      appliedRevision?: number;
+    }
   /**
    * Apply an accepted object.setProperty result to the in-store snapshot: the
    * named property's value is replaced with the engine's appliedValue so the
@@ -774,6 +1074,11 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         // A fresh connection also clears any prior "unsupported" marker so the
         // next engine is re-probed.
         sceneTree: p.connected ? state.sceneTree : undefined,
+        sceneTreeAppliedRevision:
+          p.connected && !connectionChanged ? state.sceneTreeAppliedRevision : undefined,
+        sceneTreeAppliedGeneration:
+          p.connected && !connectionChanged ? state.sceneTreeAppliedGeneration : undefined,
+        sceneTreeRequestId: undefined,
         selectedObjectId: p.connected ? state.selectedObjectId : undefined,
         sceneUnsupported: p.connected ? false : state.sceneUnsupported,
         sceneEditUnsupported: p.connected ? false : state.sceneEditUnsupported,
@@ -786,19 +1091,45 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         redoStack: p.connected ? state.redoStack : [],
         // A pending live-refresh request is meaningless across a (dis)connect.
         sceneRefreshRequired: p.connected ? state.sceneRefreshRequired : undefined,
+        sceneRefreshVersion: connectionChanged || !p.connected
+          ? state.sceneRefreshVersion + 1
+          : state.sceneRefreshVersion,
         // Inspector data is per-object / per-engine: a fresh connection re-probes
         // both, and a disconnect drops the stale snapshot + schema + verdict.
         objectSnapshot: p.connected ? state.objectSnapshot : undefined,
+        objectSnapshotAppliedRevision:
+          p.connected && !connectionChanged ? state.objectSnapshotAppliedRevision : undefined,
+        objectSnapshotAppliedGeneration:
+          p.connected && !connectionChanged ? state.objectSnapshotAppliedGeneration : undefined,
+        objectSnapshotRequestId: undefined,
+        objectSnapshotRefreshVersion: connectionChanged || !p.connected
+          ? state.objectSnapshotRefreshVersion + 1
+          : state.objectSnapshotRefreshVersion,
         // The component selection is part of the Inspector's per-engine state:
         // its id only means something to the engine that issued it.
         selectedComponentId: p.connected ? state.selectedComponentId : undefined,
         componentSnapshot: p.connected ? state.componentSnapshot : undefined,
+        componentSnapshotAppliedRevision:
+          p.connected && !connectionChanged ? state.componentSnapshotAppliedRevision : undefined,
+        componentSnapshotAppliedGeneration:
+          p.connected && !connectionChanged ? state.componentSnapshotAppliedGeneration : undefined,
+        componentSnapshotRequestId: undefined,
+        componentSnapshotRefreshVersion: connectionChanged || !p.connected
+          ? state.componentSnapshotRefreshVersion + 1
+          : state.componentSnapshotRefreshVersion,
         schemaTypes: p.connected ? state.schemaTypes : undefined,
         objectUnsupported: p.connected ? false : state.objectUnsupported,
         // The viewport thumbnail is per-connection: a fresh connection re-probes
         // it, and a disconnect drops the stale frame + verdict.
         viewportThumbnail: p.connected ? state.viewportThumbnail : undefined,
         viewportThumbnailUnsupported: p.connected ? false : state.viewportThumbnailUnsupported,
+        editHistorySummary:
+          p.connected && !connectionChanged ? state.editHistorySummary : undefined,
+        editServiceGeneration:
+          p.connected && !connectionChanged ? state.editServiceGeneration : undefined,
+        editAppliedRevision:
+          p.connected && !connectionChanged ? state.editAppliedRevision : undefined,
+        editSequence: p.connected && !connectionChanged ? state.editSequence : undefined,
       };
     }
 
@@ -860,23 +1191,39 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         connection: { ...state.connection, status: 'disconnected', capabilityNames: undefined },
         // The engine is gone: its scene snapshot + selection are no longer valid.
         sceneTree: undefined,
+        sceneTreeAppliedRevision: undefined,
+        sceneTreeAppliedGeneration: undefined,
+        sceneTreeRequestId: undefined,
         selectedObjectId: undefined,
         sceneUnsupported: undefined,
         sceneEditUnsupported: undefined,
         sceneRefreshRequired: undefined,
+        sceneRefreshVersion: state.sceneRefreshVersion + 1,
         // The engine is gone: its scene ids (and thus the undo/redo history) are
         // no longer valid, so drop both stacks.
         undoStack: [],
         redoStack: [],
         // The Inspector data is likewise invalid once the engine dies.
         objectSnapshot: undefined,
+        objectSnapshotAppliedRevision: undefined,
+        objectSnapshotAppliedGeneration: undefined,
+        objectSnapshotRequestId: undefined,
+        objectSnapshotRefreshVersion: state.objectSnapshotRefreshVersion + 1,
         selectedComponentId: undefined,
         componentSnapshot: undefined,
+        componentSnapshotAppliedRevision: undefined,
+        componentSnapshotAppliedGeneration: undefined,
+        componentSnapshotRequestId: undefined,
+        componentSnapshotRefreshVersion: state.componentSnapshotRefreshVersion + 1,
         schemaTypes: undefined,
         objectUnsupported: undefined,
         // The viewport thumbnail (and its verdict) is invalid once the engine dies.
         viewportThumbnail: undefined,
         viewportThumbnailUnsupported: undefined,
+        editHistorySummary: undefined,
+        editServiceGeneration: undefined,
+        editAppliedRevision: undefined,
+        editSequence: undefined,
         // Live asset.resolve health is invalid once the engine dies; offline
         // manifest and selectedAssetKey stay editor-local and are preserved.
         assetResolveByKey: undefined,
@@ -891,13 +1238,71 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       return { ...state, viewportState: action.payload.state };
     }
 
+    case 'editApplied': {
+      return applyServiceEdit(state, action.payload);
+    }
+
+    case 'editHistorySummaryReceived': {
+      const incoming = action.summary;
+      const currentGeneration = state.editServiceGeneration;
+      const incomingGeneration = incoming.generation ?? undefined;
+      if (
+        currentGeneration !== undefined &&
+        (incomingGeneration === undefined || incomingGeneration < currentGeneration)
+      ) {
+        return state;
+      }
+      const sameGeneration = currentGeneration === incomingGeneration;
+      if (
+        sameGeneration &&
+        ((state.editHistorySummary !== undefined &&
+          incoming.historyRevision < state.editHistorySummary.historyRevision) ||
+          (state.editAppliedRevision !== undefined &&
+            incoming.appliedRevision < state.editAppliedRevision))
+      ) {
+        return state;
+      }
+
+      const generationChanged = currentGeneration !== undefined && !sameGeneration;
+      const treeNeedsRefresh =
+        state.connection.status === 'connected' &&
+        (generationChanged ||
+          state.sceneTreeAppliedGeneration !== incomingGeneration ||
+          (state.sceneTreeAppliedRevision ?? -1) < incoming.appliedRevision);
+      const objectNeedsRefresh =
+        state.selectedObjectId !== undefined &&
+        (generationChanged ||
+          state.objectSnapshotAppliedGeneration !== incomingGeneration ||
+          (state.objectSnapshotAppliedRevision ?? -1) < incoming.appliedRevision);
+      const componentNeedsRefresh =
+        state.selectedComponentId !== undefined &&
+        (generationChanged ||
+          state.componentSnapshotAppliedGeneration !== incomingGeneration ||
+          (state.componentSnapshotAppliedRevision ?? -1) < incoming.appliedRevision);
+      const treeRefresh = treeNeedsRefresh ? refreshSceneTree(state) : {};
+      const objectRefresh = objectNeedsRefresh ? refreshObjectSnapshot(state) : {};
+      const componentRefresh = componentNeedsRefresh ? refreshComponentSnapshot(state) : {};
+
+      return {
+        ...state,
+        ...historyProjection(incoming),
+        ...treeRefresh,
+        ...objectRefresh,
+        ...componentRefresh,
+        editHistorySummary: incoming,
+        editServiceGeneration: incomingGeneration,
+        editAppliedRevision: incoming.appliedRevision,
+        editSequence: generationChanged ? undefined : state.editSequence,
+      };
+    }
+
     case 'sceneTreeChangedLive': {
       // Best-effort live tree update (protocol 0.2). fullRefreshRequired asks the
       // Outliner to re-fetch the whole tree; record the flag and leave the stale
       // tree in place until the refetch lands.
       const p = action.payload;
       if (p.fullRefreshRequired === true) {
-        return { ...state, sceneRefreshRequired: true };
+        return { ...state, ...refreshSceneTree(state) };
       }
       // Without a tree in store yet (e.g. event before the first fetch), there is
       // nothing to merge into; the connect-time fetch is the primary guarantee.
@@ -975,29 +1380,70 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         ...state,
         selectedObjectId: action.id,
         objectSnapshot: undefined,
+        objectSnapshotAppliedRevision: undefined,
+        objectSnapshotAppliedGeneration: undefined,
+        objectSnapshotRequestId: undefined,
         selectedComponentId: undefined,
         componentSnapshot: undefined,
+        componentSnapshotAppliedRevision: undefined,
+        componentSnapshotAppliedGeneration: undefined,
+        componentSnapshotRequestId: undefined,
       };
     }
 
+    case 'sceneTreeFetchStarted': {
+      return { ...state, sceneTreeRequestId: action.requestId };
+    }
+
     case 'sceneTreeLoaded': {
-      // A successful tree clears any prior "unsupported" marker and consumes any
-      // pending live-refresh request (sceneRefreshRequired -> false), which is
-      // what stops the Outliner's consume effect from re-firing.
+      if (
+        (action.requestId !== undefined && state.sceneTreeRequestId !== action.requestId) ||
+        (action.connectionGeneration !== undefined &&
+          (state.connection.status !== 'connected' ||
+            state.connection.generation !== action.connectionGeneration)) ||
+        (action.editServiceGeneration !== undefined &&
+          action.editServiceGeneration !== state.editServiceGeneration)
+      ) {
+        return state;
+      }
+      if (
+        action.appliedRevision !== undefined &&
+        state.editAppliedRevision !== undefined &&
+        action.appliedRevision < state.editAppliedRevision
+      ) {
+        return { ...state, ...refreshSceneTree(state) };
+      }
       return {
         ...state,
         sceneTree: action.root,
+        sceneTreeAppliedRevision: action.appliedRevision ?? state.editAppliedRevision,
+        sceneTreeAppliedGeneration: action.editServiceGeneration ?? state.editServiceGeneration,
         sceneUnsupported: false,
         sceneRefreshRequired: false,
       };
     }
 
     case 'sceneTreeUnsupported': {
+      if (
+        (action.requestId !== undefined && state.sceneTreeRequestId !== action.requestId) ||
+        (action.connectionGeneration !== undefined &&
+          (state.connection.status !== 'connected' ||
+            state.connection.generation !== action.connectionGeneration)) ||
+        (action.editServiceGeneration !== undefined &&
+          action.editServiceGeneration !== state.editServiceGeneration) ||
+        (action.appliedRevision !== undefined &&
+          state.editAppliedRevision !== undefined &&
+          action.appliedRevision < state.editAppliedRevision)
+      ) {
+        return state;
+      }
       // No tree to show; record the engine's degradation for the Outliner. Also
       // consumes any pending live-refresh request so the consume effect settles.
       return {
         ...state,
         sceneTree: undefined,
+        sceneTreeAppliedRevision: action.appliedRevision ?? state.editAppliedRevision,
+        sceneTreeAppliedGeneration: action.editServiceGeneration ?? state.editServiceGeneration,
         sceneUnsupported: true,
         sceneRefreshRequired: false,
       };
@@ -1015,12 +1461,47 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         ...state,
         selectedObjectId: undefined,
         objectSnapshot: undefined,
+        objectSnapshotAppliedRevision: undefined,
+        objectSnapshotAppliedGeneration: undefined,
+        objectSnapshotRequestId: undefined,
         selectedComponentId: undefined,
         componentSnapshot: undefined,
+        componentSnapshotAppliedRevision: undefined,
+        componentSnapshotAppliedGeneration: undefined,
+        componentSnapshotRequestId: undefined,
       };
     }
 
+    case 'objectSnapshotFetchStarted': {
+      return { ...state, objectSnapshotRequestId: action.requestId };
+    }
+
     case 'objectSnapshotLoaded': {
+      if (
+        (action.requestId !== undefined && state.objectSnapshotRequestId !== action.requestId) ||
+        (action.connectionGeneration !== undefined &&
+          (state.connection.status !== 'connected' ||
+            state.connection.generation !== action.connectionGeneration)) ||
+        (action.editServiceGeneration !== undefined &&
+          action.editServiceGeneration !== state.editServiceGeneration)
+      ) {
+        return state;
+      }
+      if (
+        action.appliedRevision !== undefined &&
+        state.editAppliedRevision !== undefined &&
+        action.appliedRevision < state.editAppliedRevision
+      ) {
+        return action.requestId === state.objectSnapshotRequestId
+          ? { ...state, ...refreshObjectSnapshot(state) }
+          : state;
+      }
+      if (
+        state.selectedObjectId !== undefined &&
+        action.snapshot.objectId !== state.selectedObjectId
+      ) {
+        return state;
+      }
       // A successful snapshot clears any prior "unsupported" marker. A snapshot
       // for the entity also invalidates a component selection whose component is
       // no longer advertised (the engine may have dropped it between fetches).
@@ -1031,9 +1512,20 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       return {
         ...state,
         objectSnapshot: action.snapshot,
+        objectSnapshotAppliedRevision: action.appliedRevision ?? state.editAppliedRevision,
+        objectSnapshotAppliedGeneration:
+          action.editServiceGeneration ?? state.editServiceGeneration,
+        objectSnapshotRefreshVersion: state.objectSnapshotRefreshVersion,
         objectUnsupported: false,
         selectedComponentId: stillThere ? state.selectedComponentId : undefined,
         componentSnapshot: stillThere ? state.componentSnapshot : undefined,
+        componentSnapshotAppliedRevision: stillThere
+          ? state.componentSnapshotAppliedRevision
+          : undefined,
+        componentSnapshotAppliedGeneration: stillThere
+          ? state.componentSnapshotAppliedGeneration
+          : undefined,
+        componentSnapshotRequestId: stillThere ? state.componentSnapshotRequestId : undefined,
       };
     }
 
@@ -1043,10 +1535,40 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       }
       // A new component invalidates the previously fetched component snapshot;
       // the Inspector's fetch effect loads the new one.
-      return { ...state, selectedComponentId: action.id, componentSnapshot: undefined };
+      return {
+        ...state,
+        selectedComponentId: action.id,
+        componentSnapshot: undefined,
+        componentSnapshotAppliedRevision: undefined,
+        componentSnapshotAppliedGeneration: undefined,
+      };
+    }
+
+    case 'componentSnapshotFetchStarted': {
+      return { ...state, componentSnapshotRequestId: action.requestId };
     }
 
     case 'componentSnapshotLoaded': {
+      if (
+        (action.requestId !== undefined &&
+          state.componentSnapshotRequestId !== action.requestId) ||
+        (action.connectionGeneration !== undefined &&
+          (state.connection.status !== 'connected' ||
+            state.connection.generation !== action.connectionGeneration)) ||
+        (action.editServiceGeneration !== undefined &&
+          action.editServiceGeneration !== state.editServiceGeneration)
+      ) {
+        return state;
+      }
+      if (
+        action.appliedRevision !== undefined &&
+        state.editAppliedRevision !== undefined &&
+        action.appliedRevision < state.editAppliedRevision
+      ) {
+        return action.requestId === state.componentSnapshotRequestId
+          ? { ...state, ...refreshComponentSnapshot(state) }
+          : state;
+      }
       // Ignore a late snapshot for a component that is no longer selected —
       // including the case where the selection was cleared entirely (back to the
       // object's own properties). Storing it would leave a hidden snapshot that
@@ -1054,7 +1576,13 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       if (action.snapshot.objectId !== state.selectedComponentId) {
         return state;
       }
-      return { ...state, componentSnapshot: action.snapshot };
+      return {
+        ...state,
+        componentSnapshot: action.snapshot,
+        componentSnapshotAppliedRevision: action.appliedRevision ?? state.editAppliedRevision,
+        componentSnapshotAppliedGeneration:
+          action.editServiceGeneration ?? state.editServiceGeneration,
+      };
     }
 
     case 'schemaSnapshotLoaded': {
@@ -1062,14 +1590,37 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     }
 
     case 'objectSnapshotUnsupported': {
+      if (
+        (action.requestId !== undefined && state.objectSnapshotRequestId !== action.requestId) ||
+        (action.objectId !== undefined &&
+          state.selectedObjectId !== undefined &&
+          action.objectId !== state.selectedObjectId) ||
+        (action.connectionGeneration !== undefined &&
+          (state.connection.status !== 'connected' ||
+            state.connection.generation !== action.connectionGeneration)) ||
+        (action.editServiceGeneration !== undefined &&
+          action.editServiceGeneration !== state.editServiceGeneration) ||
+        (action.appliedRevision !== undefined &&
+          state.editAppliedRevision !== undefined &&
+          action.appliedRevision < state.editAppliedRevision)
+      ) {
+        return state;
+      }
       // No snapshot to show; record the engine's degradation for the Inspector.
       // The component selection came from a snapshot this engine cannot serve,
       // so it goes with it.
       return {
         ...state,
         objectSnapshot: undefined,
+        objectSnapshotAppliedRevision: action.appliedRevision ?? state.editAppliedRevision,
+        objectSnapshotAppliedGeneration:
+          action.editServiceGeneration ?? state.editServiceGeneration,
+        objectSnapshotRequestId: action.requestId ?? state.objectSnapshotRequestId,
         selectedComponentId: undefined,
         componentSnapshot: undefined,
+        componentSnapshotAppliedRevision: undefined,
+        componentSnapshotAppliedGeneration: undefined,
+        componentSnapshotRequestId: undefined,
         objectUnsupported: true,
       };
     }
@@ -1122,6 +1673,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     }
 
     case 'recordSceneEdit': {
+      if (state.editHistorySummary !== undefined) {
+        return state;
+      }
       // A fresh accepted edit goes on top of the undo stack and clears the redo
       // branch (the classic "new edit invalidates redo" rule).
       return {
@@ -1132,6 +1686,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     }
 
     case 'undoCommitted': {
+      if (state.editHistorySummary !== undefined) {
+        return state;
+      }
       // Move the most recent edit from the undo stack to the redo stack. Guard an
       // empty stack (a no-op undo should never dispatch this, but stay pure).
       if (state.undoStack.length === 0) {
@@ -1146,6 +1703,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     }
 
     case 'redoCommitted': {
+      if (state.editHistorySummary !== undefined) {
+        return state;
+      }
       // Move the most recent undone edit back onto the undo stack. For a
       // create/duplicate the re-created object has a NEW id, so replace createdId
       // with action.newId before pushing — a subsequent undo then deletes the new
@@ -1155,7 +1715,7 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         return state;
       }
       const top = state.redoStack[state.redoStack.length - 1]!;
-      let restored: SceneEditCommand = top;
+      let restored: SceneEditStackEntry = top;
       if (
         action.newId !== undefined &&
         (top.kind === 'create' || top.kind === 'duplicate')
@@ -1170,6 +1730,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     }
 
     case 'undoFailed': {
+      if (state.editHistorySummary !== undefined) {
+        return { ...state, lastError: { message: action.message } };
+      }
       // The inverse could not be applied (stale id / engine rejection). Drop the
       // offending entry and surface the reason via the shared lastError.
       return {
@@ -1180,6 +1743,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     }
 
     case 'redoFailed': {
+      if (state.editHistorySummary !== undefined) {
+        return { ...state, lastError: { message: action.message } };
+      }
       return {
         ...state,
         redoStack: state.redoStack.slice(0, -1),
@@ -1188,6 +1754,9 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
     }
 
     case 'sceneEditHistoryCleared': {
+      if (state.editHistorySummary !== undefined) {
+        return state;
+      }
       return { ...state, undoStack: [], redoStack: [] };
     }
 
