@@ -253,11 +253,7 @@ impl EditService {
         let lease = match self.bridge.pin() {
             Ok(lease) => lease,
             Err(BackendError::NotConnected) => {
-                let mut history = self
-                    .history
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                history.synchronize(self.bridge.current_generation());
+                self.synchronize_history_if_disconnected();
                 return Ok(completed_noop_ticket());
             }
             Err(error) => return Err(error),
@@ -267,14 +263,7 @@ impl EditService {
             expected_head_id,
             expected_revision,
         };
-        let can_run = {
-            let mut history = self
-                .history
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            history.synchronize(Some(lease.generation));
-            history.prepare_action(request).is_some()
-        };
+        let can_run = self.can_prepare_history_action(lease.generation, request);
         if !can_run {
             return Ok(completed_noop_ticket());
         }
@@ -305,6 +294,35 @@ impl EditService {
             Err(mpsc::error::TrySendError::Full(_)) => Err(BackendError::EditQueueFull),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(BackendError::EditServiceStopping),
         }
+    }
+
+    fn synchronize_history_if_disconnected(&self) {
+        self.bridge.with_current_generation(|generation| {
+            if generation.is_none() {
+                self.history
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .synchronize(None);
+            }
+        });
+    }
+
+    fn can_prepare_history_action(
+        &self,
+        expected_generation: u64,
+        request: HistoryActionRequest,
+    ) -> bool {
+        self.bridge.with_current_generation(|generation| {
+            if generation != Some(expected_generation) {
+                return false;
+            }
+            let mut history = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            history.synchronize(generation);
+            history.prepare_action(request).is_some()
+        })
     }
 
     fn enqueue<F, Fut>(
@@ -674,12 +692,17 @@ async fn process_item(
         return false;
     }
 
+    let unsupported_scene_edit = item
+        .history_request
+        .as_ref()
+        .is_some_and(HistoryRequest::is_scene_structure_edit);
     let mut prepared_history = None;
     let prepared_action = {
+        let current_generation = bridge.current_generation();
         let mut state = history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.synchronize(bridge.current_generation());
+        state.synchronize(current_generation);
         if let Some(request) = item.history_request.take() {
             match state.prepare(request, item.source, item.lease.generation) {
                 Ok(prepared) => prepared_history = Some(prepared),
@@ -793,12 +816,13 @@ async fn process_item(
                             state.synchronize(current);
                             if current == Some(item.lease.generation) {
                                 if let Some(plan) = prepared_action.as_ref() {
-                                    state.finish_action_failure(plan, &error);
+                                    state.finish_action_failure(plan);
                                 } else if matches!(
                                     error,
                                     BackendError::Engine { ref code, .. }
                                         if code == "METHOD_NOT_SUPPORTED"
-                                ) {
+                                ) && unsupported_scene_edit
+                                {
                                     state.mark_edit_unsupported();
                                 }
                             }
@@ -924,6 +948,17 @@ mod tests {
 
     fn success(value: Value) -> Result<Value, BackendError> {
         Ok(value)
+    }
+
+    async fn respond_method_not_supported(peer: &mut LoopbackTransport, id: CorrelationId) {
+        let error = BridgeError {
+            code: ErrorCode::method_not_supported(),
+            message: "unsupported".to_owned(),
+            data: None,
+        };
+        peer.send(response_frame(id, ResponsePayload::Error(error)))
+            .await
+            .expect("エンジンの未対応応答を送信できる");
     }
 
     #[tokio::test]
@@ -1944,24 +1979,174 @@ mod tests {
         let redo = queue_history_action(&service, HistoryDirection::Redo);
         let (id, method, _) = next_request(&mut peer).await;
         assert_eq!(method, "object.setProperty");
-        let error = BridgeError {
-            code: ErrorCode::method_not_supported(),
-            message: "unsupported".to_owned(),
-            data: None,
-        };
-        peer.send(response_frame(id, ResponsePayload::Error(error)))
-            .await
-            .expect("error response sends");
+        respond_method_not_supported(&mut peer, id).await;
         assert!(matches!(
             redo.result().await,
             Err(BackendError::Engine { .. })
         ));
         assert_eq!(service.history_cursor(HistoryDirection::Redo).0, Some(60));
-        let unsupported = queue_history_action(&service, HistoryDirection::Redo);
+        let next_redo = queue_history_action(&service, HistoryDirection::Redo);
+        let (id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.reparentObject");
         assert_eq!(
-            unsupported.result().await.expect("unsupported is a no-op"),
+            serde_json::to_value(params).unwrap(),
+            serde_json::json!({"objectId": "retained", "newParentId": "parent"})
+        );
+        respond(&mut peer, id, serde_json::json!({"accepted": true})).await;
+        assert!(next_redo.result().await.is_ok());
+        assert_eq!(service.history_cursor(HistoryDirection::Redo).0, None);
+
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unsupported_structure_edit_makes_undo_a_noop() {
+        let (service, _control, handle, mut peer) = test_service_with_peer(4);
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            62,
+            history::HistoryRecord::Create {
+                created_id: "created".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        let bridge = service.bridge.clone();
+        let edit = service
+            .enqueue_recorded_from_ui(
+                EditKind::Edit,
+                HistoryRequest::CreateObject {
+                    parent_id: None,
+                    kind: None,
+                },
+                move |lease| async move {
+                    bridge
+                        .send_with_lease(&lease, "scene.createObject", None)
+                        .await
+                        .map(QueuedEditResult::plain)
+                },
+            )
+            .expect("構造編集を列へ入れられる");
+        let (id, method, _) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.createObject");
+        respond_method_not_supported(&mut peer, id).await;
+        assert!(matches!(
+            edit.result().await,
+            Err(BackendError::Engine { .. })
+        ));
+
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        assert_eq!(
+            undo.result().await.expect("未対応後のundoは無操作"),
             Value::Null
         );
+        assert!(tokio::time::timeout(Duration::from_millis(30), peer.recv())
+            .await
+            .is_err());
+        assert_eq!(service.history_cursor(HistoryDirection::Undo).0, Some(62));
+
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unsupported_property_edit_keeps_undo_available() {
+        let (service, _control, handle, mut peer) = test_service_with_peer(4);
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            63,
+            history::HistoryRecord::Create {
+                created_id: "created".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        let bridge = service.bridge.clone();
+        let revision = service.applied_history_revision().1;
+        let edit = service
+            .enqueue_recorded_from_ui(
+                EditKind::Edit,
+                HistoryRequest::SetProperty {
+                    object_id: "object".to_owned(),
+                    property: "value".to_owned(),
+                    requested_value: serde_json::json!(2),
+                    old_value: history::PriorCapture::Ui(history::HistoryCapture {
+                        generation: 1,
+                        revision,
+                        value: Some(serde_json::json!(1)),
+                    }),
+                },
+                move |lease| async move {
+                    let mut params = serde_json::Map::new();
+                    params.insert("objectId".to_owned(), serde_json::json!("object"));
+                    params.insert("property".to_owned(), serde_json::json!("value"));
+                    params.insert("value".to_owned(), serde_json::json!(2));
+                    bridge
+                        .send_with_lease(&lease, "object.setProperty", Some(params))
+                        .await
+                        .map(QueuedEditResult::plain)
+                },
+            )
+            .expect("値編集を列へ入れられる");
+        let (id, method, _) = next_request(&mut peer).await;
+        assert_eq!(method, "object.setProperty");
+        respond_method_not_supported(&mut peer, id).await;
+        assert!(matches!(
+            edit.result().await,
+            Err(BackendError::Engine { .. })
+        ));
+
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        let (id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.deleteObject");
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            serde_json::json!({"objectId": "created"})
+        );
+        respond(&mut peer, id, serde_json::json!({"accepted": true})).await;
+        assert!(undo.result().await.is_ok());
+
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unsupported_runtime_control_keeps_undo_available() {
+        let (service, _control, handle, mut peer) = test_service_with_peer(4);
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            64,
+            history::HistoryRecord::Create {
+                created_id: "created".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        let bridge = service.bridge.clone();
+        let control = service
+            .enqueue_from_ui(EditKind::RuntimeControl, move |lease| async move {
+                bridge
+                    .send_with_lease(&lease, "runtime.play", Some(serde_json::Map::new()))
+                    .await
+            })
+            .expect("実行制御を列へ入れられる");
+        let (id, method, _) = next_request(&mut peer).await;
+        assert_eq!(method, "runtime.play");
+        respond_method_not_supported(&mut peer, id).await;
+        assert!(matches!(
+            control.result().await,
+            Err(BackendError::Engine { .. })
+        ));
+
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        let (id, method, _) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.deleteObject");
+        respond(&mut peer, id, serde_json::json!({"accepted": true})).await;
+        assert!(undo.result().await.is_ok());
 
         service.shutdown().await;
         handle.shutdown().await;
@@ -2143,6 +2328,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_history_admission_does_not_clear_the_new_generation() {
+        let (service, control, handle, _peer) = test_service_with_peer(4);
+        control.set_generation(2, handle.clone());
+        {
+            let mut state = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.synchronize(Some(2));
+            state.seed_undo_record(
+                82,
+                history::HistoryRecord::Create {
+                    created_id: "new-generation".to_owned(),
+                    parent_id: None,
+                    kind: None,
+                },
+            );
+        }
+        let (head_id, revision) = service.history_cursor(HistoryDirection::Undo);
+        let request = HistoryActionRequest {
+            direction: HistoryDirection::Undo,
+            expected_head_id: head_id,
+            expected_revision: revision,
+        };
+
+        assert!(!service.can_prepare_history_action(1, request));
+        assert_eq!(service.history_snapshot().0, Some(2));
+        assert_eq!(service.history_cursor(HistoryDirection::Undo).0, Some(82));
+        assert_eq!(
+            service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .undo_records(),
+            vec![history::HistoryRecord::Create {
+                created_id: "new-generation".to_owned(),
+                parent_id: None,
+                kind: None,
+            }]
+        );
+
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn duplicate_undo_and_redo_requests_apply_only_the_expected_head_once() {
         let (service, _control, handle, mut peer) = test_service_with_peer(4);
         seed_history(
@@ -2238,7 +2469,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn history_clears_on_disconnect_and_exit_but_survives_workspace_close() {
+    async fn engine_exit_bridge_disconnect_clears_both_histories() {
         let (service, control, handle) = test_service(4);
         seed_history(
             &service,
@@ -2269,6 +2500,7 @@ mod tests {
             assert_eq!(state.undo_len(), 1);
             assert_eq!(state.redo_len(), 1);
         }
+        // エンジン終了後にBridgeが切断されるときと同じ世代変更を流す。
         control.disconnect();
         let snapshot = service.history_snapshot();
         assert_eq!(snapshot.0, None);
@@ -2282,7 +2514,10 @@ mod tests {
         }
         service.shutdown().await;
         handle.shutdown().await;
+    }
 
+    #[tokio::test]
+    async fn history_survives_workspace_close_without_bridge_generation_change() {
         let (service, _control, handle) = test_service(4);
         seed_history(
             &service,
@@ -2317,14 +2552,17 @@ mod tests {
                 .history
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            // workspace_closeはBridge世代を変えないため履歴を保持する。
+            // workspace_close は Bridge 世代を変えないため履歴を保持する。
             state.synchronize(Some(1));
             assert_eq!(state.undo_len(), 1);
             assert_eq!(state.redo_len(), 1);
         }
         service.shutdown().await;
         handle.shutdown().await;
+    }
 
+    #[tokio::test]
+    async fn history_clears_on_editor_service_shutdown() {
         let (service, _control, handle) = test_service(4);
         seed_history(
             &service,

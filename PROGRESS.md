@@ -9,7 +9,7 @@
 - MCP-002: UI/MCP共通の容量64のactor列と世代固定Bridge handleを追加。停止時は受付を閉じ、実行中のBridge操作をキャンセルし、保留を拒否してactorをjoinする。猶予超過時の中止/joinとdispatcher停止待ちの2秒上限も確認。履歴消去・旧応答破棄・実接続の切断を含む試験を追加。既存UI入口は未変更。fmt/clippy exit 0、cargo test 172単体+14 opt-in、証拠 `verify-MCP-002-8.txt`〜`verify-MCP-002-10.txt`。
 - MCP-003: `NORVES_MOCK_PROFILE=mcp-edit` の試験プロフィールに可変ツリー、作成/削除/親変更/複製、任意JSON値の設定と読み取りを追加。複製の再実行は新IDを払い出し、scene.liveUpdate無しでも編集できる。既定の能力一覧・golden応答は維持。CTest 8/8、既存conformance 1/1、証拠 `verify-MCP-003-4.txt` / `verify-MCP-003-5.txt`。
 - MCP-004: 編集actorへ4種の履歴記録を追加し、accepted・newId・appliedValue・旧値・redo条件を適用。UI捕捉を改訂値/親で補正し、失われた補正情報が必要な場合だけBridge操作前に再取得を要求する。補正情報が失われていない古い捕捉と、旧値未取得時の書き込みのみの動作も確認。MCP旧値取得と書き込みの一体実行、JSON.stringify互換、512項目/4MiBの補正上限、削除時の損失改訂記録と接続世代変更時の解放を試験。fmt/clippy exit 0、cargo test exit 0（188単体・14統合試験）、証拠 `verify-MCP-004-14.txt`〜`verify-MCP-004-16.txt`。
-- MCP-005: 4種の逆操作を履歴記録経路から分け、作成/複製redoの再採番、単発失敗時の対象破棄、accepted delete・切断・終了時の履歴消去を実装。workspace閉鎖がBridge世代を変えない場合の履歴保持も確認。空・未接続・未対応・古いcursor・undo/redo連打のno-opも検査。Rust 196件成功、fmt/clippy exit 0、証拠 `verify-MCP-005-19.txt`〜`verify-MCP-005-21.txt`。
+- MCP-005: 4種の逆操作、作成/複製redoの再採番、単発失敗時の対象破棄、accepted delete・Bridge切断・終了時の履歴消去を実装。構造編集のMETHOD_NOT_SUPPORTEDだけで履歴を無効化し、値編集・RuntimeControl・undo/redoの単発失敗は後続操作を止めない。根直下の旧親省略、workspace閉鎖時の保持、空・未接続・未対応・古いcursor・連打のno-op、世代交替後に新履歴を消さないこと、undo/redoのappliedValue補正を確認。Rust 203 + 14件成功、fmt/clippy exit 0、証拠 `verify-MCP-005-22.txt`〜`verify-MCP-005-24.txt`。
 - MCP M1: 2026-10-03 に E0〜E3 の設計・29タスク・依存一覧・MyWorkflow ガイド正本2本の同期を承認済み。設計評価PASS、文書検査PASS。設計文書は `90dd0fd`。
 - S-001: Outliner の折りたたみ記憶に接続の鍵(connected の間だけ sessionId から作る)を持たせ、描画時に照合して別の接続の記憶を捨てる。typecheck exit 0、vitest 630/630(新規 6 件、うち 4 件は旧実装で落ちることを確認)。
 - S-001 指摘対応: 接続の世代番号を store に足し、同じ sessionId での再接続もパネル不在中に検出する。typecheck exit 0、vitest 632/632(新規の Outliner テストは旧実装で落ちることを確認)。
@@ -42,6 +42,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-03 MCP-005差し戻し対応の開始ゲート `scripts/verify.ps1` exit 0（fixtures 174、Bridge Rust、IPC名32/11、frontend typecheck/build/test 42/43/649。C++は標準ゲートのためSKIP）。最終 fmt / clippy / `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml` は exit 0、Rust 203 + 14件成功。METHOD_NOT_SUPPORTEDの3経路、逆操作失敗後の残存redo、engine exit後のBridge切断、世代競合、appliedValue補正をログで確認。証拠 `.harness/runs/20261003-035149/preflight-MCP-005-r9.txt` / `verify-MCP-005-22.txt`〜`verify-MCP-005-24.txt`。
 - 2026-10-03 MCP-005開始ゲート `scripts/verify.ps1` exit 0（fixtures 174、Bridge Rust、IPC 32/11、frontend typecheck/build/test 42/43/649）。最終fmt/clippy/cargo testはexit 0、Rust 196件成功。各出力を `.harness/runs/20261003-035149/preflight-MCP-005.txt` / `verify-MCP-005-19.txt`〜`verify-MCP-005-21.txt` に保存して開いて確認。
 - 2026-10-03 MCP-004差し戻し対応: 補正キャッシュが失った最新改訂を追跡し、追い出し・容量超過・削除の後に古い既知値で操作する場合だけ再取得を要求する。改訂0の古いUI捕捉でも損失のない場合は維持し、値未取得なら損失後も書き込みだけ行う。開始ゲート `scripts/verify.ps1 -Cpp` exit 0、最終 fmt/clippy/cargo test もexit 0（188単体・14統合）。ログ `.harness/runs/20261003-035149/verify-MCP-004-14.txt`〜`verify-MCP-004-16.txt` を開いて確認。
 - 2026-10-03 MCP-004開始ゲート `scripts/verify.ps1 -Cpp` exit 0。fixtures 174、C++ ctest 8/8、Rust bridge・typecheck/build/lint/vitest 42/43/649 が成功。libwebsockets の MSB8065 警告が1件。

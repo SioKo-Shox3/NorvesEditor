@@ -92,6 +92,18 @@ pub(crate) enum HistoryRequest {
     DeleteObject { object_id: String },
 }
 
+impl HistoryRequest {
+    pub(super) fn is_scene_structure_edit(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateObject { .. }
+                | Self::DuplicateObject { .. }
+                | Self::ReparentObject { .. }
+                | Self::DeleteObject { .. }
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HistoryDirection {
     Undo,
@@ -454,7 +466,7 @@ impl HistoryState {
             return Ok(false);
         };
         self.applied_revision = self.applied_revision.wrapping_add(1);
-        self.update_action_corrections(&action.record, &updated_record, action.direction);
+        self.update_action_corrections(&action.record, &updated_record, action.direction, &result);
         entry.record = updated_record;
         self.push_marker(source, kind, sequence, generation);
         match action.direction {
@@ -464,12 +476,9 @@ impl HistoryState {
         Ok(true)
     }
 
-    pub(super) fn finish_action_failure(&mut self, action: &HistoryAction, error: &BackendError) {
+    pub(super) fn finish_action_failure(&mut self, action: &HistoryAction) {
         if self.pop_action_entry(action).is_some() {
             self.revision = self.revision.wrapping_add(1);
-        }
-        if matches!(error, BackendError::Engine { code, .. } if code == "METHOD_NOT_SUPPORTED") {
-            self.edit_unsupported = true;
         }
     }
 
@@ -510,6 +519,7 @@ impl HistoryState {
         old_record: &HistoryRecord,
         new_record: &HistoryRecord,
         direction: HistoryDirection,
+        result: &Value,
     ) {
         let revision = self.applied_revision;
         match (old_record, new_record, direction) {
@@ -592,10 +602,11 @@ impl HistoryState {
                 HistoryRecord::SetProperty { .. },
                 direction,
             ) => {
-                let value = match direction {
+                let recorded_value = match direction {
                     HistoryDirection::Undo => old_value,
                     HistoryDirection::Redo => new_value,
                 };
+                let value = result.get("appliedValue").unwrap_or(recorded_value);
                 self.corrections.insert(
                     CorrectionKey::Property {
                         object_id: object_id.clone(),
@@ -1507,6 +1518,75 @@ mod tests {
         let missing = capture::<Value>(1, 0, None);
         let known_null = capture(1, 0, Some(Value::Null));
         assert_ne!(missing, known_null);
+    }
+
+    #[test]
+    fn undo_redo_correction_cache_uses_engine_applied_value() {
+        let mut state = HistoryState::default();
+        state.synchronize(Some(4));
+        state.seed_undo_record(
+            20,
+            HistoryRecord::SetProperty {
+                object_id: "object".to_owned(),
+                property: "value".to_owned(),
+                old_value: serde_json::json!(1),
+                new_value: serde_json::json!(2),
+            },
+        );
+
+        let (head_id, revision) = state.history_cursor(HistoryDirection::Undo);
+        let undo = state
+            .prepare_action(HistoryActionRequest {
+                direction: HistoryDirection::Undo,
+                expected_head_id: head_id,
+                expected_revision: revision,
+            })
+            .expect("undoの先頭が一致する");
+        assert!(state
+            .finish_action_success(
+                undo,
+                EditSource::Ui,
+                EditKind::Undo,
+                21,
+                4,
+                serde_json::json!({"accepted": true, "appliedValue": 10}),
+            )
+            .expect("undoを適用できる"));
+        assert_eq!(
+            state.corrections.entries[&CorrectionKey::Property {
+                object_id: "object".to_owned(),
+                property: "value".to_owned(),
+            }]
+                .value,
+            CorrectionValue::Property(serde_json::json!(10))
+        );
+
+        let (head_id, revision) = state.history_cursor(HistoryDirection::Redo);
+        let redo = state
+            .prepare_action(HistoryActionRequest {
+                direction: HistoryDirection::Redo,
+                expected_head_id: head_id,
+                expected_revision: revision,
+            })
+            .expect("redoの先頭が一致する");
+        assert!(state
+            .finish_action_success(
+                redo,
+                EditSource::Ui,
+                EditKind::Redo,
+                22,
+                4,
+                serde_json::json!({"accepted": true, "appliedValue": 20}),
+            )
+            .expect("redoを適用できる"));
+        assert_eq!(
+            state.corrections.entries[&CorrectionKey::Property {
+                object_id: "object".to_owned(),
+                property: "value".to_owned(),
+            }]
+                .value,
+            CorrectionValue::Property(serde_json::json!(20))
+        );
     }
 
     #[test]
