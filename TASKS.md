@@ -157,8 +157,8 @@ M2 の共通規則:
 - notes: 先行 MCP-001。既存メソッドの実装のみ。新schema・能力トークン・SDK APIを足さない。型名・プロパティは試験用の汎用名。公開ヘッダを編集しない。新プロフィールの試験をCMake/ctestに登録する。
 
 ## MCP-004: 4種の履歴記録と記録条件を移植する
-- status: todo
-- done-when: NE03の1/2/3/9。accepted:trueだけを記録し、作成・複製のnewId、既知の旧値、engineのappliedValueを扱う。同値と旧値不在は記録せずredoを保持する。新記録はredoを消す。UIの捕捉後のlive更新だけでは旧値を替えないが、捕捉改訂より新しい共通列の適用値/親があれば補正する。MCPのB適用→古いUIからC適用→undo先B、親変更の同等ケースを試験する。補正情報不足では再取得を求める。MCPは列内で旧値を照会し、取得失敗では書かない。JSON.stringifyのキー順/整数キー/数値/null/負のゼロを再現する。対応表の実試験と証拠を埋める。
+- status: done
+- done-when: NE03の1/2/3/9。accepted:trueだけを記録し、作成・複製のnewId、既知の旧値、engineのappliedValueを扱う。同値と旧値不在は記録せずredoを保持する。新記録はredoを消す。UIの捕捉後のlive更新だけでは旧値を替えないが、捕捉改訂より新しい共通列の適用値/親があれば補正する。MCPのB適用→古いUIからC適用→undo先B、親変更の同等ケースを試験する。補正情報不足では再取得を求める。MCPは列内で旧値を照会し、取得失敗では書かない。JSON.stringifyのキー順/整数キー/数値/null/負のゼロを再現する。対応表の実試験と証拠を埋める。補正情報はキーとJSON値の合計4MiB・512項目まで保持し、超過した場合は再取得を求める。削除と接続世代変更で補正情報を解放する試験を置く。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`

@@ -8,6 +8,7 @@
 - MCP-001: ADR 0010 / 0011 の承認設計と要件書に合わせ、`docs/architecture.md` の読み取り・書き込み・画面操作経路を明確化。`git diff 700dfa8 --check` exit 0、証拠 `.harness/runs/20261003-035149/verify-MCP-001-4.txt`。
 - MCP-002: UI/MCP共通の容量64のactor列と世代固定Bridge handleを追加。停止時は受付を閉じ、実行中のBridge操作をキャンセルし、保留を拒否してactorをjoinする。猶予超過時の中止/joinとdispatcher停止待ちの2秒上限も確認。履歴消去・旧応答破棄・実接続の切断を含む試験を追加。既存UI入口は未変更。fmt/clippy exit 0、cargo test 172単体+14 opt-in、証拠 `verify-MCP-002-8.txt`〜`verify-MCP-002-10.txt`。
 - MCP-003: `NORVES_MOCK_PROFILE=mcp-edit` の試験プロフィールに可変ツリー、作成/削除/親変更/複製、任意JSON値の設定と読み取りを追加。複製の再実行は新IDを払い出し、scene.liveUpdate無しでも編集できる。既定の能力一覧・golden応答は維持。CTest 8/8、既存conformance 1/1、証拠 `verify-MCP-003-4.txt` / `verify-MCP-003-5.txt`。
+- MCP-004: 編集actorへ4種の履歴記録を追加し、accepted・newId・appliedValue・旧値・redo条件を適用。UI捕捉を改訂値/親で補正し、補正不足はBridge操作前に再取得を要求する。MCP旧値取得と書き込みの一体実行、JSON.stringify互換、512項目/4MiBの補正上限と削除/世代変更時の解放を試験。fmt/clippy exit 0、cargo test exit 0（186単体・14統合試験）、証拠 `verify-MCP-004-1.txt`〜`verify-MCP-004-3.txt`。
 - MCP M1: 2026-10-03 に E0〜E3 の設計・29タスク・依存一覧・MyWorkflow ガイド正本2本の同期を承認済み。設計評価PASS、文書検査PASS。設計文書は `90dd0fd`。
 - S-001: Outliner の折りたたみ記憶に接続の鍵(connected の間だけ sessionId から作る)を持たせ、描画時に照合して別の接続の記憶を捨てる。typecheck exit 0、vitest 630/630(新規 6 件、うち 4 件は旧実装で落ちることを確認)。
 - S-001 指摘対応: 接続の世代番号を store に足し、同じ sessionId での再接続もパネル不在中に検出する。typecheck exit 0、vitest 632/632(新規の Outliner テストは旧実装で落ちることを確認)。
@@ -26,10 +27,10 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-003完了、次はMCP-004。
+- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-004完了、次はMCP-005。
 
 ## Next
-- 次のタスク: MCP-004（4種の履歴記録と記録条件を移植する）。
+- 次のタスク: MCP-005（単発の取り消し・やり直しと履歴寿命を移植する）。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -40,6 +41,8 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-03 MCP-004開始ゲート `scripts/verify.ps1 -Cpp` exit 0。fixtures 174、C++ ctest 8/8、Rust bridge・typecheck/build/lint/vitest 42/43/649 が成功。libwebsockets の MSB8065 警告が1件。
+- 2026-10-03 MCP-004検証ログ `.harness/runs/20261003-035149/verify-MCP-004-1.txt`〜`verify-MCP-004-3.txt` を開いて確認。UIの古い値/親は同じ対象の共通列適用値があれば補正し、補正キャッシュの範囲外・別世代では適用前に再取得を返す。MCPは読取り結果なし/失敗時に書込みを呼ばない。
 - 2026-10-03 MCP-003: CTest の `mock_edit_profile_test` が編集プロフィールの構造変更/汎用値/新ID再発行/ライブ更新抑止/`log.subscribe` ack を検査。集約ゲートはfixtures 174、C++ 8/8、Rust・フロントエンド各ゲート成功。保存ログを開いて確認。
 - 2026-10-03 MCP-002: 開始ゲート `./scripts/verify.ps1` exit 0(fixtures 174、bridge workspace Rust、IPC commands 32 / events 11、typecheck/build、vitest 42/43/649)。最終のfmt/clippy/cargo testはexit 0、Rustは172単体+14 opt-in。保存ログを読み、新規の停止・世代・実接続試験も通過確認。`.harness/runs/20261003-035149/verify-MCP-002-8.txt`〜`verify-MCP-002-10.txt`。
 - 2026-10-03 MCP-001開始時の `./scripts/verify.ps1 -Cpp`: exit 0（fixtures 174、C++ ctest 7/7、IPC commands 32 / events 11、vitest 42/43/649、typecheck/build/fmt/clippy）。CMake の libwebsockets 生成物について MSB8065 警告が1件出たが、build と全ゲートは成功。MCP-001 の差分検証は exit 0、証拠 `.harness/runs/20261003-035149/verify-MCP-001-1.txt`。

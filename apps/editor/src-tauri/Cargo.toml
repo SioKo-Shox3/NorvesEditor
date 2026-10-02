@@ -30,7 +30,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2.11", features = [] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 # Bridge crates: src-tauri is a separate workspace, so reference the bridge
 # crates by explicit relative path (no workspace inheritance available here).
 norves-bridge-editor-client = { path = "../../../bridge/crates/norves-bridge-editor-client" }
