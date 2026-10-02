@@ -166,7 +166,7 @@ M2 の共通規則:
 - notes: 先行 MCP-002。serde_jsonの値等価をそのまま現行のJSON.stringify比較へ代用しない。未取得とnullを別の型で表す。コンポーネント編集は現行の履歴対象を勝手に広げない。serde_jsonのpreserve_orderを有効にし、標準のValue等価やキー順無視に変更しない。
 
 ## MCP-005: 単発の取り消し・やり直しと履歴寿命を移植する
-- status: todo
+- status: done
 - done-when: NE03の4/5/6/7/8をそれぞれ独立したRust試験で確かめ、1〜9の全行が埋まる。4種の逆操作は公開編集手順を通らず、履歴に積まず、内部deleteでredoを消さない。根直下の旧親は省略する。redoの新IDへ置換し次のundoが新IDを使う。単発失敗は対象記録を捨てて通知する。公開delete成功・切断・終了で両履歴を消し、workspace閉鎖では保持する。空・切断・未対応時のundo/redoは無操作。UIの先頭ID/履歴改訂が一致しない要求、同じ先頭へのundo/redo連打、未接続要求はno-opになるRust試験がある。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

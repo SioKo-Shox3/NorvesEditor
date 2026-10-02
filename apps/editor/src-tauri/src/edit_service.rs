@@ -14,7 +14,10 @@ use crate::error::BackendError;
 
 mod history;
 
-use history::{HistoryMarker, HistoryRequest, HistoryState, QueuedEditResult};
+use history::{
+    HistoryAction, HistoryActionRequest, HistoryDirection, HistoryMarker, HistoryRequest,
+    HistoryState, QueuedEditResult,
+};
 
 const QUEUE_CAPACITY: usize = 64;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
@@ -22,6 +25,11 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 type EditFuture =
     Pin<Box<dyn Future<Output = Result<QueuedEditResult, BackendError>> + Send + 'static>>;
 type EditAction = Box<dyn FnOnce(BridgeLease) -> EditFuture + Send + 'static>;
+
+enum QueuedAction {
+    Edit(EditAction),
+    History(HistoryActionRequest),
+}
 
 async fn join_after_grace(mut join: JoinHandle<()>) {
     if tokio::time::timeout(SHUTDOWN_GRACE, &mut join)
@@ -54,7 +62,7 @@ struct QueueItem {
     source: EditSource,
     kind: EditKind,
     lease: BridgeLease,
-    action: EditAction,
+    action: QueuedAction,
     history_request: Option<HistoryRequest>,
     cancelled: oneshot::Receiver<()>,
     result: oneshot::Sender<Result<QueuedEditResult, BackendError>>,
@@ -201,6 +209,104 @@ impl EditService {
         self.enqueue_from_mcp(kind, action)?.result().await
     }
 
+    pub(crate) fn enqueue_undo_from_ui(
+        &self,
+        expected_head_id: Option<u64>,
+        expected_revision: u64,
+    ) -> Result<EditTicket, BackendError> {
+        self.enqueue_history_action(
+            EditSource::Ui,
+            HistoryDirection::Undo,
+            expected_head_id,
+            expected_revision,
+        )
+    }
+
+    pub(crate) fn enqueue_redo_from_ui(
+        &self,
+        expected_head_id: Option<u64>,
+        expected_revision: u64,
+    ) -> Result<EditTicket, BackendError> {
+        self.enqueue_history_action(
+            EditSource::Ui,
+            HistoryDirection::Redo,
+            expected_head_id,
+            expected_revision,
+        )
+    }
+
+    fn enqueue_history_action(
+        &self,
+        source: EditSource,
+        direction: HistoryDirection,
+        expected_head_id: Option<u64>,
+        expected_revision: u64,
+    ) -> Result<EditTicket, BackendError> {
+        let mut admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !admission.accepting {
+            return Err(BackendError::EditServiceStopping);
+        }
+
+        let lease = match self.bridge.pin() {
+            Ok(lease) => lease,
+            Err(BackendError::NotConnected) => {
+                let mut history = self
+                    .history
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                history.synchronize(self.bridge.current_generation());
+                return Ok(completed_noop_ticket());
+            }
+            Err(error) => return Err(error),
+        };
+        let request = HistoryActionRequest {
+            direction,
+            expected_head_id,
+            expected_revision,
+        };
+        let can_run = {
+            let mut history = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            history.synchronize(Some(lease.generation));
+            history.prepare_action(request).is_some()
+        };
+        if !can_run {
+            return Ok(completed_noop_ticket());
+        }
+
+        let (cancel, cancelled) = oneshot::channel();
+        let (result, result_rx) = oneshot::channel();
+        let item = QueueItem {
+            sequence: admission.next_sequence,
+            source,
+            kind: match direction {
+                HistoryDirection::Undo => EditKind::Undo,
+                HistoryDirection::Redo => EditKind::Redo,
+            },
+            lease,
+            action: QueuedAction::History(request),
+            history_request: None,
+            cancelled,
+            result,
+        };
+        match self.sender.try_send(item) {
+            Ok(()) => {
+                admission.next_sequence = admission.next_sequence.wrapping_add(1);
+                Ok(EditTicket {
+                    result: result_rx,
+                    cancel,
+                })
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => Err(BackendError::EditQueueFull),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(BackendError::EditServiceStopping),
+        }
+    }
+
     fn enqueue<F, Fut>(
         &self,
         source: EditSource,
@@ -262,7 +368,7 @@ impl EditService {
             source,
             kind,
             lease,
-            action,
+            action: QueuedAction::Edit(action),
             history_request,
             cancelled,
             result,
@@ -288,6 +394,17 @@ impl EditService {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             history.synchronize(generation);
             history.snapshot()
+        })
+    }
+
+    pub(crate) fn history_cursor(&self, direction: HistoryDirection) -> (Option<u64>, u64) {
+        self.bridge.with_current_generation(|generation| {
+            let mut history = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            history.synchronize(generation);
+            history.history_cursor(direction)
         })
     }
 
@@ -319,12 +436,172 @@ impl EditService {
         if let Some(join) = join_guard.take() {
             join_after_grace(join).await;
         }
+        self.history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear_for_shutdown();
     }
 
     #[cfg(test)]
     pub(crate) fn history_lock_available(&self) -> bool {
         self.history.try_lock().is_ok()
     }
+}
+
+fn completed_noop_ticket() -> EditTicket {
+    let (result_tx, result) = oneshot::channel();
+    let (cancel, cancelled) = oneshot::channel();
+    let _ = result_tx.send(Ok(QueuedEditResult::plain(Value::Null)));
+    drop(cancelled);
+    EditTicket { result, cancel }
+}
+
+async fn run_history_action(
+    bridge: BridgeFacade,
+    lease: BridgeLease,
+    action: HistoryAction,
+) -> Result<QueuedEditResult, BackendError> {
+    let mut params = serde_json::Map::new();
+    let (method, result_kind) = match (&action.record, action.direction) {
+        (history::HistoryRecord::Create { created_id, .. }, HistoryDirection::Undo)
+        | (history::HistoryRecord::Duplicate { created_id, .. }, HistoryDirection::Undo) => {
+            params.insert("objectId".to_owned(), Value::String(created_id.clone()));
+            ("scene.deleteObject", HistoryResultKind::Delete)
+        }
+        (
+            history::HistoryRecord::Create {
+                parent_id, kind, ..
+            },
+            HistoryDirection::Redo,
+        ) => {
+            insert_optional_string(&mut params, "parentId", parent_id.as_deref());
+            insert_optional_string(&mut params, "kind", kind.as_deref());
+            ("scene.createObject", HistoryResultKind::Create)
+        }
+        (
+            history::HistoryRecord::Duplicate {
+                source_object_id,
+                parent_id,
+                ..
+            },
+            HistoryDirection::Redo,
+        ) => {
+            params.insert(
+                "objectId".to_owned(),
+                Value::String(source_object_id.clone()),
+            );
+            insert_optional_string(&mut params, "newParentId", parent_id.as_deref());
+            ("scene.duplicateObject", HistoryResultKind::Duplicate)
+        }
+        (
+            history::HistoryRecord::Reparent {
+                object_id,
+                old_parent_id,
+                ..
+            },
+            HistoryDirection::Undo,
+        ) => {
+            params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+            insert_optional_string(&mut params, "newParentId", old_parent_id.as_deref());
+            ("scene.reparentObject", HistoryResultKind::Reparent)
+        }
+        (
+            history::HistoryRecord::Reparent {
+                object_id,
+                new_parent_id,
+                ..
+            },
+            HistoryDirection::Redo,
+        ) => {
+            params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+            insert_optional_string(&mut params, "newParentId", new_parent_id.as_deref());
+            ("scene.reparentObject", HistoryResultKind::Reparent)
+        }
+        (
+            history::HistoryRecord::SetProperty {
+                object_id,
+                property,
+                old_value,
+                ..
+            },
+            HistoryDirection::Undo,
+        ) => {
+            params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+            params.insert("property".to_owned(), Value::String(property.clone()));
+            params.insert("value".to_owned(), old_value.clone());
+            ("object.setProperty", HistoryResultKind::Property)
+        }
+        (
+            history::HistoryRecord::SetProperty {
+                object_id,
+                property,
+                new_value,
+                ..
+            },
+            HistoryDirection::Redo,
+        ) => {
+            params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+            params.insert("property".to_owned(), Value::String(property.clone()));
+            params.insert("value".to_owned(), new_value.clone());
+            ("object.setProperty", HistoryResultKind::Property)
+        }
+    };
+
+    let value = bridge.send_with_lease(&lease, method, Some(params)).await?;
+    validate_history_result(method, result_kind, &value)?;
+    Ok(QueuedEditResult::plain(value))
+}
+
+#[derive(Clone, Copy)]
+enum HistoryResultKind {
+    Create,
+    Duplicate,
+    Delete,
+    Reparent,
+    Property,
+}
+
+fn insert_optional_string(
+    params: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value {
+        params.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+}
+
+fn validate_history_result(
+    method: &str,
+    kind: HistoryResultKind,
+    value: &Value,
+) -> Result<(), BackendError> {
+    let result = match kind {
+        HistoryResultKind::Create => norves_bridge_editor_client::parse_create_object_result(value)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        HistoryResultKind::Duplicate => {
+            norves_bridge_editor_client::parse_duplicate_object_result(value)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        HistoryResultKind::Delete => norves_bridge_editor_client::parse_delete_object_result(value)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        HistoryResultKind::Reparent => {
+            norves_bridge_editor_client::parse_reparent_object_result(value)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        HistoryResultKind::Property => {
+            norves_bridge_editor_client::parse_set_property_result(value)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+    };
+    result.map_err(|error| BackendError::Request {
+        message: format!("{method} の応答形式が不正です: {error}"),
+    })
 }
 
 async fn run_actor(
@@ -388,27 +665,51 @@ async fn process_item(
         return false;
     }
     if !bridge.is_current(item.lease.generation) {
-        let _ = item.result.send(Err(BackendError::NotConnected));
+        let outcome = if matches!(item.action, QueuedAction::History(_)) {
+            Ok(QueuedEditResult::plain(Value::Null))
+        } else {
+            Err(BackendError::NotConnected)
+        };
+        let _ = item.result.send(outcome);
         return false;
     }
 
-    let prepared_history = if let Some(request) = item.history_request.take() {
+    let mut prepared_history = None;
+    let prepared_action = {
         let mut state = history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.synchronize(bridge.current_generation());
-        match state.prepare(request, item.source, item.lease.generation) {
-            Ok(prepared) => Some(prepared),
-            Err(error) => {
-                let _ = item.result.send(Err(error));
-                return false;
+        if let Some(request) = item.history_request.take() {
+            match state.prepare(request, item.source, item.lease.generation) {
+                Ok(prepared) => prepared_history = Some(prepared),
+                Err(error) => {
+                    let _ = item.result.send(Err(error));
+                    return false;
+                }
             }
         }
-    } else {
-        None
+        if let QueuedAction::History(request) = &item.action {
+            let Some(action) = state.prepare_action(*request) else {
+                let _ = item.result.send(Ok(QueuedEditResult::plain(Value::Null)));
+                return false;
+            };
+            Some(action)
+        } else {
+            None
+        }
     };
 
-    let action = (item.action)(item.lease.clone());
+    let action = match item.action {
+        QueuedAction::Edit(action) => action(item.lease.clone()),
+        QueuedAction::History(_) => {
+            let Some(plan) = prepared_action.clone() else {
+                let _ = item.result.send(Ok(QueuedEditResult::plain(Value::Null)));
+                return false;
+            };
+            Box::pin(run_history_action(bridge.clone(), item.lease.clone(), plan))
+        }
+    };
     tokio::pin!(action);
     let (outcome, stopping) = loop {
         tokio::select! {
@@ -438,17 +739,30 @@ async fn process_item(
                 }
             }
             result = &mut action => {
-                break (match result {
-                    Ok(value) => {
-                        let committed = bridge.with_current_generation(|current| {
-                            if current != Some(item.lease.generation) {
-                                return false;
+                let outcome = match result {
+                    Ok(value) => bridge.with_current_generation(|current| {
+                        let mut state = history
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        state.synchronize(current);
+                        if current != Some(item.lease.generation) {
+                            return Err(BackendError::NotConnected);
+                        }
+                        if let Some(plan) = prepared_action.clone() {
+                            match state.finish_action_success(
+                                plan,
+                                item.source,
+                                item.kind,
+                                item.sequence,
+                                item.lease.generation,
+                                value.value.clone(),
+                            ) {
+                                Ok(true) => Ok(value),
+                                Ok(false) => Ok(QueuedEditResult::plain(Value::Null)),
+                                Err(error) => Err(error),
                             }
-                            let mut state = history
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            state.synchronize(current);
-                            if let Some(prepared) = prepared_history {
+                        } else {
+                            if let Some(prepared) = prepared_history.take() {
                                 state.record_success(
                                     prepared,
                                     item.source,
@@ -468,12 +782,31 @@ async fn process_item(
                                     item.lease.generation,
                                 );
                             }
-                            true
+                            Ok(value)
+                        }
+                    }),
+                    Err(error) => {
+                        bridge.with_current_generation(|current| {
+                            let mut state = history
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            state.synchronize(current);
+                            if current == Some(item.lease.generation) {
+                                if let Some(plan) = prepared_action.as_ref() {
+                                    state.finish_action_failure(plan, &error);
+                                } else if matches!(
+                                    error,
+                                    BackendError::Engine { ref code, .. }
+                                        if code == "METHOD_NOT_SUPPORTED"
+                                ) {
+                                    state.mark_edit_unsupported();
+                                }
+                            }
                         });
-                        if committed { Ok(value) } else { Err(BackendError::NotConnected) }
+                        Err(error)
                     }
-                    Err(error) => Err(error),
-                }, false);
+                };
+                break (outcome, false);
             }
         }
     };
@@ -485,7 +818,13 @@ async fn process_item(
 mod tests {
     use super::*;
     use crate::bridge_state::{test_edit_facade, BridgeSessionTestControl};
-    use norves_bridge_editor_client::{loopback_pair, DispatchHandle, Dispatcher};
+    use norves_bridge_core::{
+        decode_typed, encode_envelope, BridgeError, CorrelationId, Envelope, ErrorCode,
+        ResponsePayload, ValidatedEnvelope, VersionString,
+    };
+    use norves_bridge_editor_client::{
+        loopback_pair, DispatchHandle, Dispatcher, LoopbackTransport, Transport,
+    };
     use std::sync::Mutex as TestMutex;
     use tokio::sync::{oneshot, Notify};
 
@@ -498,6 +837,89 @@ mod tests {
             control,
             handle,
         )
+    }
+
+    fn test_service_with_peer(
+        capacity: usize,
+    ) -> (
+        EditService,
+        BridgeSessionTestControl,
+        DispatchHandle,
+        LoopbackTransport,
+    ) {
+        let (transport, peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let (bridge, control) = test_edit_facade(1, handle.clone());
+        (
+            EditService::with_capacity(bridge, capacity),
+            control,
+            handle,
+            peer,
+        )
+    }
+
+    fn response_frame(id: CorrelationId, payload: ResponsePayload) -> String {
+        let envelope: Envelope = ValidatedEnvelope::Response {
+            version: VersionString::try_from("0.2".to_owned()).expect("version is valid"),
+            id,
+            payload,
+            session_id: None,
+            seq: None,
+        }
+        .into();
+        encode_envelope(&envelope).expect("response envelope encodes")
+    }
+
+    async fn next_request(
+        peer: &mut LoopbackTransport,
+    ) -> (
+        CorrelationId,
+        String,
+        Option<serde_json::Map<String, Value>>,
+    ) {
+        let frame = tokio::time::timeout(Duration::from_secs(2), peer.recv())
+            .await
+            .expect("timed out waiting for history request")
+            .expect("peer receive succeeds")
+            .expect("history request was sent");
+        match decode_typed(&frame).expect("history request decodes") {
+            ValidatedEnvelope::Request {
+                id, method, params, ..
+            } => (id, method.as_str().to_owned(), params),
+            other => panic!("expected a request, received {other:?}"),
+        }
+    }
+
+    async fn respond(peer: &mut LoopbackTransport, id: CorrelationId, result: Value) {
+        peer.send(response_frame(id, ResponsePayload::Result(result)))
+            .await
+            .expect("history result sends");
+    }
+
+    fn seed_history(
+        service: &EditService,
+        direction: HistoryDirection,
+        sequence: u64,
+        record: history::HistoryRecord,
+    ) {
+        let mut state = service
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.synchronize(Some(1));
+        match direction {
+            HistoryDirection::Undo => state.seed_undo_record(sequence, record),
+            HistoryDirection::Redo => state.seed_redo_record(sequence, record),
+        }
+    }
+
+    fn queue_history_action(service: &EditService, direction: HistoryDirection) -> EditTicket {
+        let (head_id, revision) = service.history_cursor(direction);
+        match direction {
+            HistoryDirection::Undo => service.enqueue_undo_from_ui(head_id, revision),
+            HistoryDirection::Redo => service.enqueue_redo_from_ui(head_id, revision),
+        }
+        .expect("history action is accepted")
     }
 
     fn success(value: Value) -> Result<Value, BackendError> {
@@ -926,7 +1348,10 @@ mod tests {
         let created = service
             .enqueue_recorded_from_mcp(
                 EditKind::Edit,
-                HistoryRequest::CreateObject { parent_id: None },
+                HistoryRequest::CreateObject {
+                    parent_id: None,
+                    kind: None,
+                },
                 |_| async {
                     Ok(history::QueuedEditResult::plain(serde_json::json!({
                         "accepted": true,
@@ -972,6 +1397,8 @@ mod tests {
             [
                 history::HistoryRecord::Create {
                     created_id: "created".to_owned(),
+                    parent_id: None,
+                    kind: None,
                 },
                 history::HistoryRecord::SetProperty {
                     object_id: "other-object".to_owned(),
@@ -992,7 +1419,10 @@ mod tests {
         let created = service
             .enqueue_recorded_from_mcp(
                 EditKind::Edit,
-                HistoryRequest::CreateObject { parent_id: None },
+                HistoryRequest::CreateObject {
+                    parent_id: None,
+                    kind: None,
+                },
                 |_| async {
                     Ok(history::QueuedEditResult::plain(serde_json::json!({
                         "accepted": true,
@@ -1242,6 +1672,689 @@ mod tests {
         assert_eq!(*missing_order.lock().unwrap(), ["snapshot"]);
 
         service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn undo_uses_internal_inverse_for_four_record_kinds() {
+        let scenarios = [
+            (
+                history::HistoryRecord::Create {
+                    created_id: "created".to_owned(),
+                    parent_id: None,
+                    kind: Some("light".to_owned()),
+                },
+                "scene.deleteObject",
+                serde_json::json!({"objectId": "created"}),
+                serde_json::json!({"accepted": true}),
+            ),
+            (
+                history::HistoryRecord::Duplicate {
+                    source_object_id: "source".to_owned(),
+                    created_id: "copy".to_owned(),
+                    parent_id: Some("parent".to_owned()),
+                },
+                "scene.deleteObject",
+                serde_json::json!({"objectId": "copy"}),
+                serde_json::json!({"accepted": true}),
+            ),
+            (
+                history::HistoryRecord::Reparent {
+                    object_id: "child".to_owned(),
+                    old_parent_id: None,
+                    new_parent_id: Some("parent".to_owned()),
+                },
+                "scene.reparentObject",
+                serde_json::json!({"objectId": "child"}),
+                serde_json::json!({"accepted": true}),
+            ),
+            (
+                history::HistoryRecord::SetProperty {
+                    object_id: "object".to_owned(),
+                    property: "strength".to_owned(),
+                    old_value: serde_json::json!(1),
+                    new_value: serde_json::json!(2),
+                },
+                "object.setProperty",
+                serde_json::json!({
+                    "objectId": "object",
+                    "property": "strength",
+                    "value": 1
+                }),
+                serde_json::json!({"accepted": true, "appliedValue": 1}),
+            ),
+        ];
+
+        for (index, (record, expected_method, expected_params, response)) in
+            scenarios.into_iter().enumerate()
+        {
+            let (service, _control, handle, mut peer) = test_service_with_peer(4);
+            seed_history(&service, HistoryDirection::Undo, 20, record);
+            seed_history(
+                &service,
+                HistoryDirection::Redo,
+                30,
+                history::HistoryRecord::SetProperty {
+                    object_id: "kept-redo".to_owned(),
+                    property: "flag".to_owned(),
+                    old_value: Value::Null,
+                    new_value: serde_json::json!(true),
+                },
+            );
+
+            let ticket = queue_history_action(&service, HistoryDirection::Undo);
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, expected_method, "case {index}");
+            assert_eq!(serde_json::to_value(params).unwrap(), expected_params);
+            respond(&mut peer, id, response).await;
+            assert!(ticket.result().await.is_ok());
+
+            {
+                let state = service
+                    .history
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(state.undo_len(), 0, "case {index}");
+                assert_eq!(state.redo_len(), 2, "internal inverse cleared redo");
+            }
+            service.shutdown().await;
+            handle.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn redo_replaces_created_ids_and_next_undo_uses_the_new_id() {
+        let scenarios = [
+            (
+                history::HistoryRecord::Create {
+                    created_id: "old-create-id".to_owned(),
+                    parent_id: Some("parent".to_owned()),
+                    kind: Some("light".to_owned()),
+                },
+                "scene.createObject",
+                serde_json::json!({"parentId": "parent", "kind": "light"}),
+            ),
+            (
+                history::HistoryRecord::Duplicate {
+                    source_object_id: "source".to_owned(),
+                    created_id: "old-copy-id".to_owned(),
+                    parent_id: Some("target".to_owned()),
+                },
+                "scene.duplicateObject",
+                serde_json::json!({"objectId": "source", "newParentId": "target"}),
+            ),
+        ];
+
+        for (index, (record, expected_method, expected_params)) in scenarios.into_iter().enumerate()
+        {
+            let (service, _control, handle, mut peer) = test_service_with_peer(4);
+            seed_history(&service, HistoryDirection::Redo, 40, record);
+            let redo = queue_history_action(&service, HistoryDirection::Redo);
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, expected_method, "case {index}");
+            assert_eq!(serde_json::to_value(params).unwrap(), expected_params);
+            respond(
+                &mut peer,
+                id,
+                serde_json::json!({"accepted": true, "newId": "fresh-id"}),
+            )
+            .await;
+            assert!(redo.result().await.is_ok());
+
+            let undo_record = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .undo_records()
+                .pop()
+                .expect("redo moved the updated record to undo");
+            match undo_record {
+                history::HistoryRecord::Create { created_id, .. }
+                | history::HistoryRecord::Duplicate { created_id, .. } => {
+                    assert_eq!(created_id, "fresh-id");
+                }
+                other => panic!("unexpected record after redo: {other:?}"),
+            }
+
+            let undo = queue_history_action(&service, HistoryDirection::Undo);
+            let (undo_id, undo_method, undo_params) = next_request(&mut peer).await;
+            assert_eq!(undo_method, "scene.deleteObject");
+            assert_eq!(
+                serde_json::to_value(undo_params).unwrap(),
+                serde_json::json!({"objectId": "fresh-id"})
+            );
+            respond(&mut peer, undo_id, serde_json::json!({"accepted": true})).await;
+            assert!(undo.result().await.is_ok());
+            service.shutdown().await;
+            handle.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn redo_reuses_stable_reparent_and_property_targets() {
+        let scenarios = [
+            (
+                history::HistoryRecord::Reparent {
+                    object_id: "child".to_owned(),
+                    old_parent_id: None,
+                    new_parent_id: Some("next-parent".to_owned()),
+                },
+                "scene.reparentObject",
+                serde_json::json!({"objectId": "child", "newParentId": "next-parent"}),
+                serde_json::json!({"accepted": true}),
+            ),
+            (
+                history::HistoryRecord::SetProperty {
+                    object_id: "object".to_owned(),
+                    property: "visible".to_owned(),
+                    old_value: Value::Null,
+                    new_value: serde_json::json!(true),
+                },
+                "object.setProperty",
+                serde_json::json!({"objectId": "object", "property": "visible", "value": true}),
+                serde_json::json!({"accepted": true, "appliedValue": true}),
+            ),
+        ];
+
+        for (record, expected_method, expected_params, response) in scenarios {
+            let (service, _control, handle, mut peer) = test_service_with_peer(4);
+            seed_history(&service, HistoryDirection::Redo, 41, record);
+            let redo = queue_history_action(&service, HistoryDirection::Redo);
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, expected_method);
+            assert_eq!(serde_json::to_value(params).unwrap(), expected_params);
+            respond(&mut peer, id, response).await;
+            assert!(redo.result().await.is_ok());
+            assert_eq!(service.history_cursor(HistoryDirection::Undo).0, Some(41));
+            service.shutdown().await;
+            handle.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn single_undo_redo_failure_drops_only_the_attempted_entry_and_reports_error() {
+        let (service, _control, handle, mut peer) = test_service_with_peer(4);
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            50,
+            history::HistoryRecord::SetProperty {
+                object_id: "older".to_owned(),
+                property: "value".to_owned(),
+                old_value: serde_json::json!(1),
+                new_value: serde_json::json!(2),
+            },
+        );
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            51,
+            history::HistoryRecord::Create {
+                created_id: "rejected".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        let (id, method, _) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.deleteObject");
+        respond(&mut peer, id, serde_json::json!({"accepted": false})).await;
+        assert!(matches!(
+            undo.result().await,
+            Err(BackendError::Request { .. })
+        ));
+        {
+            let state = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.undo_len(), 1);
+            assert_eq!(
+                state.undo_records()[0],
+                history::HistoryRecord::SetProperty {
+                    object_id: "older".to_owned(),
+                    property: "value".to_owned(),
+                    old_value: serde_json::json!(1),
+                    new_value: serde_json::json!(2),
+                }
+            );
+        }
+
+        seed_history(
+            &service,
+            HistoryDirection::Redo,
+            60,
+            history::HistoryRecord::Reparent {
+                object_id: "retained".to_owned(),
+                old_parent_id: None,
+                new_parent_id: Some("parent".to_owned()),
+            },
+        );
+        seed_history(
+            &service,
+            HistoryDirection::Redo,
+            61,
+            history::HistoryRecord::SetProperty {
+                object_id: "unsupported".to_owned(),
+                property: "value".to_owned(),
+                old_value: serde_json::json!(1),
+                new_value: serde_json::json!(2),
+            },
+        );
+        let redo = queue_history_action(&service, HistoryDirection::Redo);
+        let (id, method, _) = next_request(&mut peer).await;
+        assert_eq!(method, "object.setProperty");
+        let error = BridgeError {
+            code: ErrorCode::method_not_supported(),
+            message: "unsupported".to_owned(),
+            data: None,
+        };
+        peer.send(response_frame(id, ResponsePayload::Error(error)))
+            .await
+            .expect("error response sends");
+        assert!(matches!(
+            redo.result().await,
+            Err(BackendError::Engine { .. })
+        ));
+        assert_eq!(service.history_cursor(HistoryDirection::Redo).0, Some(60));
+        let unsupported = queue_history_action(&service, HistoryDirection::Redo);
+        assert_eq!(
+            unsupported.result().await.expect("unsupported is a no-op"),
+            Value::Null
+        );
+
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn public_delete_clears_both_histories_only_after_acceptance() {
+        let (service, _control, handle) = test_service(4);
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            70,
+            history::HistoryRecord::Create {
+                created_id: "undo-entry".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        seed_history(
+            &service,
+            HistoryDirection::Redo,
+            71,
+            history::HistoryRecord::Create {
+                created_id: "redo-entry".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+
+        let rejected = service
+            .enqueue_recorded_from_ui(
+                EditKind::Edit,
+                HistoryRequest::DeleteObject {
+                    object_id: "object".to_owned(),
+                },
+                |_| async {
+                    Ok(QueuedEditResult::plain(
+                        serde_json::json!({"accepted": false}),
+                    ))
+                },
+            )
+            .expect("delete request is accepted into the queue");
+        assert_eq!(
+            rejected
+                .result()
+                .await
+                .expect("engine rejection is returned")["accepted"],
+            false
+        );
+        {
+            let state = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.undo_len(), 1);
+            assert_eq!(state.redo_len(), 1);
+        }
+
+        let accepted = service
+            .enqueue_recorded_from_ui(
+                EditKind::Edit,
+                HistoryRequest::DeleteObject {
+                    object_id: "object".to_owned(),
+                },
+                |_| async {
+                    Ok(QueuedEditResult::plain(
+                        serde_json::json!({"accepted": true}),
+                    ))
+                },
+            )
+            .expect("delete request is accepted into the queue");
+        accepted.result().await.expect("delete is accepted");
+        {
+            let state = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.undo_len(), 0);
+            assert_eq!(state.redo_len(), 0);
+        }
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stale_empty_disconnected_and_unsupported_history_requests_are_noops() {
+        let (service, _control, handle, mut peer) = test_service_with_peer(4);
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            80,
+            history::HistoryRecord::Create {
+                created_id: "entry".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        let (head_id, revision) = service.history_cursor(HistoryDirection::Undo);
+        let stale_id = service
+            .enqueue_undo_from_ui(head_id.map(|id| id.wrapping_add(1)), revision)
+            .expect("stale head is a no-op");
+        assert_eq!(
+            stale_id.result().await.expect("stale head is ignored"),
+            Value::Null
+        );
+        let stale_revision = service
+            .enqueue_undo_from_ui(head_id, revision.wrapping_add(1))
+            .expect("stale revision is a no-op");
+        assert_eq!(
+            stale_revision
+                .result()
+                .await
+                .expect("stale revision is ignored"),
+            Value::Null
+        );
+        assert_eq!(service.history_cursor(HistoryDirection::Undo).0, head_id);
+
+        let empty = service
+            .enqueue_redo_from_ui(None, revision)
+            .expect("empty redo is a no-op");
+        assert_eq!(
+            empty.result().await.expect("empty redo is ignored"),
+            Value::Null
+        );
+
+        {
+            let mut state = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.mark_edit_unsupported_for_test();
+        }
+        let unsupported = service
+            .enqueue_undo_from_ui(head_id, revision)
+            .expect("unsupported history is a no-op");
+        assert_eq!(
+            unsupported.result().await.expect("unsupported is ignored"),
+            Value::Null
+        );
+        assert!(tokio::time::timeout(Duration::from_millis(30), peer.recv())
+            .await
+            .is_err());
+        service.shutdown().await;
+        handle.shutdown().await;
+
+        let (disconnected_service, disconnected_control, disconnected_handle, mut peer) =
+            test_service_with_peer(4);
+        seed_history(
+            &disconnected_service,
+            HistoryDirection::Undo,
+            81,
+            history::HistoryRecord::Create {
+                created_id: "disconnected-entry".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        let (stale_head, stale_revision) =
+            disconnected_service.history_cursor(HistoryDirection::Undo);
+        disconnected_control.disconnect();
+        let disconnected = disconnected_service
+            .enqueue_undo_from_ui(stale_head, stale_revision)
+            .expect("disconnected undo is a no-op");
+        assert_eq!(
+            disconnected.result().await.expect("disconnect is ignored"),
+            Value::Null
+        );
+        assert!(disconnected_service
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .undo_records()
+            .is_empty());
+        assert!(tokio::time::timeout(Duration::from_millis(30), peer.recv())
+            .await
+            .is_err());
+        disconnected_service.shutdown().await;
+        disconnected_handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_undo_and_redo_requests_apply_only_the_expected_head_once() {
+        let (service, _control, handle, mut peer) = test_service_with_peer(4);
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            90,
+            history::HistoryRecord::Create {
+                created_id: "older".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            91,
+            history::HistoryRecord::Create {
+                created_id: "newer".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        let (head_id, revision) = service.history_cursor(HistoryDirection::Undo);
+        let first = service
+            .enqueue_undo_from_ui(head_id, revision)
+            .expect("first undo is queued");
+        let repeated = service
+            .enqueue_undo_from_ui(head_id, revision)
+            .expect("repeated undo is queued for cursor validation");
+        let (id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.deleteObject");
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            serde_json::json!({"objectId": "newer"})
+        );
+        respond(&mut peer, id, serde_json::json!({"accepted": true})).await;
+        assert!(first.result().await.is_ok());
+        assert_eq!(
+            repeated.result().await.expect("repeat is ignored"),
+            Value::Null
+        );
+
+        seed_history(
+            &service,
+            HistoryDirection::Redo,
+            92,
+            history::HistoryRecord::Create {
+                created_id: "older-redo".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        seed_history(
+            &service,
+            HistoryDirection::Redo,
+            93,
+            history::HistoryRecord::Create {
+                created_id: "newer-redo".to_owned(),
+                parent_id: Some("parent".to_owned()),
+                kind: None,
+            },
+        );
+        let (redo_head, redo_revision) = service.history_cursor(HistoryDirection::Redo);
+        let first_redo = service
+            .enqueue_redo_from_ui(redo_head, redo_revision)
+            .expect("first redo is queued");
+        let repeated_redo = service
+            .enqueue_redo_from_ui(redo_head, redo_revision)
+            .expect("repeated redo is queued for cursor validation");
+        let (redo_id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.createObject");
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            serde_json::json!({"parentId": "parent"})
+        );
+        respond(
+            &mut peer,
+            redo_id,
+            serde_json::json!({"accepted": true, "newId": "redo-fresh"}),
+        )
+        .await;
+        assert!(first_redo.result().await.is_ok());
+        assert_eq!(
+            repeated_redo.result().await.expect("repeat is ignored"),
+            Value::Null
+        );
+        assert!(tokio::time::timeout(Duration::from_millis(30), peer.recv())
+            .await
+            .is_err());
+
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn history_clears_on_disconnect_and_exit_but_survives_workspace_close() {
+        let (service, control, handle) = test_service(4);
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            100,
+            history::HistoryRecord::Create {
+                created_id: "undo".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        seed_history(
+            &service,
+            HistoryDirection::Redo,
+            101,
+            history::HistoryRecord::Create {
+                created_id: "redo".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        {
+            let mut state = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.synchronize(Some(1));
+            assert_eq!(state.undo_len(), 1);
+            assert_eq!(state.redo_len(), 1);
+        }
+        control.disconnect();
+        let snapshot = service.history_snapshot();
+        assert_eq!(snapshot.0, None);
+        {
+            let state = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.undo_len(), 0);
+            assert_eq!(state.redo_len(), 0);
+        }
+        service.shutdown().await;
+        handle.shutdown().await;
+
+        let (service, _control, handle) = test_service(4);
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            102,
+            history::HistoryRecord::Create {
+                created_id: "workspace-undo".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        seed_history(
+            &service,
+            HistoryDirection::Redo,
+            103,
+            history::HistoryRecord::Create {
+                created_id: "workspace-redo".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        {
+            let state = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.undo_len(), 1);
+            assert_eq!(state.redo_len(), 1);
+        }
+        {
+            let mut state = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // workspace_closeはBridge世代を変えないため履歴を保持する。
+            state.synchronize(Some(1));
+            assert_eq!(state.undo_len(), 1);
+            assert_eq!(state.redo_len(), 1);
+        }
+        service.shutdown().await;
+        handle.shutdown().await;
+
+        let (service, _control, handle) = test_service(4);
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            104,
+            history::HistoryRecord::Create {
+                created_id: "exit-undo".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        seed_history(
+            &service,
+            HistoryDirection::Redo,
+            105,
+            history::HistoryRecord::Create {
+                created_id: "exit-redo".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
+        service.shutdown().await;
+        {
+            let state = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(state.undo_len(), 0);
+            assert_eq!(state.redo_len(), 0);
+        }
         handle.shutdown().await;
     }
 

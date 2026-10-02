@@ -24,10 +24,13 @@ pub(crate) struct HistoryMarker {
 pub(crate) enum HistoryRecord {
     Create {
         created_id: String,
+        parent_id: Option<String>,
+        kind: Option<String>,
     },
     Duplicate {
         source_object_id: String,
         created_id: String,
+        parent_id: Option<String>,
     },
     Reparent {
         object_id: String,
@@ -68,6 +71,7 @@ pub(crate) enum PriorCapture<T> {
 pub(crate) enum HistoryRequest {
     CreateObject {
         parent_id: Option<String>,
+        kind: Option<String>,
     },
     DuplicateObject {
         source_object_id: String,
@@ -85,9 +89,27 @@ pub(crate) enum HistoryRequest {
         old_value: PriorCapture<Value>,
     },
     /// 成功した削除は履歴と補正情報を空にする。削除自体は記録しない。
-    DeleteObject {
-        object_id: String,
-    },
+    DeleteObject { object_id: String },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HistoryDirection {
+    Undo,
+    Redo,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct HistoryActionRequest {
+    pub(crate) direction: HistoryDirection,
+    pub(crate) expected_head_id: Option<u64>,
+    pub(crate) expected_revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HistoryAction {
+    pub(crate) direction: HistoryDirection,
+    entry_id: u64,
+    pub(crate) record: HistoryRecord,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -253,6 +275,32 @@ impl CorrectionCache {
         self.lost_through = revision;
     }
 
+    fn remove_object(&mut self, object_id: &str, revision: u64) {
+        let keys = self
+            .entries
+            .keys()
+            .filter(|key| match key {
+                CorrectionKey::Property {
+                    object_id: key_object_id,
+                    ..
+                }
+                | CorrectionKey::Parent {
+                    object_id: key_object_id,
+                } => key_object_id == object_id,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            return;
+        }
+        for key in keys {
+            if let Some(entry) = self.entries.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(entry.byte_len);
+            }
+        }
+        self.mark_lost_through(revision);
+    }
+
     fn mark_lost_through(&mut self, revision: u64) {
         self.lost_through = self.lost_through.max(revision);
     }
@@ -262,6 +310,7 @@ impl CorrectionCache {
 pub(super) enum PreparedHistoryRequest {
     CreateObject {
         parent_id: Option<String>,
+        kind: Option<String>,
     },
     DuplicateObject {
         source_object_id: String,
@@ -292,6 +341,7 @@ pub(super) struct HistoryState {
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     corrections: CorrectionCache,
+    edit_unsupported: bool,
 }
 
 impl HistoryState {
@@ -301,6 +351,7 @@ impl HistoryState {
             self.undo.clear();
             self.redo.clear();
             self.corrections.clear();
+            self.edit_unsupported = false;
             self.applied_revision = 0;
             self.markers.clear();
             self.revision = self.revision.wrapping_add(1);
@@ -315,6 +366,249 @@ impl HistoryState {
         self.applied_revision
     }
 
+    pub(super) fn history_cursor(&self, direction: HistoryDirection) -> (Option<u64>, u64) {
+        let stack = match direction {
+            HistoryDirection::Undo => &self.undo,
+            HistoryDirection::Redo => &self.redo,
+        };
+        (
+            stack.last().map(|entry| entry.marker.sequence),
+            self.revision,
+        )
+    }
+
+    pub(super) fn prepare_action(&self, request: HistoryActionRequest) -> Option<HistoryAction> {
+        let expected_head_id = request.expected_head_id?;
+        if self.edit_unsupported || request.expected_revision != self.revision {
+            return None;
+        }
+        let stack = match request.direction {
+            HistoryDirection::Undo => &self.undo,
+            HistoryDirection::Redo => &self.redo,
+        };
+        let entry = stack.last()?;
+        (entry.marker.sequence == expected_head_id).then(|| HistoryAction {
+            direction: request.direction,
+            entry_id: expected_head_id,
+            record: entry.record.clone(),
+        })
+    }
+
+    pub(super) fn finish_action_success(
+        &mut self,
+        action: HistoryAction,
+        source: EditSource,
+        kind: EditKind,
+        sequence: u64,
+        generation: u64,
+        result: Value,
+    ) -> Result<bool, BackendError> {
+        if result.get("accepted").and_then(Value::as_bool) != Some(true) {
+            self.discard_action(&action);
+            return Err(BackendError::Request {
+                message:
+                    "取り消し・やり直しをエンジンが受け付けませんでした。対象の履歴を破棄しました。"
+                        .to_owned(),
+            });
+        }
+
+        let updated_record = match (&action.record, action.direction) {
+            (
+                HistoryRecord::Create {
+                    parent_id, kind, ..
+                },
+                HistoryDirection::Redo,
+            ) => {
+                let Some(created_id) = non_empty_new_id(&result) else {
+                    self.discard_action(&action);
+                    return Err(malformed_history_result("newId"));
+                };
+                HistoryRecord::Create {
+                    created_id,
+                    parent_id: parent_id.clone(),
+                    kind: kind.clone(),
+                }
+            }
+            (
+                HistoryRecord::Duplicate {
+                    source_object_id,
+                    parent_id,
+                    ..
+                },
+                HistoryDirection::Redo,
+            ) => {
+                let Some(created_id) = non_empty_new_id(&result) else {
+                    self.discard_action(&action);
+                    return Err(malformed_history_result("newId"));
+                };
+                HistoryRecord::Duplicate {
+                    source_object_id: source_object_id.clone(),
+                    created_id,
+                    parent_id: parent_id.clone(),
+                }
+            }
+            _ => action.record.clone(),
+        };
+
+        let Some(mut entry) = self.pop_action_entry(&action) else {
+            return Ok(false);
+        };
+        self.applied_revision = self.applied_revision.wrapping_add(1);
+        self.update_action_corrections(&action.record, &updated_record, action.direction);
+        entry.record = updated_record;
+        self.push_marker(source, kind, sequence, generation);
+        match action.direction {
+            HistoryDirection::Undo => self.redo.push(entry),
+            HistoryDirection::Redo => self.undo.push(entry),
+        }
+        Ok(true)
+    }
+
+    pub(super) fn finish_action_failure(&mut self, action: &HistoryAction, error: &BackendError) {
+        if self.pop_action_entry(action).is_some() {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        if matches!(error, BackendError::Engine { code, .. } if code == "METHOD_NOT_SUPPORTED") {
+            self.edit_unsupported = true;
+        }
+    }
+
+    pub(super) fn mark_edit_unsupported(&mut self) {
+        self.edit_unsupported = true;
+    }
+
+    pub(super) fn clear_for_shutdown(&mut self) {
+        self.generation = None;
+        self.applied_revision = 0;
+        self.markers.clear();
+        self.undo.clear();
+        self.redo.clear();
+        self.corrections.clear();
+        self.edit_unsupported = false;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn pop_action_entry(&mut self, action: &HistoryAction) -> Option<HistoryEntry> {
+        let stack = match action.direction {
+            HistoryDirection::Undo => &mut self.undo,
+            HistoryDirection::Redo => &mut self.redo,
+        };
+        if stack.last()?.marker.sequence != action.entry_id {
+            return None;
+        }
+        stack.pop()
+    }
+
+    fn discard_action(&mut self, action: &HistoryAction) {
+        if self.pop_action_entry(action).is_some() {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    fn update_action_corrections(
+        &mut self,
+        old_record: &HistoryRecord,
+        new_record: &HistoryRecord,
+        direction: HistoryDirection,
+    ) {
+        let revision = self.applied_revision;
+        match (old_record, new_record, direction) {
+            (
+                HistoryRecord::Create { created_id, .. },
+                HistoryRecord::Create { .. },
+                HistoryDirection::Undo,
+            ) => self.corrections.remove_object(created_id, revision),
+            (
+                HistoryRecord::Create { created_id, .. },
+                HistoryRecord::Create {
+                    created_id: new_id,
+                    parent_id,
+                    ..
+                },
+                HistoryDirection::Redo,
+            ) => {
+                self.corrections.remove_object(created_id, revision);
+                self.corrections.insert(
+                    CorrectionKey::Parent {
+                        object_id: new_id.clone(),
+                    },
+                    revision,
+                    CorrectionValue::Parent(parent_id.clone()),
+                );
+            }
+            (
+                HistoryRecord::Duplicate { created_id, .. },
+                HistoryRecord::Duplicate { .. },
+                HistoryDirection::Undo,
+            ) => self.corrections.remove_object(created_id, revision),
+            (
+                HistoryRecord::Duplicate { created_id, .. },
+                HistoryRecord::Duplicate {
+                    created_id: new_id,
+                    parent_id,
+                    ..
+                },
+                HistoryDirection::Redo,
+            ) => {
+                self.corrections.remove_object(created_id, revision);
+                if let Some(parent_id) = parent_id {
+                    self.corrections.insert(
+                        CorrectionKey::Parent {
+                            object_id: new_id.clone(),
+                        },
+                        revision,
+                        CorrectionValue::Parent(Some(parent_id.clone())),
+                    );
+                }
+            }
+            (
+                HistoryRecord::Reparent {
+                    object_id,
+                    old_parent_id,
+                    new_parent_id,
+                },
+                HistoryRecord::Reparent { .. },
+                direction,
+            ) => {
+                let parent_id = match direction {
+                    HistoryDirection::Undo => old_parent_id,
+                    HistoryDirection::Redo => new_parent_id,
+                };
+                self.corrections.insert(
+                    CorrectionKey::Parent {
+                        object_id: object_id.clone(),
+                    },
+                    revision,
+                    CorrectionValue::Parent(parent_id.clone()),
+                );
+            }
+            (
+                HistoryRecord::SetProperty {
+                    object_id,
+                    property,
+                    old_value,
+                    new_value,
+                },
+                HistoryRecord::SetProperty { .. },
+                direction,
+            ) => {
+                let value = match direction {
+                    HistoryDirection::Undo => old_value,
+                    HistoryDirection::Redo => new_value,
+                };
+                self.corrections.insert(
+                    CorrectionKey::Property {
+                        object_id: object_id.clone(),
+                        property: property.clone(),
+                    },
+                    revision,
+                    CorrectionValue::Property(value.clone()),
+                );
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn prepare(
         &self,
         request: HistoryRequest,
@@ -322,8 +616,8 @@ impl HistoryState {
         generation: u64,
     ) -> Result<PreparedHistoryRequest, BackendError> {
         match request {
-            HistoryRequest::CreateObject { parent_id } => {
-                Ok(PreparedHistoryRequest::CreateObject { parent_id })
+            HistoryRequest::CreateObject { parent_id, kind } => {
+                Ok(PreparedHistoryRequest::CreateObject { parent_id, kind })
             }
             HistoryRequest::DuplicateObject {
                 source_object_id,
@@ -454,7 +748,7 @@ impl HistoryState {
         self.push_marker(source, kind, sequence, generation);
         let revision = self.applied_revision;
         let record = match prepared {
-            PreparedHistoryRequest::CreateObject { parent_id } => result
+            PreparedHistoryRequest::CreateObject { parent_id, kind } => result
                 .value
                 .get("newId")
                 .and_then(Value::as_str)
@@ -465,10 +759,12 @@ impl HistoryState {
                             object_id: created_id.to_owned(),
                         },
                         revision,
-                        CorrectionValue::Parent(parent_id),
+                        CorrectionValue::Parent(parent_id.clone()),
                     );
                     HistoryRecord::Create {
                         created_id: created_id.to_owned(),
+                        parent_id,
+                        kind,
                     }
                 }),
             PreparedHistoryRequest::DuplicateObject {
@@ -480,18 +776,19 @@ impl HistoryState {
                 .and_then(Value::as_str)
                 .filter(|created_id| !created_id.is_empty())
                 .map(|created_id| {
-                    if let Some(parent_id) = parent_id {
+                    if let Some(parent_id) = &parent_id {
                         self.corrections.insert(
                             CorrectionKey::Parent {
                                 object_id: created_id.to_owned(),
                             },
                             revision,
-                            CorrectionValue::Parent(Some(parent_id)),
+                            CorrectionValue::Parent(Some(parent_id.clone())),
                         );
                     }
                     HistoryRecord::Duplicate {
                         source_object_id,
                         created_id: created_id.to_owned(),
+                        parent_id,
                     }
                 }),
             PreparedHistoryRequest::ReparentObject {
@@ -597,18 +894,55 @@ impl HistoryState {
     }
 
     #[cfg(test)]
-    pub(super) fn seed_redo(&mut self) {
-        self.redo.push(HistoryEntry {
+    pub(super) fn seed_undo_record(&mut self, sequence: u64, record: HistoryRecord) {
+        self.generation.get_or_insert(1);
+        self.undo.push(HistoryEntry {
             marker: HistoryMarker {
-                sequence: 0,
+                sequence,
                 source: EditSource::Ui,
                 kind: EditKind::Edit,
                 generation: self.generation.unwrap_or_default(),
             },
-            record: HistoryRecord::Create {
-                created_id: "redo-entry".to_owned(),
-            },
+            record,
         });
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    #[cfg(test)]
+    pub(super) fn seed_redo_record(&mut self, sequence: u64, record: HistoryRecord) {
+        self.generation.get_or_insert(1);
+        self.redo.push(HistoryEntry {
+            marker: HistoryMarker {
+                sequence,
+                source: EditSource::Ui,
+                kind: EditKind::Edit,
+                generation: self.generation.unwrap_or_default(),
+            },
+            record,
+        });
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    #[cfg(test)]
+    pub(super) fn undo_len(&self) -> usize {
+        self.undo.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn mark_edit_unsupported_for_test(&mut self) {
+        self.edit_unsupported = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn seed_redo(&mut self) {
+        self.seed_redo_record(
+            0,
+            HistoryRecord::Create {
+                created_id: "redo-entry".to_owned(),
+                parent_id: None,
+                kind: None,
+            },
+        );
     }
 
     #[cfg(test)]
@@ -621,6 +955,20 @@ fn refresh_required() -> BackendError {
     BackendError::Request {
         message: "編集前の表示が古く、履歴の旧値を安全に補正できません。対象を再取得してから操作してください。"
             .to_owned(),
+    }
+}
+
+fn non_empty_new_id(value: &Value) -> Option<String> {
+    value
+        .get("newId")
+        .and_then(Value::as_str)
+        .filter(|created_id| !created_id.is_empty())
+        .map(str::to_owned)
+}
+
+fn malformed_history_result(field: &str) -> BackendError {
+    BackendError::Request {
+        message: format!("やり直し結果の {field} がありません。対象の履歴を破棄しました。"),
     }
 }
 
@@ -772,7 +1120,10 @@ mod tests {
 
         apply(
             &mut state,
-            HistoryRequest::CreateObject { parent_id: None },
+            HistoryRequest::CreateObject {
+                parent_id: None,
+                kind: None,
+            },
             EditSource::Ui,
             7,
             1,
@@ -823,7 +1174,10 @@ mod tests {
 
         apply(
             &mut state,
-            HistoryRequest::CreateObject { parent_id: None },
+            HistoryRequest::CreateObject {
+                parent_id: None,
+                kind: None,
+            },
             EditSource::Ui,
             7,
             5,
@@ -884,10 +1238,13 @@ mod tests {
             [
                 HistoryRecord::Create {
                     created_id: "created".to_owned(),
+                    parent_id: None,
+                    kind: None,
                 },
                 HistoryRecord::Duplicate {
                     source_object_id: "source".to_owned(),
                     created_id: "copy".to_owned(),
+                    parent_id: Some("parent".to_owned()),
                 },
                 HistoryRecord::Reparent {
                     object_id: "child".to_owned(),
@@ -912,7 +1269,10 @@ mod tests {
 
         apply(
             &mut state,
-            HistoryRequest::CreateObject { parent_id: None },
+            HistoryRequest::CreateObject {
+                parent_id: None,
+                kind: None,
+            },
             EditSource::Ui,
             3,
             1,
@@ -999,7 +1359,10 @@ mod tests {
     #[test]
     fn new_record_invalidates_redo_for_every_history_kind() {
         let requests = [
-            HistoryRequest::CreateObject { parent_id: None },
+            HistoryRequest::CreateObject {
+                parent_id: None,
+                kind: None,
+            },
             HistoryRequest::DuplicateObject {
                 source_object_id: "source".to_owned(),
                 parent_id: None,

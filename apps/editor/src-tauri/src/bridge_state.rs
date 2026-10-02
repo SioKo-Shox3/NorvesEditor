@@ -118,6 +118,7 @@ pub(crate) struct BridgeLease {
 pub(crate) struct BridgeFacade {
     current_generation: Arc<StdMutex<Option<u64>>>,
     session: watch::Receiver<Option<BridgeLease>>,
+    next_request_id: Arc<AtomicU64>,
 }
 
 impl BridgeFacade {
@@ -133,6 +134,21 @@ impl BridgeFacade {
             .clone()
             .filter(|lease| Some(lease.generation) == current)
             .ok_or(BackendError::NotConnected)
+    }
+
+    /// 捕捉済みhandleへ世代を保ったままBridge要求を送る。
+    pub(crate) async fn send_with_lease(
+        &self,
+        lease: &BridgeLease,
+        method: &str,
+        params: Option<serde_json::Map<String, Value>>,
+    ) -> Result<Value, BackendError> {
+        let request = build_request(allocate_request_id(&self.next_request_id), method, params)?;
+        match lease.handle.request(request, REQUEST_TIMEOUT).await {
+            Ok(ResponsePayload::Result(value)) => Ok(value),
+            Ok(ResponsePayload::Error(error)) => Err(error.into()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// I/O完了時にも、捕捉した世代が現行かを確かめる。
@@ -185,6 +201,14 @@ impl BridgeSessionTestControl {
         self.session_tx
             .send_replace(Some(BridgeLease { generation, handle }));
     }
+
+    pub(crate) fn disconnect(&self) {
+        *self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.session_tx.send_replace(None);
+    }
 }
 
 #[cfg(test)]
@@ -198,6 +222,7 @@ pub(crate) fn test_edit_facade(
         BridgeFacade {
             current_generation: Arc::clone(&current_generation),
             session: session_rx,
+            next_request_id: Arc::new(AtomicU64::new(0)),
         },
         BridgeSessionTestControl {
             current_generation,
@@ -220,7 +245,7 @@ pub struct BridgeState {
     inner: Mutex<Phase>,
     /// Monotonic source of unique request correlation ids. Shared so every
     /// in-flight request across all commands gets a distinct id.
-    next_request_id: AtomicU64,
+    next_request_id: Arc<AtomicU64>,
     /// Monotonic source of unique connect-attempt tokens. Bumped when an attempt
     /// starts so setup, relay self-heal, and commit share one identity.
     next_generation: AtomicU64,
@@ -233,7 +258,7 @@ impl Default for BridgeState {
         let (session_tx, _) = watch::channel(None);
         BridgeState {
             inner: Mutex::new(Phase::Disconnected),
-            next_request_id: AtomicU64::new(0),
+            next_request_id: Arc::new(AtomicU64::new(0)),
             next_generation: AtomicU64::new(0),
             session_tx,
             current_generation: Arc::new(StdMutex::new(None)),
@@ -244,10 +269,7 @@ impl Default for BridgeState {
 impl BridgeState {
     /// Allocates a unique correlation id for an in-flight request.
     fn alloc_request_id(&self) -> CorrelationId {
-        let n = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        // CorrelationId only rejects empty strings; "req-{n}" is always
-        // non-empty, so this is infallible.
-        CorrelationId::try_from(format!("req-{n}")).expect("generated id is valid")
+        allocate_request_id(&self.next_request_id)
     }
 
     /// Allocates a unique token for a new connect attempt.
@@ -270,6 +292,7 @@ impl BridgeState {
         BridgeFacade {
             current_generation: Arc::clone(&self.current_generation),
             session: self.session_tx.subscribe(),
+            next_request_id: Arc::clone(&self.next_request_id),
         }
     }
 }
@@ -307,6 +330,12 @@ fn build_request(
         session_id: None,
         seq: None,
     })
+}
+
+fn allocate_request_id(next_request_id: &AtomicU64) -> CorrelationId {
+    let n = next_request_id.fetch_add(1, Ordering::Relaxed);
+    // CorrelationIdは空文字だけを拒否するため、"req-{n}" は必ず有効。
+    CorrelationId::try_from(format!("req-{n}")).expect("生成したIDは有効")
 }
 
 /// Builds the mandatory same-session capability discovery request.
