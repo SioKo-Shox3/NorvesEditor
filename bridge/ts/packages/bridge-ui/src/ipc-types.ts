@@ -47,6 +47,71 @@ export interface WorkspacePayload {
   name: string;
 }
 
+/** 画面の値スナップショットに適用改訂を添えて編集コマンドへ渡す。 */
+export interface UiPropertyCapture {
+  generation: number;
+  revision: number;
+  value: unknown;
+}
+
+/** 画面のツリーに適用改訂を添えて親変更コマンドへ渡す。nullはシーン直下。 */
+export interface UiParentCapture {
+  generation: number;
+  revision: number;
+  parentId: string | null;
+}
+
+export type EditSource = 'ui' | 'mcp';
+
+export interface EditGroupSummary {
+  id: string;
+  name: string;
+  source: EditSource;
+  count: number;
+}
+
+/** 編集サービスが初期取得と変更イベントで共有する履歴要約。 */
+export interface EditHistorySummary {
+  generation: number | null;
+  historyRevision: number;
+  appliedRevision: number;
+  canUndo: boolean;
+  canRedo: boolean;
+  undoHeadId: number | null;
+  undoRevision: number;
+  undoGroup: EditGroupSummary | null;
+  redoHeadId: number | null;
+  redoRevision: number;
+  redoGroup: EditGroupSummary | null;
+  pending: boolean;
+}
+
+export type EditAppliedOperation =
+  | 'createObject'
+  | 'deleteObject'
+  | 'duplicateObject'
+  | 'reparentObject'
+  | 'setProperty'
+  | 'componentAdd'
+  | 'componentRemove'
+  | 'undo'
+  | 'redo';
+
+/** 編集サービスが適用した変更を画面へ伝える。 */
+export interface EditAppliedPayload {
+  operation: EditAppliedOperation;
+  objectId: string | null;
+  property: string | null;
+  value: unknown | null;
+  newId: string | null;
+  source: EditSource;
+  groupId: string;
+  generation: number;
+  sequence: number;
+  historyRevision: number;
+  appliedRevision: number;
+}
+
 /**
  * One asset entry returned by asset_read_manifest.
  *

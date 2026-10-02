@@ -52,7 +52,13 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{watch, Mutex};
 
-use crate::dto::ConnectionStatePayload;
+use crate::dto::{
+    ConnectionStatePayload, EditHistorySummaryDto, UiParentCaptureDto, UiPropertyCaptureDto,
+};
+use crate::edit_service::{
+    EditEventInput, EditKind, EditService, HistoryCapture, HistoryRequest, PriorCapture,
+    QueuedEditResult,
+};
 use crate::error::BackendError;
 use crate::events_map::ui_channel_for_event;
 use crate::protocol_names::events;
@@ -924,15 +930,18 @@ pub async fn scene_get_tree(state: State<'_, BridgeState>) -> Result<Value, Back
     Ok(value)
 }
 
-/// `scene_create_object`: `scene.createObject` with optional `parentId` / `kind`.
-/// Returns the raw wire-shaped `result` Value (UI types it as
-/// `SceneCreateObjectResult`).
+/// `scene.createObject`を編集サービスの列で実行し、エンジン応答をそのまま返す。
 #[tauri::command]
 pub async fn scene_create_object(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     parent_id: Option<String>,
     kind: Option<String>,
 ) -> Result<Value, BackendError> {
+    let request = HistoryRequest::CreateObject {
+        parent_id: parent_id.clone(),
+        kind: kind.clone(),
+    };
     let mut params = serde_json::Map::new();
     if let Some(parent_id) = parent_id {
         params.insert("parentId".to_owned(), Value::String(parent_id));
@@ -941,79 +950,137 @@ pub async fn scene_create_object(
         params.insert("kind".to_owned(), Value::String(kind));
     }
 
-    let value = send_method(state.inner(), "scene.createObject", Some(params)).await?;
-    norves_bridge_editor_client::parse_create_object_result(&value).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed scene.createObject result: {err}"),
-        }
-    })?;
-    Ok(value)
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_recorded_from_ui(EditKind::Edit, request, move |lease| async move {
+            let value = facade
+                .send_with_lease(&lease, "scene.createObject", Some(params))
+                .await?;
+            norves_bridge_editor_client::parse_create_object_result(&value).map_err(|err| {
+                BackendError::Request {
+                    message: format!("scene.createObjectの応答形式が不正です: {err}"),
+                }
+            })?;
+            Ok(QueuedEditResult::plain(value))
+        })?
+        .result()
+        .await
 }
 
-/// `scene_delete_object`: `scene.deleteObject` for `object_id`.
+/// `scene.deleteObject`を編集サービスの列で実行する。
 #[tauri::command]
 pub async fn scene_delete_object(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
 ) -> Result<Value, BackendError> {
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
 
-    let value = send_method(state.inner(), "scene.deleteObject", Some(params)).await?;
-    norves_bridge_editor_client::parse_delete_object_result(&value).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed scene.deleteObject result: {err}"),
-        }
-    })?;
-    Ok(value)
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_recorded_from_ui(
+            EditKind::Edit,
+            HistoryRequest::DeleteObject { object_id },
+            move |lease| async move {
+                let value = facade
+                    .send_with_lease(&lease, "scene.deleteObject", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_delete_object_result(&value).map_err(|err| {
+                    BackendError::Request {
+                        message: format!("scene.deleteObjectの応答形式が不正です: {err}"),
+                    }
+                })?;
+                Ok(QueuedEditResult::plain(value))
+            },
+        )?
+        .result()
+        .await
 }
 
-/// `scene_reparent_object`: `scene.reparentObject` for `object_id` and optional
-/// `new_parent_id`. Omitting `new_parent_id` moves the object to the scene root.
+/// 親変更時の画面捕捉値をBridge引数から分け、編集サービスの列で実行する。
 #[tauri::command]
 pub async fn scene_reparent_object(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
     new_parent_id: Option<String>,
+    capture: Option<UiParentCaptureDto>,
 ) -> Result<Value, BackendError> {
+    let capture = ui_parent_capture(&edit_service, capture);
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
-    if let Some(new_parent_id) = new_parent_id {
-        params.insert("newParentId".to_owned(), Value::String(new_parent_id));
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+    if let Some(new_parent_id) = &new_parent_id {
+        params.insert(
+            "newParentId".to_owned(),
+            Value::String(new_parent_id.clone()),
+        );
     }
 
-    let value = send_method(state.inner(), "scene.reparentObject", Some(params)).await?;
-    norves_bridge_editor_client::parse_reparent_object_result(&value).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed scene.reparentObject result: {err}"),
-        }
-    })?;
-    Ok(value)
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_recorded_from_ui(
+            EditKind::Edit,
+            HistoryRequest::ReparentObject {
+                object_id,
+                new_parent_id,
+                old_parent: PriorCapture::Ui(capture),
+            },
+            move |lease| async move {
+                let value = facade
+                    .send_with_lease(&lease, "scene.reparentObject", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_reparent_object_result(&value).map_err(
+                    |err| BackendError::Request {
+                        message: format!("scene.reparentObjectの応答形式が不正です: {err}"),
+                    },
+                )?;
+                Ok(QueuedEditResult::plain(value))
+            },
+        )?
+        .result()
+        .await
 }
 
-/// `scene_duplicate_object`: `scene.duplicateObject` for `object_id` and optional
-/// `new_parent_id`. Omitting `new_parent_id` places the copy alongside the
-/// original. Returns the raw wire-shaped `result` Value (UI types it as
-/// `SceneDuplicateObjectResult`).
+/// `scene.duplicateObject`を編集サービスの列で実行する。
 #[tauri::command]
 pub async fn scene_duplicate_object(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
     new_parent_id: Option<String>,
 ) -> Result<Value, BackendError> {
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
-    if let Some(new_parent_id) = new_parent_id {
-        params.insert("newParentId".to_owned(), Value::String(new_parent_id));
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+    if let Some(new_parent_id) = &new_parent_id {
+        params.insert(
+            "newParentId".to_owned(),
+            Value::String(new_parent_id.clone()),
+        );
     }
 
-    let value = send_method(state.inner(), "scene.duplicateObject", Some(params)).await?;
-    norves_bridge_editor_client::parse_duplicate_object_result(&value).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed scene.duplicateObject result: {err}"),
-        }
-    })?;
-    Ok(value)
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_recorded_from_ui(
+            EditKind::Edit,
+            HistoryRequest::DuplicateObject {
+                source_object_id: object_id,
+                parent_id: new_parent_id,
+            },
+            move |lease| async move {
+                let value = facade
+                    .send_with_lease(&lease, "scene.duplicateObject", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_duplicate_object_result(&value).map_err(
+                    |err| BackendError::Request {
+                        message: format!("scene.duplicateObjectの応答形式が不正です: {err}"),
+                    },
+                )?;
+                Ok(QueuedEditResult::plain(value))
+            },
+        )?
+        .result()
+        .await
 }
 
 /// `object_get_snapshot`: `object.getSnapshot` for `object_id`. Returns the raw
@@ -1043,92 +1110,117 @@ pub async fn object_get_snapshot(
     Ok(value)
 }
 
-/// `object_set_property`: `object.setProperty` for `object_id` / `property` /
-/// `value`. Returns the raw wire-shaped `result` Value (UI types it as
-/// `SetObjectPropertyResult`).
-///
-/// Sends `params = { objectId, property, value }` (all required by the schema;
-/// `value` is forwarded verbatim as arbitrary JSON — string/number/boolean/null/
-/// array/object — so a structured edit reaches the engine unchanged). Validated
-/// with `parse_set_property_result` so a malformed ack surfaces as a clean
-/// backend error rather than being forwarded; the ORIGINAL wire Value (carrying
-/// the engine's `appliedValue`) is still returned (same validate-then-forward
-/// pattern as the read commands). An engine that does not implement object edit
-/// answers with a protocol error, which `send_method` maps to
-/// [`BackendError::Engine`] (e.g. `METHOD_NOT_SUPPORTED`) for the UI to degrade
-/// on.
-///
-/// This is the only WRITE path among the commands; it carries no extra state
-/// (no lock held across the request `.await` — `send_method` clones the handle
-/// out of state and drops the guard before awaiting, see module docs).
+/// UI捕捉DTOをBridge paramsへ混ぜず、任意JSON値の編集を共通サービスへ渡す。
 #[tauri::command]
 pub async fn object_set_property(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
     property: String,
     value: Value,
+    capture: Option<UiPropertyCaptureDto>,
 ) -> Result<Value, BackendError> {
+    let capture = ui_property_capture(&edit_service, capture);
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
-    params.insert("property".to_owned(), Value::String(property));
-    // `value` is forwarded verbatim: a snapshot copy of the edited value, never a
-    // live engine pointer. The engine echoes (or normalizes) it back as
-    // `appliedValue`.
-    params.insert("value".to_owned(), value);
-    let result = send_method(state.inner(), "object.setProperty", Some(params)).await?;
-    // Validate shape (drift guard) but forward the original wire Value so the UI
-    // sees the engine's actual appliedValue.
-    norves_bridge_editor_client::parse_set_property_result(&result).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed object.setProperty result: {err}"),
-        }
-    })?;
-    Ok(result)
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+    params.insert("property".to_owned(), Value::String(property.clone()));
+    params.insert("value".to_owned(), value.clone());
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_recorded_from_ui(
+            EditKind::Edit,
+            HistoryRequest::SetProperty {
+                object_id,
+                property,
+                requested_value: value,
+                old_value: PriorCapture::Ui(capture),
+            },
+            move |lease| async move {
+                let result = facade
+                    .send_with_lease(&lease, "object.setProperty", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_set_property_result(&result).map_err(|err| {
+                    BackendError::Request {
+                        message: format!("object.setPropertyの応答形式が不正です: {err}"),
+                    }
+                })?;
+                Ok(QueuedEditResult::plain(result))
+            },
+        )?
+        .result()
+        .await
 }
 
-/// `component_add`: `component.add` for one object and one advertised type.
-///
-/// The type must be one the engine reported as `instantiable` in
-/// `schema.getSnapshot`; this command does not re-check that, because the
-/// engine is the authority and answers `accepted:false` for anything it cannot
-/// build. The result shape is validated as a drift guard, and the ORIGINAL wire
-/// value is forwarded so the UI sees the engine's own `componentId`.
+/// コンポーネント追加を編集サービスの列で実行し、画面更新イベントの情報も渡す。
 #[tauri::command]
 pub async fn component_add(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
     kind: String,
 ) -> Result<Value, BackendError> {
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
-    params.insert("kind".to_owned(), Value::String(kind));
-    let result = send_method(state.inner(), "component.add", Some(params)).await?;
-    norves_bridge_editor_client::parse_component_add_result(&result).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed component.add result: {err}"),
-        }
-    })?;
-    Ok(result)
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+    params.insert("kind".to_owned(), Value::String(kind.clone()));
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_with_event_from_ui(
+            EditKind::Edit,
+            EditEventInput {
+                operation: "componentAdd",
+                object_id: Some(object_id),
+                property: Some("componentKind".to_owned()),
+                value: Some(Value::String(kind)),
+            },
+            move |lease| async move {
+                let result = facade
+                    .send_with_lease(&lease, "component.add", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_component_add_result(&result).map_err(
+                    |err| BackendError::Request {
+                        message: format!("component.addの応答形式が不正です: {err}"),
+                    },
+                )?;
+                Ok(result)
+            },
+        )?
+        .result()
+        .await
 }
 
-/// `component_remove`: `component.remove` for one component id.
-///
-/// The id is the opaque handle `object.getSnapshot` advertised; it is forwarded
-/// verbatim and never parsed here.
+/// コンポーネント削除を編集サービスの列で実行する。
 #[tauri::command]
 pub async fn component_remove(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
 ) -> Result<Value, BackendError> {
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
-    let result = send_method(state.inner(), "component.remove", Some(params)).await?;
-    norves_bridge_editor_client::parse_component_remove_result(&result).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed component.remove result: {err}"),
-        }
-    })?;
-    Ok(result)
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_with_event_from_ui(
+            EditKind::Edit,
+            EditEventInput {
+                operation: "componentRemove",
+                object_id: Some(object_id),
+                property: None,
+                value: None,
+            },
+            move |lease| async move {
+                let result = facade
+                    .send_with_lease(&lease, "component.remove", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_component_remove_result(&result).map_err(
+                    |err| BackendError::Request {
+                        message: format!("component.removeの応答形式が不正です: {err}"),
+                    },
+                )?;
+                Ok(result)
+            },
+        )?
+        .result()
+        .await
 }
 
 /// `schema_get_snapshot`: `schema.getSnapshot` with an empty params object.
@@ -1295,23 +1387,126 @@ pub async fn asset_reload_manifest(state: State<'_, BridgeState>) -> Result<Valu
     validate_asset_reload_manifest_result(value)
 }
 
-/// `runtime_play`: `runtime.play` with an empty params object. Returns the raw
-/// result Value.
+/// 再生要求を編集サービスの共通列で実行する。
 #[tauri::command]
-pub async fn runtime_play(state: State<'_, BridgeState>) -> Result<Value, BackendError> {
-    send_method(state.inner(), "runtime.play", Some(serde_json::Map::new())).await
+pub async fn runtime_play(
+    state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
+) -> Result<Value, BackendError> {
+    let facade = state.edit_facade();
+    edit_service
+        .submit_from_ui(EditKind::RuntimeControl, move |lease| async move {
+            facade
+                .send_with_lease(&lease, "runtime.play", Some(serde_json::Map::new()))
+                .await
+        })
+        .await
 }
 
-/// `runtime_pause`: `runtime.pause` with an empty params object.
+/// 一時停止要求を編集サービスの共通列で実行する。
 #[tauri::command]
-pub async fn runtime_pause(state: State<'_, BridgeState>) -> Result<Value, BackendError> {
-    send_method(state.inner(), "runtime.pause", Some(serde_json::Map::new())).await
+pub async fn runtime_pause(
+    state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
+) -> Result<Value, BackendError> {
+    let facade = state.edit_facade();
+    edit_service
+        .submit_from_ui(EditKind::RuntimeControl, move |lease| async move {
+            facade
+                .send_with_lease(&lease, "runtime.pause", Some(serde_json::Map::new()))
+                .await
+        })
+        .await
 }
 
-/// `runtime_stop`: `runtime.stop` with an empty params object.
+/// 停止要求を編集サービスの共通列で実行する。
 #[tauri::command]
-pub async fn runtime_stop(state: State<'_, BridgeState>) -> Result<Value, BackendError> {
-    send_method(state.inner(), "runtime.stop", Some(serde_json::Map::new())).await
+pub async fn runtime_stop(
+    state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
+) -> Result<Value, BackendError> {
+    let facade = state.edit_facade();
+    edit_service
+        .submit_from_ui(EditKind::RuntimeControl, move |lease| async move {
+            facade
+                .send_with_lease(&lease, "runtime.stop", Some(serde_json::Map::new()))
+                .await
+        })
+        .await
+}
+
+/// UIの履歴先頭IDと改訂が現行の場合だけ、取り消しを編集サービスへ渡す。
+#[tauri::command]
+pub async fn edit_undo(
+    edit_service: State<'_, EditService>,
+    expected_head_id: Option<u64>,
+    expected_revision: u64,
+) -> Result<Value, BackendError> {
+    edit_service
+        .enqueue_undo_from_ui(expected_head_id, expected_revision)?
+        .result()
+        .await
+}
+
+/// UIの履歴先頭IDと改訂が現行の場合だけ、やり直しを編集サービスへ渡す。
+#[tauri::command]
+pub async fn edit_redo(
+    edit_service: State<'_, EditService>,
+    expected_head_id: Option<u64>,
+    expected_revision: u64,
+) -> Result<Value, BackendError> {
+    edit_service
+        .enqueue_redo_from_ui(expected_head_id, expected_revision)?
+        .result()
+        .await
+}
+
+/// 画面初期化時に、サービスが所有する履歴要約を取得する。
+#[tauri::command]
+pub fn edit_get_history(edit_service: State<'_, EditService>) -> EditHistorySummaryDto {
+    edit_service.history_summary()
+}
+
+fn ui_property_capture(
+    edit_service: &EditService,
+    capture: Option<UiPropertyCaptureDto>,
+) -> HistoryCapture<Value> {
+    match capture {
+        Some(capture) => HistoryCapture {
+            generation: capture.generation,
+            revision: capture.revision,
+            value: Some(capture.value),
+        },
+        None => {
+            let (generation, revision) = edit_service.applied_history_revision();
+            HistoryCapture {
+                generation: generation.unwrap_or_default(),
+                revision,
+                value: None,
+            }
+        }
+    }
+}
+
+fn ui_parent_capture(
+    edit_service: &EditService,
+    capture: Option<UiParentCaptureDto>,
+) -> HistoryCapture<Option<String>> {
+    match capture {
+        Some(capture) => HistoryCapture {
+            generation: capture.generation,
+            revision: capture.revision,
+            value: Some(capture.parent_id),
+        },
+        None => {
+            let (generation, revision) = edit_service.applied_history_revision();
+            HistoryCapture {
+                generation: generation.unwrap_or_default(),
+                revision,
+                value: None,
+            }
+        }
+    }
 }
 
 /// `focus_viewport`: `runtime.focusViewport` with an empty params object.

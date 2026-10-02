@@ -7,17 +7,18 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tauri::async_runtime::JoinHandle;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
 use crate::bridge_state::{BridgeFacade, BridgeLease};
+use crate::dto::{EditAppliedDto, EditHistorySummaryDto, EditSourceDto};
 use crate::error::BackendError;
+use crate::protocol_names::events;
 
 mod history;
 
-use history::{
-    HistoryAction, HistoryActionRequest, HistoryDirection, HistoryMarker, HistoryRequest,
-    HistoryState, QueuedEditResult,
-};
+use history::{HistoryAction, HistoryActionRequest, HistoryDirection, HistoryMarker, HistoryState};
+pub(crate) use history::{HistoryCapture, HistoryRequest, PriorCapture, QueuedEditResult};
 
 const QUEUE_CAPACITY: usize = 64;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
@@ -29,6 +30,23 @@ type EditAction = Box<dyn FnOnce(BridgeLease) -> EditFuture + Send + 'static>;
 enum QueuedAction {
     Edit(EditAction),
     History(HistoryActionRequest),
+}
+
+type EditEventSink = Arc<dyn Fn(EditServiceEvent) + Send + Sync + 'static>;
+
+#[derive(Clone)]
+enum EditServiceEvent {
+    Applied(EditAppliedDto),
+    HistoryChanged(EditHistorySummaryDto),
+}
+
+/// 捕捉履歴を持たない編集コマンド用の、画面更新イベント情報。
+#[derive(Clone)]
+pub(crate) struct EditEventInput {
+    pub(crate) operation: &'static str,
+    pub(crate) object_id: Option<String>,
+    pub(crate) property: Option<String>,
+    pub(crate) value: Option<Value>,
 }
 
 async fn join_after_grace(mut join: JoinHandle<()>) {
@@ -64,6 +82,8 @@ struct QueueItem {
     lease: BridgeLease,
     action: QueuedAction,
     history_request: Option<HistoryRequest>,
+    event_request: Option<HistoryRequest>,
+    event_input: Option<EditEventInput>,
     cancelled: oneshot::Receiver<()>,
     result: oneshot::Sender<Result<QueuedEditResult, BackendError>>,
 }
@@ -92,7 +112,7 @@ impl EditTicket {
     }
 }
 
-/// UIとMCPで共有する編集受付。既存UIコマンドの切り替えは後続タスクで行う。
+/// UIとMCPで共有し、接続世代ごとの編集列と履歴を所有する。
 #[allow(dead_code)]
 pub(crate) struct EditService {
     bridge: BridgeFacade,
@@ -109,7 +129,19 @@ impl EditService {
         Self::with_capacity(bridge, QUEUE_CAPACITY)
     }
 
+    pub(crate) fn new_with_app(bridge: BridgeFacade, app: AppHandle) -> Self {
+        Self::with_capacity_and_sink(bridge, QUEUE_CAPACITY, Some(tauri_event_sink(app)))
+    }
+
     fn with_capacity(bridge: BridgeFacade, capacity: usize) -> Self {
+        Self::with_capacity_and_sink(bridge, capacity, None)
+    }
+
+    fn with_capacity_and_sink(
+        bridge: BridgeFacade,
+        capacity: usize,
+        event_sink: Option<EditEventSink>,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(capacity);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let history = Arc::new(StdMutex::new(HistoryState::default()));
@@ -119,6 +151,7 @@ impl EditService {
             bridge.subscribe(),
             shutdown_rx,
             Arc::clone(&history),
+            event_sink.clone(),
         ));
         Self {
             bridge,
@@ -143,6 +176,28 @@ impl EditService {
         Fut: Future<Output = Result<Value, BackendError>> + Send + 'static,
     {
         self.enqueue(EditSource::Ui, kind, action)
+    }
+
+    pub(crate) fn enqueue_with_event_from_ui<F, Fut>(
+        &self,
+        kind: EditKind,
+        event_input: EditEventInput,
+        action: F,
+    ) -> Result<EditTicket, BackendError>
+    where
+        F: FnOnce(BridgeLease) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<Value, BackendError>> + Send + 'static,
+    {
+        self.enqueue_inner(
+            EditSource::Ui,
+            kind,
+            None,
+            None,
+            Some(event_input),
+            Box::new(|lease| {
+                Box::pin(async move { action(lease).await.map(QueuedEditResult::plain) })
+            }),
+        )
     }
 
     pub(crate) fn enqueue_from_mcp<F, Fut>(
@@ -280,6 +335,8 @@ impl EditService {
             lease,
             action: QueuedAction::History(request),
             history_request: None,
+            event_request: None,
+            event_input: None,
             cancelled,
             result,
         };
@@ -339,6 +396,8 @@ impl EditService {
             source,
             kind,
             None,
+            None,
+            None,
             Box::new(|lease| {
                 Box::pin(async move { action(lease).await.map(QueuedEditResult::plain) })
             }),
@@ -359,7 +418,9 @@ impl EditService {
         self.enqueue_inner(
             source,
             kind,
+            Some(request.clone()),
             Some(request),
+            None,
             Box::new(|lease| Box::pin(action(lease))),
         )
     }
@@ -369,6 +430,8 @@ impl EditService {
         source: EditSource,
         kind: EditKind,
         history_request: Option<HistoryRequest>,
+        event_request: Option<HistoryRequest>,
+        event_input: Option<EditEventInput>,
         action: EditAction,
     ) -> Result<EditTicket, BackendError> {
         let mut admission = self
@@ -388,6 +451,8 @@ impl EditService {
             lease,
             action: QueuedAction::Edit(action),
             history_request,
+            event_request,
+            event_input,
             cancelled,
             result,
         };
@@ -412,6 +477,17 @@ impl EditService {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             history.synchronize(generation);
             history.snapshot()
+        })
+    }
+
+    pub(crate) fn history_summary(&self) -> EditHistorySummaryDto {
+        self.bridge.with_current_generation(|generation| {
+            let mut history = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            history.synchronize(generation);
+            history.summary()
         })
     }
 
@@ -628,6 +704,7 @@ async fn run_actor(
     mut sessions: watch::Receiver<Option<BridgeLease>>,
     mut shutdown: watch::Receiver<bool>,
     history: Arc<StdMutex<HistoryState>>,
+    event_sink: Option<EditEventSink>,
 ) {
     let generation = bridge.current_generation();
     history
@@ -651,11 +728,27 @@ async fn run_actor(
                 let mut state = history
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let before = state.summary();
                 state.synchronize(generation);
+                let after = state.summary();
+                drop(state);
+                if before != after {
+                    emit_service_event(
+                        event_sink.as_ref(),
+                        EditServiceEvent::HistoryChanged(after),
+                    );
+                }
             }
             item = receiver.recv() => {
                 let Some(item) = item else { break; };
-                if process_item(&bridge, &mut sessions, &mut shutdown, &history, item).await {
+                if process_item(
+                    &bridge,
+                    &mut sessions,
+                    &mut shutdown,
+                    &history,
+                    event_sink.as_ref(),
+                    item,
+                ).await {
                     break;
                 }
             }
@@ -673,6 +766,7 @@ async fn process_item(
     sessions: &mut watch::Receiver<Option<BridgeLease>>,
     shutdown: &mut watch::Receiver<bool>,
     history: &Arc<StdMutex<HistoryState>>,
+    event_sink: Option<&EditEventSink>,
     mut item: QueueItem,
 ) -> bool {
     if matches!(
@@ -697,12 +791,25 @@ async fn process_item(
         .as_ref()
         .is_some_and(HistoryRequest::is_scene_structure_edit);
     let mut prepared_history = None;
-    let prepared_action = {
+    let event_request = item.event_request.clone();
+    let event_input = item.event_input.clone();
+    let event_source = item.source;
+    let event_kind = item.kind;
+    let event_sequence = item.sequence;
+    let event_generation = item.lease.generation;
+    let (prepared_action, history_before) = {
         let current_generation = bridge.current_generation();
         let mut state = history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.synchronize(current_generation);
+        if state.is_pending() {
+            let _ = item.result.send(Err(BackendError::Request {
+                message: "編集履歴に部分失敗が残っています。保留中は編集・取り消し・実行制御を受け付けません。"
+                    .to_owned(),
+            }));
+            return false;
+        }
         if let Some(request) = item.history_request.take() {
             match state.prepare(request, item.source, item.lease.generation) {
                 Ok(prepared) => prepared_history = Some(prepared),
@@ -712,7 +819,7 @@ async fn process_item(
                 }
             }
         }
-        if let QueuedAction::History(request) = &item.action {
+        let prepared_action = if let QueuedAction::History(request) = &item.action {
             let Some(action) = state.prepare_action(*request) else {
                 let _ = item.result.send(Ok(QueuedEditResult::plain(Value::Null)));
                 return false;
@@ -720,7 +827,8 @@ async fn process_item(
             Some(action)
         } else {
             None
-        }
+        };
+        (prepared_action, state.summary())
     };
 
     let action = match item.action {
@@ -834,8 +942,284 @@ async fn process_item(
             }
         }
     };
+
+    let history_after = history
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .summary();
+    if let (Some(sink), Ok(result)) = (event_sink, outcome.as_ref()) {
+        if history_after.applied_revision != history_before.applied_revision
+            && result.value.get("accepted").and_then(Value::as_bool) == Some(true)
+            && event_kind != EditKind::RuntimeControl
+        {
+            if let Some(details) = edit_event_details(
+                event_request.as_ref(),
+                event_input.as_ref(),
+                prepared_action.as_ref(),
+                &result.value,
+            ) {
+                let group_sequence = prepared_action
+                    .as_ref()
+                    .map_or(event_sequence, |action| action.entry_id);
+                emit_service_event(
+                    Some(sink),
+                    EditServiceEvent::Applied(EditAppliedDto {
+                        operation: details.operation,
+                        object_id: details.object_id,
+                        property: details.property,
+                        value: details.value,
+                        new_id: details.new_id,
+                        source: source_dto(event_source),
+                        group_id: history::group_id(event_generation, group_sequence),
+                        generation: event_generation,
+                        sequence: event_sequence,
+                        history_revision: history_after.history_revision,
+                        applied_revision: history_after.applied_revision,
+                    }),
+                );
+            }
+        }
+    }
+    if history_after != history_before {
+        emit_service_event(event_sink, EditServiceEvent::HistoryChanged(history_after));
+    }
     let _ = item.result.send(outcome);
     stopping
+}
+
+struct EditEventDetails {
+    operation: String,
+    object_id: Option<String>,
+    property: Option<String>,
+    value: Option<Value>,
+    new_id: Option<String>,
+}
+
+fn source_dto(source: EditSource) -> EditSourceDto {
+    match source {
+        EditSource::Ui => EditSourceDto::Ui,
+        EditSource::Mcp => EditSourceDto::Mcp,
+    }
+}
+
+fn edit_event_details(
+    request: Option<&HistoryRequest>,
+    input: Option<&EditEventInput>,
+    action: Option<&HistoryAction>,
+    result: &Value,
+) -> Option<EditEventDetails> {
+    if let Some(action) = action {
+        let (operation, object_id, property, value, new_id) =
+            match (&action.record, action.direction) {
+                (history::HistoryRecord::Create { created_id, .. }, HistoryDirection::Undo) => {
+                    ("undo", Some(created_id.clone()), None, None, None)
+                }
+                (history::HistoryRecord::Create { .. }, HistoryDirection::Redo) => (
+                    "redo",
+                    None,
+                    None,
+                    None,
+                    result
+                        .get("newId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                ),
+                (history::HistoryRecord::Duplicate { created_id, .. }, HistoryDirection::Undo) => {
+                    ("undo", Some(created_id.clone()), None, None, None)
+                }
+                (
+                    history::HistoryRecord::Duplicate {
+                        source_object_id, ..
+                    },
+                    HistoryDirection::Redo,
+                ) => (
+                    "redo",
+                    Some(source_object_id.clone()),
+                    None,
+                    None,
+                    result
+                        .get("newId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                ),
+                (
+                    history::HistoryRecord::Reparent {
+                        object_id,
+                        old_parent_id,
+                        ..
+                    },
+                    HistoryDirection::Undo,
+                ) => (
+                    "undo",
+                    Some(object_id.clone()),
+                    Some("parentId".to_owned()),
+                    Some(optional_string_value(old_parent_id.as_deref())),
+                    None,
+                ),
+                (
+                    history::HistoryRecord::Reparent {
+                        object_id,
+                        new_parent_id,
+                        ..
+                    },
+                    HistoryDirection::Redo,
+                ) => (
+                    "redo",
+                    Some(object_id.clone()),
+                    Some("parentId".to_owned()),
+                    Some(optional_string_value(new_parent_id.as_deref())),
+                    None,
+                ),
+                (
+                    history::HistoryRecord::SetProperty {
+                        object_id,
+                        property,
+                        old_value,
+                        ..
+                    },
+                    HistoryDirection::Undo,
+                ) => (
+                    "undo",
+                    Some(object_id.clone()),
+                    Some(property.clone()),
+                    Some(
+                        result
+                            .get("appliedValue")
+                            .cloned()
+                            .unwrap_or_else(|| old_value.clone()),
+                    ),
+                    None,
+                ),
+                (
+                    history::HistoryRecord::SetProperty {
+                        object_id,
+                        property,
+                        new_value,
+                        ..
+                    },
+                    HistoryDirection::Redo,
+                ) => (
+                    "redo",
+                    Some(object_id.clone()),
+                    Some(property.clone()),
+                    Some(
+                        result
+                            .get("appliedValue")
+                            .cloned()
+                            .unwrap_or_else(|| new_value.clone()),
+                    ),
+                    None,
+                ),
+            };
+        return Some(EditEventDetails {
+            operation: operation.to_owned(),
+            object_id,
+            property,
+            value,
+            new_id,
+        });
+    }
+
+    if let Some(request) = request {
+        return Some(match request {
+            HistoryRequest::CreateObject { .. } => EditEventDetails {
+                operation: "createObject".to_owned(),
+                object_id: None,
+                property: None,
+                value: None,
+                new_id: result
+                    .get("newId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            },
+            HistoryRequest::DuplicateObject {
+                source_object_id, ..
+            } => EditEventDetails {
+                operation: "duplicateObject".to_owned(),
+                object_id: Some(source_object_id.clone()),
+                property: None,
+                value: None,
+                new_id: result
+                    .get("newId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            },
+            HistoryRequest::DeleteObject { object_id } => EditEventDetails {
+                operation: "deleteObject".to_owned(),
+                object_id: Some(object_id.clone()),
+                property: None,
+                value: None,
+                new_id: None,
+            },
+            HistoryRequest::ReparentObject {
+                object_id,
+                new_parent_id,
+                ..
+            } => EditEventDetails {
+                operation: "reparentObject".to_owned(),
+                object_id: Some(object_id.clone()),
+                property: Some("parentId".to_owned()),
+                value: Some(optional_string_value(new_parent_id.as_deref())),
+                new_id: None,
+            },
+            HistoryRequest::SetProperty {
+                object_id,
+                property,
+                requested_value,
+                ..
+            } => EditEventDetails {
+                operation: "setProperty".to_owned(),
+                object_id: Some(object_id.clone()),
+                property: Some(property.clone()),
+                value: Some(
+                    result
+                        .get("appliedValue")
+                        .cloned()
+                        .unwrap_or_else(|| requested_value.clone()),
+                ),
+                new_id: None,
+            },
+        });
+    }
+
+    input.map(|input| EditEventDetails {
+        operation: input.operation.to_owned(),
+        object_id: input.object_id.clone(),
+        property: input.property.clone(),
+        value: input.value.clone(),
+        new_id: if input.operation == "componentAdd" {
+            result
+                .get("componentId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        } else {
+            None
+        },
+    })
+}
+
+fn optional_string_value(value: Option<&str>) -> Value {
+    value.map_or(Value::Null, |value| Value::String(value.to_owned()))
+}
+
+fn emit_service_event(event_sink: Option<&EditEventSink>, event: EditServiceEvent) {
+    if let Some(event_sink) = event_sink {
+        event_sink(event);
+    }
+}
+
+fn tauri_event_sink(app: AppHandle) -> EditEventSink {
+    Arc::new(move |event| {
+        let result = match event {
+            EditServiceEvent::Applied(payload) => app.emit(events::EDIT_APPLIED, payload),
+            EditServiceEvent::HistoryChanged(payload) => {
+                app.emit(events::EDIT_HISTORY_CHANGED, payload)
+            }
+        };
+        if let Err(error) = result {
+            tracing::warn!(error = %error, "編集サービスのイベントを送信できませんでした");
+        }
+    })
 }
 
 #[cfg(test)]
@@ -948,6 +1332,173 @@ mod tests {
 
     fn success(value: Value) -> Result<Value, BackendError> {
         Ok(value)
+    }
+
+    #[tokio::test]
+    async fn history_summary_exposes_the_undo_head_and_display_group() {
+        let (service, _control, _handle) = test_service(4);
+        seed_history(
+            &service,
+            HistoryDirection::Undo,
+            17,
+            history::HistoryRecord::SetProperty {
+                object_id: "object-1".to_owned(),
+                property: "color".to_owned(),
+                old_value: serde_json::json!("blue"),
+                new_value: serde_json::json!("red"),
+            },
+        );
+
+        let summary = service.history_summary();
+        assert!(summary.can_undo);
+        assert!(!summary.can_redo);
+        assert_eq!(summary.undo_head_id, Some(17));
+        assert_eq!(summary.undo_revision, summary.history_revision);
+        assert_eq!(
+            summary.undo_group,
+            Some(crate::dto::EditGroupSummaryDto {
+                id: "edit-1-17".to_owned(),
+                name: "プロパティを変更".to_owned(),
+                source: EditSourceDto::Ui,
+                count: 1,
+            })
+        );
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn pending_partial_failure_rejects_runtime_control_before_execution() {
+        let (service, _control, _handle) = test_service(4);
+        {
+            let mut state = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.synchronize(Some(1));
+            state.set_pending_for_test(true);
+        }
+        let invoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let invoked_action = Arc::clone(&invoked);
+        let ticket = service
+            .enqueue_from_ui(EditKind::RuntimeControl, move |_| async move {
+                invoked_action.store(true, std::sync::atomic::Ordering::Release);
+                success(serde_json::json!({ "accepted": true }))
+            })
+            .expect("実行制御の受付が列に入る");
+
+        assert!(matches!(
+            ticket.result().await,
+            Err(BackendError::Request { message }) if message.contains("部分失敗")
+        ));
+        assert!(!invoked.load(std::sync::atomic::Ordering::Acquire));
+        let summary = service.history_summary();
+        assert!(summary.pending);
+        assert!(!summary.can_undo);
+        assert!(!summary.can_redo);
+        service.shutdown().await;
+    }
+
+    #[test]
+    fn applied_property_event_uses_engine_value_and_ui_source_fields() {
+        let request = HistoryRequest::SetProperty {
+            object_id: "object-1".to_owned(),
+            property: "color".to_owned(),
+            requested_value: serde_json::json!("red"),
+            old_value: PriorCapture::Ui(HistoryCapture {
+                generation: 1,
+                revision: 3,
+                value: Some(serde_json::json!("blue")),
+            }),
+        };
+        let details = edit_event_details(
+            Some(&request),
+            None,
+            None,
+            &serde_json::json!({ "accepted": true, "appliedValue": null }),
+        )
+        .expect("適用イベント情報が作られる");
+        assert_eq!(details.operation, "setProperty");
+        assert_eq!(details.object_id.as_deref(), Some("object-1"));
+        assert_eq!(details.property.as_deref(), Some("color"));
+        assert_eq!(details.value, Some(Value::Null));
+        assert_eq!(source_dto(EditSource::Ui), EditSourceDto::Ui);
+    }
+
+    #[tokio::test]
+    async fn accepted_ui_edit_emits_applied_details_and_history_summary() {
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let (bridge, _control) = test_edit_facade(1, handle.clone());
+        let facade = bridge.clone();
+        let emitted = Arc::new(TestMutex::new(Vec::new()));
+        let event_log = Arc::clone(&emitted);
+        let sink: EditEventSink = Arc::new(move |event| {
+            event_log.lock().unwrap().push(event);
+        });
+        let service = EditService::with_capacity_and_sink(bridge, 8, Some(sink));
+        let mut params = serde_json::Map::new();
+        params.insert("kind".to_owned(), Value::String("Node".to_owned()));
+        let ticket = service
+            .enqueue_recorded_from_ui(
+                EditKind::Edit,
+                HistoryRequest::CreateObject {
+                    parent_id: None,
+                    kind: Some("Node".to_owned()),
+                },
+                move |lease| async move {
+                    let result = facade
+                        .send_with_lease(&lease, "scene.createObject", Some(params))
+                        .await?;
+                    Ok(QueuedEditResult::plain(result))
+                },
+            )
+            .expect("画面の編集要求が受け付けられる");
+        let (request_id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.createObject");
+        assert_eq!(
+            params.and_then(|params| params.get("kind").cloned()),
+            Some(Value::String("Node".to_owned()))
+        );
+        respond(
+            &mut peer,
+            request_id,
+            serde_json::json!({ "accepted": true, "newId": "node-1" }),
+        )
+        .await;
+        assert_eq!(
+            ticket.result().await.expect("編集結果が返る"),
+            serde_json::json!({ "accepted": true, "newId": "node-1" })
+        );
+
+        {
+            let events = emitted.lock().unwrap();
+            assert_eq!(events.len(), 2);
+            match &events[0] {
+                EditServiceEvent::Applied(payload) => {
+                    assert_eq!(payload.operation, "createObject");
+                    assert_eq!(payload.new_id.as_deref(), Some("node-1"));
+                    assert_eq!(payload.source, EditSourceDto::Ui);
+                    assert_eq!(payload.group_id, "edit-1-0");
+                    assert_eq!(payload.generation, 1);
+                    assert_eq!(payload.sequence, 0);
+                    assert_eq!(payload.applied_revision, 1);
+                    assert_eq!(payload.history_revision, 2);
+                }
+                EditServiceEvent::HistoryChanged(_) => panic!("適用イベントが先に発行される"),
+            }
+            match &events[1] {
+                EditServiceEvent::HistoryChanged(summary) => {
+                    assert!(summary.can_undo);
+                    assert_eq!(summary.undo_head_id, Some(0));
+                    assert_eq!(
+                        summary.undo_group.as_ref().map(|group| group.count),
+                        Some(1)
+                    );
+                }
+                EditServiceEvent::Applied(_) => panic!("履歴要約イベントが後に発行される"),
+            }
+        }
+        service.shutdown().await;
     }
 
     async fn respond_method_not_supported(peer: &mut LoopbackTransport, id: CorrelationId) {

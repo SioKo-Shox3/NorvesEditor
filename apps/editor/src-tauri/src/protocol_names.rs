@@ -31,6 +31,9 @@ pub mod commands {
     pub const SCHEMA_GET_SNAPSHOT: &str = "schema_get_snapshot";
     pub const COMPONENT_ADD: &str = "component_add";
     pub const COMPONENT_REMOVE: &str = "component_remove";
+    pub const EDIT_UNDO: &str = "edit_undo";
+    pub const EDIT_REDO: &str = "edit_redo";
+    pub const EDIT_GET_HISTORY: &str = "edit_get_history";
     pub const VIEWPORT_GET_THUMBNAIL: &str = "viewport_get_thumbnail";
     pub const RUNTIME_PLAY: &str = "runtime_play";
     pub const RUNTIME_PAUSE: &str = "runtime_pause";
@@ -67,6 +70,8 @@ pub mod events {
     pub const BRIDGE_DISCONNECTED: &str = "bridge:bridge-disconnected";
     pub const SCENE_TREE_CHANGED: &str = "bridge:scene-tree-changed";
     pub const OBJECT_CHANGED: &str = "bridge:object-changed";
+    pub const EDIT_APPLIED: &str = "bridge:edit-applied";
+    pub const EDIT_HISTORY_CHANGED: &str = "bridge:edit-history-changed";
 }
 
 #[cfg(test)]
@@ -105,6 +110,13 @@ mod tests {
     #[test]
     fn command_scene_create_object() {
         assert_eq!(commands::SCENE_CREATE_OBJECT, "scene_create_object");
+    }
+
+    #[test]
+    fn command_edit_history() {
+        assert_eq!(commands::EDIT_UNDO, "edit_undo");
+        assert_eq!(commands::EDIT_REDO, "edit_redo");
+        assert_eq!(commands::EDIT_GET_HISTORY, "edit_get_history");
     }
 
     #[test]
@@ -275,6 +287,12 @@ mod tests {
         assert_eq!(events::OBJECT_CHANGED, "bridge:object-changed");
     }
 
+    #[test]
+    fn events_edit_service() {
+        assert_eq!(events::EDIT_APPLIED, "bridge:edit-applied");
+        assert_eq!(events::EDIT_HISTORY_CHANGED, "bridge:edit-history-changed");
+    }
+
     // -----------------------------------------------------------------------
     // No-duplicate guards within each set
     // -----------------------------------------------------------------------
@@ -296,6 +314,9 @@ mod tests {
             commands::SCHEMA_GET_SNAPSHOT,
             commands::COMPONENT_ADD,
             commands::COMPONENT_REMOVE,
+            commands::EDIT_UNDO,
+            commands::EDIT_REDO,
+            commands::EDIT_GET_HISTORY,
             commands::VIEWPORT_GET_THUMBNAIL,
             commands::RUNTIME_PLAY,
             commands::RUNTIME_PAUSE,
@@ -335,6 +356,8 @@ mod tests {
             events::BRIDGE_DISCONNECTED,
             events::SCENE_TREE_CHANGED,
             events::OBJECT_CHANGED,
+            events::EDIT_APPLIED,
+            events::EDIT_HISTORY_CHANGED,
         ];
         let mut sorted = all;
         sorted.sort_unstable();

@@ -43,7 +43,10 @@ pub fn run() {
             // 配布版にもWARN以上を残せるよう、AppHandle生成後にログ出力先を決める。
             backend_log::init(app.path().app_log_dir().ok());
             let bridge = app.state::<BridgeState>();
-            app.manage(EditService::new(bridge.edit_facade()));
+            app.manage(EditService::new_with_app(
+                bridge.edit_facade(),
+                app.handle().clone(),
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -68,6 +71,9 @@ pub fn run() {
             bridge_state::runtime_play,
             bridge_state::runtime_pause,
             bridge_state::runtime_stop,
+            bridge_state::edit_undo,
+            bridge_state::edit_redo,
+            bridge_state::edit_get_history,
             bridge_state::focus_viewport,
             process_runtime::launch_engine,
             process_runtime::stop_engine,

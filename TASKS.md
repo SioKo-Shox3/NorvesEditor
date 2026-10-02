@@ -175,7 +175,7 @@ M2 の共通規則:
 - notes: 先行 MCP-004。依存ID連鎖・削除復元は対象外。単発失敗をNE06の複数編集の保留へ変えない。
 
 ## MCP-006: 編集・履歴の Tauri コマンドとサービスイベントを結ぶ
-- status: todo
+- status: done
 - done-when: NE04/NE05。既存の編集入口と新しいundo/redo/履歴取得が共通サービスへ渡る。旧値・旧親の捕捉情報をUI専用DTOで受け、Bridge paramsには出さない。適用ごとに対象・プロパティ・値・新ID・出どころ・まとまりID・世代・改訂を発行し、undo/redoにも発行する。履歴要約を初期取得できる。protocol_names.rsとTSのcommand/event定数、型、ラッパーが一致する。UI捕捉改訂と履歴先頭ID/改訂をDTOに含め、UI起源を明示する。UIのplay/pause/stopもサービスへ渡し、部分失敗保留の拒否を返す。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

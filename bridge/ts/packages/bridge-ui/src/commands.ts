@@ -9,12 +9,16 @@ import type {
   SceneDeleteObjectResult,
   SceneDuplicateObjectResult,
   SceneReparentObjectResult,
+  SetObjectPropertyResult,
 } from '@norves/bridge-types';
 import type {
   AssetManifestPayload,
   AssetManifestResult,
   AssetResolveResult,
+  EditHistorySummary,
   EngineSettingsPayload,
+  UiParentCapture,
+  UiPropertyCapture,
   WorkspacePayload,
 } from './ipc-types.js';
 
@@ -43,6 +47,9 @@ export const BRIDGE_COMMANDS = {
   schemaGetSnapshot: 'schema_get_snapshot',
   componentAdd: 'component_add',
   componentRemove: 'component_remove',
+  editUndo: 'edit_undo',
+  editRedo: 'edit_redo',
+  editGetHistory: 'edit_get_history',
   viewportGetThumbnail: 'viewport_get_thumbnail',
   runtimePlay: 'runtime_play',
   runtimePause: 'runtime_pause',
@@ -87,10 +94,14 @@ export async function sceneDeleteObject(objectId: string): Promise<SceneDeleteOb
 export async function sceneReparentObject(
   objectId: string,
   newParentId?: string,
+  capture?: UiParentCapture,
 ): Promise<SceneReparentObjectResult> {
-  const args: { objectId: string; newParentId?: string } = { objectId };
+  const args: { objectId: string; newParentId?: string; capture?: UiParentCapture } = { objectId };
   if (newParentId !== undefined) {
     args.newParentId = newParentId;
+  }
+  if (capture !== undefined) {
+    args.capture = capture;
   }
   return invoke<SceneReparentObjectResult>(BRIDGE_COMMANDS.sceneReparentObject, args);
 }
@@ -104,6 +115,62 @@ export async function sceneDuplicateObject(
     args.newParentId = newParentId;
   }
   return invoke<SceneDuplicateObjectResult>(BRIDGE_COMMANDS.sceneDuplicateObject, args);
+}
+
+export async function objectSetProperty(
+  objectId: string,
+  property: string,
+  value: unknown,
+  capture?: UiPropertyCapture,
+): Promise<SetObjectPropertyResult> {
+  const args: {
+    objectId: string;
+    property: string;
+    value: unknown;
+    capture?: UiPropertyCapture;
+  } = { objectId, property, value };
+  if (capture !== undefined) {
+    args.capture = capture;
+  }
+  return invoke<SetObjectPropertyResult>(BRIDGE_COMMANDS.objectSetProperty, args);
+}
+
+export async function editUndo(
+  expectedHeadId: number | null,
+  expectedRevision: number,
+): Promise<unknown> {
+  return invoke(BRIDGE_COMMANDS.editUndo, { expectedHeadId, expectedRevision });
+}
+
+export async function editRedo(
+  expectedHeadId: number | null,
+  expectedRevision: number,
+): Promise<unknown> {
+  return invoke(BRIDGE_COMMANDS.editRedo, { expectedHeadId, expectedRevision });
+}
+
+export async function editGetHistory(): Promise<EditHistorySummary> {
+  return invoke<EditHistorySummary>(BRIDGE_COMMANDS.editGetHistory);
+}
+
+export async function componentAdd(objectId: string, kind: string): Promise<unknown> {
+  return invoke<unknown>(BRIDGE_COMMANDS.componentAdd, { objectId, kind });
+}
+
+export async function componentRemove(objectId: string): Promise<unknown> {
+  return invoke<unknown>(BRIDGE_COMMANDS.componentRemove, { objectId });
+}
+
+export async function runtimePlay(): Promise<unknown> {
+  return invoke<unknown>(BRIDGE_COMMANDS.runtimePlay);
+}
+
+export async function runtimePause(): Promise<unknown> {
+  return invoke<unknown>(BRIDGE_COMMANDS.runtimePause);
+}
+
+export async function runtimeStop(): Promise<unknown> {
+  return invoke<unknown>(BRIDGE_COMMANDS.runtimeStop);
 }
 // エンジンのパスは Rust 側のファイル選択ダイアログでだけ変わる。パス文字列を渡すコマンドは無い。
 export async function getEngineSettings(): Promise<EngineSettingsPayload> {

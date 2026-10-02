@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use super::{EditKind, EditSource};
 use crate::bridge_state::BridgeLease;
+use crate::dto::{EditGroupSummaryDto, EditHistorySummaryDto, EditSourceDto};
 use crate::error::BackendError;
 
 const MAX_CORRECTION_ENTRIES: usize = 512;
@@ -120,7 +121,7 @@ pub(crate) struct HistoryActionRequest {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HistoryAction {
     pub(crate) direction: HistoryDirection,
-    entry_id: u64,
+    pub(super) entry_id: u64,
     pub(crate) record: HistoryRecord,
 }
 
@@ -354,6 +355,7 @@ pub(super) struct HistoryState {
     redo: Vec<HistoryEntry>,
     corrections: CorrectionCache,
     edit_unsupported: bool,
+    pending: bool,
 }
 
 impl HistoryState {
@@ -366,8 +368,47 @@ impl HistoryState {
             self.edit_unsupported = false;
             self.applied_revision = 0;
             self.markers.clear();
+            self.pending = false;
             self.revision = self.revision.wrapping_add(1);
         }
+    }
+
+    pub(super) fn summary(&self) -> EditHistorySummaryDto {
+        let undo_group = self.group_summary(HistoryDirection::Undo);
+        let redo_group = self.group_summary(HistoryDirection::Redo);
+        let (undo_head_id, undo_revision) = self.history_cursor(HistoryDirection::Undo);
+        let (redo_head_id, redo_revision) = self.history_cursor(HistoryDirection::Redo);
+        EditHistorySummaryDto {
+            generation: self.generation,
+            history_revision: self.revision,
+            applied_revision: self.applied_revision,
+            can_undo: undo_head_id.is_some() && !self.edit_unsupported && !self.pending,
+            can_redo: redo_head_id.is_some() && !self.edit_unsupported && !self.pending,
+            undo_head_id,
+            undo_revision,
+            undo_group,
+            redo_head_id,
+            redo_revision,
+            redo_group,
+            pending: self.pending,
+        }
+    }
+
+    fn group_summary(&self, direction: HistoryDirection) -> Option<EditGroupSummaryDto> {
+        let stack = match direction {
+            HistoryDirection::Undo => &self.undo,
+            HistoryDirection::Redo => &self.redo,
+        };
+        let entry = stack.last()?;
+        Some(EditGroupSummaryDto {
+            id: group_id(entry.marker.generation, entry.marker.sequence),
+            name: entry.record.summary_name().to_owned(),
+            source: match entry.marker.source {
+                EditSource::Ui => EditSourceDto::Ui,
+                EditSource::Mcp => EditSourceDto::Mcp,
+            },
+            count: 1,
+        })
     }
 
     pub(super) fn snapshot(&self) -> (Option<u64>, u64, Vec<HistoryMarker>) {
@@ -391,7 +432,7 @@ impl HistoryState {
 
     pub(super) fn prepare_action(&self, request: HistoryActionRequest) -> Option<HistoryAction> {
         let expected_head_id = request.expected_head_id?;
-        if self.edit_unsupported || request.expected_revision != self.revision {
+        if self.edit_unsupported || self.pending || request.expected_revision != self.revision {
             return None;
         }
         let stack = match request.direction {
@@ -483,7 +524,14 @@ impl HistoryState {
     }
 
     pub(super) fn mark_edit_unsupported(&mut self) {
-        self.edit_unsupported = true;
+        if !self.edit_unsupported {
+            self.edit_unsupported = true;
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    pub(super) fn is_pending(&self) -> bool {
+        self.pending
     }
 
     pub(super) fn clear_for_shutdown(&mut self) {
@@ -494,6 +542,7 @@ impl HistoryState {
         self.redo.clear();
         self.corrections.clear();
         self.edit_unsupported = false;
+        self.pending = false;
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -891,7 +940,14 @@ impl HistoryState {
         sequence: u64,
         generation: u64,
     ) {
+        self.applied_revision = self.applied_revision.wrapping_add(1);
         self.push_marker(source, kind, sequence, generation);
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_pending_for_test(&mut self, pending: bool) {
+        self.pending = pending;
+        self.revision = self.revision.wrapping_add(1);
     }
 
     #[cfg(test)]
@@ -959,6 +1015,21 @@ impl HistoryState {
     #[cfg(test)]
     pub(super) fn correction_stats(&self) -> (usize, usize) {
         (self.corrections.entries.len(), self.corrections.bytes)
+    }
+}
+
+pub(super) fn group_id(generation: u64, sequence: u64) -> String {
+    format!("edit-{generation}-{sequence}")
+}
+
+impl HistoryRecord {
+    fn summary_name(&self) -> &'static str {
+        match self {
+            Self::Create { .. } => "オブジェクトを作成",
+            Self::Duplicate { .. } => "オブジェクトを複製",
+            Self::Reparent { .. } => "親を変更",
+            Self::SetProperty { .. } => "プロパティを変更",
+        }
     }
 }
 

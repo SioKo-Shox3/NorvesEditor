@@ -6,7 +6,7 @@
 //! camelCase to match the TS convention.
 
 use norves_bridge_core::CapabilityDescriptor;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::process::EnginePathSource;
 
@@ -97,6 +97,77 @@ pub struct AssetManifestPayload {
     pub version: u32,
     pub manifest_path: String,
     pub assets: Vec<AssetEntryDto>,
+}
+
+/// 画面から値編集へ渡す、表示スナップショット由来の捕捉値。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiPropertyCaptureDto {
+    pub generation: u64,
+    pub revision: u64,
+    pub value: serde_json::Value,
+}
+
+/// 画面から親変更へ渡す、表示ツリー由来の捕捉値。`None` はシーン直下。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiParentCaptureDto {
+    pub generation: u64,
+    pub revision: u64,
+    pub parent_id: Option<String>,
+}
+
+/// 編集・履歴の出どころ。Bridge wire protocolの値ではない。
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EditSourceDto {
+    Ui,
+    Mcp,
+}
+
+/// 取り消し・やり直しの先頭まとまりを表示する要約。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditGroupSummaryDto {
+    pub id: String,
+    pub name: String,
+    pub source: EditSourceDto,
+    pub count: usize,
+}
+
+/// 画面初期取得と履歴変更イベントで共有するサービス要約。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditHistorySummaryDto {
+    pub generation: Option<u64>,
+    pub history_revision: u64,
+    pub applied_revision: u64,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub undo_head_id: Option<u64>,
+    pub undo_revision: u64,
+    pub undo_group: Option<EditGroupSummaryDto>,
+    pub redo_head_id: Option<u64>,
+    pub redo_revision: u64,
+    pub redo_group: Option<EditGroupSummaryDto>,
+    pub pending: bool,
+}
+
+/// 共通サービスが適用した編集を画面へ伝えるイベント。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditAppliedDto {
+    pub operation: String,
+    pub object_id: Option<String>,
+    pub property: Option<String>,
+    pub value: Option<serde_json::Value>,
+    pub new_id: Option<String>,
+    pub source: EditSourceDto,
+    pub group_id: String,
+    pub generation: u64,
+    pub sequence: u64,
+    pub history_revision: u64,
+    pub applied_revision: u64,
 }
 
 impl ConnectionStatePayload {
@@ -238,6 +309,68 @@ mod tests {
                     "variant": "default",
                     "sourceHash": "source-hash"
                 }]
+            })
+        );
+    }
+
+    #[test]
+    fn ui_capture_keeps_json_null_and_root_parent_distinct_from_missing_capture() {
+        let property: UiPropertyCaptureDto = serde_json::from_value(serde_json::json!({
+            "generation": 7,
+            "revision": 12,
+            "value": null
+        }))
+        .expect("JSON nullを捕捉値として読み取れる");
+        assert_eq!(property.generation, 7);
+        assert_eq!(property.revision, 12);
+        assert_eq!(property.value, serde_json::Value::Null);
+
+        let parent: UiParentCaptureDto = serde_json::from_value(serde_json::json!({
+            "generation": 7,
+            "revision": 12,
+            "parentId": null
+        }))
+        .expect("nullをシーン直下の捕捉値として読み取れる");
+        assert_eq!(parent.parent_id, None);
+        assert_eq!(
+            serde_json::to_value(EditSourceDto::Ui).expect("UIの出どころを直列化できる"),
+            serde_json::json!("ui")
+        );
+        assert_eq!(
+            serde_json::to_value(EditSourceDto::Mcp).expect("MCPの出どころを直列化できる"),
+            serde_json::json!("mcp")
+        );
+    }
+
+    #[test]
+    fn edit_applied_dto_serializes_all_required_revision_fields() {
+        let payload = EditAppliedDto {
+            operation: "setProperty".to_owned(),
+            object_id: Some("object-1".to_owned()),
+            property: Some("color".to_owned()),
+            value: Some(serde_json::Value::Null),
+            new_id: None,
+            source: EditSourceDto::Ui,
+            group_id: "edit-7-9".to_owned(),
+            generation: 7,
+            sequence: 9,
+            history_revision: 13,
+            applied_revision: 11,
+        };
+        assert_eq!(
+            serde_json::to_value(payload).expect("適用イベントを直列化できる"),
+            serde_json::json!({
+                "operation": "setProperty",
+                "objectId": "object-1",
+                "property": "color",
+                "value": null,
+                "newId": null,
+                "source": "ui",
+                "groupId": "edit-7-9",
+                "generation": 7,
+                "sequence": 9,
+                "historyRevision": 13,
+                "appliedRevision": 11
             })
         );
     }
