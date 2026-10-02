@@ -33,8 +33,9 @@
 //! The connect/reconnect double-relay behavior is exercised end-to-end against
 //! the mock engine in P6; here it is structural plus the pure mapping tests.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use norves_bridge_core::{
@@ -49,7 +50,7 @@ use serde_json::Value;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 use crate::dto::ConnectionStatePayload;
 use crate::error::BackendError;
@@ -76,6 +77,7 @@ const OFFERED_PROTOCOL_VERSIONS: [&str; 2] = ["0.2", "0.1"];
 const CLIENT_NAME: &str = "NorvesEditor";
 /// Default per-request timeout for engine method calls.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const DISPATCHER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 /// Builds the loopback WebSocket URL for a local engine `port`.
 ///
@@ -103,6 +105,107 @@ struct LiveConnection {
     capabilities: Vec<CapabilityDescriptor>,
 }
 
+/// 編集actorへ渡す、接続世代に固定されたBridgeの入口。
+#[derive(Clone)]
+pub(crate) struct BridgeLease {
+    pub(crate) generation: u64,
+    #[allow(dead_code)]
+    pub(crate) handle: DispatchHandle,
+}
+
+/// 編集側が接続のロックを持ち越さず、世代付きhandleを得るための内部窓口。
+#[derive(Clone)]
+pub(crate) struct BridgeFacade {
+    current_generation: Arc<StdMutex<Option<u64>>>,
+    session: watch::Receiver<Option<BridgeLease>>,
+}
+
+impl BridgeFacade {
+    /// 現在の世代とセッションを同じ世代の組として複製する。
+    #[allow(dead_code)]
+    pub(crate) fn pin(&self) -> Result<BridgeLease, BackendError> {
+        let current = *self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.session
+            .borrow()
+            .clone()
+            .filter(|lease| Some(lease.generation) == current)
+            .ok_or(BackendError::NotConnected)
+    }
+
+    /// I/O完了時にも、捕捉した世代が現行かを確かめる。
+    pub(crate) fn is_current(&self, generation: u64) -> bool {
+        *self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            == Some(generation)
+    }
+
+    /// 履歴の読み出し時に現在の世代を照合する。
+    pub(crate) fn current_generation(&self) -> Option<u64> {
+        *self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// 世代を固定したまま、I/O後の短い状態記録を行う。
+    pub(crate) fn with_current_generation<T>(&self, action: impl FnOnce(Option<u64>) -> T) -> T {
+        let current = self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        action(*current)
+    }
+
+    /// 接続変更をactorへ通知する受信口を複製する。
+    pub(crate) fn subscribe(&self) -> watch::Receiver<Option<BridgeLease>> {
+        self.session.clone()
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct BridgeSessionTestControl {
+    current_generation: Arc<StdMutex<Option<u64>>>,
+    session_tx: watch::Sender<Option<BridgeLease>>,
+}
+
+#[cfg(test)]
+impl BridgeSessionTestControl {
+    pub(crate) fn set_generation(&self, generation: u64, handle: DispatchHandle) {
+        let mut current = self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = Some(generation);
+        self.session_tx
+            .send_replace(Some(BridgeLease { generation, handle }));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_edit_facade(
+    generation: u64,
+    handle: DispatchHandle,
+) -> (BridgeFacade, BridgeSessionTestControl) {
+    let (session_tx, session_rx) = watch::channel(Some(BridgeLease { generation, handle }));
+    let current_generation = Arc::new(StdMutex::new(Some(generation)));
+    (
+        BridgeFacade {
+            current_generation: Arc::clone(&current_generation),
+            session: session_rx,
+        },
+        BridgeSessionTestControl {
+            current_generation,
+            session_tx,
+        },
+    )
+}
+
 /// Connection phase. `Connecting(token)` rejects overlap and prevents stale
 /// success/failure paths from committing over a disconnected or newer attempt.
 enum Phase {
@@ -121,14 +224,19 @@ pub struct BridgeState {
     /// Monotonic source of unique connect-attempt tokens. Bumped when an attempt
     /// starts so setup, relay self-heal, and commit share one identity.
     next_generation: AtomicU64,
+    session_tx: watch::Sender<Option<BridgeLease>>,
+    current_generation: Arc<StdMutex<Option<u64>>>,
 }
 
 impl Default for BridgeState {
     fn default() -> Self {
+        let (session_tx, _) = watch::channel(None);
         BridgeState {
             inner: Mutex::new(Phase::Disconnected),
             next_request_id: AtomicU64::new(0),
             next_generation: AtomicU64::new(0),
+            session_tx,
+            current_generation: Arc::new(StdMutex::new(None)),
         }
     }
 }
@@ -145,6 +253,35 @@ impl BridgeState {
     /// Allocates a unique token for a new connect attempt.
     fn alloc_generation(&self) -> u64 {
         self.next_generation.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// 現在の接続を、actor向けの短命な読み取り窓口へ公開する。
+    fn publish_session(&self, lease: Option<BridgeLease>) {
+        let mut current = self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = lease.as_ref().map(|session| session.generation);
+        self.session_tx.send_replace(lease);
+    }
+
+    /// 編集サービスが接続handleを世代付きで捕捉する窓口を作る。
+    pub(crate) fn edit_facade(&self) -> BridgeFacade {
+        BridgeFacade {
+            current_generation: Arc::clone(&self.current_generation),
+            session: self.session_tx.subscribe(),
+        }
+    }
+}
+
+/// Connected状態から編集actor向けの世代付きhandleを作る。
+fn edit_lease(phase: &Phase) -> Option<BridgeLease> {
+    match phase {
+        Phase::Connected(conn) => Some(BridgeLease {
+            generation: conn.generation,
+            handle: conn.handle.clone(),
+        }),
+        Phase::Disconnected | Phase::Connecting(_) => None,
     }
 }
 
@@ -328,6 +465,7 @@ fn spawn_relay(
                     let state = app.state::<BridgeState>();
                     let mut guard = state.inner.lock().await;
                     reset_owned_phase_and_then(&mut guard, generation, |_| {
+                        state.publish_session(None);
                         // `emit` is synchronous in Tauri 2. Keep transition and
                         // publication in this one mutex interval so a connect
                         // commit cannot interleave between them.
@@ -349,17 +487,20 @@ fn spawn_relay(
     })
 }
 
-/// Reliably stops an old [`LiveConnection`]'s relay and dispatcher.
-///
-/// Order (see module docs): abort the relay task, shut down the dispatcher
-/// handle (closes the broadcast), then await the relay's join handle so the task
-/// has demonstrably ended. Idempotent: a JoinError from the abort is expected
-/// and ignored.
+/// 古い接続のrelayとdispatcherを終了させる。
 async fn tear_down(conn: LiveConnection) {
     conn.relay.abort();
-    conn.handle.shutdown().await;
-    // Await the aborted task so it cannot outlive this call and double-emit.
+    if !wait_for_dispatcher_shutdown(conn.handle.shutdown()).await {
+        tracing::warn!("Bridge dispatcherの停止応答が2秒以内に返りませんでした");
+    }
+    // 中止したrelayをjoinし、切断通知が二重に出ないようにする。
     let _ = conn.relay.await;
+}
+
+async fn wait_for_dispatcher_shutdown(shutdown: impl Future<Output = ()>) -> bool {
+    tokio::time::timeout(DISPATCHER_SHUTDOWN_GRACE, shutdown)
+        .await
+        .is_ok()
 }
 
 /// The shared connect flow used by `bridge_connect` (and, after teardown, by
@@ -529,7 +670,10 @@ pub(crate) async fn connect_on_port(
     {
         let mut guard = state.inner.lock().await;
         match &*guard {
-            Phase::Disconnected => *guard = Phase::Connecting(token),
+            Phase::Disconnected => {
+                *guard = Phase::Connecting(token);
+                state.publish_session(None);
+            }
             Phase::Connecting(_) | Phase::Connected(_) => {
                 return Err(BackendError::AlreadyConnected);
             }
@@ -544,7 +688,8 @@ pub(crate) async fn connect_on_port(
             let payload = connection_state_payload(&conn);
             let commit = {
                 let mut guard = state.inner.lock().await;
-                try_commit_connection(&mut guard, token, conn, |_| {
+                try_commit_connection(&mut guard, token, conn, |phase| {
+                    state.publish_session(edit_lease(phase));
                     // Synchronous emit under the same lock interval as commit.
                     let _ = app.emit(events::CONNECTION_STATE, payload.clone());
                 })
@@ -560,7 +705,9 @@ pub(crate) async fn connect_on_port(
         Err(err) => {
             // Reset only this failed attempt; never clobber a newer token.
             let mut guard = state.inner.lock().await;
-            reset_connecting_if_matches(&mut guard, token);
+            if reset_connecting_if_matches(&mut guard, token) {
+                state.publish_session(None);
+            }
             Err(err)
         }
     }
@@ -593,10 +740,28 @@ pub async fn bridge_connect(
 pub(crate) async fn disconnect_quietly(state: &BridgeState) {
     let taken = {
         let mut guard = state.inner.lock().await;
-        match std::mem::replace(&mut *guard, Phase::Disconnected) {
+        let taken = match std::mem::replace(&mut *guard, Phase::Disconnected) {
             Phase::Connected(conn) => Some(conn),
             _ => None,
-        }
+        };
+        state.publish_session(None);
+        taken
+    };
+    if let Some(conn) = taken {
+        tear_down(conn).await;
+    }
+}
+
+/// アプリ終了時に接続を無効化し、relayとdispatcherを非同期に終了する。
+pub(crate) async fn shutdown_on_exit(state: &BridgeState) {
+    let taken = {
+        let mut guard = state.inner.lock().await;
+        let taken = match std::mem::replace(&mut *guard, Phase::Disconnected) {
+            Phase::Connected(conn) => Some(conn),
+            Phase::Connecting(_) | Phase::Disconnected => None,
+        };
+        state.publish_session(None);
+        taken
     };
     if let Some(conn) = taken {
         tear_down(conn).await;
@@ -614,11 +779,13 @@ pub async fn bridge_disconnect(
     // Take the live connection out under the lock, then tear down WITHOUT it.
     let taken = {
         let mut guard = state.inner.lock().await;
-        match std::mem::replace(&mut *guard, Phase::Disconnected) {
+        let taken = match std::mem::replace(&mut *guard, Phase::Disconnected) {
             Phase::Connected(conn) => Some(conn),
             // Connecting or Disconnected: nothing live to tear down.
             _ => None,
-        }
+        };
+        state.publish_session(None);
+        taken
     };
     if let Some(conn) = taken {
         tear_down(conn).await;
@@ -643,6 +810,7 @@ pub async fn bridge_reconnect(
         match std::mem::replace(&mut *guard, Phase::Connecting(token)) {
             Phase::Connected(conn) => {
                 let endpoint = conn.endpoint.clone();
+                state.publish_session(None);
                 (conn, endpoint)
             }
             Phase::Connecting(current) => {
@@ -667,7 +835,8 @@ pub async fn bridge_reconnect(
             let payload = connection_state_payload(&conn);
             let commit = {
                 let mut guard = state.inner.lock().await;
-                try_commit_connection(&mut guard, token, conn, |_| {
+                try_commit_connection(&mut guard, token, conn, |phase| {
+                    state.publish_session(edit_lease(phase));
                     let _ = app.emit(events::CONNECTION_STATE, payload.clone());
                 })
             };
@@ -679,7 +848,9 @@ pub async fn bridge_reconnect(
         }
         Err(err) => {
             let mut guard = state.inner.lock().await;
-            reset_connecting_if_matches(&mut guard, token);
+            if reset_connecting_if_matches(&mut guard, token) {
+                state.publish_session(None);
+            }
             Err(err)
         }
     }
@@ -1189,6 +1360,132 @@ mod tests {
             } => (id, method.as_str().to_owned(), params),
             other => panic!("expected setup request, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn bridge_io_does_not_hold_locks_and_disconnect_invalidates_edits() {
+        let state = BridgeState::default();
+        let (transport, mut engine) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let (relay, relay_dropped) = connection_setup_relay_probe();
+        {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connected(LiveConnection {
+                generation: 1,
+                handle: handle.clone(),
+                relay,
+                endpoint: ws_url_for_port(49770),
+                session_id: "edit-service-test".to_owned(),
+                server_name: "loopback".to_owned(),
+                capabilities: Vec::new(),
+            });
+            state.publish_session(edit_lease(&phase));
+        }
+        let service = crate::edit_service::EditService::new(state.edit_facade());
+        let request = build_request(
+            state.alloc_request_id(),
+            "bridge.test",
+            Some(serde_json::Map::new()),
+        )
+        .expect("test request is valid");
+        let ticket = service
+            .enqueue_from_ui(
+                crate::edit_service::EditKind::Edit,
+                move |lease| async move {
+                    match lease.handle.request(request, Duration::from_secs(5)).await {
+                        Ok(ResponsePayload::Result(value)) => Ok(value),
+                        Ok(ResponsePayload::Error(error)) => Err(error.into()),
+                        Err(error) => Err(error.into()),
+                    }
+                },
+            )
+            .expect("edit request is accepted");
+        let (id, method, _) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "bridge.test");
+        assert!(state.inner.try_lock().is_ok());
+        assert!(service.history_lock_available());
+
+        engine
+            .send(connection_setup_response_frame(
+                id,
+                ResponsePayload::Result(serde_json::json!({ "accepted": true })),
+            ))
+            .await
+            .expect("response sends");
+        assert_eq!(
+            ticket.result().await.expect("edit succeeds")["accepted"],
+            true
+        );
+        let (generation, revision_before_disconnect, entries) = service.history_snapshot();
+        assert_eq!(generation, Some(1));
+        assert_eq!(entries.len(), 1);
+
+        let pending_request = build_request(
+            state.alloc_request_id(),
+            "bridge.pending",
+            Some(serde_json::Map::new()),
+        )
+        .expect("pending test request is valid");
+        let pending_edit = service
+            .enqueue_from_mcp(
+                crate::edit_service::EditKind::Edit,
+                move |lease| async move {
+                    match lease
+                        .handle
+                        .request(pending_request, Duration::from_secs(5))
+                        .await
+                    {
+                        Ok(ResponsePayload::Result(value)) => Ok(value),
+                        Ok(ResponsePayload::Error(error)) => Err(error.into()),
+                        Err(error) => Err(error.into()),
+                    }
+                },
+            )
+            .expect("second edit request is accepted");
+        let (_, method, _) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "bridge.pending");
+
+        let queued_action_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let queued_action_probe = std::sync::Arc::clone(&queued_action_ran);
+        let queued_edit = service
+            .enqueue_from_ui(crate::edit_service::EditKind::Edit, move |_| async move {
+                queued_action_probe.store(true, std::sync::atomic::Ordering::Release);
+                Ok(Value::Null)
+            })
+            .expect("third edit request is queued");
+
+        disconnect_quietly(&state).await;
+        assert!(matches!(
+            pending_edit.result().await,
+            Err(BackendError::NotConnected)
+        ));
+        assert!(matches!(
+            queued_edit.result().await,
+            Err(BackendError::NotConnected)
+        ));
+        assert!(!queued_action_ran.load(std::sync::atomic::Ordering::Acquire));
+        let (generation, revision, entries) = service.history_snapshot();
+        assert_eq!(generation, None);
+        assert!(revision > revision_before_disconnect);
+        assert!(entries.is_empty());
+
+        service.shutdown().await;
+        relay_dropped.await.expect("切断後にrelayの終了を確認する");
+    }
+
+    #[tokio::test]
+    async fn dispatcher_shutdown_wait_is_limited_to_two_seconds() {
+        let began = tokio::time::Instant::now();
+        assert!(!wait_for_dispatcher_shutdown(std::future::pending()).await);
+        let elapsed = began.elapsed();
+        assert!(
+            elapsed >= DISPATCHER_SHUTDOWN_GRACE,
+            "shutdown returned after {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "shutdown took {elapsed:?}"
+        );
     }
 
     async fn connection_setup_serve_hello(engine: &mut LoopbackTransport) {

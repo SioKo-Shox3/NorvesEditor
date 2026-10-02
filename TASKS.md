@@ -140,7 +140,7 @@ M2 の共通規則:
 - notes: 先行なし。NorvesEditorの製品文書を確定する。管理外agent-guideの正本同期は独立タスクに分け、実装の先行条件にしない。
 
 ## MCP-002: 編集サービスの実行列と接続世代を用意する
-- status: todo
+- status: done
 - done-when: NE02。UI/MCP の2入口から来た編集を受付順に1件ずつ実行する。undo中に来た編集はundo完了後に実行する。接続世代が変わると履歴と保留が無効になり、旧応答を新世代へ記録しない。BridgeのI/O中に接続・履歴のロックが取得できる試験がある。受付停止・キャンセル・終了join・キュー満杯の拒否を試験する。終了を延期して非同期停止し、2秒の猶予後の中止/joinも試験する。同期フックで無期限のblocking_lockを追加しない。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

@@ -87,6 +87,7 @@ pub(crate) const ENGINE_PATH_ENV: &str = "NORVES_ENGINE_PATH";
 /// How long to wait for the engine's `READY <port>` stdout line before giving up
 /// and killing the child.
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
+const EXIT_JOIN_GRACE: Duration = Duration::from_secs(2);
 
 /// The live half of a running engine process. The `Child` is intentionally NOT
 /// stored here — the monitor task owns it so it alone may `wait()`.
@@ -98,9 +99,7 @@ struct ProcessHandle {
     /// Asks the monitor to `start_kill` + `wait` the child. A send error means
     /// the monitor already finished, which is fine.
     kill_tx: oneshot::Sender<()>,
-    /// Join handle for the monitor task (kept so the handle is self-describing;
-    /// the monitor is detached and clears the holder itself on exit).
-    #[allow(dead_code)] // Retained for lifetime clarity; monitor self-clears.
+    /// 子プロセスの終了監視タスク。終了時はkill要求後にjoinする。
     monitor: JoinHandle<()>,
 }
 
@@ -489,18 +488,40 @@ pub async fn stop_engine(
     Ok(())
 }
 
-/// Best-effort kill of a running engine on app exit, invoked from the Tauri
-/// `RunEvent` hook (plan J3). Synchronous: takes the handle out under a blocking
-/// lock and signals the monitor to kill. `kill_on_drop(true)` is the safety net,
-/// but this explicit hook is preferred because drop is not guaranteed on abort
-/// (see module docs on residual orphan risk).
-pub fn kill_engine_on_exit(app: &AppHandle) {
+/// アプリ終了時に子プロセスを停止し、監視タスクを2秒以内にjoinする。
+pub(crate) async fn shutdown_on_exit(app: &AppHandle) {
     let state = app.state::<ProcessState>();
-    // The RunEvent callback is synchronous; use blocking_lock. No await is held.
     let handle = {
-        let mut guard = state.inner.blocking_lock();
+        let mut guard = state.inner.lock().await;
         guard.take()
     };
+    let Some(handle) = handle else {
+        return;
+    };
+
+    let ProcessHandle {
+        kill_tx,
+        mut monitor,
+        ..
+    } = handle;
+    let _ = kill_tx.send(());
+    if tokio::time::timeout(EXIT_JOIN_GRACE, &mut monitor)
+        .await
+        .is_err()
+    {
+        monitor.abort();
+        let _ = monitor.await;
+    }
+}
+
+/// 同期終了イベントでの保険。ロック待ちは行わず、取得できた場合だけkillを送る。
+pub fn kill_engine_on_exit(app: &AppHandle) {
+    let state = app.state::<ProcessState>();
+    let handle = state
+        .inner
+        .try_lock()
+        .ok()
+        .and_then(|mut guard| guard.take());
     if let Some(handle) = handle {
         let _ = handle.kill_tx.send(());
     }

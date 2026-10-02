@@ -44,6 +44,13 @@ pub enum BackendError {
     /// エンジン設定の保存やファイル選択ダイアログの失敗。
     #[serde(rename_all = "camelCase")]
     Settings { message: String },
+    /// 編集列が満杯で要求を受け付けられなかった。
+    #[allow(dead_code)]
+    EditQueueFull,
+    /// 編集サービスが停止中で要求を受け付けられなかった。
+    EditServiceStopping,
+    /// Bridge呼び出しの開始前に要求が取り消された。
+    EditCancelled,
 }
 
 impl std::fmt::Display for BackendError {
@@ -61,6 +68,9 @@ impl std::fmt::Display for BackendError {
             BackendError::Handshake { message } => write!(f, "handshake failed: {message}"),
             BackendError::Process { message } => write!(f, "{message}"),
             BackendError::Settings { message } => write!(f, "{message}"),
+            BackendError::EditQueueFull => write!(f, "編集要求の待ち列が満杯です"),
+            BackendError::EditServiceStopping => write!(f, "編集サービスは停止中です"),
+            BackendError::EditCancelled => write!(f, "編集要求は取り消されました"),
         }
     }
 }

@@ -1,9 +1,7 @@
-// NorvesEditor Tauri entry point. P5 wires the real editor-client backend: the
-// Rust side OWNS the Bridge connection + lifecycle and exposes it to the UI as
-// Tauri commands, relaying engine events to the frontend. No frontend UI wiring
-// (P6) and no app panels (P4) here.
+// NorvesEditorのTauriエントリーポイント。Bridge接続とエンジンプロセスの寿命をRustが管理し、
+// UIにはTauri command/eventを通して公開する。
 
-// P3: IPC name constants. Now referenced by the command fns + event relay.
+// BridgeのIPC名を一か所で管理する。
 mod protocol_names;
 
 mod asset_manifest;
@@ -11,6 +9,7 @@ mod asset_manifest;
 mod backend_log;
 mod bridge_state;
 mod dto;
+mod edit_service;
 // エンジン設定(実行ファイルのパス)の保存と、Rust 側で開くファイル選択ダイアログ。
 mod engine_settings;
 mod error;
@@ -24,30 +23,29 @@ mod process_runtime;
 mod workspace;
 
 use bridge_state::BridgeState;
+use edit_service::EditService;
 use engine_settings::EngineSettingsState;
 use process_runtime::ProcessState;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::Manager;
 use workspace::WorkspaceState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 接続・エンジンプロセス・ワークスペース・設定をアプリの状態として共有する。
     let app = tauri::Builder::default()
-        // WARN 以上を stderr と `app_log_dir` のログファイルへ出す(配布版にはコンソールが無い)。
-        // ログディレクトリはアプリの識別子から決まるので、AppHandle ができる setup で初期化する。
+        .manage(BridgeState::default())
+        .manage(ProcessState::default())
+        .manage(WorkspaceState::default())
+        .manage(EngineSettingsState::default())
         .setup(|app| {
+            // 配布版にもWARN以上を残せるよう、AppHandle生成後にログ出力先を決める。
             backend_log::init(app.path().app_log_dir().ok());
+            let bridge = app.state::<BridgeState>();
+            app.manage(EditService::new(bridge.edit_facade()));
             Ok(())
         })
-        // The backend owns the connection state for the whole app lifetime.
-        .manage(BridgeState::default())
-        // J3: the (at most one) running engine process, separate from the
-        // connection state.
-        .manage(ProcessState::default())
-        // Phase A: workspace root state is a pure editor concern, independent
-        // from the Bridge connection and engine process lifecycle.
-        .manage(WorkspaceState::default())
-        // 設定ファイルの読み替え・書き戻しを直列にする。
-        .manage(EngineSettingsState::default())
         .invoke_handler(tauri::generate_handler![
             bridge_state::bridge_connect,
             bridge_state::bridge_disconnect,
@@ -86,14 +84,28 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    // J3: on app exit, best-effort kill a running engine so it is not orphaned.
-    // `kill_on_drop(true)` is only a safety net (not guaranteed on abort), so the
-    // explicit kill here is preferred. Both ExitRequested and Exit are handled so
-    // the kill fires whether the exit is user-initiated or programmatic.
-    app.run(|app_handle, event| match event {
-        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-            process_runtime::kill_engine_on_exit(app_handle);
+    let exit_started = Arc::new(AtomicBool::new(false));
+    let exit_completed = Arc::new(AtomicBool::new(false));
+    // 終了要求をいったん延期し、編集列・Bridge・エンジンの非同期停止後に終了する。
+    app.run(move |app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
+            if exit_completed.load(Ordering::Acquire) {
+                return;
+            }
+            api.prevent_exit();
+            if !exit_started.swap(true, Ordering::AcqRel) {
+                let app_handle = app_handle.clone();
+                let exit_completed = Arc::clone(&exit_completed);
+                tauri::async_runtime::spawn(async move {
+                    app_handle.state::<EditService>().shutdown().await;
+                    bridge_state::shutdown_on_exit(app_handle.state::<BridgeState>().inner()).await;
+                    process_runtime::shutdown_on_exit(&app_handle).await;
+                    exit_completed.store(true, Ordering::Release);
+                    app_handle.exit(code.unwrap_or_default());
+                });
+            }
         }
+        tauri::RunEvent::Exit => process_runtime::kill_engine_on_exit(app_handle),
         _ => {}
     });
 }
