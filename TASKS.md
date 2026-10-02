@@ -4,10 +4,10 @@ M2 ループが消化する機能一覧。M1(対話設計)でユーザーと合�
 (計画→実装→検証→コミットが1回で終わる)。閉じないと分かったら分割して行を増やす。
 `status` は `todo | doing | done | blocked`。`done` へのフリップは検証出力を開いた後でしか許されない(verify-gate)。
 
-現在の主題: MCP と編集層（E0〜E3 / NE01〜NE14）。M1 の全体承認待ち。
-基点: `700dfa8`、ブランチ: `feature/editor-mcp-edit-layer`。MCP- のタスクは承認後に実行する。
+現在の主題: MCP と編集層（E0〜E3 / NE01〜NE14）。2026-10-03 に M1 の全体承認を受けた。
+基点: `700dfa8`、ブランチ: `feature/editor-mcp-edit-layer`。MCP- の29タスクを M2 で実行する。
 仕様: `docs/mcp-and-edit-layer-requirements.md`、ADR 0010 / 0011、`docs/mcp-undo-test-mapping.md`。
-未承認の依存追加・M2起動をしない。NE15〜NE22と NorvesLib の変更は今回の対象外。
+要件12章の依存一覧と MCP-029 の MyWorkflow ガイド正本2本の同期も承認済み。NE15〜NE22と NorvesLib の変更は今回の対象外。
 
 M2 の共通規則:
 - 先行タスクが done でないタスクは実装しない。blocked の先行が残る場合は依存するタスクも理由付きで blocked にする。
