@@ -149,7 +149,7 @@ M2 の共通規則:
 - notes: 先行 MCP-001。actor所有・有界キュー。ここでは既存UI入口を切り替えない。世代とhandleを固定するBridgeの内部ファサードを用意する。Mutexによる全I/Oの直列化は禁止。async寿命の危険地帯、評価・コミット本文必須。
 
 ## MCP-003: モックに可変シーンの試験プロフィールを足す
-- status: todo
+- status: done
 - done-when: NE02/NE03/NE12の試験前提。明示的なMCP試験プロフィールで既存のcreate/delete/reparent/duplicateと汎用の値設定を実装し、読み取りに結果が反映される。redoは新IDを返す。liveイベントを抑止しても編集できる。既定MockAdapterの能力・golden応答は変えず、既存conformanceを実行して通る。試験プロフィールのlog.subscribeはspec準拠のsubscriptionIdを返し、既定の不適合ackを変更しない。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test -p norves-bridge-editor-client --test conformance -- --nocapture; exit $LASTEXITCODE"`

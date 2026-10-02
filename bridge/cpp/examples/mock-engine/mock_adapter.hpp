@@ -19,10 +19,13 @@
 #include "Norves/Bridge/json_value.hpp"
 #include "Norves/Bridge/result.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -50,6 +53,20 @@ namespace norves::mock
     class MockAdapter : public Norves::Bridge::IBridgeEngineAdapter
     {
     public:
+        enum class Profile
+        {
+            Default,
+            McpEdit,
+        };
+
+        explicit MockAdapter(Profile profile = Profile::Default) : profile_(profile)
+        {
+            if (is_mcp_edit_profile())
+            {
+                initialize_editable_scene();
+            }
+        }
+
         Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError> hello(
             const Norves::Bridge::JsonValue& /*params*/,
             std::string_view selectedProtocolVersion) override
@@ -67,6 +84,24 @@ namespace norves::mock
         Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
         getCapabilities(const Norves::Bridge::JsonValue& /*params*/) override
         {
+            if (is_mcp_edit_profile())
+            {
+                // 編集用の既存 capability を広告し、ライブ更新を使わないプロフィールにする。
+                return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                              Norves::Bridge::BridgeError>::
+                    ok(parse_or_die(
+                        R"({"capabilities":[)"
+                        R"({"name":"runtime.control","version":"0.1","description":"Play/pause/stop control."},)"
+                        R"({"name":"log.stream"},)"
+                        R"({"name":"viewport.focus"},)"
+                        R"({"name":"scene.query"},)"
+                        R"({"name":"object.query"},)"
+                        R"({"name":"object.edit"},)"
+                        R"({"name":"scene.edit"},)"
+                        R"({"name":"viewport.thumbnail"},)"
+                        R"({"name":"component.edit"}]})"));
+            }
+
             // スペックポジティブフィクスチャ
             // （methods/bridge.getCapabilities/positive/response-valid.json）の
             // result.capabilities と値等価にする。H-D 適合ランナーが結果全体を
@@ -145,13 +180,35 @@ namespace norves::mock
             // フラグを立てる。ack-before-event の順序を決定論的に維持する
             // （ws_test_server の FakeAdapter と同じ「フラグセット、ack 後に発行」パターン）。
             emit_log_burst.store(true);
+            if (is_mcp_edit_profile())
+            {
+                const std::string subscriptionId =
+                    "mock-sub-" + std::to_string(next_subscription_ordinal++);
+                active_subscriptions.insert(subscriptionId);
+                std::string ack = R"({"subscriptionId":")";
+                ack += subscriptionId;
+                ack += R"("})";
+                return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                              Norves::Bridge::BridgeError>::
+                    ok(parse_or_die(ack));
+            }
             return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(R"({"subscribed":true})"));
         }
 
         Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
-        logUnsubscribe(const Norves::Bridge::JsonValue& /*params*/) override
+        logUnsubscribe(const Norves::Bridge::JsonValue& params) override
         {
+            if (is_mcp_edit_profile())
+            {
+                const std::string paramsText = params.dump();
+                const auto subscriptionId = extract_string_field(paramsText, "subscriptionId");
+                const bool removed = subscriptionId.has_value() &&
+                                     active_subscriptions.erase(subscriptionId.value()) != 0;
+                return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                              Norves::Bridge::BridgeError>::
+                    ok(parse_or_die(removed ? R"({"ok":true})" : R"({"ok":false})"));
+            }
             return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(R"({"unsubscribed":true})"));
         }
@@ -169,12 +226,124 @@ namespace norves::mock
         Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError> sceneGetTree(
             const Norves::Bridge::JsonValue& /*params*/) override
         {
+            if (is_mcp_edit_profile())
+            {
+                return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                              Norves::Bridge::BridgeError>::
+                    ok(parse_or_die("{\"root\":" + editable_node_json("n-0") + "}"));
+            }
             return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
                 ok(parse_or_die(
                     R"({"root":{"id":"n-0","name":"Root","kind":"object","children":[)"
                     R"({"id":"n-1","name":"NodeA","kind":"object"},)"
                     R"({"id":"n-2","name":"GroupNode","kind":"object","children":[)"
                     R"({"id":"n-3","name":"NodeB"}]}]}})"));
+        }
+
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        sceneCreateObject(const Norves::Bridge::JsonValue& params) override
+        {
+            if (!is_mcp_edit_profile())
+            {
+                return Norves::Bridge::IBridgeEngineAdapter::sceneCreateObject(params);
+            }
+            const std::string paramsText = params.dump();
+            const auto requestedParent = extract_string_field(paramsText, "parentId");
+            const auto requestedKind = extract_string_field(paramsText, "kind");
+            const std::string parentId = requestedParent.value_or("n-0");
+            const std::string kind = requestedKind.value_or("object");
+            if (kind.empty() || editable_nodes.find(parentId) == editable_nodes.end())
+            {
+                return accepted_result(false);
+            }
+
+            const std::string objectId = allocate_object_id();
+            const std::string name = "Mock Object " + std::to_string(next_object_ordinal - 1);
+            add_editable_node(objectId, name, kind, parentId);
+            return accepted_result(true, std::optional<std::string>{objectId});
+        }
+
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        sceneDeleteObject(const Norves::Bridge::JsonValue& params) override
+        {
+            if (!is_mcp_edit_profile())
+            {
+                return Norves::Bridge::IBridgeEngineAdapter::sceneDeleteObject(params);
+            }
+            const std::string paramsText = params.dump();
+            const auto objectId = extract_string_field(paramsText, "objectId");
+            if (!objectId.has_value() || objectId.value() == "n-0" ||
+                editable_nodes.find(objectId.value()) == editable_nodes.end())
+            {
+                return accepted_result(false);
+            }
+
+            const auto parentId = editable_nodes.at(objectId.value()).parentId;
+            if (parentId.has_value())
+            {
+                auto& siblings = editable_nodes.at(parentId.value()).children;
+                siblings.erase(std::remove(siblings.begin(), siblings.end(), objectId.value()),
+                               siblings.end());
+            }
+            remove_editable_subtree(objectId.value());
+            return accepted_result(true);
+        }
+
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        sceneReparentObject(const Norves::Bridge::JsonValue& params) override
+        {
+            if (!is_mcp_edit_profile())
+            {
+                return Norves::Bridge::IBridgeEngineAdapter::sceneReparentObject(params);
+            }
+            const std::string paramsText = params.dump();
+            const auto objectId = extract_string_field(paramsText, "objectId");
+            const auto requestedParent = extract_string_field(paramsText, "newParentId");
+            const std::string parentId = requestedParent.value_or("n-0");
+            if (!objectId.has_value() || objectId.value() == "n-0" ||
+                editable_nodes.find(objectId.value()) == editable_nodes.end() ||
+                editable_nodes.find(parentId) == editable_nodes.end() ||
+                would_create_cycle(objectId.value(), parentId))
+            {
+                return accepted_result(false);
+            }
+
+            EditableNode& node = editable_nodes.at(objectId.value());
+            if (node.parentId.has_value())
+            {
+                auto& siblings = editable_nodes.at(node.parentId.value()).children;
+                siblings.erase(std::remove(siblings.begin(), siblings.end(), objectId.value()),
+                               siblings.end());
+            }
+            node.parentId = parentId;
+            editable_nodes.at(parentId).children.push_back(objectId.value());
+            return accepted_result(true);
+        }
+
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        sceneDuplicateObject(const Norves::Bridge::JsonValue& params) override
+        {
+            if (!is_mcp_edit_profile())
+            {
+                return Norves::Bridge::IBridgeEngineAdapter::sceneDuplicateObject(params);
+            }
+            const std::string paramsText = params.dump();
+            const auto objectId = extract_string_field(paramsText, "objectId");
+            const auto requestedParent = extract_string_field(paramsText, "newParentId");
+            if (!objectId.has_value() || objectId.value() == "n-0" ||
+                editable_nodes.find(objectId.value()) == editable_nodes.end())
+            {
+                return accepted_result(false);
+            }
+            const std::string parentId = requestedParent.value_or(
+                editable_nodes.at(objectId.value()).parentId.value_or("n-0"));
+            if (editable_nodes.find(parentId) == editable_nodes.end())
+            {
+                return accepted_result(false);
+            }
+
+            return accepted_result(
+                true, std::optional<std::string>{clone_editable_subtree(objectId.value(), parentId)});
         }
 
         // @brief object.getSnapshot。params.objectId に対応するプロパティバッグを返す。
@@ -195,6 +364,13 @@ namespace norves::mock
             const std::string paramsText = params.dump();
             const std::optional<std::string> objectId = extract_string_field(paramsText, "objectId");
             const std::string id = objectId.value_or("n-1");
+
+            if (is_mcp_edit_profile())
+            {
+                return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                              Norves::Bridge::BridgeError>::
+                    ok(parse_or_die(editable_snapshot_text(id)));
+            }
 
             // 本文は snapshot_text が一元管理する（object.changed の params も同じ本文を
             // components 抜きで綴るため。分けて持つと、一方だけ直した結果イベントが空の
@@ -223,6 +399,35 @@ namespace norves::mock
             const std::optional<std::string> objectId = extract_string_field(paramsText, "objectId");
             const std::optional<std::string> propertyName = extract_string_field(paramsText, "property");
             const std::optional<std::string> valueText = extract_json_field(paramsText, "value");
+
+            if (is_mcp_edit_profile())
+            {
+                const auto node = objectId.has_value() ? editable_nodes.find(objectId.value()) :
+                                                         editable_nodes.end();
+                if (node == editable_nodes.end() || !propertyName.has_value() ||
+                    propertyName->empty() || !valueText.has_value())
+                {
+                    return accepted_result(false);
+                }
+                auto property = node->second.properties.find(propertyName.value());
+                if (property == node->second.properties.end())
+                {
+                    node->second.property_order.push_back(propertyName.value());
+                    node->second.properties.emplace(
+                        propertyName.value(), EditableProperty{valueText.value(), std::nullopt});
+                }
+                else
+                {
+                    property->second.value = valueText.value();
+                }
+
+                std::string ack = R"({"accepted":true,"appliedValue":)";
+                ack += valueText.value();
+                ack += "}";
+                return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                              Norves::Bridge::BridgeError>::
+                    ok(parse_or_die(ack));
+            }
 
             if (objectId.has_value() && propertyName.has_value() &&
                 propertyName.value() == "fieldOfView" && valueText.has_value())
@@ -386,6 +591,277 @@ namespace norves::mock
         std::atomic<bool> emit_scene_tree_changed{false};
 
     private:
+        struct EditableProperty
+        {
+            std::string value;
+            std::optional<std::string> valueType;
+        };
+
+        struct EditableNode
+        {
+            std::string id;
+            std::string name;
+            std::string kind;
+            bool includeKind = true;
+            std::optional<std::string> parentId;
+            std::vector<std::string> children;
+            std::vector<std::string> property_order;
+            std::map<std::string, EditableProperty> properties;
+        };
+
+        Profile profile_ = Profile::Default;
+        std::uint64_t next_object_ordinal = 1;
+        std::uint64_t next_subscription_ordinal = 1;
+        std::set<std::string> active_subscriptions;
+        std::map<std::string, EditableNode> editable_nodes;
+
+        bool is_mcp_edit_profile() const { return profile_ == Profile::McpEdit; }
+
+        static Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        accepted_result(bool accepted, const std::optional<std::string>& newId = std::nullopt)
+        {
+            std::string response = accepted ? R"({"accepted":true)" : R"({"accepted":false)";
+            if (newId.has_value())
+            {
+                response += ",\"newId\":";
+                response += json_quote(newId.value());
+            }
+            response += "}";
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::
+                ok(parse_or_die(response));
+        }
+
+        static std::string json_quote(std::string_view value)
+        {
+            std::string quoted{"\""};
+            for (const unsigned char c : value)
+            {
+                switch (c)
+                {
+                    case '"':
+                        quoted += R"(\")";
+                        break;
+                    case '\\':
+                        quoted += R"(\\)";
+                        break;
+                    case '\b':
+                        quoted += R"(\b)";
+                        break;
+                    case '\f':
+                        quoted += R"(\f)";
+                        break;
+                    case '\n':
+                        quoted += R"(\n)";
+                        break;
+                    case '\r':
+                        quoted += R"(\r)";
+                        break;
+                    case '\t':
+                        quoted += R"(\t)";
+                        break;
+                    default:
+                        if (c < 0x20)
+                        {
+                            constexpr char Hex[] = "0123456789abcdef";
+                            quoted += R"(\u00)";
+                            quoted += Hex[(c >> 4) & 0x0f];
+                            quoted += Hex[c & 0x0f];
+                        }
+                        else
+                        {
+                            quoted += static_cast<char>(c);
+                        }
+                        break;
+                }
+            }
+            quoted += '"';
+            return quoted;
+        }
+
+        void initialize_editable_scene()
+        {
+            add_editable_node("n-0", "Root", "object", std::nullopt);
+            add_editable_node("n-1", "NodeA", "object", "n-0");
+            add_editable_node("n-2", "GroupNode", "object", "n-0");
+            add_editable_node("n-3", "NodeB", "object", "n-2");
+            editable_nodes.at("n-3").includeKind = false;
+
+            add_editable_property("n-0", "visible", "true", "boolean");
+            add_editable_property("n-1", "label", R"("Example Name")", "string");
+            add_editable_property("n-1", "fieldOfView", "60", "number");
+            add_editable_property("n-1", "enabled", "true", "boolean");
+            add_editable_property("n-1", "parent", "null");
+            add_editable_property("n-1", "position", "[0,1.5,-10]", "vector3");
+            add_editable_property("n-1", "metadata", R"({"locked":false,"tag":"primary"})");
+            add_editable_property("n-2", "label", R"("Group")", "string");
+            add_editable_property("n-2", "childCount", "1", "number");
+            add_editable_property("n-3", "enabled", "false", "boolean");
+        }
+
+        void add_editable_node(std::string id, std::string name, std::string kind,
+                               std::optional<std::string> parentId)
+        {
+            EditableNode node;
+            node.id = id;
+            node.name = std::move(name);
+            node.kind = std::move(kind);
+            node.parentId = std::move(parentId);
+            editable_nodes.emplace(id, std::move(node));
+            if (editable_nodes.at(id).parentId.has_value())
+            {
+                editable_nodes.at(editable_nodes.at(id).parentId.value()).children.push_back(id);
+            }
+        }
+
+        void add_editable_property(const std::string& objectId, std::string name,
+                                   std::string value,
+                                   std::optional<std::string> valueType = std::nullopt)
+        {
+            EditableNode& node = editable_nodes.at(objectId);
+            node.property_order.push_back(name);
+            node.properties.emplace(std::move(name),
+                                    EditableProperty{std::move(value), std::move(valueType)});
+        }
+
+        std::string allocate_object_id()
+        {
+            return "mcp-node-" + std::to_string(next_object_ordinal++);
+        }
+
+        static std::string editable_node_json(const EditableNode& node,
+                                              const std::map<std::string, EditableNode>& nodes)
+        {
+            std::string out = R"({"id":)" + json_quote(node.id);
+            if (node.includeKind)
+            {
+                out += ",\"kind\":" + json_quote(node.kind);
+            }
+            out += ",\"name\":" + json_quote(node.name);
+            if (!node.children.empty())
+            {
+                out += ",\"children\":[";
+                bool first = true;
+                for (const auto& childId : node.children)
+                {
+                    if (!first)
+                    {
+                        out += ',';
+                    }
+                    first = false;
+                    out += editable_node_json(nodes.at(childId), nodes);
+                }
+                out += ']';
+            }
+            out += '}';
+            return out;
+        }
+
+        std::string editable_node_json(const std::string& objectId) const
+        {
+            return editable_node_json(editable_nodes.at(objectId), editable_nodes);
+        }
+
+        std::string editable_snapshot_text(const std::string& objectId)
+        {
+            const auto nodeIt = editable_nodes.find(objectId);
+            if (nodeIt == editable_nodes.end())
+            {
+                return R"({"objectId":)" + json_quote(objectId) + ",\"properties\":[]}";
+            }
+            const EditableNode& node = nodeIt->second;
+            std::string out = R"({"objectId":)" + json_quote(node.id) + ",\"name\":" +
+                              json_quote(node.name);
+            if (node.includeKind)
+            {
+                out += ",\"kind\":" + json_quote(node.kind);
+            }
+            out += ",\"properties\":[";
+            bool first = true;
+            for (const auto& propertyName : node.property_order)
+            {
+                const auto property = node.properties.find(propertyName);
+                if (property == node.properties.end())
+                {
+                    continue;
+                }
+                if (!first)
+                {
+                    out += ',';
+                }
+                first = false;
+                out += R"({"name":)";
+                out += json_quote(propertyName);
+                out += ",\"value\":";
+                out += property->second.value;
+                if (property->second.valueType.has_value())
+                {
+                    out += ",\"valueType\":";
+                    out += json_quote(property->second.valueType.value());
+                }
+                out += '}';
+            }
+            out += ']';
+            out += components_json(objectId);
+            out += '}';
+            return out;
+        }
+
+        bool would_create_cycle(const std::string& objectId, const std::string& parentId) const
+        {
+            std::string current = parentId;
+            while (true)
+            {
+                if (current == objectId)
+                {
+                    return true;
+                }
+                const auto node = editable_nodes.find(current);
+                if (node == editable_nodes.end() || !node->second.parentId.has_value())
+                {
+                    return false;
+                }
+                current = node->second.parentId.value();
+            }
+        }
+
+        void remove_editable_subtree(const std::string& objectId)
+        {
+            const auto node = editable_nodes.find(objectId);
+            if (node == editable_nodes.end())
+            {
+                return;
+            }
+            const std::vector<std::string> children = node->second.children;
+            for (const auto& child : children)
+            {
+                remove_editable_subtree(child);
+            }
+            editable_nodes.erase(objectId);
+            object_components.erase(objectId);
+            object_field_of_view.erase(objectId);
+        }
+
+        std::string clone_editable_subtree(const std::string& sourceId,
+                                           const std::string& parentId)
+        {
+            const EditableNode source = editable_nodes.at(sourceId);
+            const std::vector<std::string> sourceChildren = source.children;
+            const std::string copyId = allocate_object_id();
+            EditableNode copy = source;
+            copy.id = copyId;
+            copy.name += " Copy";
+            copy.parentId = parentId;
+            copy.children.clear();
+            editable_nodes.emplace(copyId, std::move(copy));
+            editable_nodes.at(parentId).children.push_back(copyId);
+            for (const auto& childId : sourceChildren)
+            {
+                clone_editable_subtree(childId, copyId);
+            }
+            return copyId;
+        }
+
         // @brief objectId -> fieldOfView の現在値（JSON 数値テキスト）。objectSetProperty が
         // 更新し objectGetSnapshot が読む。
         // @note mock のシングルスレッド recv ループ前提でのみ安全（上記 objectSetProperty の
@@ -581,9 +1057,9 @@ namespace norves::mock
         }
 
         // @brief コンパクトな JSON オブジェクトテキストから、トップレベルの文字列フィールドの値
-        // （引用符なし）を取り出す。フィクスチャ駆動の決定論的入力に対する最小限のスキャナで
-        // あり、汎用 JSON パーサではない（examples/ からは opaque な JsonValue しか触れないため、
-        // dump() したコンパクト表現を読む）。見つからなければ nullopt。
+        // （引用符なし）を取り出し、JSON 文字列のエスケープを復元する。汎用 JSON パーサでは
+        // ないが、examples/ から opaque な JsonValue しか触れないため dump() の出力を読む。
+        // 見つからない場合や文字列以外の場合は nullopt。
         static std::optional<std::string> extract_string_field(const std::string& objectText,
                                                                std::string_view key)
         {
@@ -595,9 +1071,149 @@ namespace norves::mock
             const std::string& value = raw.value();
             if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
             {
-                return value.substr(1, value.size() - 2);
+                return decode_json_string(value);
             }
             return std::nullopt;
+        }
+
+        static std::optional<std::uint32_t> read_hex_quad(std::string_view text,
+                                                          std::size_t& position)
+        {
+            if (position + 4 > text.size())
+            {
+                return std::nullopt;
+            }
+            std::uint32_t value = 0;
+            for (std::size_t i = 0; i < 4; ++i)
+            {
+                const char digit = text[position + i];
+                value <<= 4;
+                if (digit >= '0' && digit <= '9')
+                {
+                    value |= static_cast<std::uint32_t>(digit - '0');
+                }
+                else if (digit >= 'a' && digit <= 'f')
+                {
+                    value |= static_cast<std::uint32_t>(digit - 'a' + 10);
+                }
+                else if (digit >= 'A' && digit <= 'F')
+                {
+                    value |= static_cast<std::uint32_t>(digit - 'A' + 10);
+                }
+                else
+                {
+                    return std::nullopt;
+                }
+            }
+            position += 4;
+            return value;
+        }
+
+        static void append_utf8(std::string& output, std::uint32_t codePoint)
+        {
+            if (codePoint <= 0x7f)
+            {
+                output += static_cast<char>(codePoint);
+            }
+            else if (codePoint <= 0x7ff)
+            {
+                output += static_cast<char>(0xc0 | (codePoint >> 6));
+                output += static_cast<char>(0x80 | (codePoint & 0x3f));
+            }
+            else if (codePoint <= 0xffff)
+            {
+                output += static_cast<char>(0xe0 | (codePoint >> 12));
+                output += static_cast<char>(0x80 | ((codePoint >> 6) & 0x3f));
+                output += static_cast<char>(0x80 | (codePoint & 0x3f));
+            }
+            else
+            {
+                output += static_cast<char>(0xf0 | (codePoint >> 18));
+                output += static_cast<char>(0x80 | ((codePoint >> 12) & 0x3f));
+                output += static_cast<char>(0x80 | ((codePoint >> 6) & 0x3f));
+                output += static_cast<char>(0x80 | (codePoint & 0x3f));
+            }
+        }
+
+        static std::optional<std::string> decode_json_string(std::string_view token)
+        {
+            if (token.size() < 2 || token.front() != '"' || token.back() != '"')
+            {
+                return std::nullopt;
+            }
+            const std::size_t end = token.size() - 1;
+            std::string decoded;
+            for (std::size_t position = 1; position < end;)
+            {
+                const char value = token[position++];
+                if (value != '\\')
+                {
+                    decoded += value;
+                    continue;
+                }
+                if (position >= end)
+                {
+                    return std::nullopt;
+                }
+                const char escape = token[position++];
+                switch (escape)
+                {
+                    case '"':
+                    case '\\':
+                    case '/':
+                        decoded += escape;
+                        break;
+                    case 'b':
+                        decoded += '\b';
+                        break;
+                    case 'f':
+                        decoded += '\f';
+                        break;
+                    case 'n':
+                        decoded += '\n';
+                        break;
+                    case 'r':
+                        decoded += '\r';
+                        break;
+                    case 't':
+                        decoded += '\t';
+                        break;
+                    case 'u':
+                    {
+                        auto codePoint = read_hex_quad(token, position);
+                        if (!codePoint.has_value())
+                        {
+                            return std::nullopt;
+                        }
+                        if (codePoint.value() >= 0xd800 && codePoint.value() <= 0xdbff)
+                        {
+                            if (position + 2 > end || token[position] != '\\' ||
+                                token[position + 1] != 'u')
+                            {
+                                return std::nullopt;
+                            }
+                            position += 2;
+                            const auto lowSurrogate = read_hex_quad(token, position);
+                            if (!lowSurrogate.has_value() || lowSurrogate.value() < 0xdc00 ||
+                                lowSurrogate.value() > 0xdfff)
+                            {
+                                return std::nullopt;
+                            }
+                            codePoint = 0x10000 + ((codePoint.value() - 0xd800) << 10) +
+                                        (lowSurrogate.value() - 0xdc00);
+                        }
+                        else if (codePoint.value() >= 0xdc00 && codePoint.value() <= 0xdfff)
+                        {
+                            return std::nullopt;
+                        }
+                        append_utf8(decoded, codePoint.value());
+                        break;
+                    }
+                    default:
+                        return std::nullopt;
+                }
+            }
+            return decoded;
         }
 
         // @brief コンパクトな JSON オブジェクトテキストから、トップレベルのフィールド値を生の
