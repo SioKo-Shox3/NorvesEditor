@@ -22,9 +22,11 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- なし
+- MCP / 編集層の M1: E0〜E3（NE01〜NE14）の設計・ADR 2本・26タスク・取り消し試験対応表の下書き。全体承認待ち。実装・依存追加・M2起動は未着手。
 
 ## Next
+- M1: 下書きと依存一覧の別文脈評価を確認し、全体承認を1回受ける。承認後に `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature` をバックグラウンド起動する。
+- MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
   - Settings の「参照…」で OS のファイル選択ダイアログが開き、選んだパスが表示される
   - 保存した起動引数が、エンジンのコマンドラインに `--bridge-port` より前で渡る(`Get-CimInstance Win32_Process` の CommandLine で確かめられる)
@@ -33,6 +35,10 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-02 MCP M1: HEAD `700dfa8`、取得済みの `origin/main` は `872e406`。小物修正ブランチは未統合。基点を `700dfa8` とする選択を受け、`feature/editor-mcp-edit-layer` に分岐した。ワークツリーは増やしていない。
+- M1の決定: ポート49770/永続256 bitトークン/app_config_dir（Windows DPAPI、Unix0700/0600）。play/pause/stopは許可を通し操作記録へ、履歴には積まない。複数編集の部分失敗は未処理部分を保持し再試行/破棄、通常編集は成功分だけ残す。単発の失敗時の記録破棄は維持する。
+- 開始儀式: `./scripts/verify.ps1 -Cpp` exit 0（fixtures174、C++7/7、IPC32/11、vitest42/43/649、typecheck/build/fmt/clippy）。`cargo test --manifest-path apps/editor/src-tauri/Cargo.toml` exit 0（単体164、opt-in14は環境変数未設定でSKIP）。bridgeのopt-inも未設定なので、実エンジンe2eの合格とは扱わない。証拠 `.harness/mcp-m1-baseline-verify.log` / `mcp-m1-baseline-tauri.log` を開いて確認した。
+- M1の停止条件: 文書・依存・未決判断を揃え評価したら全体承認待ちで止める。承認前にコード変更・依存導入・ランナー起動をしない。MyWorkflowガイド2本の正本同期は別repo文書変更として承認対象へ含めたが、現在は変更していない。
 - S-005: 上限は 32 件 × 512 バイト(Windows のコマンドライン上限 32767 文字に収めるため)。S-004 の指摘2(狭い幅での見た目の証拠)はこの環境で GUI を起動できず未対応のまま。起動引数の入力欄も含めて、全タスク後の実機確認で幅を狭めて確かめ、スクリーンショットを残す。`.bat` / `.cmd` を選べる問題は S-008 に切り出した。
 - S-004: 欄の幅の確認は jsdom ではレイアウトが無く自動化できない。`docs/agent-guide/typescript.md` に手書き CSS の確認手順は見当たらなかった。CSS は折り返し前提(`.settings-engine__*`、パスは `overflow-wrap: anywhere`)にし、実機で狭いウィンドウにして崩れないことを全タスク後の手動確認に含める。`extractBackendError` を `useBridge.ts` から export して再利用した。
 - S-003: `tauri-plugin-dialog` は使わない。登録すると webview の `window.confirm` が Promise を返す版に差し替わり、`PropertyInspectorPanel.tsx` の確認が常に真になる(確認なしでコンポーネントを外す)。rfd はプラグインと同じ版・機能(`common-controls-v6`, `gtk3`)。rfd は windows-sys 0.60 を引くので依存木に 0.60 と 0.61 が並ぶ。

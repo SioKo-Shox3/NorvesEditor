@@ -12,6 +12,25 @@ The alpha Game View is not an embedded native GPU viewport. The engine owns an e
 
 ## Layer Boundaries
 
+E0〜E3 の拡張案は ADR 0010 / 0011 と `mcp-and-edit-layer-requirements.md` に記録する。
+次の2層は実装予定であり、全体承認後に追加する。
+
+| 層 | 所有するもの | 境界 |
+| --- | --- | --- |
+| Rust の編集サービス | 編集・取り消し・やり直しの共通列、履歴、接続世代、適用結果のイベント | UI と MCP が同じ入口を使う。Bridge の I/O 中に状態ロックを保持しない |
+| Rust の MCP の口 | loopback HTTP、トークン認証、Origin/Host 検証、道具一覧、許可・確認、操作記録 | 読み取りは既存の照会、書き込みは編集サービスを使う。プロセス操作・エンジン設定を公開しない |
+
+```text
+画面 → Tauri のコマンド ─┐
+                       ├→ 編集サービス → Bridge クライアント → エンジン
+言語モデル → MCP → 許可 ─┘
+                       └→ 適用結果・履歴要約 → Tauri イベント → 画面
+```
+
+MCP は既定で無効、127.0.0.1 のみ、既定ポート49770。書き込みは読み取りのみから始める。
+適用結果の通知は編集サービスが所有し、エンジンの best-effort イベントに依存しない。
+秘密はアプリ設定ディレクトリ、操作記録はアプリログディレクトリに置く。
+
 | Layer | Owns | Must Not Own |
 | --- | --- | --- |
 | `apps/editor` TypeScript UI | panels, presentation state, command/event wrappers | raw WebSocket transport, engine process spawning, engine live memory |
