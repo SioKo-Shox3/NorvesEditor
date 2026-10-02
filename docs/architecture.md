@@ -20,9 +20,11 @@ E0〜E3 の承認済み設計は ADR 0010 / 0011 と `mcp-and-edit-layer-require
 | Rust の MCP サーバー | loopback の Streamable HTTP、Bearer トークン認証、Origin/Host 検証、能力に基づく道具一覧、入力・結果検証、許可・確認、操作記録 | 読み取りは既存の Bridge 照会を使い、書き込み・undo/redo・実行制御は編集サービスを使う。プロセス操作・エンジン設定を公開しない |
 
 ```text
-画面 → Tauri コマンド → 編集サービス ──────────────────────┐
-MCP → loopback サーバー → 認証・許可 ───────────────────────┤
-MCP の読み取り道具 → 既存の Bridge 照会 ────────────────────┴→ Bridge クライアント → エンジン
+画面の編集・実行制御 → Tauri コマンド → 編集サービス ──────┐
+MCP → loopback サーバー → 全要求の Bearer/Host 検証・Origin は存在時に照合
+  ├→ 読み取り道具 → 既存の Bridge 照会 ──────────────────┤
+  └→ 書き込み・undo/redo・実行制御の道具 → 許可（必要な操作は確認） → 編集サービス ─┤
+                                                          └→ Bridge クライアント → エンジン
 編集サービス → 適用結果・履歴要約 → Tauri イベント → 画面
 ```
 
@@ -46,22 +48,22 @@ MCP は既定で無効、127.0.0.1 のみ、既定ポート49770。書き込み�
 
 ```text
 TypeScript 画面
-  -> 型付き Tauri コマンドラッパー
-  -> Rust 編集サービス（編集、undo/redo、実行制御）
+  -> 型付き Tauri コマンドラッパー -> Rust バックエンド
+     ├-> 編集・undo/redo・実行制御 -> Rust 編集サービス
+     └-> エンジンプロセスの起動・停止、Bridge 接続・再接続、状態照会
 MCP クライアント
-  -> loopback MCP サーバー -> 認証・許可 -> Rust 編集サービス
-  -> 読み取り道具 -> 既存の Bridge 照会
-Tauri Rust バックエンド
-  -> エンジンプロセス管理
-  -> Bridge 接続と再接続・セッション状態を所有
-  -> Rust Bridge エディタクライアント runtime
-  -> WebSocket + JSON
+  -> loopback MCP サーバー -> 全要求の Bearer/Host 検証・Origin は存在時に照合
+     ├-> 読み取り道具 -> 既存の Bridge 照会
+     └-> 書き込み・undo/redo・実行制御 -> 許可（必要な操作は確認） -> Rust 編集サービス
+Rust 編集サービス ──────────┐
+既存の Bridge 照会 ─────────┴-> Rust Bridge エディタクライアント runtime
+  -> WebSocket + JSON -> C++ エンジンプロセス
 C++ エンジンプロセス
   -> 独立した Bridge エンジン SDK
   -> エンジンアダプタ
 ```
 
-Rust バックエンドがプロセスと Bridge 接続の状態を所有する。画面はコマンドとイベントで状態を観測し、生の WebSocket 状態を持たない。MCP の書き込みは画面と同じ編集サービスを使い、読み取りは既存の Bridge 照会経路を使う。
+Tauri Rust バックエンドがエンジンプロセスと Bridge 接続の状態を所有する。画面はコマンドとイベントで状態を観測し、生の WebSocket 状態を持たない。MCP は全要求で Bearer と Host を検証し、Origin は存在する場合に照合する。読み取りは既存の Bridge 照会を使い、書き込みは許可を通し、確認が必要な操作では確認を経て画面と同じ編集サービスを使う。
 
 ## Bridge Subsystem
 
