@@ -150,9 +150,9 @@ M2 の共通規則:
 
 ## MCP-003: モックに可変シーンの試験プロフィールを足す
 - status: todo
-- done-when: NE02/NE03/NE12の試験前提。明示的なMCP試験プロフィールで既存のcreate/delete/reparent/duplicateと汎用の値設定を実装し、読み取りに結果が反映される。redoは新IDを返す。liveイベントを抑止しても編集できる。既定MockAdapterの能力・golden応答は変えず、既存conformanceを実行して通る。
+- done-when: NE02/NE03/NE12の試験前提。明示的なMCP試験プロフィールで既存のcreate/delete/reparent/duplicateと汎用の値設定を実装し、読み取りに結果が反映される。redoは新IDを返す。liveイベントを抑止しても編集できる。既定MockAdapterの能力・golden応答は変えず、既存conformanceを実行して通る。試験プロフィールのlog.subscribeはspec準拠のsubscriptionIdを返し、既定の不適合ackを変更しない。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
-- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe').Path; cargo test -p norves-bridge-editor-client --test conformance -- --nocapture; exit $LASTEXITCODE"`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test -p norves-bridge-editor-client --test conformance -- --nocapture; exit $LASTEXITCODE"`
 - paths: bridge/cpp/examples/mock-engine/**, bridge/cpp/engine-sdk/tests/CMakeLists.txt, bridge/cpp/engine-sdk/tests/mock_edit_profile_test.cpp
 - notes: 先行 MCP-001。既存メソッドの実装のみ。新schema・能力トークン・SDK APIを足さない。型名・プロパティは試験用の汎用名。公開ヘッダを編集しない。新プロフィールの試験をCMake/ctestに登録する。
 
@@ -176,7 +176,7 @@ M2 の共通規則:
 
 ## MCP-006: 編集・履歴の Tauri コマンドとサービスイベントを結ぶ
 - status: todo
-- done-when: NE04/NE05。既存の編集入口と新しいundo/redo/履歴取得が共通サービスへ渡る。旧値・旧親の捕捉情報をUI専用DTOで受け、Bridge paramsには出さない。適用ごとに対象・プロパティ・値・新ID・出どころ・まとまりID・世代・改訂を発行し、undo/redoにも発行する。履歴要約を初期取得できる。protocol_names.rsとTSのcommand/event定数、型、ラッパーが一致する。UI捕捉改訂と履歴先頭ID/改訂をDTOに含め、UI起源を明示する。
+- done-when: NE04/NE05。既存の編集入口と新しいundo/redo/履歴取得が共通サービスへ渡る。旧値・旧親の捕捉情報をUI専用DTOで受け、Bridge paramsには出さない。適用ごとに対象・プロパティ・値・新ID・出どころ・まとまりID・世代・改訂を発行し、undo/redoにも発行する。履歴要約を初期取得できる。protocol_names.rsとTSのcommand/event定数、型、ラッパーが一致する。UI捕捉改訂と履歴先頭ID/改訂をDTOに含め、UI起源を明示する。UIのplay/pause/stopもサービスへ渡し、部分失敗保留の拒否を返す。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
@@ -187,7 +187,7 @@ M2 の共通規則:
 
 ## MCP-007: サービスイベントから画面の表示を更新する
 - status: todo
-- done-when: NE05。UIの外から来た値設定がInspectorとOutlinerに出るvitestがあり、renameと構造編集も更新される。engineのscene.treeChanged/object.changedを発行しない模型で通る。世代・改訂が古いイベントを捨て、購読開始と欠落時に要約・必要なスナップショットを再取得する。イベント購読を解除しStrictModeの古い取得応答で上書きしない。
+- done-when: NE05。UIの外から来た値設定がInspectorとOutlinerに出るvitestがあり、renameと構造編集も更新される。engineのscene.treeChanged/object.changedを発行しない模型で通る。世代・改訂が古いイベントを捨て、購読開始と欠落時に要約・必要なスナップショットを再取得する。イベント購読を解除しStrictModeの古い取得応答で上書きしない。表示snapshot/treeに適用改訂を保持し、古い取得応答で改訂を巻き戻さない。
 - verify: `pnpm -C apps/editor typecheck`
 - verify: `pnpm -C apps/editor test`
 - paths: apps/editor/src/state/**, apps/editor/src/hooks/useBridge.ts, apps/editor/src/hooks/__tests__/useBridge.lifecycle.test.tsx, apps/editor/src/components/SceneOutlinerPanel.tsx, apps/editor/src/components/PropertyInspectorPanel.tsx, apps/editor/src/components/__tests__/**
@@ -195,7 +195,7 @@ M2 の共通規則:
 
 ## MCP-008: 画面の編集と取り消しをバックエンド履歴へ切り替える
 - status: todo
-- done-when: NE04。store.tsからundoStack/redoStackと逆操作の正本を外し、useBridgeの編集・undo/redoはTauriを呼ぶだけになる。UI旧値・旧親の捕捉は発行前に維持する。Ctrl+Z/Ctrl+Y、空・未接続時、ボタン、入力欄の挙動を維持し、要約イベントで有効/無効が変わる試験がある。既存試験はRustへ移した内部履歴の検査を除き、IPC/eventの模型差し替えで観測結果が同じ。対応表に残った表示試験を列挙する。UIの実行中ガードと先頭ID/改訂を維持し、連打・キーリピートが多重undoにならないvitestがある。
+- done-when: NE04。store.tsからundoStack/redoStackと逆操作の正本を外し、useBridgeの編集・undo/redoはTauriを呼ぶだけになる。UI旧値・旧親の捕捉は発行前に維持する。Ctrl+Z/Ctrl+Y、空・未接続時、ボタン、入力欄の挙動を維持し、要約イベントで有効/無効が変わる試験がある。既存試験はRustへ移した内部履歴の検査を除き、IPC/eventの模型差し替えで観測結果が同じ。対応表に残った表示試験を列挙する。UIの実行中ガードと先頭ID/改訂を維持し、連打・キーリピートが多重undoにならないvitestがある。画面の捕捉値/親とその時点の適用改訂を送る。補正情報不足の拒否は再取得して再操作を案内し、自動で書き直さない。画面のplay/pause/stopも共通列のTauri入口へ通す。
 - verify: `pnpm -C apps/editor typecheck`
 - verify: `pnpm -C apps/editor test`
 - verify: `node scripts/check-protocol-names.mjs`
@@ -232,11 +232,11 @@ M2 の共通規則:
 
 ## MCP-012: 認証付き loopback HTTP の入口を実装する
 - status: todo
-- done-when: NE07。127.0.0.1だけへbindし、不正Origin403、Originなしの認証済みCLI、トークンなし/違う/失効済みの拒否、Host完全一致を実HTTPで試験する。axumとrmcpの検証設定を明示する。body1MiB/接続32/通常並行16/stream8の上限と通常30秒/確認付き125秒を守り、listen/GET SSEへ通常timeoutを適用しない。長寿命streamはアイドル5分/最大30分。Discover2026-07-28とInitialize2025-11-25を明示した実クライアントで空tools/listが返る。
+- done-when: NE07。127.0.0.1だけへbindし、不正Origin403、Originなしの認証済みCLI、トークンなし/違う/失効済みの拒否、Host完全一致を実HTTPで試験する。axumとrmcpの検証設定を明示する。body1MiB/接続32/通常並行16/stream8の上限と通常30秒を守り、listen/GET SSEへ通常timeoutを適用しない。長寿命streamはアイドル5分/最大30分。Discover2026-07-28とInitialize2025-11-25を明示した実クライアントで空tools/listが返る。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
-- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/error.rs, apps/editor/src-tauri/Cargo.toml, apps/editor/src-tauri/Cargo.lock, docs/mcp-and-edit-layer-requirements.md
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/error.rs, apps/editor/src-tauri/Cargo.toml, apps/editor/src-tauri/Cargo.lock, docs/mcp-and-edit-layer-requirements.md, apps/editor/src-tauri/src/lib.rs
 - notes: 先行 MCP-010/MCP-011。rmcp/axum/tokio-utilとdev用reqwest/towerを承認一覧から導入する。上限はaxum/tokioで実装し、製品towerの追加は要らない。CORS/Tauri権限を広げない。legacy_session_modeを明示。推移依存増分をcargo tree/lockで示す。危険地帯の評価・本文必須。
 
 ## MCP-013: MCP サーバーの設定連携と寿命を管理する
@@ -260,7 +260,7 @@ M2 の共通規則:
 
 ## MCP-015: 能力と仕様から道具と入力検証を生成する
 - status: todo
-- done-when: NE08。能力なし/未接続/read-onlyのwrite道具は出ず、接続/許可変更で一覧を更新する。現行accepted_subscription_filter/listenを実装してSubscriptionSinkへ通知し、legacyは各peerへ通知する。両版の実HTTP試験とstream失効試験がある。書き込みの外枠params/groupIdと独自道具のschemaを分け、params部分だけは埋め込みspecと意味が一致する。unknown field/不正型/上限違反を事前拒否し、外部schemaを取得しない。絶対$idとfragment参照の解決を試験する。必要能力の組を定義し、不足時は公開しない。
+- done-when: NE08。能力なし/未接続/read-onlyのwrite道具は出ず、接続/許可変更で一覧を更新する。現行accepted_subscription_filter/listenを実装してSubscriptionSinkへ通知し、legacyは各peerへ通知する。両版の実HTTP試験とstream失効試験がある。書き込みの外枠params/groupIdと独自道具のschemaを分け、params部分だけは埋め込みspecと意味が一致する。unknown field/不正型/上限違反を事前拒否し、外部schemaを取得しない。絶対$idとfragment参照の解決を試験する。必要能力の組を定義し、不足時は公開しない。現行listen/旧GET SSEの停止・期限・再購読を実HTTPで試験する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
@@ -269,20 +269,21 @@ M2 の共通規則:
 
 ## MCP-016: 最近のエンジンログをバックエンドへ保持する
 - status: todo
-- done-when: NE10。1000件または合計2MiBの上限を超えると古い順に消える。世代・時刻・連番で絞れ、保持範囲と欠落が分かる。relayのlog.messageをUIへのemit前に保管し、UI不在でも読める。切断・再接続と古いrelayのログが混ざらない試験が通る。log.stream接続時にlog.subscribeを世代固定で1回送り、UI/MCP不在でも保持する。購読失敗を状態で返し、切断時のunsubscribeは最善努力、終了/世代変更でタスクを取り消す。古いackを捨てる。実mockのsubscribe後のバーストを保持する試験がある。
+- done-when: NE10。1000件または合計2MiBの上限を超えると古い順に消える。世代・時刻・連番で絞れ、保持範囲と欠落が分かる。relayのlog.messageをUIへのemit前に保管し、UI不在でも読める。切断・再接続と古いrelayのログが混ざらない試験が通る。log.stream接続時にlog.subscribeを世代固定で1回送り、UI/MCP不在でも保持する。購読失敗を状態で返し、切断時のunsubscribeは最善努力、終了/世代変更でタスクを取り消す。古いackを捨てる。実mockのsubscribe後のバーストを保持する試験がある。subscriptionId不在は不適合状態で、IDを捏造してunsubscribeしない。受信ログは保持する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - paths: apps/editor/src-tauri/src/mcp/log_buffer.rs, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/tests/mcp_reads.rs
-- notes: 先行 MCP-002。ログの内容は非信頼データ。無制限の文字列を件数上限だけで保管しない。
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_ENGINE_PATH=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test --manifest-path apps/editor/src-tauri/Cargo.toml --test mcp_reads -- --nocapture; exit $LASTEXITCODE"`
+- notes: 先行 MCP-002。ログの内容は非信頼データ。無制限の文字列を件数上限だけで保管しない。Bridge購読寿命の危険地帯として評価・本文必須。
 
 ## MCP-017: モックの試験プロフィールに資産の読み取りを足す
 - status: todo
 - done-when: NE09の試験前提。MCP試験プロフィールが既存asset.readのmanifestとresolveを実装し、能力・logicalPath・未知パスの結果が一致する。既定プロフィールのgoldenは変えない。型schema・可変シーン・資産の読み取りを実プロセスから照会する試験がある。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
-- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe').Path; cargo test -p norves-bridge-editor-client --test conformance -- --nocapture; exit $LASTEXITCODE"`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test -p norves-bridge-editor-client --test conformance -- --nocapture; exit $LASTEXITCODE"`
 - paths: bridge/cpp/examples/mock-engine/**, bridge/cpp/engine-sdk/tests/mock_edit_profile_test.cpp, bridge/crates/norves-bridge-editor-client/tests/mcp_mock_profile.rs
-- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe').Path; cargo test -p norves-bridge-editor-client --test mcp_mock_profile -- --nocapture; exit $LASTEXITCODE"`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test -p norves-bridge-editor-client --test mcp_mock_profile -- --nocapture; exit $LASTEXITCODE"`
 - notes: 先行 MCP-003。新規asset.editやasset.saveを作らない。既存capabilityだけを広告する。
 
 ## MCP-018: 読み取り道具と上限付きの続きを実装する
@@ -292,7 +293,7 @@ M2 の共通規則:
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - paths: apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/tests/mcp_reads.rs
-- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_ENGINE_PATH=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe').Path; cargo test --manifest-path apps/editor/src-tauri/Cargo.toml --test mcp_reads -- --nocapture; exit $LASTEXITCODE"`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_ENGINE_PATH=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test --manifest-path apps/editor/src-tauri/Cargo.toml --test mcp_reads -- --nocapture; exit $LASTEXITCODE"`
 - notes: 先行 MCP-015/MCP-016/MCP-017。実mockを使うmcp_readsをこのタスクで実行する。envなしの通常cargo testではopt-inをSKIPと明示し、env指定の不正パス/起動失敗は必ず失敗させる。cursorをBridgeへ送らない。
 
 ## MCP-019: PNG を検証・縮小して MCP に返す
@@ -326,7 +327,7 @@ M2 の共通規則:
 
 ## MCP-022: 要求ごとの書き込み確認をバックエンドで管理する
 - status: todo
-- done-when: NE13。delete/component.removeとMCP undo内部deleteはwrite可でも確認必須、read-onlyでは拒否する。列外の確認brokerが120秒/拒否/HTTP切断/認証改訂/世代変更で取り下げる。一度だけの要求固有確認で、承認後に旧値/対象/範囲/許可改訂/undo先頭IDと履歴改訂/deleteの履歴破棄影響を照合し、違えば再確認する。待機中もUI編集と終了が進む。MCPから承認できず、信頼したmain画面commandだけが承認する。
+- done-when: NE13。delete/component.removeとMCP undo内部deleteはwrite可でも確認必須、read-onlyでは拒否する。列外の確認brokerが120秒/拒否/HTTP切断/認証改訂/世代変更で取り下げる。一度だけの要求固有確認で、承認後に旧値/対象/範囲/許可改訂/undo先頭IDと履歴改訂/deleteの履歴破棄影響を照合し、違えば再確認する。待機中もUI編集と終了が進む。MCPから承認できず、信頼したmain画面commandだけが承認する。要求全体125秒に再照会/走査/列待ちも含める。旧版はHTTP応答破棄と要求ID別cancelを結び、両版の切断取消を試験する。未開始は列から取消、開始済みは次の操作へ進まずBridge結果を確認し、適用済みと結果不明を区別する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
@@ -355,7 +356,7 @@ M2 の共通規則:
 
 ## MCP-025: 名前付きまとまりの開始・終了と自動閉鎖を公開する
 - status: todo
-- done-when: NE12/NE06。beginの256 bit groupIdをparams外枠で受け、正しいID所持を所有者とする。秘密と表示用IDを分け、共有トークン/自己申告client名を同一性に使わない。複数編集が1回undoで戻り、groupIdなし/別ID/UI/undo/redo/非取り消し操作の前に閉じる。128編集/無操作5分/全体15分/無効化/認証失効で閉じる。期限後IDは拒否する。人の列を止めず、同じまとまり内redoの依存IDを置換し、部分失敗はNE06を使う。
+- done-when: NE12/NE06。beginの256 bit groupIdをparams外枠で受け、正しいID所持を所有者とする。秘密と表示用IDを分け、共有トークン/自己申告client名を同一性に使わない。複数編集が1回undoで戻り、groupIdなし/別ID/UI/undo/redo/非取り消し操作の前に閉じる。128編集/無操作5分/全体15分/無効化/認証失効で閉じる。期限後IDは拒否する。人の列を止めず、同じまとまり内redoの依存IDを置換し、部分失敗はNE06を使う。Bridge切断/世代変更で閉じて旧groupIdを拒否する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
@@ -394,7 +395,8 @@ M2 の共通規則:
 ## MCP-029: 管理用ガイドの正本へ所有権とセキュリティを同期する
 - status: todo
 - done-when: NE01の管理用文書同期。MyWorkflowの正本architecture/tauri-securityが編集サービス・loopback MCP・秘密保護を記録し、deploy後の管理外コピーが一致する。NorvesEditor製品文書と矛盾しない。
-- verify: `git -C ../MyWorkflow diff HEAD^ --check`
+- verify: `git -C ../MyWorkflow diff main --check`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "if ((Get-FileHash 'docs/agent-guide/architecture.md').Hash -ne (Get-FileHash '../MyWorkflow/projects/NorvesEditor/agent-guide/architecture.md').Hash) { exit 1 }; if ((Get-FileHash 'docs/agent-guide/tauri-security.md').Hash -ne (Get-FileHash '../MyWorkflow/projects/NorvesEditor/agent-guide/tauri-security.md').Hash) { exit 1 }"`
+- verify: `node -e "const fs=require('fs');const a=fs.readFileSync('../MyWorkflow/projects/NorvesEditor/agent-guide/architecture.md','utf8');const t=fs.readFileSync('../MyWorkflow/projects/NorvesEditor/agent-guide/tauri-security.md','utf8');if(!a.includes('edit_service')||!a.includes('127.0.0.1')||!t.includes('mcp-token.bin')||!t.includes('127.0.0.1'))process.exit(1)"`
 - paths: ../MyWorkflow/projects/NorvesEditor/agent-guide/architecture.md, ../MyWorkflow/projects/NorvesEditor/agent-guide/tauri-security.md
 - notes: 先行 MCP-001。別repo文書2本だけの変更をM1承認へ含める。MyWorkflowの合意を読み専用ブランチで編集・コミット・deployする。展開コピーの直接編集/mainコミット/push禁止。不可ならblockedにして他タスクを止めない。MyWorkflowのコミットも進捗へ記録する。
