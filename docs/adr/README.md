@@ -1,10 +1,10 @@
-# Architecture Decision Records
+# アーキテクチャ決定記録（ADR）
 
-This directory stores ADRs for decisions that affect public API shape, protocol compatibility, process/security permissions, memory ownership, thread affinity, viewport strategy, or long-term repository structure.
+ADR には、公開 API の形、プロトコル互換性、プロセスとセキュリティ権限、メモリ所有権、スレッド親和性、ビューポート方針、長期的なリポジトリ構成に影響する決定を記録する。
 
-`docs/alpha-project-plan.md` remains the project-level plan. ADRs record focused decisions that future work should not accidentally reverse.
+プロジェクト全体の計画は `docs/alpha-project-plan.md` に置き、ADR には将来の変更で不用意に覆さない個別の決定を記録する。
 
-Initial ADRs:
+## 初期 ADR
 
 ```text
 0001-editor-owned-bridge-subsystem.md
@@ -16,15 +16,17 @@ Initial ADRs:
 0007-cpp-websocket-library-libwebsockets.md
 0008-cpp23-and-norveslib-style-alignment.md
 0009-cpp-bridge-namespace-pascalcase.md
+0010-backend-edit-service-and-history.md
+0011-local-mcp-interface.md
 ```
 
-Each ADR should record:
+各 ADR には次を記録する。
 
 ```text
-- status
-- context
-- decision
-- consequences
-- affected workstreams
-- verification or migration notes when applicable
+- 状態
+- 背景
+- 決定
+- 帰結
+- 影響する作業範囲
+- 必要に応じて検証または移行の注記
 ```

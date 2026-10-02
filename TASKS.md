@@ -133,7 +133,7 @@ M2 の共通規則:
 - notes: S-009 で見つけた(S-009 の done-when は Settings UI の3箇所だけ)。
 
 ## MCP-001: E0 の設計記録と層の境界を確定する
-- status: todo
+- status: done
 - done-when: NE01。ADR 0010 / 0011 が承認済みの設計を記録し、docs/architecture.md の層と所有者が一致する。ADR2本と層の更新が評価されている。
 - verify: `git diff 700dfa8 --check`
 - paths: docs/adr/0010-backend-edit-service-and-history.md, docs/adr/0011-local-mcp-interface.md, docs/adr/README.md, docs/architecture.md, docs/mcp-and-edit-layer-requirements.md

@@ -5,6 +5,7 @@
 
 ## Done
 - (反復ごとに1行: タスク id、コミット、検証の要点)
+- MCP-001: ADR 0010 / 0011 を一覧へ登録し、要件書の承認状態と `docs/architecture.md` の層・所有者・経路を統一。`git diff 700dfa8 --check` exit 0、証拠 `.harness/runs/20261003-035149/verify-MCP-001-1.txt`。
 - MCP M1: 2026-10-03 に E0〜E3 の設計・29タスク・依存一覧・MyWorkflow ガイド正本2本の同期を承認済み。設計評価PASS、文書検査PASS。設計文書は `90dd0fd`。
 - S-001: Outliner の折りたたみ記憶に接続の鍵(connected の間だけ sessionId から作る)を持たせ、描画時に照合して別の接続の記憶を捨てる。typecheck exit 0、vitest 630/630(新規 6 件、うち 4 件は旧実装で落ちることを確認)。
 - S-001 指摘対応: 接続の世代番号を store に足し、同じ sessionId での再接続もパネル不在中に検出する。typecheck exit 0、vitest 632/632(新規の Outliner テストは旧実装で落ちることを確認)。
@@ -23,9 +24,10 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 承認済みの29タスクを評価付きランナーへ渡す。MCP-001から開始し、1反復1タスクで進める。
+- MCP / 編集層の M2: 承認済みの29タスクを評価付きランナーへ渡す。MCP-001完了、MCP-002から1反復1タスクで進める。
 
 ## Next
+- 次のタスク: MCP-002（編集サービスの実行列と接続世代）。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -36,6 +38,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-03 MCP-001開始時の `./scripts/verify.ps1 -Cpp`: exit 0（fixtures 174、C++ ctest 7/7、IPC commands 32 / events 11、vitest 42/43/649、typecheck/build/fmt/clippy）。CMake の libwebsockets 生成物について MSB8065 警告が1件出たが、build と全ゲートは成功。MCP-001 の差分検証は exit 0、証拠 `.harness/runs/20261003-035149/verify-MCP-001-1.txt`。
 - 2026-10-03 M2開始儀式: `verify.ps1 -Cpp` exit 0、エディタ Rust 単体164件通過、vitest42/43/649件通過。opt-inの実エンジン試験は環境変数未設定でSKIP。証拠 `.harness/mcp-m2-start-verify.log` / `mcp-m2-start-tauri.log` を開いて確認した。作業ブランチは `feature/editor-mcp-edit-layer`、プッシュしない。
 - 2026-10-02 MCP M1: HEAD `700dfa8`、取得済みの `origin/main` は `872e406`。小物修正ブランチは未統合。基点を `700dfa8` とする選択を受け、`feature/editor-mcp-edit-layer` に分岐した。ワークツリーは増やしていない。
 - M1の決定: ポート49770/永続256 bitトークン/app_config_dir（Windows DPAPI、Unix0700/0600）。play/pause/stopは許可を通し操作記録へ、履歴には積まない。複数編集の部分失敗は未処理部分を保持し再試行/破棄、通常編集は成功分だけ残す。単発の失敗時の記録破棄は維持する。
