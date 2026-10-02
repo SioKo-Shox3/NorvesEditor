@@ -8,7 +8,7 @@
 - MCP-001: ADR 0010 / 0011 の承認設計と要件書に合わせ、`docs/architecture.md` の読み取り・書き込み・画面操作経路を明確化。`git diff 700dfa8 --check` exit 0、証拠 `.harness/runs/20261003-035149/verify-MCP-001-4.txt`。
 - MCP-002: UI/MCP共通の容量64のactor列と世代固定Bridge handleを追加。停止時は受付を閉じ、実行中のBridge操作をキャンセルし、保留を拒否してactorをjoinする。猶予超過時の中止/joinとdispatcher停止待ちの2秒上限も確認。履歴消去・旧応答破棄・実接続の切断を含む試験を追加。既存UI入口は未変更。fmt/clippy exit 0、cargo test 172単体+14 opt-in、証拠 `verify-MCP-002-8.txt`〜`verify-MCP-002-10.txt`。
 - MCP-003: `NORVES_MOCK_PROFILE=mcp-edit` の試験プロフィールに可変ツリー、作成/削除/親変更/複製、任意JSON値の設定と読み取りを追加。複製の再実行は新IDを払い出し、scene.liveUpdate無しでも編集できる。既定の能力一覧・golden応答は維持。CTest 8/8、既存conformance 1/1、証拠 `verify-MCP-003-4.txt` / `verify-MCP-003-5.txt`。
-- MCP-004: 編集actorへ4種の履歴記録を追加し、accepted・newId・appliedValue・旧値・redo条件を適用。UI捕捉を改訂値/親で補正し、補正不足はBridge操作前に再取得を要求する。MCP旧値取得と書き込みの一体実行、JSON.stringify互換、512項目/4MiBの補正上限と削除/世代変更時の解放を試験。fmt/clippy exit 0、cargo test exit 0（186単体・14統合試験）、証拠 `verify-MCP-004-1.txt`〜`verify-MCP-004-3.txt`。
+- MCP-004: 編集actorへ4種の履歴記録を追加し、accepted・newId・appliedValue・旧値・redo条件を適用。UI捕捉を改訂値/親で補正し、失われた補正情報が必要な場合だけBridge操作前に再取得を要求する。補正情報が失われていない古い捕捉と、旧値未取得時の書き込みのみの動作も確認。MCP旧値取得と書き込みの一体実行、JSON.stringify互換、512項目/4MiBの補正上限、削除時の損失改訂記録と接続世代変更時の解放を試験。fmt/clippy exit 0、cargo test exit 0（188単体・14統合試験）、証拠 `verify-MCP-004-14.txt`〜`verify-MCP-004-16.txt`。
 - MCP M1: 2026-10-03 に E0〜E3 の設計・29タスク・依存一覧・MyWorkflow ガイド正本2本の同期を承認済み。設計評価PASS、文書検査PASS。設計文書は `90dd0fd`。
 - S-001: Outliner の折りたたみ記憶に接続の鍵(connected の間だけ sessionId から作る)を持たせ、描画時に照合して別の接続の記憶を捨てる。typecheck exit 0、vitest 630/630(新規 6 件、うち 4 件は旧実装で落ちることを確認)。
 - S-001 指摘対応: 接続の世代番号を store に足し、同じ sessionId での再接続もパネル不在中に検出する。typecheck exit 0、vitest 632/632(新規の Outliner テストは旧実装で落ちることを確認)。
@@ -41,6 +41,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-03 MCP-004差し戻し対応: 補正キャッシュが失った最新改訂を追跡し、追い出し・容量超過・削除の後に古い既知値で操作する場合だけ再取得を要求する。改訂0の古いUI捕捉でも損失のない場合は維持し、値未取得なら損失後も書き込みだけ行う。開始ゲート `scripts/verify.ps1 -Cpp` exit 0、最終 fmt/clippy/cargo test もexit 0（188単体・14統合）。ログ `.harness/runs/20261003-035149/verify-MCP-004-14.txt`〜`verify-MCP-004-16.txt` を開いて確認。
 - 2026-10-03 MCP-004開始ゲート `scripts/verify.ps1 -Cpp` exit 0。fixtures 174、C++ ctest 8/8、Rust bridge・typecheck/build/lint/vitest 42/43/649 が成功。libwebsockets の MSB8065 警告が1件。
 - 2026-10-03 MCP-004検証ログ `.harness/runs/20261003-035149/verify-MCP-004-1.txt`〜`verify-MCP-004-3.txt` を開いて確認。UIの古い値/親は同じ対象の共通列適用値があれば補正し、補正キャッシュの範囲外・別世代では適用前に再取得を返す。MCPは読取り結果なし/失敗時に書込みを呼ばない。
 - 2026-10-03 MCP-003: CTest の `mock_edit_profile_test` が編集プロフィールの構造変更/汎用値/新ID再発行/ライブ更新抑止/`log.subscribe` ack を検査。集約ゲートはfixtures 174、C++ 8/8、Rust・フロントエンド各ゲート成功。保存ログを開いて確認。

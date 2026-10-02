@@ -921,7 +921,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_stale_correction_requests_reload_before_running_the_edit() {
+    async fn unlost_stale_capture_uses_its_ui_value_after_an_unrelated_edit() {
         let (service, _control, handle) = test_service(4);
         let created = service
             .enqueue_recorded_from_mcp(
@@ -936,7 +936,6 @@ mod tests {
             )
             .expect("create is queued");
         created.result().await.expect("create is accepted");
-
         let edit_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let edit_probe = Arc::clone(&edit_ran);
         let stale = service
@@ -950,6 +949,155 @@ mod tests {
                         generation: 1,
                         revision: 0,
                         value: Some(serde_json::json!("A")),
+                    }),
+                },
+                move |_| async move {
+                    edit_probe.store(true, std::sync::atomic::Ordering::Release);
+                    Ok(history::QueuedEditResult::plain(serde_json::json!({
+                        "accepted": true,
+                        "appliedValue": "C"
+                    })))
+                },
+            )
+            .expect("stale edit enters the queue");
+        stale.result().await.expect("unlost capture is accepted");
+        assert!(edit_ran.load(std::sync::atomic::Ordering::Acquire));
+        let records = service
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .undo_records();
+        assert_eq!(
+            records,
+            [
+                history::HistoryRecord::Create {
+                    created_id: "created".to_owned(),
+                },
+                history::HistoryRecord::SetProperty {
+                    object_id: "other-object".to_owned(),
+                    property: "color".to_owned(),
+                    old_value: serde_json::json!("A"),
+                    new_value: serde_json::json!("C"),
+                },
+            ]
+        );
+
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stale_capture_without_old_value_writes_without_recording() {
+        let (service, _control, handle) = test_service(4);
+        let created = service
+            .enqueue_recorded_from_mcp(
+                EditKind::Edit,
+                HistoryRequest::CreateObject { parent_id: None },
+                |_| async {
+                    Ok(history::QueuedEditResult::plain(serde_json::json!({
+                        "accepted": true,
+                        "newId": "created"
+                    })))
+                },
+            )
+            .expect("create is queued");
+        created.result().await.expect("create is accepted");
+        let deleted = service
+            .enqueue_recorded_from_mcp(
+                EditKind::Edit,
+                HistoryRequest::DeleteObject {
+                    object_id: "created".to_owned(),
+                },
+                |_| async {
+                    Ok(history::QueuedEditResult::plain(serde_json::json!({
+                        "accepted": true
+                    })))
+                },
+            )
+            .expect("delete is queued");
+        deleted.result().await.expect("delete is accepted");
+
+        let edit_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let edit_probe = Arc::clone(&edit_ran);
+        let stale = service
+            .enqueue_recorded_from_ui(
+                EditKind::Edit,
+                HistoryRequest::SetProperty {
+                    object_id: "other-object".to_owned(),
+                    property: "color".to_owned(),
+                    requested_value: serde_json::json!("C"),
+                    old_value: history::PriorCapture::Ui(history::HistoryCapture {
+                        generation: 1,
+                        revision: 0,
+                        value: None,
+                    }),
+                },
+                move |_| async move {
+                    edit_probe.store(true, std::sync::atomic::Ordering::Release);
+                    Ok(history::QueuedEditResult::plain(serde_json::json!({
+                        "accepted": true,
+                        "appliedValue": "C"
+                    })))
+                },
+            )
+            .expect("stale edit enters the queue");
+        stale
+            .result()
+            .await
+            .expect("missing old value does not block the edit");
+        assert!(edit_ran.load(std::sync::atomic::Ordering::Acquire));
+        let records = service
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .undo_records();
+        assert!(records.is_empty());
+
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn lost_stale_correction_requests_reload_before_running_the_edit() {
+        let (service, _control, handle) = test_service(4);
+        for index in 0..513 {
+            let object_id = format!("object-{index}");
+            let edit = service
+                .enqueue_recorded_from_mcp(
+                    EditKind::Edit,
+                    HistoryRequest::SetProperty {
+                        object_id,
+                        property: "value".to_owned(),
+                        requested_value: serde_json::json!(index),
+                        old_value: history::PriorCapture::InAction,
+                    },
+                    move |_| async move {
+                        Ok(history::QueuedEditResult::with_prior(
+                            serde_json::json!({
+                                "accepted": true,
+                                "appliedValue": index
+                            }),
+                            history::HistoryPrior::Property(serde_json::json!("old")),
+                        ))
+                    },
+                )
+                .expect("MCP edit is queued");
+            edit.result().await.expect("MCP edit is accepted");
+        }
+
+        let edit_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let edit_probe = Arc::clone(&edit_ran);
+        let stale = service
+            .enqueue_recorded_from_ui(
+                EditKind::Edit,
+                HistoryRequest::SetProperty {
+                    object_id: "object-0".to_owned(),
+                    property: "value".to_owned(),
+                    requested_value: serde_json::json!("new"),
+                    old_value: history::PriorCapture::Ui(history::HistoryCapture {
+                        generation: 1,
+                        revision: 0,
+                        value: Some(serde_json::json!("old")),
                     }),
                 },
                 move |_| async move {

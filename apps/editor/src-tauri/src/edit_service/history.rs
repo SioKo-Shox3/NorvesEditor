@@ -188,6 +188,7 @@ struct CorrectionEntry {
 struct CorrectionCache {
     entries: HashMap<CorrectionKey, CorrectionEntry>,
     bytes: usize,
+    lost_through: u64,
 }
 
 impl CorrectionCache {
@@ -204,9 +205,11 @@ impl CorrectionCache {
             .byte_len()
             .checked_add(value.byte_len().unwrap_or(usize::MAX))
         else {
+            self.mark_lost_through(revision);
             return;
         };
         if byte_len > MAX_CORRECTION_BYTES {
+            self.mark_lost_through(revision);
             return;
         }
 
@@ -223,6 +226,7 @@ impl CorrectionCache {
             };
             if let Some(oldest) = self.entries.remove(&oldest_key) {
                 self.bytes = self.bytes.saturating_sub(oldest.byte_len);
+                self.mark_lost_through(oldest.revision);
             }
         }
 
@@ -238,8 +242,19 @@ impl CorrectionCache {
     }
 
     fn clear(&mut self) {
-        self.entries = HashMap::new();
+        self.entries.clear();
         self.bytes = 0;
+        self.lost_through = 0;
+    }
+
+    fn clear_and_mark_lost_through(&mut self, revision: u64) {
+        self.entries.clear();
+        self.bytes = 0;
+        self.lost_through = revision;
+    }
+
+    fn mark_lost_through(&mut self, revision: u64) {
+        self.lost_through = self.lost_through.max(revision);
     }
 }
 
@@ -403,7 +418,10 @@ impl HistoryState {
                 .ok_or_else(refresh_required);
         }
 
-        if capture.revision < self.applied_revision && cached.is_none() {
+        if capture.value.is_some()
+            && capture.revision < self.corrections.lost_through
+            && cached.is_none()
+        {
             return Err(refresh_required());
         }
         Ok(capture.value)
@@ -424,7 +442,8 @@ impl HistoryState {
 
         if let PreparedHistoryRequest::DeleteObject { object_id: _ } = prepared {
             self.applied_revision = self.applied_revision.wrapping_add(1);
-            self.corrections.clear();
+            self.corrections
+                .clear_and_mark_lost_through(self.applied_revision);
             self.undo.clear();
             self.redo.clear();
             self.push_marker(source, kind, sequence, generation);
@@ -539,7 +558,7 @@ impl HistoryState {
                 marker: self
                     .markers
                     .last()
-                    .expect("accepted marker was recorded")
+                    .expect("accepted マーカーを記録済み")
                     .clone(),
                 record,
             });
@@ -614,7 +633,7 @@ fn js_stringify(value: &Value) -> String {
         Value::Null => "null".to_owned(),
         Value::Bool(value) => value.to_string(),
         Value::Number(value) => js_number_string(value),
-        Value::String(value) => serde_json::to_string(value).expect("string values serialize"),
+        Value::String(value) => serde_json::to_string(value).expect("文字列値を直列化できる"),
         Value::Array(values) => {
             let items = values.iter().map(js_stringify).collect::<Vec<_>>();
             format!("[{}]", items.join(","))
@@ -637,7 +656,7 @@ fn js_stringify(value: &Value) -> String {
                 .map(|(key, value)| {
                     format!(
                         "{}:{}",
-                        serde_json::to_string(key).expect("object keys serialize"),
+                        serde_json::to_string(key).expect("オブジェクトのキーを直列化できる"),
                         js_stringify(value)
                     )
                 })
@@ -655,7 +674,7 @@ fn javascript_array_index(key: &str) -> Option<u32> {
 fn js_number_string(number: &serde_json::Number) -> String {
     let value = number
         .as_f64()
-        .expect("serde_json numbers are finite and representable as f64");
+        .expect("serde_json の数値は有限で f64 で表現できる");
     if value == 0.0 {
         return "0".to_owned();
     }
@@ -1136,14 +1155,16 @@ mod tests {
                     object_id: format!("object-{index}"),
                     property: "value".to_owned(),
                 },
-                index as u64,
+                index as u64 + 1,
                 CorrectionValue::Property(Value::from(index as u64)),
             );
         }
         assert_eq!(cache.entries.len(), MAX_CORRECTION_ENTRIES);
         assert!(cache.bytes <= MAX_CORRECTION_BYTES);
+        assert_eq!(cache.lost_through, 1);
 
         cache.clear();
+        assert_eq!(cache.lost_through, 0);
         let first_key = CorrectionKey::Property {
             object_id: "first".to_owned(),
             property: "value".to_owned(),
@@ -1166,6 +1187,7 @@ mod tests {
         assert!(cache.get(&first_key).is_none());
         assert!(cache.get(&second_key).is_some());
         assert!(cache.bytes <= MAX_CORRECTION_BYTES);
+        assert_eq!(cache.lost_through, 1);
 
         cache.clear();
         cache.insert(
@@ -1173,11 +1195,12 @@ mod tests {
                 object_id: "large".to_owned(),
                 property: "value".to_owned(),
             },
-            1,
+            3,
             CorrectionValue::Property(Value::String("x".repeat(MAX_CORRECTION_BYTES))),
         );
         assert!(cache.entries.is_empty());
         assert_eq!(cache.bytes, 0);
+        assert_eq!(cache.lost_through, 3);
     }
 
     #[test]
@@ -1213,9 +1236,21 @@ mod tests {
         )
         .expect("delete does not need a capture");
         assert_eq!(state.correction_stats(), (0, 0));
+        assert_eq!(state.corrections.lost_through, state.applied_revision());
         assert!(state.undo_records().is_empty());
 
         let revision = state.applied_revision();
+        let stale_after_delete = HistoryRequest::SetProperty {
+            object_id: "other-object".to_owned(),
+            property: "value".to_owned(),
+            requested_value: serde_json::json!(3),
+            old_value: PriorCapture::Ui(capture(1, revision - 1, Some(serde_json::json!(2)))),
+        };
+        assert!(matches!(
+            state.prepare(stale_after_delete, EditSource::Ui, 1),
+            Err(BackendError::Request { message }) if message.contains("再取得")
+        ));
+
         apply(
             &mut state,
             HistoryRequest::SetProperty {
@@ -1233,6 +1268,7 @@ mod tests {
         assert_eq!(state.correction_stats().0, 1);
         state.synchronize(Some(2));
         assert_eq!(state.correction_stats(), (0, 0));
+        assert_eq!(state.corrections.lost_through, 0);
         assert!(state.undo_records().is_empty());
         let stale_capture = HistoryRequest::SetProperty {
             object_id: "object".to_owned(),
