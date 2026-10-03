@@ -15,6 +15,7 @@ mod engine_settings;
 mod error;
 mod events_map;
 pub mod mcp;
+mod mcp_settings;
 pub mod mcp_token;
 // Windows 限定: 起動したエンジンをエディタの寿命に縛る Job Object。
 #[cfg(windows)]
@@ -27,6 +28,8 @@ mod workspace;
 use bridge_state::BridgeState;
 use edit_service::EditService;
 use engine_settings::EngineSettingsState;
+use mcp::runtime::McpRuntime;
+use mcp::McpAuthorization;
 use process_runtime::ProcessState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -44,11 +47,19 @@ pub fn run() {
         .setup(|app| {
             // 配布版にもWARN以上を残せるよう、AppHandle生成後にログ出力先を決める。
             backend_log::init(app.path().app_log_dir().ok());
+            let config_dir = app.path().app_config_dir().map_err(std::io::Error::other)?;
+            let authorization = McpAuthorization::default();
             let bridge = app.state::<BridgeState>();
-            app.manage(EditService::new_with_app(
+            app.manage(EditService::new_with_app_and_authorization(
                 bridge.edit_facade(),
                 app.handle().clone(),
+                authorization.clone(),
             ));
+            let mcp_runtime = McpRuntime::new(config_dir, authorization);
+            app.manage(mcp_runtime.clone());
+            tauri::async_runtime::spawn(async move {
+                mcp_runtime.initialize().await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -85,6 +96,10 @@ pub fn run() {
             engine_settings::pick_engine_path,
             engine_settings::clear_engine_path,
             engine_settings::set_engine_args,
+            mcp::runtime::get_mcp_settings,
+            mcp::runtime::set_mcp_settings,
+            mcp::runtime::get_mcp_token,
+            mcp::runtime::regenerate_mcp_token,
             workspace::workspace_open,
             workspace::workspace_get,
             workspace::workspace_close,
@@ -96,7 +111,7 @@ pub fn run() {
 
     let exit_started = Arc::new(AtomicBool::new(false));
     let exit_completed = Arc::new(AtomicBool::new(false));
-    // 終了要求をいったん延期し、編集列・Bridge・エンジンの非同期停止後に終了する。
+    // 終了要求をいったん延期し、MCP・編集列・Bridge・エンジンの非同期停止後に終了する。
     app.run(move |app_handle, event| match event {
         tauri::RunEvent::ExitRequested { code, api, .. } => {
             if exit_completed.load(Ordering::Acquire) {
@@ -107,6 +122,7 @@ pub fn run() {
                 let app_handle = app_handle.clone();
                 let exit_completed = Arc::clone(&exit_completed);
                 tauri::async_runtime::spawn(async move {
+                    app_handle.state::<McpRuntime>().shutdown().await;
                     app_handle.state::<EditService>().shutdown().await;
                     bridge_state::shutdown_on_exit(app_handle.state::<BridgeState>().inner()).await;
                     process_runtime::shutdown_on_exit(&app_handle).await;

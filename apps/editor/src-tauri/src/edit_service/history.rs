@@ -648,6 +648,19 @@ impl HistoryState {
         self.active_group.is_some()
     }
 
+    /// 認証改訂で MCP 所有の未完了まとまりを閉じ、古いまとまりIDを失効させる。
+    pub(super) fn revoke_mcp_group(&mut self) -> bool {
+        if self
+            .active_group
+            .as_ref()
+            .is_some_and(|group| group.metadata.source == EditSource::Mcp)
+        {
+            self.close_active_group()
+        } else {
+            false
+        }
+    }
+
     fn close_active_group(&mut self) -> bool {
         let Some(mut group) = self.active_group.take() else {
             return false;

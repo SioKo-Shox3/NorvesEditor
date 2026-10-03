@@ -7,7 +7,10 @@ use std::{
     io,
     net::{Ipv4Addr, SocketAddr},
     pin::Pin,
-    sync::{Arc, Mutex, RwLock, Weak},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, RwLock, Weak,
+    },
     task::{Context, Poll, Waker},
     time::Duration,
 };
@@ -38,13 +41,15 @@ use serde_json::Value;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream},
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::{watch, OwnedSemaphorePermit, Semaphore},
     time::{self, Instant, Sleep},
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::mcp_token::McpToken;
 use axum::extract::connect_info::Connected;
+
+pub mod runtime;
 
 /// MCP POST 本体の最大サイズ。
 pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
@@ -65,16 +70,150 @@ const SSE_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RESPONSE_HEADER_BYTES: usize = 16 * 1024;
 
+/// MCP 認証の改訂と、その改訂で受け付けた要求の取消を共有する。
+#[derive(Clone)]
+pub struct McpAuthorization {
+    inner: Arc<McpAuthorizationInner>,
+}
+
+struct McpAuthorizationInner {
+    revision: AtomicU64,
+    revision_tx: watch::Sender<u64>,
+    leases: Mutex<Vec<(u64, Weak<CancellationToken>)>>,
+}
+
+impl Default for McpAuthorization {
+    fn default() -> Self {
+        let (revision_tx, _) = watch::channel(1);
+        Self {
+            inner: Arc::new(McpAuthorizationInner {
+                revision: AtomicU64::new(1),
+                revision_tx,
+                leases: Mutex::new(Vec::new()),
+            }),
+        }
+    }
+}
+
+impl McpAuthorization {
+    /// 現在の改訂で要求リースを作り、失効時の取消一覧へ登録する。
+    pub fn current_lease(&self) -> McpRequestLease {
+        let cancellation = Arc::new(CancellationToken::new());
+        let mut leases = self
+            .inner
+            .leases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        leases.retain(|(_, token)| token.strong_count() > 0);
+        let revision = self.inner.revision.load(Ordering::Acquire);
+        if revision == self.inner.revision.load(Ordering::Acquire) {
+            leases.push((revision, Arc::downgrade(&cancellation)));
+        } else {
+            cancellation.cancel();
+        }
+        McpRequestLease {
+            revision,
+            cancellation,
+            authorization: self.clone(),
+        }
+    }
+
+    /// 現在の改訂を進め、以前の改訂で登録された全要求を取り消す。
+    pub fn revoke(&self) -> u64 {
+        let revision = self
+            .inner
+            .revision
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        self.inner.revision_tx.send_replace(revision);
+        let mut leases = self
+            .inner
+            .leases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        leases.retain(|(lease_revision, token)| {
+            if *lease_revision == revision {
+                return token.strong_count() > 0;
+            }
+            if let Some(token) = token.upgrade() {
+                token.cancel();
+            }
+            false
+        });
+        revision
+    }
+
+    /// Actor が要求の認証改訂を確認する。
+    pub fn is_current(&self, revision: u64) -> bool {
+        self.inner.revision.load(Ordering::Acquire) == revision
+    }
+
+    /// 認証改訂が変わったとき actor が所有中のまとまりを失効させる購読。
+    pub(crate) fn subscribe_revision(&self) -> watch::Receiver<u64> {
+        self.inner.revision_tx.subscribe()
+    }
+}
+
+/// HTTP で認証された要求の改訂と取消通知。
+#[derive(Clone)]
+pub struct McpRequestLease {
+    revision: u64,
+    cancellation: Arc<CancellationToken>,
+    authorization: McpAuthorization,
+}
+
+impl McpRequestLease {
+    /// 認証された時点の改訂。
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// 要求の停止・確認待ちの取消に使う通知。
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.as_ref().clone()
+    }
+
+    /// 認証失効まで待機し、確認や要求処理を中断する。
+    pub async fn cancelled(&self) {
+        self.cancellation.cancelled().await;
+    }
+
+    /// 要求がまだ現在の認証改訂に属するかを返す。
+    pub fn is_current(&self) -> bool {
+        !self.cancellation.is_cancelled() && self.authorization.is_current(self.revision)
+    }
+}
+
+/// RMCP の要求ハンドラーへ引き継ぐため、HTTP要求から認証リースを複製する。
+pub fn request_authorization(request: &Request) -> Option<McpRequestLease> {
+    request.extensions().get::<McpRequestLease>().cloned()
+}
+
+/// RMCP道具ハンドラーの要求contextから、HTTP認証リースを取り出す。
+pub fn request_authorization_from_context(
+    context: &rmcp::service::RequestContext<rmcp::service::RoleServer>,
+) -> Option<McpRequestLease> {
+    let parts = context.extensions.get::<axum::http::request::Parts>()?;
+    parts.extensions.get::<McpRequestLease>().cloned()
+}
+
 /// 実行中のサーバーが照合するトークン。入れ替え後は古い値を即時に失効させる。
 pub struct McpHttpAuth {
-    token: RwLock<McpToken>,
+    token: RwLock<Option<McpToken>>,
+    authorization: McpAuthorization,
 }
 
 impl McpHttpAuth {
     /// 保存済みトークンで HTTP 認証を開始する。
     pub fn new(token: McpToken) -> Self {
+        Self::with_authorization(token, McpAuthorization::default())
+    }
+
+    /// 保存済みトークンと、編集 actor と共有する認証改訂で HTTP 認証を開始する。
+    pub fn with_authorization(token: McpToken, authorization: McpAuthorization) -> Self {
         Self {
-            token: RwLock::new(token),
+            token: RwLock::new(Some(token)),
+            authorization,
         }
     }
 
@@ -84,14 +223,27 @@ impl McpHttpAuth {
             .token
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *current = token;
+        *current = Some(token);
+        self.authorization.revoke();
     }
 
-    fn matches(&self, presented: &str) -> bool {
-        self.token
+    /// 待受停止前に認証を閉じ、現行要求と後続の actor 要求を失効させる。
+    pub fn disable(&self) {
+        let mut current = self
+            .token
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *current = None;
+        self.authorization.revoke();
+    }
+
+    fn authorize(&self, presented: &str) -> Option<McpRequestLease> {
+        let token = self
+            .token
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .matches(presented)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        token.as_ref().filter(|token| token.matches(presented))?;
+        Some(self.authorization.current_lease())
     }
 }
 
@@ -796,9 +948,9 @@ async fn authenticate_and_limit(
     {
         return StatusCode::FORBIDDEN.into_response();
     }
-    if !valid_authorization(request.headers(), &state.auth) {
+    let Some(auth_lease) = authorized_request(request.headers(), &state.auth) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
 
     let request_started = Instant::now();
     let request_deadline = request_started + state.policy.request;
@@ -817,7 +969,11 @@ async fn authenticate_and_limit(
         };
     let is_long_stream = parts.method == Method::GET
         || (parts.method == Method::POST && contains_listen_request(&body));
-    let request = Request::from_parts(parts, Body::from(body));
+    if !auth_lease.is_current() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let mut request = Request::from_parts(parts, Body::from(body));
+    request.extensions_mut().insert(auth_lease);
 
     let admission = if is_long_stream {
         match state.limits.streams.clone().try_acquire_owned() {
@@ -899,19 +1055,14 @@ fn valid_origin(headers: &HeaderMap, expected: &str) -> bool {
     values.next().is_none() && value.to_str().is_ok_and(|value| value == expected)
 }
 
-fn valid_authorization(headers: &HeaderMap, auth: &McpHttpAuth) -> bool {
+fn authorized_request(headers: &HeaderMap, auth: &McpHttpAuth) -> Option<McpRequestLease> {
     let mut values = headers.get_all(AUTHORIZATION).iter();
-    let Some(value) = values.next() else {
-        return false;
-    };
+    let value = values.next()?;
     if values.next().is_some() {
-        return false;
+        return None;
     }
-    value
-        .to_str()
-        .ok()
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| auth.matches(token))
+    let value = value.to_str().ok()?;
+    auth.authorize(value.strip_prefix("Bearer ")?)
 }
 
 fn contains_listen_request(body: &[u8]) -> bool {
@@ -1075,8 +1226,13 @@ mod tests {
 
         async fn stop(mut self) {
             self.shutdown.cancel();
-            self.task.abort();
-            let _ = (&mut self.task).await;
+            if time::timeout(super::runtime::SERVER_STOP_GRACE, &mut self.task)
+                .await
+                .is_err()
+            {
+                self.task.abort();
+                let _ = (&mut self.task).await;
+            }
         }
     }
 
@@ -1529,6 +1685,109 @@ mod tests {
             .await
             .expect("Discover クライアントを閉じる");
         server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn disabling_runtime_closes_legacy_get_sse_and_current_listen() {
+        let directory = TestTokenDirectory::new();
+        let authorization = McpAuthorization::default();
+        let runtime = runtime::McpRuntime::new(directory.0.clone(), authorization);
+        let reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("利用可能なloopback portを得る");
+        let port = reservation.local_addr().expect("portを読む").port();
+        drop(reservation);
+
+        let settings = runtime
+            .set_settings(true, port)
+            .await
+            .expect("MCPサーバーを有効にする");
+        let token = runtime.token().await.expect("秘密を明示取得する").token;
+        let endpoint = settings.endpoint.expect("endpointが返る");
+        let http = reqwest::Client::new();
+        let initialize = http
+            .post(&endpoint)
+            .bearer_auth(&token)
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .header(
+                "Mcp-Protocol-Version",
+                ProtocolVersion::V_2025_11_25.as_str(),
+            )
+            .body(initialize_body())
+            .send()
+            .await
+            .expect("legacy Initializeを送る");
+        assert_eq!(initialize.status(), StatusCode::OK);
+        let session = initialize
+            .headers()
+            .get("Mcp-Session-Id")
+            .expect("legacy session idが返る")
+            .to_str()
+            .expect("session idが文字列")
+            .to_owned();
+        let _ = initialize.bytes().await.expect("Initialize応答を読む");
+        let mut legacy_stream = http
+            .get(&endpoint)
+            .bearer_auth(&token)
+            .header("Mcp-Session-Id", session)
+            .header(
+                "Mcp-Protocol-Version",
+                ProtocolVersion::V_2025_11_25.as_str(),
+            )
+            .header(ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("legacy GET SSEを開く");
+        assert_eq!(legacy_stream.status(), StatusCode::OK);
+        let _ = time::timeout(Duration::from_secs(1), legacy_stream.chunk())
+            .await
+            .expect("legacy streamの初回イベントを待つ")
+            .expect("legacy stream本文を読む");
+
+        let transport = StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(endpoint.as_str()).auth_header(token),
+        );
+        let client = ClientConfig::new(
+            ClientCapabilities::default(),
+            Implementation::new("mcp-013-shutdown-test", "1"),
+        )
+        .serve_with_lifecycle(
+            transport,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await
+        .expect("現行Discoverを完了する");
+        let mut subscription = client
+            .peer()
+            .listen(SubscriptionFilter::default())
+            .await
+            .expect("現行listenを開く");
+        assert!(
+            time::timeout(Duration::from_millis(80), subscription.next())
+                .await
+                .is_err()
+        );
+
+        let stopped = runtime
+            .set_settings(false, port)
+            .await
+            .expect("両版のstreamを停止する");
+        assert_eq!(stopped.state, crate::dto::McpServerStateDto::Disabled);
+        let legacy_closed = time::timeout(Duration::from_secs(3), legacy_stream.chunk())
+            .await
+            .expect("legacy SSEは停止猶予内に閉じる");
+        assert!(legacy_closed.is_err() || legacy_closed.is_ok_and(|chunk| chunk.is_none()));
+        assert!(
+            time::timeout(Duration::from_secs(3), subscription.next())
+                .await
+                .is_ok(),
+            "現行listenは停止猶予内に終了通知を返す"
+        );
+        client.cancel().await.expect("現行MCP clientを閉じる");
+        runtime.shutdown().await;
     }
 
     #[tokio::test]

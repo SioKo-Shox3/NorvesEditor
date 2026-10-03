@@ -18,6 +18,8 @@ import type {
   EditHistorySummary,
   EditDiscardResult,
   EngineSettingsPayload,
+  McpSettingsPayload,
+  McpTokenPayload,
   UiParentCapture,
   UiPropertyCapture,
   WorkspacePayload,
@@ -64,6 +66,10 @@ export const BRIDGE_COMMANDS = {
   pickEnginePath: 'pick_engine_path',
   clearEnginePath: 'clear_engine_path',
   setEngineArgs: 'set_engine_args',
+  getMcpSettings: 'get_mcp_settings',
+  setMcpSettings: 'set_mcp_settings',
+  getMcpToken: 'get_mcp_token',
+  regenerateMcpToken: 'regenerate_mcp_token',
   workspaceOpen: 'workspace_open',
   workspaceGet: 'workspace_get',
   workspaceClose: 'workspace_close',
@@ -200,6 +206,29 @@ export async function clearEnginePath(): Promise<EngineSettingsPayload> {
 /** 起動引数(1 要素 = 1 引数)を保存する。バックエンドが確かめ、空行を捨てた後の設定を返す。 */
 export async function setEngineArgs(args: string[]): Promise<EngineSettingsPayload> {
   return invoke<EngineSettingsPayload>(BRIDGE_COMMANDS.setEngineArgs, { args });
+}
+
+/** MCPの有効状態、待受ポート、listener状態を取得する。秘密は返さない。 */
+export async function getMcpSettings(): Promise<McpSettingsPayload> {
+  return invoke<McpSettingsPayload>(BRIDGE_COMMANDS.getMcpSettings);
+}
+
+/** MCPの有効状態とloopbackポートを保存する。 */
+export async function setMcpSettings(
+  enabled: boolean,
+  port: number,
+): Promise<McpSettingsPayload> {
+  return invoke<McpSettingsPayload>(BRIDGE_COMMANDS.setMcpSettings, { enabled, port });
+}
+
+/** MCPトークンを明示的に表示するときだけ呼び出す。 */
+export async function getMcpToken(): Promise<McpTokenPayload> {
+  return invoke<McpTokenPayload>(BRIDGE_COMMANDS.getMcpToken);
+}
+
+/** MCPトークンを作り直し、以前の認証と接続を失効させる。 */
+export async function regenerateMcpToken(): Promise<McpSettingsPayload> {
+  return invoke<McpSettingsPayload>(BRIDGE_COMMANDS.regenerateMcpToken);
 }
 
 export async function workspaceOpen(rootPath: string): Promise<WorkspacePayload> {

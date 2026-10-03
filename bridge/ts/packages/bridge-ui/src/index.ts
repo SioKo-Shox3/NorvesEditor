@@ -73,6 +73,10 @@ export {
   pickEnginePath,
   clearEnginePath,
   setEngineArgs,
+  getMcpSettings,
+  setMcpSettings,
+  getMcpToken,
+  regenerateMcpToken,
   type BridgeCommandName,
 } from './commands.js';
 export {
@@ -91,6 +95,8 @@ export type {
   ConnectionStatePayload,
   EnginePathSource,
   EngineSettingsPayload,
+  McpSettingsPayload,
+  McpTokenPayload,
   WorkspacePayload,
   UiPropertyCapture,
   UiParentCapture,

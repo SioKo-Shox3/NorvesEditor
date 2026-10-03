@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use crate::bridge_state::{BridgeFacade, BridgeLease};
 use crate::dto::{EditAppliedDto, EditDiscardResultDto, EditHistorySummaryDto, EditSourceDto};
 use crate::error::BackendError;
+use crate::mcp::{McpAuthorization, McpRequestLease};
 use crate::protocol_names::events;
 
 mod history;
@@ -103,6 +104,7 @@ struct QueueItem {
     history_request: Option<HistoryRequest>,
     event_request: Option<HistoryRequest>,
     event_input: Option<EditEventInput>,
+    auth_lease: Option<McpRequestLease>,
     cancelled: oneshot::Receiver<()>,
     result: oneshot::Sender<Result<QueuedEditResult, BackendError>>,
 }
@@ -114,6 +116,7 @@ struct EnqueueContext {
     history_request: Option<HistoryRequest>,
     event_request: Option<HistoryRequest>,
     event_input: Option<EditEventInput>,
+    auth_lease: Option<McpRequestLease>,
 }
 
 struct Admission {
@@ -132,6 +135,7 @@ pub(crate) struct EditTicket {
 pub(crate) struct EditGroupHandle {
     token: u64,
     generation: u64,
+    auth_revision: u64,
 }
 
 #[allow(dead_code)]
@@ -153,6 +157,7 @@ pub(crate) struct EditService {
     sender: mpsc::Sender<QueueItem>,
     admission: StdMutex<Admission>,
     history: Arc<StdMutex<HistoryState>>,
+    authorization: McpAuthorization,
     shutdown_tx: watch::Sender<bool>,
     join: Mutex<Option<JoinHandle<()>>>,
 }
@@ -164,11 +169,29 @@ impl EditService {
     }
 
     pub(crate) fn new_with_app(bridge: BridgeFacade, app: AppHandle) -> Self {
-        Self::with_capacity_and_sink(bridge, QUEUE_CAPACITY, Some(tauri_event_sink(app)))
+        Self::new_with_app_and_authorization(bridge, app, McpAuthorization::default())
+    }
+
+    pub(crate) fn new_with_app_and_authorization(
+        bridge: BridgeFacade,
+        app: AppHandle,
+        authorization: McpAuthorization,
+    ) -> Self {
+        Self::with_capacity_and_sink_and_authorization(
+            bridge,
+            QUEUE_CAPACITY,
+            Some(tauri_event_sink(app)),
+            authorization,
+        )
     }
 
     fn with_capacity(bridge: BridgeFacade, capacity: usize) -> Self {
-        Self::with_capacity_and_sink(bridge, capacity, None)
+        Self::with_capacity_and_sink_and_authorization(
+            bridge,
+            capacity,
+            None,
+            McpAuthorization::default(),
+        )
     }
 
     fn with_capacity_and_sink(
@@ -176,14 +199,30 @@ impl EditService {
         capacity: usize,
         event_sink: Option<EditEventSink>,
     ) -> Self {
+        Self::with_capacity_and_sink_and_authorization(
+            bridge,
+            capacity,
+            event_sink,
+            McpAuthorization::default(),
+        )
+    }
+
+    fn with_capacity_and_sink_and_authorization(
+        bridge: BridgeFacade,
+        capacity: usize,
+        event_sink: Option<EditEventSink>,
+        authorization: McpAuthorization,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(capacity);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let auth_changes = authorization.subscribe_revision();
         let history = Arc::new(StdMutex::new(HistoryState::default()));
         let join = tauri::async_runtime::spawn(run_actor(
             bridge.clone(),
             receiver,
             bridge.subscribe(),
             shutdown_rx,
+            auth_changes,
             Arc::clone(&history),
             event_sink.clone(),
         ));
@@ -195,6 +234,7 @@ impl EditService {
                 next_sequence: 0,
             }),
             history,
+            authorization,
             shutdown_tx,
             join: Mutex::new(Some(join)),
         }
@@ -246,6 +286,33 @@ impl EditService {
         self.enqueue(EditSource::Mcp, kind, action)
     }
 
+    /// HTTP で捕捉した認証リースを維持して MCP 編集を列へ投入する。
+    pub(crate) fn enqueue_from_mcp_authorized<F, Fut>(
+        &self,
+        auth_lease: McpRequestLease,
+        kind: EditKind,
+        action: F,
+    ) -> Result<EditTicket, BackendError>
+    where
+        F: FnOnce(BridgeLease) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<Value, BackendError>> + Send + 'static,
+    {
+        self.enqueue_with_context(
+            EnqueueContext {
+                source: EditSource::Mcp,
+                kind,
+                group_token: None,
+                history_request: None,
+                event_request: None,
+                event_input: None,
+                auth_lease: Some(auth_lease),
+            },
+            Box::new(|lease| {
+                Box::pin(async move { action(lease).await.map(QueuedEditResult::plain) })
+            }),
+        )
+    }
+
     /// 記録候補をUIから列へ入れ、捕捉改訂が古ければBridge操作の前に拒否する。
     pub(crate) fn enqueue_recorded_from_ui<F, Fut>(
         &self,
@@ -274,36 +341,96 @@ impl EditService {
         self.enqueue_recorded(EditSource::Mcp, kind, request, action)
     }
 
+    /// HTTP で捕捉した認証リースを維持して旧値照会と書込みを同じ列へ投入する。
+    pub(crate) fn enqueue_recorded_from_mcp_authorized<F, Fut>(
+        &self,
+        auth_lease: McpRequestLease,
+        kind: EditKind,
+        request: HistoryRequest,
+        action: F,
+    ) -> Result<EditTicket, BackendError>
+    where
+        F: FnOnce(BridgeLease) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<QueuedEditResult, BackendError>> + Send + 'static,
+    {
+        self.enqueue_with_context(
+            EnqueueContext {
+                source: EditSource::Mcp,
+                kind,
+                group_token: None,
+                history_request: Some(request.clone()),
+                event_request: Some(request),
+                event_input: None,
+                auth_lease: Some(auth_lease),
+            },
+            Box::new(|lease| Box::pin(action(lease))),
+        )
+    }
+
     /// MCPの名前付きまとまりを列へ投入し、後続の明示的な編集に使うハンドルを返す。
     pub(crate) async fn begin_group_from_mcp(
         &self,
         name: String,
     ) -> Result<EditGroupHandle, BackendError> {
-        let (ticket, token, generation) =
-            self.enqueue_control(EditSource::Mcp, |sequence, generation| {
+        self.begin_group_from_mcp_authorized(name, self.authorization.current_lease())
+            .await
+    }
+
+    /// 認証済み MCP 要求の改訂に結び付けて名前付きまとまりを開始する。
+    pub(crate) async fn begin_group_from_mcp_authorized(
+        &self,
+        name: String,
+        auth_lease: McpRequestLease,
+    ) -> Result<EditGroupHandle, BackendError> {
+        if !auth_lease.is_current() {
+            return Err(BackendError::McpAuthorizationRevoked);
+        }
+        let (ticket, token, generation) = self.enqueue_control_with_auth(
+            EditSource::Mcp,
+            Some(auth_lease.clone()),
+            |sequence, generation| {
                 QueuedAction::Group(GroupControl::Begin {
                     token: sequence,
                     generation,
                     name,
                 })
-            })?;
+            },
+        )?;
         ticket.result().await?;
-        Ok(EditGroupHandle { token, generation })
+        Ok(EditGroupHandle {
+            token,
+            generation,
+            auth_revision: auth_lease.revision(),
+        })
     }
 
     pub(crate) async fn end_group_from_mcp(
         &self,
         group: EditGroupHandle,
     ) -> Result<Value, BackendError> {
+        self.end_group_from_mcp_authorized(group, self.authorization.current_lease())
+            .await
+    }
+
+    /// 認証改訂が開始時と一致する場合だけ、名前付きまとまりを閉じる。
+    pub(crate) async fn end_group_from_mcp_authorized(
+        &self,
+        group: EditGroupHandle,
+        auth_lease: McpRequestLease,
+    ) -> Result<Value, BackendError> {
+        if !auth_lease.is_current() || group.auth_revision != auth_lease.revision() {
+            return Err(BackendError::McpAuthorizationRevoked);
+        }
         if self.bridge.current_generation() != Some(group.generation) {
             return Err(BackendError::NotConnected);
         }
-        let (ticket, _, _) = self.enqueue_control(EditSource::Mcp, |_, _| {
-            QueuedAction::Group(GroupControl::End {
-                token: group.token,
-                generation: group.generation,
-            })
-        })?;
+        let (ticket, _, _) =
+            self.enqueue_control_with_auth(EditSource::Mcp, Some(auth_lease), |_, _| {
+                QueuedAction::Group(GroupControl::End {
+                    token: group.token,
+                    generation: group.generation,
+                })
+            })?;
         ticket.result().await
     }
 
@@ -318,6 +445,31 @@ impl EditService {
         F: FnOnce(BridgeLease) -> Fut + Send + 'static,
         Fut: Future<Output = Result<QueuedEditResult, BackendError>> + Send + 'static,
     {
+        self.enqueue_recorded_in_group_from_mcp_authorized(
+            group,
+            self.authorization.current_lease(),
+            kind,
+            request,
+            action,
+        )
+    }
+
+    /// 要求リースと開始時の認証改訂が一致するまとまり編集だけを列へ入れる。
+    pub(crate) fn enqueue_recorded_in_group_from_mcp_authorized<F, Fut>(
+        &self,
+        group: EditGroupHandle,
+        auth_lease: McpRequestLease,
+        kind: EditKind,
+        request: HistoryRequest,
+        action: F,
+    ) -> Result<EditTicket, BackendError>
+    where
+        F: FnOnce(BridgeLease) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<QueuedEditResult, BackendError>> + Send + 'static,
+    {
+        if !auth_lease.is_current() || group.auth_revision != auth_lease.revision() {
+            return Err(BackendError::McpAuthorizationRevoked);
+        }
         let generation = self.bridge.current_generation().unwrap_or_default();
         if generation != group.generation {
             return Err(BackendError::NotConnected);
@@ -330,6 +482,7 @@ impl EditService {
                 history_request: Some(request.clone()),
                 event_request: Some(request),
                 event_input: None,
+                auth_lease: Some(auth_lease),
             },
             Box::new(|lease| Box::pin(action(lease))),
         )
@@ -372,6 +525,22 @@ impl EditService {
         Fut: Future<Output = Result<Value, BackendError>> + Send + 'static,
     {
         self.enqueue_from_mcp(kind, action)?.result().await
+    }
+
+    /// 認証済み MCP 要求を、actor の実行直前に同じ改訂であることを確かめて実行する。
+    pub(crate) async fn submit_from_mcp_authorized<F, Fut>(
+        &self,
+        auth_lease: McpRequestLease,
+        kind: EditKind,
+        action: F,
+    ) -> Result<Value, BackendError>
+    where
+        F: FnOnce(BridgeLease) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<Value, BackendError>> + Send + 'static,
+    {
+        self.enqueue_from_mcp_authorized(auth_lease, kind, action)?
+            .result()
+            .await
     }
 
     pub(crate) fn enqueue_undo_from_ui(
@@ -453,6 +622,7 @@ impl EditService {
             history_request: None,
             event_request: None,
             event_input: None,
+            auth_lease: (source == EditSource::Mcp).then(|| self.authorization.current_lease()),
             cancelled,
             result,
         };
@@ -558,6 +728,7 @@ impl EditService {
                 history_request,
                 event_request,
                 event_input,
+                auth_lease: None,
             },
             action,
         )
@@ -575,7 +746,11 @@ impl EditService {
             history_request,
             event_request,
             event_input,
+            mut auth_lease,
         } = context;
+        if source == EditSource::Mcp && auth_lease.is_none() {
+            auth_lease = Some(self.authorization.current_lease());
+        }
         let mut admission = self
             .admission
             .lock()
@@ -596,6 +771,7 @@ impl EditService {
             history_request,
             event_request,
             event_input,
+            auth_lease,
             cancelled,
             result,
         };
@@ -615,6 +791,19 @@ impl EditService {
     fn enqueue_control<F>(
         &self,
         source: EditSource,
+        build: F,
+    ) -> Result<(EditTicket, u64, u64), BackendError>
+    where
+        F: FnOnce(u64, u64) -> QueuedAction,
+    {
+        let auth_lease = (source == EditSource::Mcp).then(|| self.authorization.current_lease());
+        self.enqueue_control_with_auth(source, auth_lease, build)
+    }
+
+    fn enqueue_control_with_auth<F>(
+        &self,
+        source: EditSource,
+        auth_lease: Option<McpRequestLease>,
         build: F,
     ) -> Result<(EditTicket, u64, u64), BackendError>
     where
@@ -642,6 +831,7 @@ impl EditService {
             history_request: None,
             event_request: None,
             event_input: None,
+            auth_lease,
             cancelled,
             result,
         };
@@ -741,6 +931,13 @@ fn completed_noop_ticket() -> EditTicket {
     let _ = result_tx.send(Ok(QueuedEditResult::plain(Value::Null)));
     drop(cancelled);
     EditTicket { result, cancel }
+}
+
+async fn wait_for_auth_revocation(lease: Option<McpRequestLease>) {
+    match lease {
+        Some(lease) => lease.cancelled().await,
+        None => std::future::pending().await,
+    }
 }
 
 async fn run_history_action(
@@ -896,6 +1093,7 @@ async fn run_actor(
     mut receiver: mpsc::Receiver<QueueItem>,
     mut sessions: watch::Receiver<Option<BridgeLease>>,
     mut shutdown: watch::Receiver<bool>,
+    mut auth_changes: watch::Receiver<u64>,
     history: Arc<StdMutex<HistoryState>>,
     event_sink: Option<EditEventSink>,
 ) {
@@ -932,12 +1130,31 @@ async fn run_actor(
                     );
                 }
             }
+            changed = auth_changes.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let mut state = history
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let before = state.summary();
+                state.revoke_mcp_group();
+                let after = state.summary();
+                drop(state);
+                if before != after {
+                    emit_service_event(
+                        event_sink.as_ref(),
+                        EditServiceEvent::HistoryChanged(after),
+                    );
+                }
+            }
             item = receiver.recv() => {
                 let Some(item) = item else { break; };
                 if process_item(
                     &bridge,
                     &mut sessions,
                     &mut shutdown,
+                    &mut auth_changes,
                     &history,
                     event_sink.as_ref(),
                     item,
@@ -958,10 +1175,19 @@ async fn process_item(
     bridge: &BridgeFacade,
     sessions: &mut watch::Receiver<Option<BridgeLease>>,
     shutdown: &mut watch::Receiver<bool>,
+    auth_changes: &mut watch::Receiver<u64>,
     history: &Arc<StdMutex<HistoryState>>,
     event_sink: Option<&EditEventSink>,
     mut item: QueueItem,
 ) -> bool {
+    if item
+        .auth_lease
+        .as_ref()
+        .is_some_and(|lease| !lease.is_current())
+    {
+        let _ = item.result.send(Err(BackendError::McpAuthorizationRevoked));
+        return false;
+    }
     if matches!(
         item.cancelled.try_recv(),
         Err(oneshot::error::TryRecvError::Closed)
@@ -1072,6 +1298,14 @@ async fn process_item(
         .as_ref()
         .is_some_and(|action| action.grouped || retry_action);
     let group_events = Arc::new(StdMutex::new(Vec::new()));
+    if item
+        .auth_lease
+        .as_ref()
+        .is_some_and(|lease| !lease.is_current())
+    {
+        let _ = item.result.send(Err(BackendError::McpAuthorizationRevoked));
+        return false;
+    }
     let action: EditFuture = match item.action {
         QueuedAction::Edit(action) => action(item.lease.clone()),
         QueuedAction::History(_) | QueuedAction::Retry => {
@@ -1126,6 +1360,34 @@ async fn process_item(
                     || current != Some(item.lease.generation)
                 {
                     break (Err(BackendError::NotConnected), false);
+                }
+            }
+            _ = wait_for_auth_revocation(item.auth_lease.clone()) => {
+                break (Err(BackendError::McpAuthorizationRevoked), false);
+            }
+            changed = auth_changes.changed() => {
+                if changed.is_err() {
+                    break (Err(BackendError::McpAuthorizationRevoked), false);
+                }
+                let mut state = history
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let before = state.summary();
+                state.revoke_mcp_group();
+                let after = state.summary();
+                drop(state);
+                if before != after {
+                    emit_service_event(
+                        event_sink,
+                        EditServiceEvent::HistoryChanged(after),
+                    );
+                }
+                if item
+                    .auth_lease
+                    .as_ref()
+                    .is_some_and(|lease| !lease.is_current())
+                {
+                    break (Err(BackendError::McpAuthorizationRevoked), false);
                 }
             }
             result = &mut action => {
@@ -1271,6 +1533,14 @@ fn process_control_item(
     event_sink: Option<&EditEventSink>,
     item: QueueItem,
 ) -> bool {
+    if item
+        .auth_lease
+        .as_ref()
+        .is_some_and(|lease| !lease.is_current())
+    {
+        let _ = item.result.send(Err(BackendError::McpAuthorizationRevoked));
+        return false;
+    }
     let before = history
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1282,6 +1552,13 @@ fn process_control_item(
         state.synchronize(generation);
         if generation != Some(item.lease.generation) {
             return Err(BackendError::NotConnected);
+        }
+        if item
+            .auth_lease
+            .as_ref()
+            .is_some_and(|lease| !lease.is_current())
+        {
+            return Err(BackendError::McpAuthorizationRevoked);
         }
         if state.is_pending() && !matches!(item.action, QueuedAction::Discard) {
             return Err(BackendError::Request {
@@ -1773,6 +2050,31 @@ mod tests {
         let (bridge, control) = test_edit_facade(1, handle.clone());
         (
             EditService::with_capacity(bridge, capacity),
+            control,
+            handle,
+            peer,
+        )
+    }
+
+    fn test_service_with_peer_and_authorization(
+        capacity: usize,
+        authorization: McpAuthorization,
+    ) -> (
+        EditService,
+        BridgeSessionTestControl,
+        DispatchHandle,
+        LoopbackTransport,
+    ) {
+        let (transport, peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let (bridge, control) = test_edit_facade(1, handle.clone());
+        (
+            EditService::with_capacity_and_sink_and_authorization(
+                bridge,
+                capacity,
+                None,
+                authorization,
+            ),
             control,
             handle,
             peer,
@@ -2997,6 +3299,126 @@ mod tests {
         service.shutdown().await;
         handle.shutdown().await;
         new_handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn actor_rejects_an_authenticated_request_queued_before_revocation() {
+        let authorization = McpAuthorization::default();
+        let (service, _control, handle, _peer) =
+            test_service_with_peer_and_authorization(4, authorization.clone());
+        let (started, started_rx) = oneshot::channel();
+        let (release, release_rx) = oneshot::channel();
+        let blocker = service
+            .enqueue_from_ui(EditKind::Edit, move |_| async move {
+                let _ = started.send(());
+                let _ = release_rx.await;
+                success(Value::Null)
+            })
+            .expect("先行要求を列へ入れる");
+        started_rx.await.expect("先行要求がactorへ入る");
+
+        let auth_lease = authorization.current_lease();
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_action = Arc::clone(&ran);
+        let queued = service
+            .enqueue_from_mcp_authorized(auth_lease.clone(), EditKind::Edit, move |_| async move {
+                ran_action.store(true, std::sync::atomic::Ordering::Release);
+                success(Value::Null)
+            })
+            .expect("MCP要求を認証改訂付きで列へ入れる");
+
+        authorization.revoke();
+        release.send(()).expect("先行要求を解放する");
+        blocker.result().await.expect("先行要求が完了する");
+        assert!(matches!(
+            queued.result().await,
+            Err(BackendError::McpAuthorizationRevoked)
+        ));
+        assert!(!ran.load(std::sync::atomic::Ordering::Acquire));
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn actor_cancels_an_in_flight_mcp_request_when_its_lease_is_revoked() {
+        let authorization = McpAuthorization::default();
+        let (service, _control, handle, _peer) =
+            test_service_with_peer_and_authorization(4, authorization.clone());
+        let (started, started_rx) = oneshot::channel();
+        let (dropped, dropped_rx) = oneshot::channel();
+        struct DropNotice(Option<oneshot::Sender<()>>);
+        impl Drop for DropNotice {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let auth_lease = authorization.current_lease();
+        let ticket = service
+            .enqueue_from_mcp_authorized(auth_lease, EditKind::Edit, move |_| async move {
+                let _notice = DropNotice(Some(dropped));
+                let _ = started.send(());
+                std::future::pending::<Result<Value, BackendError>>().await
+            })
+            .expect("認証済みMCP要求を列へ入れる");
+        started_rx.await.expect("MCP要求が実行を始める");
+
+        authorization.revoke();
+        assert!(matches!(
+            ticket.result().await,
+            Err(BackendError::McpAuthorizationRevoked)
+        ));
+        tokio::time::timeout(Duration::from_secs(1), dropped_rx)
+            .await
+            .expect("失効要求のfutureを破棄する")
+            .expect("要求の取消を確認する");
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn revoking_authorization_closes_an_open_mcp_group_and_rejects_its_id() {
+        let authorization = McpAuthorization::default();
+        let (service, _control, handle, _peer) =
+            test_service_with_peer_and_authorization(4, authorization.clone());
+        let auth_lease = authorization.current_lease();
+        let group = service
+            .begin_group_from_mcp_authorized("失効するまとまり".to_owned(), auth_lease.clone())
+            .await
+            .expect("MCPまとまりを開く");
+        assert!(service
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .has_active_group());
+
+        authorization.revoke();
+        let current_lease = authorization.current_lease();
+        assert!(matches!(
+            service
+                .end_group_from_mcp_authorized(group, current_lease)
+                .await,
+            Err(BackendError::McpAuthorizationRevoked)
+        ));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let active = service
+                    .history
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .has_active_group();
+                if !active {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("失効通知が開いたまとまりを閉じる");
+        assert!(!auth_lease.is_current());
+        service.shutdown().await;
+        handle.shutdown().await;
     }
 
     #[tokio::test]

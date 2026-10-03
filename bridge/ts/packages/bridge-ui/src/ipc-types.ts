@@ -36,6 +36,20 @@ export interface EngineSettingsPayload {
   savedArgs: string[];
 }
 
+/** MCPの状態取得と設定変更が返す公開状態。トークンは含まれない。 */
+export interface McpSettingsPayload {
+  enabled: boolean;
+  port: number;
+  state: 'disabled' | 'running' | 'bindFailed' | 'storageFailed';
+  endpoint?: string;
+  error?: string;
+}
+
+/** 明示的な秘密表示要求だけが返すトークン。 */
+export interface McpTokenPayload {
+  token: string;
+}
+
 /**
  * Payload returned by workspace_open / workspace_get.
  *

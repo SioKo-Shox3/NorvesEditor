@@ -47,6 +47,10 @@ pub mod commands {
     pub const PICK_ENGINE_PATH: &str = "pick_engine_path";
     pub const CLEAR_ENGINE_PATH: &str = "clear_engine_path";
     pub const SET_ENGINE_ARGS: &str = "set_engine_args";
+    pub const GET_MCP_SETTINGS: &str = "get_mcp_settings";
+    pub const SET_MCP_SETTINGS: &str = "set_mcp_settings";
+    pub const GET_MCP_TOKEN: &str = "get_mcp_token";
+    pub const REGENERATE_MCP_TOKEN: &str = "regenerate_mcp_token";
     pub const WORKSPACE_OPEN: &str = "workspace_open";
     pub const WORKSPACE_GET: &str = "workspace_get";
     pub const WORKSPACE_CLOSE: &str = "workspace_close";
@@ -186,6 +190,14 @@ mod tests {
     #[test]
     fn command_stop_engine() {
         assert_eq!(commands::STOP_ENGINE, "stop_engine");
+    }
+
+    #[test]
+    fn command_mcp_settings_and_token() {
+        assert_eq!(commands::GET_MCP_SETTINGS, "get_mcp_settings");
+        assert_eq!(commands::SET_MCP_SETTINGS, "set_mcp_settings");
+        assert_eq!(commands::GET_MCP_TOKEN, "get_mcp_token");
+        assert_eq!(commands::REGENERATE_MCP_TOKEN, "regenerate_mcp_token");
     }
 
     #[test]

@@ -57,6 +57,8 @@ pub enum BackendError {
     /// MCP トークンの保護・保存・読み出しに失敗した。
     #[allow(dead_code)]
     McpTokenStorage,
+    /// MCP要求の認証改訂が失効した。
+    McpAuthorizationRevoked,
 }
 
 impl std::fmt::Display for BackendError {
@@ -83,15 +85,14 @@ impl std::fmt::Display for BackendError {
             BackendError::McpTokenStorage => {
                 write!(f, "MCP トークンを安全に保護または保存できませんでした")
             }
+            BackendError::McpAuthorizationRevoked => {
+                write!(f, "MCP 要求の認証が更新または停止されました")
+            }
         }
     }
 }
 
 impl std::error::Error for BackendError {}
-
-#[cfg(test)]
-#[path = "mcp_settings.rs"]
-mod mcp_settings_tests;
 
 impl From<ConnectError> for BackendError {
     fn from(err: ConnectError) -> Self {

@@ -54,6 +54,36 @@ pub struct EngineSettingsPayload {
     pub saved_args: Vec<String>,
 }
 
+/// `get_mcp_settings` と設定変更コマンドが返す、秘密を含まない MCP 状態。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSettingsPayload {
+    pub enabled: bool,
+    pub port: u16,
+    pub state: McpServerStateDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// loopback MCP サーバーの公開状態。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum McpServerStateDto {
+    Disabled,
+    Running,
+    BindFailed,
+    StorageFailed,
+}
+
+/// 明示的な秘密表示コマンドだけが返す MCP トークン。
+#[derive(Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTokenPayload {
+    pub token: String,
+}
+
 /// Payload returned by workspace management commands.
 // Phase A: mirror this shape in bridge-ui/src/ipc-types.ts.
 #[derive(Debug, Clone, Serialize, PartialEq)]
