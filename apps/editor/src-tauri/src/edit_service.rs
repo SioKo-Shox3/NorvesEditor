@@ -13,16 +13,19 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use crate::bridge_state::{BridgeFacade, BridgeLease};
 use crate::dto::{EditAppliedDto, EditDiscardResultDto, EditHistorySummaryDto, EditSourceDto};
 use crate::error::BackendError;
-use crate::mcp::{McpAuthorization, McpRequestLease};
+use crate::mcp::{
+    authorization::{McpHistoryAction, McpHistoryDirection},
+    McpAuthorization, McpRequestLease,
+};
 use crate::protocol_names::events;
 
 mod history;
 
 use history::{
-    HistoryAction, HistoryActionRequest, HistoryDirection, HistoryMarker, HistoryOperationContext,
-    HistoryState,
+    HistoryAction, HistoryActionRequest, HistoryMarker, HistoryOperationContext, HistoryState,
 };
 pub(crate) use history::{HistoryCapture, HistoryRequest, PriorCapture, QueuedEditResult};
+pub(crate) use history::{HistoryDirection, HistoryRecord};
 
 const QUEUE_CAPACITY: usize = 64;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
@@ -225,6 +228,7 @@ impl EditService {
             auth_changes,
             Arc::clone(&history),
             event_sink.clone(),
+            authorization.clone(),
         ));
         Self {
             bridge,
@@ -885,6 +889,36 @@ impl EditService {
         })
     }
 
+    /// MCPに見える先頭まとまり全体を、対象ID・履歴改訂と一緒に複製する。
+    pub(crate) fn history_action_for_mcp(
+        &self,
+        direction: McpHistoryDirection,
+    ) -> Option<McpHistoryAction> {
+        self.bridge.with_current_generation(|generation| {
+            let mut history = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            history.synchronize(generation);
+            let direction: HistoryDirection = direction.into();
+            let (head_id, revision) = history.history_cursor(direction);
+            let action = history.prepare_action(HistoryActionRequest {
+                direction,
+                expected_head_id: head_id,
+                expected_revision: revision,
+            })?;
+            Some(McpHistoryAction {
+                direction: match direction {
+                    HistoryDirection::Undo => McpHistoryDirection::Undo,
+                    HistoryDirection::Redo => McpHistoryDirection::Redo,
+                },
+                head_id: action.entry_id,
+                revision,
+                records: action.steps.into_iter().map(|step| step.record).collect(),
+            })
+        })
+    }
+
     /// 画面スナップショットに付ける、現在接続の適用改訂を返す。
     #[allow(dead_code)]
     pub(crate) fn applied_history_revision(&self) -> (Option<u64>, u64) {
@@ -1088,6 +1122,7 @@ fn validate_history_result(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_actor(
     bridge: BridgeFacade,
     mut receiver: mpsc::Receiver<QueueItem>,
@@ -1096,8 +1131,10 @@ async fn run_actor(
     mut auth_changes: watch::Receiver<u64>,
     history: Arc<StdMutex<HistoryState>>,
     event_sink: Option<EditEventSink>,
+    authorization: McpAuthorization,
 ) {
-    let generation = bridge.current_generation();
+    let mut observed_generation = bridge.current_generation();
+    let generation = observed_generation;
     history
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1116,6 +1153,10 @@ async fn run_actor(
                     break;
                 }
                 let generation = bridge.current_generation();
+                if generation != observed_generation {
+                    observed_generation = generation;
+                    authorization.revoke();
+                }
                 let mut state = history
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2980,6 +3021,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_history_snapshot_contains_every_entry_in_the_ui_head_group() {
+        let (service, _control, _handle) = test_service(4);
+        {
+            let mut history = service
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            history.synchronize(Some(1));
+            history.seed_undo_group_for_test(
+                500,
+                vec![
+                    HistoryRecord::SetProperty {
+                        object_id: "inside-scope".to_owned(),
+                        property: "visible".to_owned(),
+                        old_value: Value::Bool(false),
+                        new_value: Value::Bool(true),
+                    },
+                    HistoryRecord::SetProperty {
+                        object_id: "outside-scope".to_owned(),
+                        property: "visible".to_owned(),
+                        old_value: Value::Bool(false),
+                        new_value: Value::Bool(true),
+                    },
+                ],
+            );
+        }
+
+        let action = service
+            .history_action_for_mcp(McpHistoryDirection::Undo)
+            .expect("人の先頭まとまりを捕捉する");
+        assert_eq!(action.head_id, 501);
+        assert_eq!(action.records.len(), 2);
+        assert!(action.records.iter().any(|record| matches!(
+            record,
+            HistoryRecord::SetProperty { object_id, .. } if object_id == "inside-scope"
+        )));
+        assert!(action.records.iter().any(|record| matches!(
+            record,
+            HistoryRecord::SetProperty { object_id, .. } if object_id == "outside-scope"
+        )));
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn pending_partial_failure_rejects_edits_undo_redo_and_runtime_controls() {
         let (service, _control, _handle) = test_service(8);
         {
@@ -3335,6 +3420,44 @@ mod tests {
             Err(BackendError::McpAuthorizationRevoked)
         ));
         assert!(!ran.load(std::sync::atomic::Ordering::Acquire));
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn bridge_reconnect_revokes_a_previous_generation_write_permit() {
+        let authorization = McpAuthorization::default();
+        authorization
+            .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                mode: crate::mcp::McpWriteMode::Enabled,
+                scene_root_id: None,
+            })
+            .expect("書き込み可にする");
+        let (service, control, handle, _peer) =
+            test_service_with_peer_and_authorization(4, authorization.clone());
+        let lease = authorization.current_lease();
+        let policy = authorization.write_policy_snapshot();
+        let operation = crate::mcp::authorization::McpWriteOperation::Property {
+            object_id: "node".to_owned(),
+        };
+        let permit = authorization
+            .issue_write_permit(&lease, &policy, 1, operation.clone())
+            .expect("旧接続のpermitを作る");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        control.set_generation(2, handle.clone());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while lease.is_current() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("再接続で旧要求を失効させる");
+        assert_eq!(
+            authorization.validate_write_permit(&permit, &lease, 1, &operation),
+            Err(crate::mcp::authorization::ScopeError::AuthorizationRevoked)
+        );
+
         service.shutdown().await;
         handle.shutdown().await;
     }

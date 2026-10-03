@@ -9,10 +9,12 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     dto::{McpServerStateDto, McpSettingsPayload, McpTokenPayload},
     error::BackendError,
-    mcp::{reads::McpReadContext, McpAuthorization, McpHttpAuth, McpHttpServer},
+    mcp::{reads::McpReadContext, McpAuthorization, McpHttpAuth, McpHttpServer, McpWriteMode},
     mcp_settings::{McpSettings, McpSettingsError},
     mcp_token::{McpToken, McpTokenStore},
 };
+
+use super::authorization::{McpWriteSettings, ScopeError};
 
 #[cfg(test)]
 use std::net::Ipv4Addr;
@@ -61,6 +63,7 @@ impl McpRuntime {
         authorization: McpAuthorization,
         reads: Option<McpReadContext>,
     ) -> Self {
+        let _ = authorization.set_write_settings(McpWriteSettings::default());
         let loaded = McpSettings::load(&config_dir);
         let (settings, state, error, initialized) = match loaded {
             Ok(settings) => (settings, McpServerStateDto::Disabled, None, false),
@@ -143,6 +146,28 @@ impl McpRuntime {
         } else {
             control.state = McpServerStateDto::Disabled;
         }
+        Ok(self.payload(&control))
+    }
+
+    /// 書き込みモードとシーン部分木を設定し、旧要求の許可を失効させる。
+    pub async fn set_write_access(
+        &self,
+        mode: McpWriteMode,
+        scene_root_id: Option<String>,
+    ) -> Result<McpSettingsPayload, BackendError> {
+        let control = self.inner.control.lock().await;
+        if control.closing {
+            return Err(runtime_stopping_error());
+        }
+        self.inner
+            .authorization
+            .set_write_settings(McpWriteSettings {
+                mode,
+                scene_root_id,
+            })
+            .map_err(|error: ScopeError| BackendError::Request {
+                message: error.message().to_owned(),
+            })?;
         Ok(self.payload(&control))
     }
 
@@ -241,7 +266,9 @@ impl McpRuntime {
                 McpHttpServer::bind_with_reads(
                     control.settings.port,
                     Arc::clone(&auth),
-                    reads.clone(),
+                    reads
+                        .clone()
+                        .with_authorization(self.inner.authorization.clone()),
                 )
                 .await
             }
@@ -313,9 +340,12 @@ impl McpRuntime {
     }
 
     fn payload(&self, control: &McpControl) -> McpSettingsPayload {
+        let write_settings = self.inner.authorization.write_policy_snapshot().settings;
         McpSettingsPayload {
             enabled: control.settings.enabled,
             port: control.settings.port,
+            write_mode: write_settings.mode,
+            scene_root_id: write_settings.scene_root_id,
             state: control.state,
             endpoint: if control.state == McpServerStateDto::Running {
                 control.settings.endpoint().ok().map(|url| url.to_string())
@@ -385,6 +415,17 @@ pub async fn set_mcp_settings(
 }
 
 #[tauri::command]
+pub async fn set_mcp_write_access(
+    window: WebviewWindow,
+    runtime: State<'_, McpRuntime>,
+    mode: McpWriteMode,
+    scene_root_id: Option<String>,
+) -> Result<McpSettingsPayload, BackendError> {
+    require_trusted_window(&window)?;
+    runtime.set_write_access(mode, scene_root_id).await
+}
+
+#[tauri::command]
 pub async fn get_mcp_token(
     window: WebviewWindow,
     runtime: State<'_, McpRuntime>,
@@ -439,9 +480,53 @@ mod tests {
         let payload = runtime.settings().await;
         assert!(!payload.enabled);
         assert_eq!(payload.port, 49_770);
+        assert_eq!(payload.write_mode, McpWriteMode::ReadOnly);
+        assert_eq!(payload.scene_root_id, None);
         assert_eq!(payload.state, McpServerStateDto::Disabled);
         assert!(payload.endpoint.is_none());
         assert!(runtime.inner.control.lock().await.server.is_none());
+    }
+
+    #[tokio::test]
+    async fn write_access_changes_revoke_old_requests_and_restart_read_only() {
+        let directory = TestDirectory::new();
+        let authorization = McpAuthorization::default();
+        authorization
+            .set_write_settings(McpWriteSettings {
+                mode: McpWriteMode::Enabled,
+                scene_root_id: Some("stale-scope".to_owned()),
+            })
+            .expect("事前の許可を作る");
+        let old_lease = authorization.current_lease();
+        let runtime = McpRuntime::new(directory.0.clone(), authorization.clone());
+        let initial = runtime.settings().await;
+        assert_eq!(initial.write_mode, McpWriteMode::ReadOnly);
+        assert_eq!(initial.scene_root_id, None);
+        assert!(!old_lease.is_current());
+
+        let enabled_lease = authorization.current_lease();
+        let enabled = runtime
+            .set_write_access(McpWriteMode::Enabled, Some("allowed-root".to_owned()))
+            .await
+            .expect("書き込み可の範囲を設定する");
+        assert_eq!(enabled.write_mode, McpWriteMode::Enabled);
+        assert_eq!(enabled.scene_root_id.as_deref(), Some("allowed-root"));
+        assert!(!enabled_lease.is_current());
+
+        let confirm_lease = authorization.current_lease();
+        let confirmed = runtime
+            .set_write_access(McpWriteMode::Confirm, None)
+            .await
+            .expect("都度確認へ変更する");
+        assert_eq!(confirmed.write_mode, McpWriteMode::Confirm);
+        assert!(confirmed.scene_root_id.is_none());
+        assert!(!confirm_lease.is_current());
+
+        let invalid = runtime
+            .set_write_access(McpWriteMode::Enabled, Some(String::new()))
+            .await;
+        assert!(matches!(invalid, Err(BackendError::Request { .. })));
+        runtime.shutdown().await;
     }
 
     #[tokio::test]

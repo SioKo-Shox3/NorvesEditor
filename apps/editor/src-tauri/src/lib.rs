@@ -98,6 +98,7 @@ pub fn run() {
             engine_settings::set_engine_args,
             mcp::runtime::get_mcp_settings,
             mcp::runtime::set_mcp_settings,
+            mcp::runtime::set_mcp_write_access,
             mcp::runtime::get_mcp_token,
             mcp::runtime::regenerate_mcp_token,
             workspace::workspace_open,

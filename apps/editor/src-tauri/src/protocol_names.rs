@@ -49,6 +49,7 @@ pub mod commands {
     pub const SET_ENGINE_ARGS: &str = "set_engine_args";
     pub const GET_MCP_SETTINGS: &str = "get_mcp_settings";
     pub const SET_MCP_SETTINGS: &str = "set_mcp_settings";
+    pub const SET_MCP_WRITE_ACCESS: &str = "set_mcp_write_access";
     pub const GET_MCP_TOKEN: &str = "get_mcp_token";
     pub const REGENERATE_MCP_TOKEN: &str = "regenerate_mcp_token";
     pub const WORKSPACE_OPEN: &str = "workspace_open";
@@ -196,6 +197,7 @@ mod tests {
     fn command_mcp_settings_and_token() {
         assert_eq!(commands::GET_MCP_SETTINGS, "get_mcp_settings");
         assert_eq!(commands::SET_MCP_SETTINGS, "set_mcp_settings");
+        assert_eq!(commands::SET_MCP_WRITE_ACCESS, "set_mcp_write_access");
         assert_eq!(commands::GET_MCP_TOKEN, "get_mcp_token");
         assert_eq!(commands::REGENERATE_MCP_TOKEN, "regenerate_mcp_token");
     }

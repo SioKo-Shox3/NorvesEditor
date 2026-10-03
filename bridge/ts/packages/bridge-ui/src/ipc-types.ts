@@ -40,10 +40,14 @@ export interface EngineSettingsPayload {
 export interface McpSettingsPayload {
   enabled: boolean;
   port: number;
+  writeMode?: McpWriteMode;
+  sceneRootId?: string;
   state: 'disabled' | 'running' | 'bindFailed' | 'storageFailed';
   endpoint?: string;
   error?: string;
 }
+
+export type McpWriteMode = 'readOnly' | 'enabled' | 'confirm';
 
 /** 明示的な秘密表示要求だけが返すトークン。 */
 export interface McpTokenPayload {

@@ -1411,6 +1411,40 @@ impl HistoryState {
     }
 
     #[cfg(test)]
+    pub(super) fn seed_undo_group_for_test(
+        &mut self,
+        first_sequence: u64,
+        records: Vec<HistoryRecord>,
+    ) {
+        let Some(first) = records.first() else {
+            return;
+        };
+        self.generation.get_or_insert(1);
+        let generation = self.generation.unwrap_or_default();
+        let mut group = test_group_metadata(generation, first_sequence, first);
+        group.count = records.len();
+        group.named = true;
+        let key = group.key.clone();
+        for (offset, record) in records.into_iter().enumerate() {
+            let sequence = first_sequence.wrapping_add(offset as u64);
+            self.undo.push(HistoryEntry {
+                marker: HistoryMarker {
+                    sequence,
+                    source: EditSource::Ui,
+                    kind: EditKind::Edit,
+                    generation,
+                },
+                record,
+                group: GroupMetadata {
+                    key: key.clone(),
+                    ..group.clone()
+                },
+            });
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    #[cfg(test)]
     pub(super) fn seed_redo_record(&mut self, sequence: u64, record: HistoryRecord) {
         self.generation.get_or_insert(1);
         let generation = self.generation.unwrap_or_default();

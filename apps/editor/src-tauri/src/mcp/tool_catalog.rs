@@ -58,6 +58,7 @@ struct ToolSpec {
     access: ToolAccess,
     capabilities: &'static [&'static str],
     input: SchemaSource,
+    bridge_method: Option<&'static str>,
     bridge_write: bool,
     destructive: bool,
 }
@@ -209,7 +210,7 @@ fn tool_specs() -> &'static [ToolSpec] {
         "共通編集列を通してオブジェクトのプロパティを設定します。",
         "object.setProperty",
         ToolAccess::Write,
-        &["object.edit", "object.query"],
+        &["object.edit", "object.query", "scene.query"],
         false,
     ),
     bridge_tool(
@@ -218,7 +219,7 @@ fn tool_specs() -> &'static [ToolSpec] {
         "共通編集列を通してシーンにオブジェクトを作成します。",
         "scene.createObject",
         ToolAccess::Write,
-        &["scene.edit"],
+        &["scene.edit", "scene.query"],
         false,
     ),
     bridge_tool(
@@ -254,7 +255,7 @@ fn tool_specs() -> &'static [ToolSpec] {
         "共通編集列を通して型schemaにあるcomponentを追加します。",
         "component.add",
         ToolAccess::Write,
-        &["component.edit", "object.query"],
+        &["component.edit", "object.query", "scene.query"],
         false,
     ),
     bridge_tool(
@@ -263,7 +264,7 @@ fn tool_specs() -> &'static [ToolSpec] {
         "共通編集列を通してcomponentを外します。",
         "component.remove",
         ToolAccess::Write,
-        &["component.edit", "object.query"],
+        &["component.edit", "object.query", "scene.query"],
         true,
     ),
     bridge_tool(
@@ -378,6 +379,15 @@ impl McpToolCatalog {
         self.snapshot().generation
     }
 
+    /// 現行接続が範囲検査と操作に必要な能力をすべて広告しているか確認する。
+    pub(crate) fn has_capabilities(&self, generation: u64, required: &[&str]) -> bool {
+        let state = self.snapshot();
+        state.generation == Some(generation)
+            && required
+                .iter()
+                .all(|capability| state.capabilities.contains(*capability))
+    }
+
     pub(crate) fn list(&self) -> Vec<Tool> {
         let state = self.snapshot();
         if state.generation.is_none() {
@@ -434,6 +444,39 @@ impl McpToolCatalog {
         }
     }
 
+    /// 一覧に出さないBridge書き込み道具の直接呼び出しも、同じschemaで検証する。
+    pub(crate) fn validate_hidden_write_attempt(
+        &self,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<ValidatedToolInput, ToolInputError> {
+        let spec = tool_specs()
+            .iter()
+            .find(|spec| spec.name == name && spec.bridge_write)
+            .ok_or(ToolInputError::Unavailable)?;
+        let schema = input_schema(spec).map_err(|_| ToolInputError::Schema)?;
+        if !schema_is_valid(&schema, arguments, &schema) {
+            return Err(ToolInputError::Invalid);
+        }
+        let object = arguments.as_object().ok_or(ToolInputError::Invalid)?;
+        let params = object
+            .get("params")
+            .cloned()
+            .ok_or(ToolInputError::Invalid)?;
+        let group_id = object
+            .get("groupId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        Ok(ValidatedToolInput::BridgeWrite { params, group_id })
+    }
+
+    pub(crate) fn hidden_write_method(&self, name: &str) -> Option<&'static str> {
+        tool_specs()
+            .iter()
+            .find(|spec| spec.name == name && spec.bridge_write)
+            .and_then(|spec| spec.bridge_method)
+    }
+
     fn snapshot(&self) -> CatalogState {
         self.lock_state().clone()
     }
@@ -486,6 +529,7 @@ fn bridge_tool(
         access,
         capabilities,
         input: SchemaSource::Bridge(method_schema(method)),
+        bridge_method: Some(method),
         bridge_write: access == ToolAccess::Write,
         destructive,
     }
@@ -506,6 +550,7 @@ fn custom_tool(
         access,
         capabilities,
         input: SchemaSource::Custom(schema),
+        bridge_method: None,
         bridge_write: false,
         destructive: false,
     }
@@ -851,7 +896,11 @@ mod tests {
         assert!(catalog.get("object_set_property").is_none());
         catalog.set_connection(
             Some(2),
-            &[descriptor("object.edit"), descriptor("object.query")],
+            &[
+                descriptor("object.edit"),
+                descriptor("object.query"),
+                descriptor("scene.query"),
+            ],
         );
         assert!(catalog.get("object_set_property").is_none());
         catalog.set_write_permission(WritePermission::Enabled);
@@ -862,8 +911,45 @@ mod tests {
     }
 
     #[test]
+    fn backend_write_mode_does_not_publish_tools_before_write_handlers_exist() {
+        let catalog = connected_catalog(&[
+            "object.edit",
+            "object.query",
+            "scene.query",
+            "scene.edit",
+            "component.edit",
+            "runtime.control",
+        ]);
+        let authorization = crate::mcp::McpAuthorization::default();
+        authorization
+            .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                mode: crate::mcp::McpWriteMode::Enabled,
+                scene_root_id: None,
+            })
+            .expect("書き込み可モードを設定する");
+
+        assert!(catalog.get("object_set_property").is_none());
+        assert!(catalog.get("scene_delete_object").is_none());
+        assert!(catalog.list().iter().all(|tool| {
+            !matches!(
+                tool.name.as_ref(),
+                "object_set_property"
+                    | "scene_create_object"
+                    | "scene_delete_object"
+                    | "scene_reparent_object"
+                    | "scene_duplicate_object"
+                    | "component_add"
+                    | "component_remove"
+                    | "runtime_play"
+                    | "runtime_pause"
+                    | "runtime_stop"
+            )
+        }));
+    }
+
+    #[test]
     fn bridge_tool_schema_resolves_absolute_ids_and_fragment_references_offline() {
-        let catalog = connected_catalog(&["object.query", "object.edit"]);
+        let catalog = connected_catalog(&["object.query", "object.edit", "scene.query"]);
         catalog.set_write_permission(WritePermission::Enabled);
         let tool = catalog
             .get("object_set_property")
@@ -899,7 +985,7 @@ mod tests {
 
     #[test]
     fn write_wrapper_validates_params_and_group_id_separately() {
-        let catalog = connected_catalog(&["object.edit", "object.query"]);
+        let catalog = connected_catalog(&["object.edit", "object.query", "scene.query"]);
         catalog.set_write_permission(WritePermission::Enabled);
         let valid = json!({
             "params":{"objectId":"node-1","property":"visible","value":true},

@@ -12,7 +12,18 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Map, Value};
 use tokio::sync::Mutex;
 
-use crate::{bridge_state::BridgeFacade, error::BackendError};
+use crate::{
+    bridge_state::{BridgeFacade, BridgeLease},
+    error::BackendError,
+    mcp::{
+        authorization::{
+            parse_scope_snapshot_bytes, parse_scope_tree_bytes, with_scope_deadline,
+            McpHistoryAction, McpSceneScopeIndex, McpScopeBudget, McpWriteOperation,
+            McpWritePermit,
+        },
+        McpAuthorization, McpRequestLease,
+    },
+};
 
 use super::{
     log_buffer::{LogBuffer, LogQuery},
@@ -71,6 +82,7 @@ pub(crate) struct McpReadContext {
     logs: Arc<StdMutex<LogBuffer>>,
     snapshots: Arc<Mutex<ReadSnapshotStore>>,
     thumbnails: McpThumbnailService,
+    authorization: Option<McpAuthorization>,
 }
 
 static DEFAULT_READ_CONTEXT: OnceLock<StdMutex<Option<McpReadContext>>> = OnceLock::new();
@@ -88,6 +100,230 @@ impl McpReadContext {
             logs,
             snapshots: Arc::new(Mutex::new(ReadSnapshotStore::default())),
             thumbnails,
+            authorization: None,
+        }
+    }
+
+    /// 認証設定を結び、書き込み許可検査を使えるようにする。
+    #[allow(dead_code)]
+    pub(crate) fn with_authorization(mut self, authorization: McpAuthorization) -> Self {
+        self.authorization = Some(authorization);
+        self
+    }
+
+    /// Bridge methodと対象を検査し、実行直前に再照合するpermitを返す。
+    #[allow(dead_code)]
+    pub(crate) async fn authorize_write(
+        &self,
+        request_lease: &McpRequestLease,
+        method: &str,
+        params: &Value,
+    ) -> Result<McpWritePermit, String> {
+        let operation = McpWriteOperation::from_bridge_method(method, params)
+            .map_err(|error| error.message().to_owned())?;
+        self.authorize_operation(request_lease, operation).await
+    }
+
+    /// 非公開の書き込み道具への直接呼び出しもschema・権限・範囲を検査する。
+    #[allow(dead_code)]
+    pub(crate) async fn authorize_hidden_write_attempt(
+        &self,
+        request_lease: &McpRequestLease,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<McpWritePermit, String> {
+        let method = self
+            .catalog
+            .hidden_write_method(name)
+            .ok_or_else(|| tool_input_message(ToolInputError::Unavailable))?;
+        let validated = self
+            .catalog
+            .validate_hidden_write_attempt(name, arguments)
+            .map_err(tool_input_message)?;
+        let ValidatedToolInput::BridgeWrite { params, .. } = validated else {
+            return Err(tool_input_message(ToolInputError::Invalid));
+        };
+        self.authorize_write(request_lease, method, &params).await
+    }
+
+    /// MCP undo/redoの先頭まとまりに含まれる全記録を検査してpermitを返す。
+    #[allow(dead_code)]
+    pub(crate) async fn authorize_history(
+        &self,
+        request_lease: &McpRequestLease,
+        action: McpHistoryAction,
+    ) -> Result<McpWritePermit, String> {
+        self.authorize_operation(request_lease, McpWriteOperation::History(action))
+            .await
+    }
+
+    async fn authorize_operation(
+        &self,
+        request_lease: &McpRequestLease,
+        operation: McpWriteOperation,
+    ) -> Result<McpWritePermit, String> {
+        let authorization = self
+            .authorization
+            .as_ref()
+            .ok_or_else(|| "MCP書き込みの認証状態がありません。".to_owned())?;
+        let policy = authorization.write_policy_snapshot();
+        authorization
+            .check_write_request(request_lease, &policy, &operation)
+            .map_err(|error| error.message().to_owned())?;
+        let generation = self
+            .catalog
+            .current_generation()
+            .ok_or_else(|| "Bridgeに接続してから書き込みを許可してください。".to_owned())?;
+        let bridge_lease = self.bridge.pin().map_err(|error| error.to_string())?;
+        if bridge_lease.generation != generation {
+            return Err("Bridge接続が切り替わりました。操作をやり直してください。".to_owned());
+        }
+        let required = operation.required_capabilities();
+        if !self.catalog.has_capabilities(generation, &required) {
+            return Err("接続中のエンジンに範囲検査に必要な能力がありません。".to_owned());
+        }
+
+        let needs_tree = !matches!(operation, McpWriteOperation::RuntimeControl)
+            || policy.settings.scene_root_id.is_some();
+        if needs_tree {
+            let resolution = async {
+                let (mut index, mut budget) = self
+                    .resolve_scene_scope(
+                        &bridge_lease,
+                        generation,
+                        policy.settings.scene_root_id.as_deref(),
+                    )
+                    .await?;
+                self.resolve_component_targets(&bridge_lease, &mut index, &mut budget, &operation)
+                    .await?;
+                index
+                    .check_operation(&operation)
+                    .map_err(|error| error.message().to_owned())
+            };
+            with_scope_deadline(resolution)
+                .await
+                .map_err(|error| error.message().to_owned())??;
+        }
+        if !self.bridge.is_current(generation) {
+            return Err(
+                "範囲検査中にBridge接続が切り替わりました。操作をやり直してください。".to_owned(),
+            );
+        }
+        let permit = authorization
+            .issue_write_permit(request_lease, &policy, generation, operation)
+            .map_err(|error| error.message().to_owned())?;
+        authorization
+            .validate_write_permit(&permit, request_lease, generation, &permit.operation)
+            .map_err(|error| error.message().to_owned())?;
+        Ok(permit)
+    }
+
+    async fn resolve_scene_scope(
+        &self,
+        lease: &BridgeLease,
+        generation: u64,
+        scene_root_id: Option<&str>,
+    ) -> Result<(McpSceneScopeIndex, McpScopeBudget), String> {
+        if !self.catalog.has_capabilities(generation, &["scene.query"]) {
+            return Err("範囲検査に必要なscene.query能力がありません。".to_owned());
+        }
+        let result = self
+            .bridge
+            .send_with_lease(lease, "scene.getTree", Some(Map::new()))
+            .await
+            .map_err(|error| {
+                format!(
+                    "範囲検査用のscene.getTreeを取得できません: {}",
+                    engine_error_as_data(error)
+                )
+            })?;
+        let tree_bytes =
+            parse_scope_tree_bytes(&result).map_err(|error| error.message().to_owned())?;
+        let mut budget =
+            McpScopeBudget::new(tree_bytes).map_err(|error| error.message().to_owned())?;
+        let index = McpSceneScopeIndex::from_result(&result, scene_root_id, &mut budget)
+            .map_err(|error| error.message().to_owned())?;
+        if !self.bridge.is_current(generation) {
+            return Err(
+                "範囲検査中にBridge接続が切り替わりました。操作をやり直してください。".to_owned(),
+            );
+        }
+        Ok((index, budget))
+    }
+
+    async fn resolve_component_targets(
+        &self,
+        lease: &BridgeLease,
+        index: &mut McpSceneScopeIndex,
+        budget: &mut McpScopeBudget,
+        operation: &McpWriteOperation,
+    ) -> Result<(), String> {
+        let mut targets = Vec::new();
+        match operation {
+            McpWriteOperation::Property { object_id } if !index.contains_node(object_id) => {
+                targets.push(object_id.as_str());
+            }
+            McpWriteOperation::ComponentRemove { component_id } => {
+                targets.push(component_id.as_str());
+            }
+            McpWriteOperation::History(action) => {
+                for record in &action.records {
+                    if let crate::edit_service::HistoryRecord::SetProperty { object_id, .. } =
+                        record
+                    {
+                        if !index.contains_node(object_id) {
+                            targets.push(object_id.as_str());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        targets.sort_unstable();
+        targets.dedup();
+        if targets.is_empty() {
+            return Ok(());
+        }
+        if !self
+            .catalog
+            .has_capabilities(lease.generation, &["object.query"])
+        {
+            return Err("componentの所属確認に必要なobject.query能力がありません。".to_owned());
+        }
+        for owner_id in index.scene_object_ids() {
+            budget
+                .begin_snapshot()
+                .map_err(|error| error.message().to_owned())?;
+            let mut params = Map::new();
+            params.insert("objectId".to_owned(), Value::String(owner_id.clone()));
+            let result = self
+                .bridge
+                .send_with_lease(lease, "object.getSnapshot", Some(params))
+                .await
+                .map_err(|error| {
+                    format!(
+                        "componentの所属snapshotを取得できません: {}",
+                        engine_error_as_data(error)
+                    )
+                })?;
+            let snapshot_bytes =
+                parse_scope_snapshot_bytes(&result).map_err(|error| error.message().to_owned())?;
+            budget
+                .add_bytes(snapshot_bytes)
+                .map_err(|error| error.message().to_owned())?;
+            let snapshot = norves_bridge_editor_client::parse_object_snapshot_result(&result)
+                .map_err(|_| "componentの所属snapshot形式が不正です。".to_owned())?;
+            index
+                .record_component_snapshot(&owner_id, snapshot)
+                .map_err(|error| error.message().to_owned())?;
+        }
+        if targets
+            .iter()
+            .all(|target| index.contains_component(target))
+        {
+            Ok(())
+        } else {
+            Err("componentの所属を確認できないため、操作を拒否しました。".to_owned())
         }
     }
 
@@ -108,6 +344,10 @@ impl McpReadContext {
 
     pub(crate) fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
         self.catalog.get(name)
+    }
+
+    pub(crate) fn is_hidden_write_tool(&self, name: &str) -> bool {
+        self.catalog.hidden_write_method(name).is_some()
     }
 
     /// 既存thumbnail取得を共有し、検査済みのPNGをMCP imageとして返す。
@@ -1142,6 +1382,132 @@ mod tests {
             .collect::<Vec<_>>();
         catalog.set_connection(Some(generation), &capabilities);
         McpReadContext::new(bridge, catalog, logs, McpThumbnailService::default())
+    }
+
+    #[tokio::test]
+    async fn direct_write_attempt_is_rejected_on_every_read_only_startup() {
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let authorization = McpAuthorization::default();
+        let lease = authorization.current_lease();
+        let context = test_context(
+            71,
+            handle.clone(),
+            &["object.edit", "object.query", "scene.query"],
+            Arc::new(StdMutex::new(LogBuffer::default())),
+        )
+        .with_authorization(authorization);
+
+        assert!(context.get_tool("object_set_property").is_none());
+        let error = context
+            .authorize_hidden_write_attempt(
+                &lease,
+                "object_set_property",
+                &json!({"params":{"objectId":"node","property":"visible","value":true}}),
+            )
+            .await
+            .expect_err("read-onlyは直接呼び出しも拒否する");
+        assert!(error.contains("読み取り専用"));
+        assert!(timeout(Duration::from_millis(100), peer.recv())
+            .await
+            .is_err());
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn scoped_write_authorization_checks_engine_tree_and_keeps_tools_hidden() {
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let authorization = McpAuthorization::default();
+        authorization
+            .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                mode: crate::mcp::McpWriteMode::Enabled,
+                scene_root_id: Some("allowed".to_owned()),
+            })
+            .expect("許可範囲を設定する");
+        let lease = authorization.current_lease();
+        let context = test_context(
+            72,
+            handle.clone(),
+            &["object.edit", "object.query", "scene.query"],
+            Arc::new(StdMutex::new(LogBuffer::default())),
+        )
+        .with_authorization(authorization.clone());
+
+        let responder = tokio::spawn(async move {
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, "scene.getTree");
+            assert!(params.as_ref().is_some_and(Map::is_empty));
+            peer.send(response_frame(
+                id,
+                json!({"root":{"id":"scene","children":[
+                    {"id":"allowed","children":[{"id":"target"}]},
+                    {"id":"outside"}
+                ]}}),
+            ))
+            .await
+            .expect("範囲検査用ツリーを返す");
+            assert!(timeout(Duration::from_millis(100), peer.recv())
+                .await
+                .is_err());
+            handle.shutdown().await;
+        });
+
+        assert!(context.get_tool("object_set_property").is_none());
+        let permit = context
+            .authorize_hidden_write_attempt(
+                &lease,
+                "object_set_property",
+                &json!({"params":{"objectId":"target","property":"visible","value":true}}),
+            )
+            .await
+            .expect("許可部分木内の対象を確認する");
+        authorization
+            .validate_write_permit(
+                &permit,
+                &lease,
+                72,
+                &McpWriteOperation::Property {
+                    object_id: "target".to_owned(),
+                },
+            )
+            .expect("permitを同じ対象と世代で照合する");
+        responder.await.expect("ツリーmockが完了する");
+    }
+
+    #[tokio::test]
+    async fn missing_scene_query_capability_denies_scope_resolution() {
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let authorization = McpAuthorization::default();
+        authorization
+            .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                mode: crate::mcp::McpWriteMode::Enabled,
+                scene_root_id: None,
+            })
+            .expect("書き込み可へ変更する");
+        let lease = authorization.current_lease();
+        let context = test_context(
+            73,
+            handle.clone(),
+            &["object.edit", "object.query"],
+            Arc::new(StdMutex::new(LogBuffer::default())),
+        )
+        .with_authorization(authorization);
+
+        let error = context
+            .authorize_hidden_write_attempt(
+                &lease,
+                "object_set_property",
+                &json!({"params":{"objectId":"node","property":"visible","value":true}}),
+            )
+            .await
+            .expect_err("scene.queryなしの範囲検査を拒否する");
+        assert!(error.contains("能力"));
+        assert!(timeout(Duration::from_millis(100), peer.recv())
+            .await
+            .is_err());
+        handle.shutdown().await;
     }
 
     fn node(id: &str, children: Vec<Value>) -> Value {

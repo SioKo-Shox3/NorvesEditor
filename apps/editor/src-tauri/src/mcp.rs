@@ -38,6 +38,7 @@ use rmcp::{
     },
     ServerHandler,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -50,11 +51,29 @@ use tokio_util::sync::CancellationToken;
 use crate::mcp_token::McpToken;
 use axum::extract::connect_info::Connected;
 
+pub(crate) mod authorization;
 pub mod log_buffer;
 pub(crate) mod reads;
 pub mod runtime;
 pub(crate) mod thumbnail;
 pub(crate) mod tool_catalog;
+
+use authorization::{
+    McpWriteOperation, McpWritePermit, McpWritePolicySnapshot, McpWriteSettings, ScopeError,
+};
+
+/// MCP書き込みの実行時許可モード。
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum McpWriteMode {
+    /// 起動時の既定値。MCP書き込みを拒否する。
+    #[default]
+    ReadOnly,
+    /// 許可範囲内の通常書き込みを受け付ける。
+    Enabled,
+    /// 個々の書き込みに画面確認を要求する。
+    Confirm,
+}
 
 /// MCP POST 本体の最大サイズ。
 pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
@@ -85,6 +104,12 @@ struct McpAuthorizationInner {
     revision: AtomicU64,
     revision_tx: watch::Sender<u64>,
     leases: Mutex<Vec<(u64, Weak<CancellationToken>)>>,
+    write_policy: RwLock<WritePolicyState>,
+}
+
+struct WritePolicyState {
+    settings: McpWriteSettings,
+    revision: u64,
 }
 
 impl Default for McpAuthorization {
@@ -95,6 +120,10 @@ impl Default for McpAuthorization {
                 revision: AtomicU64::new(1),
                 revision_tx,
                 leases: Mutex::new(Vec::new()),
+                write_policy: RwLock::new(WritePolicyState {
+                    settings: McpWriteSettings::default(),
+                    revision: 1,
+                }),
             }),
         }
     }
@@ -153,9 +182,110 @@ impl McpAuthorization {
         self.inner.revision.load(Ordering::Acquire) == revision
     }
 
+    /// 起動中の書き込み設定を変更し、以前のHTTP要求とpermitをすべて失効させる。
+    pub(crate) fn set_write_settings(&self, settings: McpWriteSettings) -> Result<u64, ScopeError> {
+        settings.validate()?;
+        let mut policy = self
+            .inner
+            .write_policy
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if policy.settings == settings {
+            return Ok(policy.revision);
+        }
+        policy.settings = settings;
+        policy.revision = policy.revision.wrapping_add(1);
+        let revision = policy.revision;
+        drop(policy);
+        self.revoke();
+        Ok(revision)
+    }
+
+    /// 現在の設定と改訂を一組で捕捉する。
+    pub(crate) fn write_policy_snapshot(&self) -> McpWritePolicySnapshot {
+        let policy = self
+            .inner
+            .write_policy
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        McpWritePolicySnapshot {
+            settings: policy.settings.clone(),
+            revision: policy.revision,
+        }
+    }
+
+    /// 範囲検査後に、現在の設定改訂へ結び付いたpermitを発行する。
+    pub(crate) fn issue_write_permit(
+        &self,
+        lease: &McpRequestLease,
+        snapshot: &McpWritePolicySnapshot,
+        generation: u64,
+        operation: McpWriteOperation,
+    ) -> Result<McpWritePermit, ScopeError> {
+        self.check_write_request(lease, snapshot, &operation)?;
+        Ok(McpWritePermit {
+            auth_revision: lease.revision(),
+            policy_revision: snapshot.revision,
+            generation,
+            operation,
+        })
+    }
+
+    /// 範囲照会の前後で、要求と設定snapshotがまだ有効か確認する。
+    pub(crate) fn check_write_request(
+        &self,
+        lease: &McpRequestLease,
+        snapshot: &McpWritePolicySnapshot,
+        operation: &McpWriteOperation,
+    ) -> Result<(), ScopeError> {
+        if !lease.is_current() {
+            return Err(ScopeError::AuthorizationRevoked);
+        }
+        let current = self.write_policy_snapshot();
+        if current.revision != snapshot.revision || current.settings != snapshot.settings {
+            return Err(ScopeError::AuthorizationRevoked);
+        }
+        if snapshot.settings.mode == McpWriteMode::ReadOnly {
+            return Err(ScopeError::ReadOnly);
+        }
+        let _ = operation;
+        Ok(())
+    }
+
+    /// actorが実行直前に、permitと接続・認証・設定改訂を再照合する。
+    pub(crate) fn validate_write_permit(
+        &self,
+        permit: &McpWritePermit,
+        lease: &McpRequestLease,
+        generation: u64,
+        operation: &McpWriteOperation,
+    ) -> Result<(), ScopeError> {
+        let current = self.write_policy_snapshot();
+        if !lease.is_current()
+            || permit.auth_revision != lease.revision()
+            || permit.policy_revision != current.revision
+            || permit.generation != generation
+            || permit.operation != *operation
+        {
+            return Err(ScopeError::AuthorizationRevoked);
+        }
+        ensure_write_mode(current.settings.mode, operation)
+    }
+
     /// 認証改訂が変わったとき actor が所有中のまとまりを失効させる購読。
     pub(crate) fn subscribe_revision(&self) -> watch::Receiver<u64> {
         self.inner.revision_tx.subscribe()
+    }
+}
+
+fn ensure_write_mode(mode: McpWriteMode, operation: &McpWriteOperation) -> Result<(), ScopeError> {
+    match mode {
+        McpWriteMode::ReadOnly => Err(ScopeError::ReadOnly),
+        McpWriteMode::Confirm => Err(ScopeError::ConfirmationRequired),
+        McpWriteMode::Enabled if operation.requires_confirmation() => {
+            Err(ScopeError::ConfirmationRequired)
+        }
+        McpWriteMode::Enabled => Ok(()),
     }
 }
 
@@ -1215,7 +1345,7 @@ impl ServerHandler for McpServerHandler {
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
-        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         let Self::ReadTools(reads) = self else {
             #[cfg(test)]
@@ -1227,13 +1357,31 @@ impl ServerHandler for McpServerHandler {
             }
             return Err(rmcp::ErrorData::method_not_found::<CallToolRequestMethod>());
         };
-        if reads.get_tool(&request.name).is_none() {
-            return Err(rmcp::ErrorData::method_not_found::<CallToolRequestMethod>());
-        }
         let arguments = request
             .arguments
             .map(Value::Object)
             .unwrap_or_else(|| Value::Object(Map::new()));
+        if reads.get_tool(&request.name).is_none() {
+            if !reads.is_hidden_write_tool(&request.name) {
+                return Err(rmcp::ErrorData::method_not_found::<CallToolRequestMethod>());
+            }
+            let Some(request_lease) = request_authorization_from_context(&context) else {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    "MCP要求の認証リースがありません。",
+                )])
+                .into());
+            };
+            return match reads
+                .authorize_hidden_write_attempt(&request_lease, &request.name, &arguments)
+                .await
+            {
+                Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)]).into()),
+                Ok(_permit) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                    "この段階ではMCP書き込み道具を公開していません。",
+                )])
+                .into()),
+            };
+        }
         if request.name == "viewport_get_thumbnail" {
             return match reads.call_thumbnail_image(arguments).await {
                 Ok(image) => Ok(thumbnail_image_result(image).into()),

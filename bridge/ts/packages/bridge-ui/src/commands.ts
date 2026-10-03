@@ -20,6 +20,7 @@ import type {
   EngineSettingsPayload,
   McpSettingsPayload,
   McpTokenPayload,
+  McpWriteMode,
   UiParentCapture,
   UiPropertyCapture,
   WorkspacePayload,
@@ -68,6 +69,7 @@ export const BRIDGE_COMMANDS = {
   setEngineArgs: 'set_engine_args',
   getMcpSettings: 'get_mcp_settings',
   setMcpSettings: 'set_mcp_settings',
+  setMcpWriteAccess: 'set_mcp_write_access',
   getMcpToken: 'get_mcp_token',
   regenerateMcpToken: 'regenerate_mcp_token',
   workspaceOpen: 'workspace_open',
@@ -219,6 +221,17 @@ export async function setMcpSettings(
   port: number,
 ): Promise<McpSettingsPayload> {
   return invoke<McpSettingsPayload>(BRIDGE_COMMANDS.setMcpSettings, { enabled, port });
+}
+
+/** MCP書き込み許可モードとシーン部分木を設定する。 */
+export async function setMcpWriteAccess(
+  mode: McpWriteMode,
+  sceneRootId?: string,
+): Promise<McpSettingsPayload> {
+  return invoke<McpSettingsPayload>(BRIDGE_COMMANDS.setMcpWriteAccess, {
+    mode,
+    sceneRootId,
+  });
 }
 
 /** MCPトークンを明示的に表示するときだけ呼び出す。 */

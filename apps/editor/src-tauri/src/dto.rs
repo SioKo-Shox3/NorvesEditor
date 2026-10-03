@@ -60,6 +60,9 @@ pub struct EngineSettingsPayload {
 pub struct McpSettingsPayload {
     pub enabled: bool,
     pub port: u16,
+    pub write_mode: crate::mcp::McpWriteMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scene_root_id: Option<String>,
     pub state: McpServerStateDto,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
