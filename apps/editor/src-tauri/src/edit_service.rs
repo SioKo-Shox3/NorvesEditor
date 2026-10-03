@@ -2906,7 +2906,10 @@ mod tests {
                 ))
             },
         );
-        assert!(matches!(stale_write, Err(BackendError::NotConnected)));
+        assert!(matches!(
+            stale_write,
+            Err(BackendError::NotConnected | BackendError::McpAuthorizationRevoked)
+        ));
         service.shutdown().await;
         handle.shutdown().await;
     }

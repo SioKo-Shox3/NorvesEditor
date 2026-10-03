@@ -323,7 +323,7 @@ M2 の共通規則:
 - verify: `node scripts/check-protocol-names.mjs`
 - verify: `pnpm -r --if-present typecheck`
 - paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/dto.rs, apps/editor/src-tauri/src/protocol_names.rs, bridge/ts/packages/bridge-ui/src/**, bridge/ts/packages/bridge-types/src/**
-- notes: 先行 MCP-020。この段ではwrite道具を公開しない。資産のprefix許可はNE19まで実装せず範囲外として記録する。Tauriセキュリティの評価・本文必須。
+- notes: 先行 MCP-020。この段ではwrite道具を公開しない。資産のprefix許可はNE19まで実装せず範囲外として記録する。Tauriセキュリティの評価・本文必須。再接続後の古いまとまりハンドルは未接続または認可失効として拒否する。
 
 ## MCP-022: 要求ごとの書き込み確認をバックエンドで管理する
 - status: todo

@@ -5,6 +5,7 @@
 
 ## Done
 - MCP-021: 起動時read-only、書き込み可/都度確認モード、設定改訂と接続世代による許可失効を検査。シーン部分木では対象・移動元親・作成先・複製先・削除部分木と削除親、履歴先頭まとまりの全記録を照合し、component所属の不明・衝突、未知ID/能力、範囲上限超過を拒否する。書き込み道具は未公開のまま。資産prefix許可はNE19まで対象外。fmt/clippy、IPC名、pnpm typecheckはexit 0。cargo testは同時実行時に既存の世代切替試験が1件失敗した後、単独再実行で331単体・14統合が成功。証拠 `.harness/runs/20261003-161248/verify-MCP-021-1.txt`、`-2.txt`、`-4.txt`〜`-6.txt`。初回失敗は `-3.txt`。
+- MCP-021差し戻し対応: 再接続直後の旧group handle拒否は、actorの処理順により未接続または認可失効で返るため、どちらの失効応答も許容する試験に修正。指定5ゲートはexit 0。cargo testは331単体・1実mock・14統合成功。起動時read-only、モード/設定改訂、再接続、対象範囲、履歴全記録、ノード・snapshot・byte・時間上限の試験も通過。証拠 `.harness/runs/20261003-161248/verify-MCP-021-7.txt`〜`verify-MCP-021-11.txt`。
 - MCP-020: 時刻付き画像一覧ヘルパーを追加し、PNG byte列1〜16枚を入力順の4列に配置。時刻はHH:MM:SS.mmmで検査し、番号・時刻を5×7固定字形とテキストへ併記する。各辺4096/16777216画素、入力・出力PNG各2 MiB、作業見積り最大126 MiB、出力長辺2048を制限し、空・枚数超過・不正時刻・overflowを拒否。縮小は`thumbnail_exact`を使い、4096×4096画像と独立した16枚分の最大入力PNGを組み合わせた試験を追加。画像試験で並び、1枚目・2枚目の見出し位置を確認。fmt/clippy exit 0、cargo test 329単体・1 mcp_reads・14 process_e2e成功。証拠 `.harness/runs/20261003-161248/preflight-MCP-020-16.txt` / `verify-MCP-020-4.txt`〜`verify-MCP-020-6.txt`。
 - MCP-015: 接続中の能力と許可から道具一覧を生成し、Bridge params schemaを仕様から埋め込み、書き込みparams/groupIdと独自schemaを分離。jsonschemaをオフライン検証し、未知項目・型違い・上限超過・外部参照を拒否する。現行版listenのSubscriptionSink通知と旧版各peer通知、両版の実HTTP通知・停止・期限・再購読を試験。fmt/clippy exit 0、cargo testは319単体・1 MCP mock・14 process_e2e成功。証拠 `.harness/runs/20261003-161248/preflight-MCP-015-current.txt` / `verify-MCP-015-8.txt`〜`verify-MCP-015-10.txt`。
 - MCP-019: `viewport.getThumbnail` をPNG限定で検査し、MCP `image/png` contentのbase64 dataとして返す。Bridgeの640×360/256KiB上限を維持し、長辺512・MCP PNG 512KiB、宣言寸法/IHDR検査、2 worker/128MiB予算を適用。Game View/MCPは進行中要求と世代別1秒snapshotを共有し、MCP失敗にGame Viewをbackoffさせない。通常切断はcacheを失効し、アプリ終了時にworkerを停止・joinする。fmt/clippy/cargo test exit 0（299単体・1 mock統合・14 process_e2e）。証拠 `.harness/runs/20261003-161248/preflight-MCP-019.txt` / `verify-MCP-019-2.txt`〜`verify-MCP-019-4.txt`。
@@ -46,10 +47,10 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-017とMCP-019〜MCP-020の19件は実装・指定検証済み。MCP-020の評価はこの反復後にランナーが実施する。MCP-018は実装済みだが再検証の試験失敗でblocked。Done節の実装記録は、その評価完了を意味しない。
+- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-017とMCP-019〜MCP-021の20件は実装・指定検証済み。MCP-021の評価はこの反復後にランナーが実施する。MCP-018は実装済みだが再検証の試験失敗でblocked。Done節の実装記録は、その評価完了を意味しない。
 
 ## Next
-- 未完の最優先はMCP-021。MCP-018は試験失敗の原因確認と評価が残っている。
+- 未完の最優先はMCP-022。MCP-018は試験失敗の原因確認と評価が残っている。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -60,6 +61,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-03 MCP-021差し戻し対応: 旧group handleの試験を、再接続で可能な未接続/認可失効どちらの拒否も確認する形へ修正した。fmt / clippy / cargo test（331単体・1実mock・14統合）/ IPC名 / pnpm typecheck はすべてexit 0。保存ログを開いて試験結果・IPC同期・型検査を確認。範囲認可試験は起動時read-only、write/confirm、再接続・設定変更の失効、各対象と履歴全記録、容量超過と期限切れを確認した。
 - 2026-10-03 MCP-020差し戻し対応: `resize_exact`の入力幅に比例する中間画像を避けるため`thumbnail_exact`へ切り替えた。最大寸法・独立した全画像2 MiBの回帰試験と2枚目の番号字形試験を追加。指定3ゲートはexit 0、cargo testは329単体・1 mcp_reads・14 process_e2e成功。保存出力を開いて確認した: `preflight-MCP-020-16.txt` / `verify-MCP-020-4.txt`〜`verify-MCP-020-6.txt`。
 - 2026-10-03 MCP-020: scripts/verify.ps1 と指定fmt/clippy/cargo testを実行し、保存出力を開いて確認。最終cargo testは328単体・1 mcp_reads・14 process_e2e成功。初回だけ既存edit_serviceの世代変更テストが1件失敗したが、コード変更せず同じ全テストを再実行して成功した。時刻書式はHH:MM:SS.mmm、PNGは8 bit以下を許可し16 bitは作業上限のため拒否する。
 - 2026-10-03 MCP-015: `scripts/verify.ps1` と指定fmt/clippy/cargo testを実行し、各保存ログを開いて確認した。実HTTPで現行版と旧版の道具一覧通知、現行listen/旧GET SSEの停止・期限・再購読を確認。
