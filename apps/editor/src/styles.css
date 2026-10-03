@@ -299,6 +299,94 @@ html, body, #root {
   color: var(--color-success);
 }
 
+/* ---- Settings の MCP 接続欄 ---- */
+.settings-mcp {
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-mcp__note,
+.settings-mcp__impact {
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.settings-mcp__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.settings-mcp__port {
+  gap: 4px;
+  max-width: 180px;
+}
+
+.settings-mcp__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  min-width: 0;
+}
+
+.settings-mcp__value {
+  min-width: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-mcp__actions {
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.settings-mcp__token-section,
+.settings-mcp__instructions {
+  gap: 5px;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.settings-mcp__token {
+  display: block;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.settings-mcp__impact {
+  padding-left: 8px;
+  border-left: 2px solid var(--color-warning, var(--color-border));
+}
+
+.settings-mcp__steps {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.settings-mcp__command {
+  display: block;
+  padding: 6px;
+  background: var(--color-surface-raised, var(--color-bg-secondary));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 /* ---- error banner ---- */
 .error-banner {
   display: flex;

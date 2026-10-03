@@ -55,6 +55,12 @@ const DEFAULT_ENGINE = {
   savedArgs: [],
 };
 
+const DEFAULT_MCP = {
+  enabled: false,
+  port: 49770,
+  state: 'disabled',
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   // SettingsPanel はマウント時に workspace_get で復元する。レイアウトのリセットのテストが
@@ -62,6 +68,7 @@ beforeEach(() => {
   (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
     if (cmd === 'workspace_get') return Promise.resolve(null);
     if (cmd === 'get_engine_settings') return Promise.resolve(DEFAULT_ENGINE);
+    if (cmd === 'get_mcp_settings') return Promise.resolve(DEFAULT_MCP);
     return Promise.resolve(undefined);
   });
 });
@@ -113,6 +120,7 @@ describe('SettingsPanel layout reset (P6)', () => {
     (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
       if (cmd === 'workspace_get') return Promise.resolve(null);
       if (cmd === 'workspace_open') return Promise.resolve(workspace);
+      if (cmd === 'get_mcp_settings') return Promise.resolve(DEFAULT_MCP);
       return Promise.resolve(undefined);
     });
 
@@ -141,6 +149,7 @@ describe('SettingsPanel layout reset (P6)', () => {
     (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
       if (cmd === 'workspace_get') return Promise.resolve(null);
       if (cmd === 'workspace_open') return Promise.resolve(workspace);
+      if (cmd === 'get_mcp_settings') return Promise.resolve(DEFAULT_MCP);
       return Promise.resolve(undefined);
     });
 
@@ -170,6 +179,7 @@ describe('SettingsPanel layout reset (P6)', () => {
     };
     (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
       if (cmd === 'workspace_get') return Promise.resolve(workspace);
+      if (cmd === 'get_mcp_settings') return Promise.resolve(DEFAULT_MCP);
       return Promise.resolve(undefined);
     });
 
@@ -211,6 +221,8 @@ function mockEngineCommands(handlers: Record<string, () => Promise<unknown>>): v
     if (cmd === 'workspace_get') return Promise.resolve(null);
     const handler = handlers[cmd];
     if (handler !== undefined) return handler();
+    if (cmd === 'get_engine_settings') return Promise.resolve(DEFAULT_ENGINE);
+    if (cmd === 'get_mcp_settings') return Promise.resolve(DEFAULT_MCP);
     return Promise.resolve(undefined);
   });
 }
@@ -614,5 +626,131 @@ describe('SettingsPanel の起動引数', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('エンジンの設定の応答が不正です');
+  });
+});
+
+// -------------------------------------------------------------------------
+// MCP 欄。Settings は別ウィンドウなので、状態はバックエンドから取得し、
+// トークンは表示操作が行われるまで取得しない。
+// -------------------------------------------------------------------------
+
+describe('SettingsPanel の MCP 欄', () => {
+  it('マウント時にバックエンドの状態を読み、秘密を要求前に表示しない', async () => {
+    const running = {
+      enabled: true,
+      port: 49771,
+      state: 'running',
+      endpoint: 'http://127.0.0.1:49771/mcp',
+    };
+    mockEngineCommands({ get_mcp_settings: () => Promise.resolve(running) });
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mcp-state').textContent).toContain('待ち受け中');
+    });
+    expect(tauriCore.invoke as Mock).toHaveBeenCalledWith('get_mcp_settings');
+    expect(screen.getByTestId('mcp-endpoint').textContent).toBe(running.endpoint);
+    expect(screen.getByTestId('mcp-command').textContent).toContain('norves-editor');
+    expect((tauriCore.invoke as Mock).mock.calls.some((call) => call[0] === 'get_mcp_token')).toBe(false);
+    expect(screen.queryByTestId('mcp-token')).toBeNull();
+  });
+
+  it('bindエラーを状態と説明文で表示する', async () => {
+    mockEngineCommands({
+      get_mcp_settings: () => Promise.resolve({
+        enabled: true,
+        port: 49770,
+        state: 'bindFailed',
+        error: '127.0.0.1:49770でMCPサーバーを開始できませんでした。ポートの使用状況を確認してください。',
+      }),
+    });
+    renderPanel();
+
+    const status = await screen.findByTestId('mcp-state');
+    expect(status.textContent).toContain('待ち受けに失敗');
+    expect(screen.getByRole('alert').textContent).toContain('ポートの使用状況を確認してください');
+  });
+
+  it('明示的な表示操作でだけ秘密を取得し、隠す操作で消す', async () => {
+    mockEngineCommands({
+      get_mcp_settings: () => Promise.resolve(DEFAULT_MCP),
+      get_mcp_token: () => Promise.resolve({ token: 'fixture-only-secret' }),
+    });
+    renderPanel();
+    await screen.findByTestId('mcp-state');
+
+    expect(screen.queryByTestId('mcp-token')).toBeNull();
+    expect((tauriCore.invoke as Mock).mock.calls.some((call) => call[0] === 'get_mcp_token')).toBe(false);
+    fireEvent.click(button('トークンを表示'));
+
+    expect((await screen.findByTestId('mcp-token')).textContent).toBe('fixture-only-secret');
+    fireEvent.click(button('トークンを隠す'));
+    expect(screen.queryByTestId('mcp-token')).toBeNull();
+  });
+
+  it('有効状態とポートを一緒に保存し、返された待ち受け状態を表示する', async () => {
+    const running = {
+      enabled: true,
+      port: 49772,
+      state: 'running',
+      endpoint: 'http://127.0.0.1:49772/mcp',
+    };
+    mockEngineCommands({
+      get_mcp_settings: () => Promise.resolve(DEFAULT_MCP),
+      set_mcp_settings: () => Promise.resolve(running),
+    });
+    renderPanel();
+    await screen.findByTestId('mcp-state');
+
+    fireEvent.click(screen.getByLabelText('MCPサーバーを有効にする'));
+    fireEvent.change(screen.getByLabelText('待ち受けポート'), { target: { value: '49772' } });
+    fireEvent.click(button('設定を適用'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mcp-state').textContent).toContain('待ち受け中');
+    });
+    expect(tauriCore.invoke as Mock).toHaveBeenCalledWith('set_mcp_settings', {
+      enabled: true,
+      port: 49772,
+    });
+    expect(screen.getByTestId('mcp-endpoint').textContent).toBe(running.endpoint);
+  });
+
+  it('再生成の確認をキャンセルしたときはトークンを変更しない', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    mockEngineCommands({ get_mcp_settings: () => Promise.resolve(DEFAULT_MCP) });
+    renderPanel();
+    await screen.findByTestId('mcp-state');
+
+    fireEvent.click(button('トークンを再生成'));
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(confirm.mock.calls[0]?.[0]).toContain('現在のトークンによる接続');
+    expect(confirm.mock.calls[0]?.[0]).toContain('再接続してください');
+    expect((tauriCore.invoke as Mock).mock.calls.some((call) => call[0] === 'regenerate_mcp_token')).toBe(false);
+  });
+
+  it('再生成後は取得済みトークンを消し、クライアントへの影響を案内する', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const regenerated = { ...DEFAULT_MCP, port: 49771 };
+    mockEngineCommands({
+      get_mcp_settings: () => Promise.resolve(DEFAULT_MCP),
+      get_mcp_token: () => Promise.resolve({ token: 'fixture-only-secret' }),
+      regenerate_mcp_token: () => Promise.resolve(regenerated),
+    });
+    renderPanel();
+    await screen.findByTestId('mcp-state');
+    fireEvent.click(button('トークンを表示'));
+    await screen.findByTestId('mcp-token');
+
+    fireEvent.click(button('トークンを再生成'));
+
+    expect(confirm).toHaveBeenCalledOnce();
+    await waitFor(() => {
+      expect(screen.queryByTestId('mcp-token')).toBeNull();
+      expect(screen.getByTestId('mcp-endpoint').textContent).toContain('49771');
+    });
+    expect((tauriCore.invoke as Mock).mock.calls.some((call) => call[0] === 'regenerate_mcp_token')).toBe(true);
+    expect(screen.getByText(/再生成すると以前のトークン/).textContent).toContain('クライアントを再接続してください');
   });
 });

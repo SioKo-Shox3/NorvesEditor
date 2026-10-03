@@ -251,7 +251,7 @@ M2 の共通規則:
 - notes: 先行 MCP-012。信頼したSettings窓/main窓のcommandだけで設定変更・秘密表示を行う。将来の確認/group実装が登録するキャンセルを含め寿命の所有者を定める。危険地帯の評価・本文必須。
 
 ## MCP-014: Settings に MCP の接続設定を出す
-- status: todo
+- status: done
 - done-when: NE07。有効化・ポート・状態・bindエラー・秘密の明示表示と再生成・接続手順がある。再生成の影響を示す。別ウィンドウからバックエンドの状態を取得し、StrictMode/連打/キャンセル/応答順の試験が通る。秘密を未要求時に表示しない。接続名はnorves-editorなど用途に基づく名前。
 - verify: `pnpm -C apps/editor typecheck`
 - verify: `pnpm -C apps/editor test`
