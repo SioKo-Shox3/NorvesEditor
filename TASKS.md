@@ -278,7 +278,7 @@ M2 の共通規則:
 - notes: 先行 MCP-002。ログの内容は非信頼データ。無制限の文字列を件数上限だけで保管しない。broadcastのlagはログ件数と断定せず、取りこぼした通知数と欠落の可能性を別で示す。Bridge購読寿命の危険地帯として評価・本文必須。
 
 ## MCP-017: モックの試験プロフィールに資産の読み取りを足す
-- status: todo
+- status: done
 - done-when: NE09の試験前提。MCP試験プロフィールが既存asset.readのmanifestとresolveを実装し、能力・logicalPath・未知パスの結果が一致する。既定プロフィールのgoldenは変えない。型schema・可変シーン・資産の読み取りを実プロセスから照会する試験がある。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test -p norves-bridge-editor-client --test conformance -- --nocapture; exit $LASTEXITCODE"`

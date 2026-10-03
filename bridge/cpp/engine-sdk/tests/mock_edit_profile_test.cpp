@@ -62,6 +62,8 @@ namespace
             R"({"capabilities":[{"name":"runtime.control","version":"0.1","description":"Play/pause/stop control."},{"name":"log.stream"},{"name":"viewport.focus"},{"name":"scene.query"},{"name":"object.query"},{"name":"object.edit"},{"name":"scene.liveUpdate"},{"name":"viewport.thumbnail"},{"name":"component.edit"}]})";
         CheckJson(adapter.getCapabilities(Request("{}")), expectedCapabilities);
         CheckJson(adapter.logSubscribe(Request("{}")), R"({"subscribed":true})");
+        NORVES_CHECK(adapter.assetGetManifest(Request("{}")).is_err());
+        NORVES_CHECK(adapter.assetResolve(Request(R"({"logicalPath":"textures/hero.png"})")).is_err());
     }
 
     void TestMcpEditProfile()
@@ -69,7 +71,17 @@ namespace
         MockAdapter adapter(MockAdapter::Profile::McpEdit);
         const std::string capabilities = Dump(adapter.getCapabilities(Request("{}")));
         CheckContains(capabilities, R"("name":"scene.edit")");
+        CheckContains(capabilities, R"("name":"asset.read")");
         NORVES_CHECK(capabilities.find(R"("name":"scene.liveUpdate")") == std::string::npos);
+        NORVES_CHECK(capabilities.find(R"("name":"asset.reload")") == std::string::npos);
+
+        CheckJson(adapter.assetGetManifest(Request(R"({"filter":"texture","page":0,"pageSize":50})")),
+                  R"({"version":1,"entries":[{"logicalPath":"textures/hero.png","kind":"texture","variant":"default","format":"png","sourceHash":"source-hash","cookedPackage":"packs/textures.ncp","entryName":"textures/hero.png","entryType":"texture","cookedHash":"cooked-hash","cookedVersion":1}],"totalCount":1,"page":0,"pageSize":50})");
+        CheckJson(adapter.assetResolve(Request(
+                      R"({"logicalPath":"textures/hero.png","kind":"texture","variant":"default"})")),
+                  R"({"status":"successCooked","source":"cooked","normalizedLogicalPath":"textures/hero.png"})");
+        CheckJson(adapter.assetResolve(Request(R"({"logicalPath":"textures/missing.png"})")),
+                  R"({"status":"cookedEntryMissing","source":"none","normalizedLogicalPath":"textures/missing.png"})");
 
         CheckJson(adapter.sceneGetTree(Request("{}")),
                   R"({"root":{"id":"n-0","name":"Root","kind":"object","children":[{"id":"n-1","name":"NodeA","kind":"object"},{"id":"n-2","name":"GroupNode","kind":"object","children":[{"id":"n-3","name":"NodeB"}]}]}})");

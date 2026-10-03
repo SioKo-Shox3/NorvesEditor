@@ -99,7 +99,8 @@ namespace norves::mock
                         R"({"name":"object.edit"},)"
                         R"({"name":"scene.edit"},)"
                         R"({"name":"viewport.thumbnail"},)"
-                        R"({"name":"component.edit"}]})"));
+                        R"({"name":"component.edit"},)"
+                        R"({"name":"asset.read"}]})"));
             }
 
             // スペックポジティブフィクスチャ
@@ -560,6 +561,50 @@ namespace norves::mock
                     R"({"typeName":"TypeB","kind":"component","instantiable":false},)"
                     R"({"typeName":"camera","kind":"component","instantiable":true,"properties":[)"
                     R"({"name":"fieldOfView","valueType":"number"}]}]})"));
+        }
+
+        // @brief MCP 試験プロフィール用の資産解決結果を値コピーで返す。
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        assetResolve(const Norves::Bridge::JsonValue& params) override
+        {
+            if (!is_mcp_edit_profile())
+            {
+                return Norves::Bridge::IBridgeEngineAdapter::assetResolve(params);
+            }
+
+            const auto logicalPath = extract_string_field(params.dump(), "logicalPath");
+            const std::string normalizedPath = logicalPath.value_or("");
+            const bool hasPath = logicalPath.has_value() && !logicalPath->empty();
+            const bool found = normalizedPath == "textures/hero.png";
+            const std::string status = found ? "successCooked" :
+                                       hasPath ? "cookedEntryMissing" : "invalidRequest";
+            const std::string source = found ? "cooked" : "none";
+            const std::string result = R"({"status":)" + json_quote(status) +
+                                       R"(,"source":)" + json_quote(source) +
+                                       R"(,"normalizedLogicalPath":)" + json_quote(normalizedPath) +
+                                       "}";
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::
+                ok(parse_or_die(result));
+        }
+
+        // @brief MCP 試験プロフィール用のマニフェストを DTO として返す。
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        assetGetManifest(const Norves::Bridge::JsonValue& params) override
+        {
+            if (!is_mcp_edit_profile())
+            {
+                return Norves::Bridge::IBridgeEngineAdapter::assetGetManifest(params);
+            }
+
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::
+                ok(parse_or_die(
+                    R"({"version":1,"entries":[)"
+                    R"({"logicalPath":"textures/hero.png","kind":"texture","variant":"default","format":"png",)"
+                    R"("sourceHash":"source-hash","cookedPackage":"packs/textures.ncp","entryName":"textures/hero.png",)"
+                    R"("entryType":"texture","cookedHash":"cooked-hash","cookedVersion":1}],)"
+                    R"("totalCount":1,"page":0,"pageSize":50})"));
         }
 
         // @brief viewport.getThumbnail。小さなテスト用 PNG（2x2、base64 後でも 100 バイト程度
