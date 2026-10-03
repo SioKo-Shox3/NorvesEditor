@@ -5,6 +5,7 @@
 
 ## Done
 - (反復ごとに1行: タスク id、コミット、検証の要点)
+- MCP-009 差し戻し対応: 部分失敗のエラー経路でBridge世代を履歴ロックより先に読み、履歴参照側とロック順を統一してデッドロックを防止。fmt/clippy/cargo test（218単体+14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべて成功。証拠 `.harness/runs/20261003-035149/verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt`。
 - MCP-009: 名前・出どころ・時刻を持つまとまりと逆順undo/順redoを実装。部分失敗では成功位置と未処理部分を保留し、既知拒否だけを再試行して成功分を重複適用しない。結果不明のtimeout/通信断は再送せず、破棄結果に残存変更を返す。新IDのまとまり内置換、世代切り替え、保留中の編集・undo/redo・play/pause/stop拒否を試験。fmt/clippy/cargo test（218単体+14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべて成功。証拠 `.harness/runs/20261003-035149/verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt`。
 - MCP-008: 画面storeから編集履歴の正本と逆操作を外し、編集・undo/redo・実行制御を共通サービスのTauri入口へ接続。旧値/親と適用改訂の捕捉、要約イベントによる表示、捕捉不足時の再取得と再操作案内を画面側試験で確認し、連打中の二重送信と自動キー反復も抑止。typecheck exit 0、vitest 621/621、IPC名35 commands/13 events一致。証拠 `.harness/runs/20261003-035149/verify-MCP-008-7.txt`〜`verify-MCP-008-9.txt`。
 - MCP-007: 編集サービスの接続世代・適用改訂・sequenceを基準化し、購読開始中に届いたイベントも要約取得後に再同期する。世代・改訂が古い通知を捨て、必要なシーン/Inspector snapshotを取り直す。サービスイベントだけで値・改名・構造変更がOutlinerとInspectorへ反映される試験を追加。typecheck exit 0、vitest 657/657。証拠 `.harness/runs/20261003-035149/verify-MCP-007-5.txt` / `verify-MCP-007-6.txt`。
@@ -46,6 +47,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-03 MCP-009差し戻し: 部分失敗処理で世代ロック→履歴ロックの順に統一。指定された最終ゲート5件はexit 0で、保存ログを開いて確認した。
 - 2026-10-03 MCP-009: 開始ゲート `scripts/verify.ps1` exit 0。最終 fmt/clippy/cargo test（218単体・14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべてexit 0。実Bridge要求timeout後の結果不明・保留要約・再送なし・再接続世代変更による解消を新試験で確認し、保存ログを開いて合格を確認。
 - 2026-10-03 MCP-008: 開始ゲート `./scripts/verify.ps1` と最終 `pnpm -C apps/editor typecheck` / `pnpm -C apps/editor test` / `node scripts/check-protocol-names.mjs` はすべて exit 0。保存ログを開いて確認し、フロントエンドvitest 621/621、IPC名35 commands/13 events一致。store・hookに画面履歴の記録/逆操作が残らないことも検索で確認した。
 - 2026-10-03 MCP-007: 再接続後は接続要約が確定するまで編集イベントを適用せず、取得中に通知が届いた場合は要約をもう一度照会する。古い取得応答は要求ID/接続世代/適用改訂で破棄。typecheckとフロントエンドvitestを保存ログから確認。

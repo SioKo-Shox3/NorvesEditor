@@ -1401,10 +1401,10 @@ async fn run_group_history_action(
                 });
             }
             Err(error) => {
+                let current_generation = bridge.current_generation();
                 let mut state = history
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let current_generation = bridge.current_generation();
                 state.synchronize(current_generation);
                 if current_generation == Some(lease.generation) {
                     state.finish_group_failure(&action, completed, &error);
