@@ -14,13 +14,16 @@ use tokio::sync::Mutex;
 
 use crate::{
     bridge_state::{BridgeFacade, BridgeLease},
+    dto::{EditSourceDto, McpConfirmationRequestDto},
+    edit_service::EditHistoryConfirmationSnapshot,
     error::BackendError,
     mcp::{
         authorization::{
             parse_scope_snapshot_bytes, parse_scope_tree_bytes, with_scope_deadline,
             McpHistoryAction, McpSceneScopeIndex, McpScopeBudget, McpWriteOperation,
-            McpWritePermit,
+            McpWritePermit, McpWritePolicySnapshot,
         },
+        confirmation::ConfirmationResult,
         McpAuthorization, McpRequestLease,
     },
 };
@@ -46,6 +49,29 @@ const MAX_CURSOR_BYTES: usize = 256;
 const MAX_ENGINE_ERROR_CODE_BYTES: usize = 128;
 const MAX_ENGINE_ERROR_MESSAGE_BYTES: usize = 4096;
 const BRIDGE_ASSET_PAGE_SIZE: u64 = 200;
+const MAX_CONFIRMATION_TARGETS: usize = 200;
+const MAX_CONFIRMATION_VALUE_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Debug, PartialEq)]
+struct AuthorizationReview {
+    policy: McpWritePolicySnapshot,
+    generation: u64,
+    operation: McpWriteOperation,
+    scope_values: Vec<Value>,
+    preview: ConfirmationPreview,
+    history_snapshot: Option<EditHistoryConfirmationSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ConfirmationPreview {
+    target_ids: Vec<String>,
+    target_count: usize,
+    before: Option<Value>,
+    after: Option<Value>,
+    source: Option<EditSourceDto>,
+    undo_available: bool,
+    clears_history: bool,
+}
 
 fn engine_error_as_data(error: BackendError) -> String {
     match error {
@@ -83,6 +109,8 @@ pub(crate) struct McpReadContext {
     snapshots: Arc<Mutex<ReadSnapshotStore>>,
     thumbnails: McpThumbnailService,
     authorization: Option<McpAuthorization>,
+    history_source:
+        Option<Arc<dyn Fn() -> EditHistoryConfirmationSnapshot + Send + Sync + 'static>>,
 }
 
 static DEFAULT_READ_CONTEXT: OnceLock<StdMutex<Option<McpReadContext>>> = OnceLock::new();
@@ -101,6 +129,7 @@ impl McpReadContext {
             snapshots: Arc::new(Mutex::new(ReadSnapshotStore::default())),
             thumbnails,
             authorization: None,
+            history_source: None,
         }
     }
 
@@ -108,6 +137,15 @@ impl McpReadContext {
     #[allow(dead_code)]
     pub(crate) fn with_authorization(mut self, authorization: McpAuthorization) -> Self {
         self.authorization = Some(authorization);
+        self
+    }
+
+    /// 確認待ちの間に変わった履歴改訂とundo先頭を検出する。
+    pub(crate) fn with_history_source(
+        mut self,
+        source: Arc<dyn Fn() -> EditHistoryConfirmationSnapshot + Send + Sync + 'static>,
+    ) -> Self {
+        self.history_source = Some(source);
         self
     }
 
@@ -121,7 +159,8 @@ impl McpReadContext {
     ) -> Result<McpWritePermit, String> {
         let operation = McpWriteOperation::from_bridge_method(method, params)
             .map_err(|error| error.message().to_owned())?;
-        self.authorize_operation(request_lease, operation).await
+        self.authorize_operation(request_lease, method, method, params.clone(), operation, None)
+            .await
     }
 
     /// 非公開の書き込み道具への直接呼び出しもschema・権限・範囲を検査する。
@@ -143,32 +182,195 @@ impl McpReadContext {
         let ValidatedToolInput::BridgeWrite { params, .. } = validated else {
             return Err(tool_input_message(ToolInputError::Invalid));
         };
-        self.authorize_write(request_lease, method, &params).await
+        let operation = McpWriteOperation::from_bridge_method(method, &params)
+            .map_err(|error| error.message().to_owned())?;
+        self.authorize_operation(
+            request_lease,
+            name,
+            method,
+            params,
+            operation,
+            None,
+        )
+        .await
     }
 
     /// MCP undo/redoの先頭まとまりに含まれる全記録を検査してpermitを返す。
     #[allow(dead_code)]
-    pub(crate) async fn authorize_history(
+    pub(crate) async fn authorize_history<F>(
         &self,
         request_lease: &McpRequestLease,
         action: McpHistoryAction,
-    ) -> Result<McpWritePermit, String> {
-        self.authorize_operation(request_lease, McpWriteOperation::History(action))
-            .await
+        current_history: F,
+    ) -> Result<McpWritePermit, String>
+    where
+        F: Fn() -> Option<McpHistoryAction> + Send + Sync + 'static,
+    {
+        let operation = McpWriteOperation::History(action);
+        self.authorize_operation(
+            request_lease,
+            "edit_undo_redo",
+            "edit.history",
+            Value::Null,
+            operation,
+            Some(Arc::new(current_history)),
+        )
+        .await
     }
 
     async fn authorize_operation(
         &self,
         request_lease: &McpRequestLease,
+        tool_name: &str,
+        method: &str,
+        params: Value,
         operation: McpWriteOperation,
+        history_snapshot: Option<Arc<dyn Fn() -> Option<McpHistoryAction> + Send + Sync>>,
     ) -> Result<McpWritePermit, String> {
+        let authorization = self
+            .authorization
+            .as_ref()
+            .ok_or_else(|| "MCP書き込みの認証状態がありません。".to_owned())?;
+        let requires_confirmation = operation.requires_confirmation();
+        let confirmation_broker = authorization.confirmations();
+        let mut operation = operation;
+        if let Some(current_history) = history_snapshot.as_ref() {
+            let current = current_history()
+                .ok_or_else(|| "取り消し対象の履歴を再取得できません。".to_owned())?;
+            if !matches!(&operation, McpWriteOperation::History(action) if *action == current) {
+                operation = McpWriteOperation::History(current);
+            }
+        }
+        let mut review = self
+            .resolve_authorization_review(
+                request_lease,
+                method,
+                &params,
+                operation.clone(),
+                requires_confirmation,
+            )
+            .await?;
+        let needs_confirmation = review.policy.settings.mode == crate::mcp::McpWriteMode::Confirm
+            || requires_confirmation;
+        if !needs_confirmation {
+            let permit = authorization
+                .issue_write_permit(
+                    request_lease,
+                    &review.policy,
+                    review.generation,
+                    review.operation.clone(),
+                )
+                .map_err(|error| error.message().to_owned())?;
+            authorization
+                .validate_write_permit(
+                    &permit,
+                    request_lease,
+                    review.generation,
+                    &review.operation,
+                )
+                .map_err(|error| error.message().to_owned())?;
+            return Ok(permit);
+        }
+
+        loop {
+            if !request_lease.is_current() {
+                return Err("MCP要求の認証または接続が失効しました。".to_owned());
+            }
+            let deadline = request_lease
+                .confirmation_deadline()
+                .ok_or_else(|| "MCP書き込み要求の全体期限を超えました。".to_owned())?;
+            let request = confirmation_request(
+                tool_name,
+                method,
+                deadline,
+                &review.preview,
+                review.history_snapshot,
+            )?;
+            match confirmation_broker.request(request, request_lease).await {
+                ConfirmationResult::Approved => {}
+                ConfirmationResult::Rejected => {
+                    return Err("エディタ画面でこの操作は拒否されました。".to_owned());
+                }
+                ConfirmationResult::TimedOut => {
+                    return Err("エディタ画面での確認期限を超えました。".to_owned());
+                }
+                ConfirmationResult::Cancelled if !request_lease.is_authorization_current() => {
+                    return Err("MCPの許可が変更されたため、この操作は失効しました。".to_owned());
+                }
+                ConfirmationResult::Cancelled => {
+                    return Err("HTTP要求が終了したため、この操作は取り下げられました。".to_owned());
+                }
+                ConfirmationResult::Unavailable => {
+                    return Err("確認待ちを受け付けられませんでした。".to_owned());
+                }
+            }
+
+            if let Some(current_history) = history_snapshot.as_ref().and_then(|read| read()) {
+                if !matches!(&review.operation, McpWriteOperation::History(action) if *action == current_history)
+                {
+                    review = self
+                        .resolve_authorization_review(
+                            request_lease,
+                            method,
+                            &params,
+                            McpWriteOperation::History(current_history),
+                            true,
+                        )
+                        .await?;
+                    continue;
+                }
+            } else if history_snapshot.is_some() {
+                return Err("取り消し対象の履歴を再取得できません。".to_owned());
+            }
+
+            let current = self
+                .resolve_authorization_review(
+                    request_lease,
+                    method,
+                    &params,
+                    review.operation.clone(),
+                    requires_confirmation,
+                )
+                .await?;
+            if current != review {
+                review = current;
+                continue;
+            }
+            let permit = authorization
+                .issue_confirmed_write_permit(
+                    request_lease,
+                    &review.policy,
+                    review.generation,
+                    review.operation.clone(),
+                )
+                .map_err(|error| error.message().to_owned())?;
+            authorization
+                .validate_write_permit(
+                    &permit,
+                    request_lease,
+                    review.generation,
+                    &review.operation,
+                )
+                .map_err(|error| error.message().to_owned())?;
+            return Ok(permit);
+        }
+    }
+
+    async fn resolve_authorization_review(
+        &self,
+        request_lease: &McpRequestLease,
+        method: &str,
+        params: &Value,
+        operation: McpWriteOperation,
+        requires_confirmation: bool,
+    ) -> Result<AuthorizationReview, String> {
         let authorization = self
             .authorization
             .as_ref()
             .ok_or_else(|| "MCP書き込みの認証状態がありません。".to_owned())?;
         let policy = authorization.write_policy_snapshot();
         authorization
-            .check_write_request(request_lease, &policy, &operation)
+            .check_write_preflight(request_lease, &policy)
             .map_err(|error| error.message().to_owned())?;
         let generation = self
             .catalog
@@ -178,30 +380,60 @@ impl McpReadContext {
         if bridge_lease.generation != generation {
             return Err("Bridge接続が切り替わりました。操作をやり直してください。".to_owned());
         }
-        let required = operation.required_capabilities();
-        if !self.catalog.has_capabilities(generation, &required) {
+        if !self
+            .catalog
+            .has_capabilities(generation, &operation.required_capabilities())
+        {
             return Err("接続中のエンジンに範囲検査に必要な能力がありません。".to_owned());
         }
 
+        let mut scope_values = Vec::new();
+        let mut tree = None;
+        let show_confirmation = requires_confirmation
+            || policy.settings.mode == crate::mcp::McpWriteMode::Confirm;
         let needs_tree = !matches!(operation, McpWriteOperation::RuntimeControl)
             || policy.settings.scene_root_id.is_some();
         if needs_tree {
             let resolution = async {
-                let (mut index, mut budget) = self
+                let (mut index, mut budget, tree_result) = self
                     .resolve_scene_scope(
                         &bridge_lease,
                         generation,
                         policy.settings.scene_root_id.as_deref(),
                     )
                     .await?;
-                self.resolve_component_targets(&bridge_lease, &mut index, &mut budget, &operation)
-                    .await?;
+                tree = Some(tree_result.clone());
+                scope_values.push(tree_result.clone());
+                scope_values.extend(
+                    self.resolve_component_targets(
+                        &bridge_lease,
+                        &mut index,
+                        &mut budget,
+                        &operation,
+                    )
+                    .await?,
+                );
                 index
                     .check_operation(&operation)
-                    .map_err(|error| error.message().to_owned())
+                    .map_err(|error| error.message().to_owned())?;
+                if show_confirmation {
+                    if let Some(snapshot_id) = confirmation_snapshot_id(&operation) {
+                        let snapshot = self
+                            .read_confirmation_snapshot(
+                                &bridge_lease,
+                                &mut budget,
+                                snapshot_id,
+                            )
+                            .await?;
+                        scope_values.push(snapshot);
+                    }
+                }
+                Ok::<(), String>(())
             };
-            with_scope_deadline(resolution)
+            let deadline = request_lease.request_deadline();
+            tokio::time::timeout_at(deadline, with_scope_deadline(resolution))
                 .await
+                .map_err(|_| "MCP書き込み要求の全体期限を超えました。".to_owned())?
                 .map_err(|error| error.message().to_owned())??;
         }
         if !self.bridge.is_current(generation) {
@@ -209,13 +441,19 @@ impl McpReadContext {
                 "範囲検査中にBridge接続が切り替わりました。操作をやり直してください。".to_owned(),
             );
         }
-        let permit = authorization
-            .issue_write_permit(request_lease, &policy, generation, operation)
-            .map_err(|error| error.message().to_owned())?;
         authorization
-            .validate_write_permit(&permit, request_lease, generation, &permit.operation)
+            .check_write_preflight(request_lease, &policy)
             .map_err(|error| error.message().to_owned())?;
-        Ok(permit)
+        let history_snapshot = self.history_source.as_ref().map(|source| source());
+        let preview = make_confirmation_preview(&operation, method, params, tree.as_ref(), &scope_values)?;
+        Ok(AuthorizationReview {
+            policy,
+            generation,
+            operation,
+            scope_values,
+            preview,
+            history_snapshot,
+        })
     }
 
     async fn resolve_scene_scope(
@@ -223,7 +461,7 @@ impl McpReadContext {
         lease: &BridgeLease,
         generation: u64,
         scene_root_id: Option<&str>,
-    ) -> Result<(McpSceneScopeIndex, McpScopeBudget), String> {
+    ) -> Result<(McpSceneScopeIndex, McpScopeBudget, Value), String> {
         if !self.catalog.has_capabilities(generation, &["scene.query"]) {
             return Err("範囲検査に必要なscene.query能力がありません。".to_owned());
         }
@@ -248,7 +486,7 @@ impl McpReadContext {
                 "範囲検査中にBridge接続が切り替わりました。操作をやり直してください。".to_owned(),
             );
         }
-        Ok((index, budget))
+        Ok((index, budget, result))
     }
 
     async fn resolve_component_targets(
@@ -257,7 +495,7 @@ impl McpReadContext {
         index: &mut McpSceneScopeIndex,
         budget: &mut McpScopeBudget,
         operation: &McpWriteOperation,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<Value>, String> {
         let mut targets = Vec::new();
         match operation {
             McpWriteOperation::Property { object_id } if !index.contains_node(object_id) => {
@@ -282,7 +520,7 @@ impl McpReadContext {
         targets.sort_unstable();
         targets.dedup();
         if targets.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         if !self
             .catalog
@@ -290,6 +528,7 @@ impl McpReadContext {
         {
             return Err("componentの所属確認に必要なobject.query能力がありません。".to_owned());
         }
+        let mut snapshots = Vec::new();
         for owner_id in index.scene_object_ids() {
             budget
                 .begin_snapshot()
@@ -316,15 +555,53 @@ impl McpReadContext {
             index
                 .record_component_snapshot(&owner_id, snapshot)
                 .map_err(|error| error.message().to_owned())?;
+            snapshots.push(result);
         }
         if targets
             .iter()
             .all(|target| index.contains_component(target))
         {
-            Ok(())
+            Ok(snapshots)
         } else {
             Err("componentの所属を確認できないため、操作を拒否しました。".to_owned())
         }
+    }
+
+    async fn read_confirmation_snapshot(
+        &self,
+        lease: &BridgeLease,
+        budget: &mut McpScopeBudget,
+        object_id: &str,
+    ) -> Result<Value, String> {
+        if !self
+            .catalog
+            .has_capabilities(lease.generation, &["object.query"])
+        {
+            return Err("確認用snapshotに必要なobject.query能力がありません。".to_owned());
+        }
+        budget
+            .begin_snapshot()
+            .map_err(|error| error.message().to_owned())?;
+        let mut params = Map::new();
+        params.insert("objectId".to_owned(), Value::String(object_id.to_owned()));
+        let snapshot = self
+            .bridge
+            .send_with_lease(lease, "object.getSnapshot", Some(params))
+            .await
+            .map_err(|error| {
+                format!(
+                    "確認用snapshotを取得できません: {}",
+                    engine_error_as_data(error)
+                )
+            })?;
+        let bytes = parse_scope_snapshot_bytes(&snapshot)
+            .map_err(|error| error.message().to_owned())?;
+        budget
+            .add_bytes(bytes)
+            .map_err(|error| error.message().to_owned())?;
+        norves_bridge_editor_client::parse_object_snapshot_result(&snapshot)
+            .map_err(|_| "確認用snapshotの形式が不正です。".to_owned())?;
+        Ok(snapshot)
     }
 
     pub(crate) fn install_default(context: Self) {
@@ -710,6 +987,311 @@ impl McpReadContext {
                 Instant::now(),
             )
             .map_err(PagingError::message)
+    }
+}
+
+fn confirmation_snapshot_id(operation: &McpWriteOperation) -> Option<&str> {
+    match operation {
+        McpWriteOperation::Property { object_id } => Some(object_id),
+        McpWriteOperation::ComponentRemove { component_id } => Some(component_id),
+        _ => None,
+    }
+}
+
+fn confirmation_request(
+    tool_name: &str,
+    method: &str,
+    deadline: tokio::time::Instant,
+    preview: &ConfirmationPreview,
+    history_snapshot: Option<EditHistoryConfirmationSnapshot>,
+) -> Result<McpConfirmationRequestDto, String> {
+    for value in [&preview.before, &preview.after].into_iter().flatten() {
+        let size = serde_json::to_vec(value)
+            .map_err(|_| "確認内容をJSONへ変換できません。".to_owned())?
+            .len();
+        if size > MAX_CONFIRMATION_VALUE_BYTES {
+            return Err("確認内容が64 KiBを超えるため、操作を拒否しました。".to_owned());
+        }
+    }
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "確認期限を計算できません。".to_owned())?;
+    let expires_at = now
+        .as_millis()
+        .saturating_add(remaining.as_millis())
+        .min(u64::MAX as u128) as u64;
+    Ok(McpConfirmationRequestDto {
+        id: String::new(),
+        tool_name: tool_name.to_owned(),
+        method: method.to_owned(),
+        target_ids: preview.target_ids.clone(),
+        target_count: preview.target_count,
+        before: preview.before.clone(),
+        after: preview.after.clone(),
+        source: preview.source,
+        undo_available: preview.undo_available,
+        clears_history: preview.clears_history,
+        history_generation: history_snapshot.and_then(|snapshot| snapshot.generation),
+        history_revision: history_snapshot.map_or(0, |snapshot| snapshot.history_revision),
+        undo_head_id: history_snapshot.and_then(|snapshot| snapshot.undo_head_id),
+        expires_at,
+    })
+}
+
+fn make_confirmation_preview(
+    operation: &McpWriteOperation,
+    method: &str,
+    params: &Value,
+    tree: Option<&Value>,
+    scope_values: &[Value],
+) -> Result<ConfirmationPreview, String> {
+    let mut target_ids = Vec::new();
+    let mut target_count = 0;
+    let mut before = None;
+    let mut after = None;
+    let mut source = None;
+    let mut undo_available = false;
+    let mut clears_history = false;
+    match operation {
+        McpWriteOperation::Property { object_id } => {
+            target_ids.push(object_id.clone());
+            target_count = 1;
+            let property = params.get("property").and_then(Value::as_str);
+            before = scope_values
+                .iter()
+                .find(|snapshot| snapshot.get("objectId").and_then(Value::as_str) == Some(object_id))
+                .and_then(|snapshot| snapshot.get("properties"))
+                .and_then(Value::as_array)
+                .and_then(|entries| {
+                    entries.iter().find(|entry| {
+                        entry.get("name").and_then(Value::as_str) == property
+                    })
+                })
+                .and_then(|entry| entry.get("value"))
+                .cloned();
+            after = params.get("value").cloned();
+            undo_available = true;
+        }
+        McpWriteOperation::Create { parent_id } => {
+            target_ids.extend(parent_id.iter().cloned());
+            target_count = 1;
+            after = Some(json!({
+                "kind": params.get("kind").cloned().unwrap_or(Value::Null),
+                "parentId": parent_id,
+            }));
+            undo_available = true;
+        }
+        McpWriteOperation::Duplicate {
+            object_id,
+            new_parent_id,
+        } => {
+            target_ids.push(object_id.clone());
+            target_ids.extend(new_parent_id.iter().cloned());
+            target_count = 1;
+            before = tree.and_then(|value| find_tree_node(value, object_id)).cloned();
+            after = Some(json!({
+                "source": before,
+                "parentId": new_parent_id,
+            }));
+            undo_available = true;
+        }
+        McpWriteOperation::Reparent {
+            object_id,
+            new_parent_id,
+        } => {
+            target_ids.push(object_id.clone());
+            target_ids.extend(new_parent_id.iter().cloned());
+            target_count = 1;
+            let old_parent = tree.and_then(|value| find_tree_parent(value, object_id));
+            target_ids.extend(old_parent.clone());
+            before = Some(json!({ "parentId": old_parent }));
+            after = Some(json!({ "parentId": new_parent_id }));
+            undo_available = true;
+        }
+        McpWriteOperation::Delete { object_id } => {
+            before = tree.and_then(|value| find_tree_node(value, object_id)).cloned();
+            if let Some(node) = before.as_ref() {
+                collect_tree_ids(node, &mut target_ids);
+            } else {
+                target_ids.push(object_id.clone());
+            }
+            target_count = target_ids.len();
+            clears_history = true;
+        }
+        McpWriteOperation::ComponentAdd { object_id } => {
+            target_ids.push(object_id.clone());
+            target_count = 1;
+            after = Some(json!({
+                "componentKind": params.get("kind").cloned().unwrap_or(Value::Null),
+                "objectId": object_id,
+            }));
+        }
+        McpWriteOperation::ComponentRemove { component_id } => {
+            target_ids.push(component_id.clone());
+            target_count = 1;
+            before = scope_values
+                .iter()
+                .find(|snapshot| snapshot.get("objectId").and_then(Value::as_str) == Some(component_id))
+                .cloned();
+        }
+        McpWriteOperation::RuntimeControl => {
+            target_ids.push("engine".to_owned());
+            target_count = 1;
+            after = Some(json!({ "method": method }));
+        }
+        McpWriteOperation::History(action) => {
+            let mut before_values = Vec::new();
+            let mut after_values = Vec::new();
+            for record in &action.records {
+                match record {
+                    crate::edit_service::HistoryRecord::Create {
+                        created_id,
+                        parent_id,
+                        kind,
+                    } => {
+                        target_ids.push(created_id.clone());
+                        target_ids.extend(parent_id.iter().cloned());
+                        match action.direction {
+                            crate::mcp::authorization::McpHistoryDirection::Undo => {
+                                before_values.push(json!({"objectId":created_id,"kind":kind}));
+                                after_values.push(Value::Null);
+                            }
+                            crate::mcp::authorization::McpHistoryDirection::Redo => {
+                                before_values.push(Value::Null);
+                                after_values.push(json!({"kind":kind,"parentId":parent_id}));
+                            }
+                        }
+                    }
+                    crate::edit_service::HistoryRecord::Duplicate {
+                        source_object_id,
+                        created_id,
+                        parent_id,
+                    } => {
+                        target_ids.push(source_object_id.clone());
+                        target_ids.push(created_id.clone());
+                        target_ids.extend(parent_id.iter().cloned());
+                        match action.direction {
+                            crate::mcp::authorization::McpHistoryDirection::Undo => {
+                                before_values.push(json!({"objectId":created_id}));
+                                after_values.push(Value::Null);
+                            }
+                            crate::mcp::authorization::McpHistoryDirection::Redo => {
+                                before_values.push(Value::Null);
+                                after_values.push(json!({"sourceObjectId":source_object_id,"parentId":parent_id}));
+                            }
+                        }
+                    }
+                    crate::edit_service::HistoryRecord::Reparent {
+                        object_id,
+                        old_parent_id,
+                        new_parent_id,
+                    } => {
+                        target_ids.push(object_id.clone());
+                        target_ids.extend(old_parent_id.iter().cloned());
+                        target_ids.extend(new_parent_id.iter().cloned());
+                        let (old_parent, new_parent) = match action.direction {
+                            crate::mcp::authorization::McpHistoryDirection::Undo => {
+                                (new_parent_id, old_parent_id)
+                            }
+                            crate::mcp::authorization::McpHistoryDirection::Redo => {
+                                (old_parent_id, new_parent_id)
+                            }
+                        };
+                        before_values.push(json!({"objectId":object_id,"parentId":old_parent}));
+                        after_values.push(json!({"objectId":object_id,"parentId":new_parent}));
+                    }
+                    crate::edit_service::HistoryRecord::SetProperty {
+                        object_id,
+                        property,
+                        old_value,
+                        new_value,
+                    } => {
+                        target_ids.push(object_id.clone());
+                        let (old_value, new_value) = match action.direction {
+                            crate::mcp::authorization::McpHistoryDirection::Undo => {
+                                (new_value, old_value)
+                            }
+                            crate::mcp::authorization::McpHistoryDirection::Redo => {
+                                (old_value, new_value)
+                            }
+                        };
+                        before_values.push(json!({"objectId":object_id,"property":property,"value":old_value}));
+                        after_values.push(json!({"objectId":object_id,"property":property,"value":new_value}));
+                    }
+                }
+            }
+            before = Some(Value::Array(before_values));
+            after = Some(Value::Array(after_values));
+            target_count = target_ids.len();
+            source = Some(match action.source {
+                crate::edit_service::EditSource::Ui => EditSourceDto::Ui,
+                crate::edit_service::EditSource::Mcp => EditSourceDto::Mcp,
+            });
+            undo_available = true;
+        }
+    }
+    target_ids.sort();
+    target_ids.dedup();
+    if target_count == 0 {
+        target_count = target_ids.len();
+    }
+    target_ids.truncate(MAX_CONFIRMATION_TARGETS);
+    for value in [&before, &after].into_iter().flatten() {
+        let size = serde_json::to_vec(value)
+            .map_err(|_| "確認内容をJSONへ変換できません。".to_owned())?
+            .len();
+        if size > MAX_CONFIRMATION_VALUE_BYTES {
+            return Err("確認内容が64 KiBを超えるため、操作を拒否しました。".to_owned());
+        }
+    }
+    Ok(ConfirmationPreview {
+        target_ids,
+        target_count,
+        before,
+        after,
+        source,
+        undo_available,
+        clears_history,
+    })
+}
+
+fn find_tree_node<'a>(tree: &'a Value, object_id: &str) -> Option<&'a Value> {
+    fn find<'a>(node: &'a Value, object_id: &str) -> Option<&'a Value> {
+        if node.get("id").and_then(Value::as_str) == Some(object_id) {
+            return Some(node);
+        }
+        node.get("children")
+            .and_then(Value::as_array)?
+            .iter()
+            .find_map(|child| find(child, object_id))
+    }
+    find(tree.get("root")?, object_id)
+}
+
+fn find_tree_parent(tree: &Value, object_id: &str) -> Option<String> {
+    fn find(node: &Value, object_id: &str) -> Option<String> {
+        let parent_id = node.get("id").and_then(Value::as_str)?;
+        let children = node.get("children").and_then(Value::as_array)?;
+        if children
+            .iter()
+            .any(|child| child.get("id").and_then(Value::as_str) == Some(object_id))
+        {
+            return Some(parent_id.to_owned());
+        }
+        children.iter().find_map(|child| find(child, object_id))
+    }
+    find(tree.get("root")?, object_id)
+}
+
+fn collect_tree_ids(node: &Value, ids: &mut Vec<String>) {
+    if let Some(id) = node.get("id").and_then(Value::as_str) {
+        ids.push(id.to_owned());
+    }
+    if let Some(children) = node.get("children").and_then(Value::as_array) {
+        for child in children {
+            collect_tree_ids(child, ids);
+        }
     }
 }
 

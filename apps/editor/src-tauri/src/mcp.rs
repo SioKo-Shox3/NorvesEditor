@@ -52,6 +52,7 @@ use crate::mcp_token::McpToken;
 use axum::extract::connect_info::Connected;
 
 pub(crate) mod authorization;
+pub(crate) mod confirmation;
 // E4で接続するまで、一覧ヘルパーは内部APIとして保持する。
 #[allow(dead_code)]
 pub(crate) mod images;
@@ -64,6 +65,7 @@ pub(crate) mod tool_catalog;
 use authorization::{
     McpWriteOperation, McpWritePermit, McpWritePolicySnapshot, McpWriteSettings, ScopeError,
 };
+use confirmation::McpConfirmationBroker;
 
 /// MCP書き込みの実行時許可モード。
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -88,6 +90,8 @@ pub const MAX_ORDINARY_REQUESTS: usize = 16;
 pub const MAX_LONG_LIVED_STREAMS: usize = 8;
 /// 通常要求の全体期限。
 pub const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// MCP書き込み要求は確認・再照会・編集列待ちを含めて125秒で終了する。
+pub const WRITE_REQUEST_TIMEOUT: Duration = Duration::from_secs(125);
 /// 長寿命 SSE の無通信期限。
 pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// 長寿命 SSE の最大寿命。
@@ -105,9 +109,11 @@ pub struct McpAuthorization {
 
 struct McpAuthorizationInner {
     revision: AtomicU64,
+    next_request_id: AtomicU64,
     revision_tx: watch::Sender<u64>,
     leases: Mutex<Vec<(u64, Weak<CancellationToken>)>>,
     write_policy: RwLock<WritePolicyState>,
+    confirmations: McpConfirmationBroker,
 }
 
 struct WritePolicyState {
@@ -121,12 +127,14 @@ impl Default for McpAuthorization {
         Self {
             inner: Arc::new(McpAuthorizationInner {
                 revision: AtomicU64::new(1),
+                next_request_id: AtomicU64::new(1),
                 revision_tx,
                 leases: Mutex::new(Vec::new()),
                 write_policy: RwLock::new(WritePolicyState {
                     settings: McpWriteSettings::default(),
                     revision: 1,
                 }),
+                confirmations: McpConfirmationBroker::default(),
             }),
         }
     }
@@ -135,7 +143,7 @@ impl Default for McpAuthorization {
 impl McpAuthorization {
     /// 現在の改訂で要求リースを作り、失効時の取消一覧へ登録する。
     pub fn current_lease(&self) -> McpRequestLease {
-        let cancellation = Arc::new(CancellationToken::new());
+        let authorization_cancellation = Arc::new(CancellationToken::new());
         let mut leases = self
             .inner
             .leases
@@ -144,13 +152,19 @@ impl McpAuthorization {
         leases.retain(|(_, token)| token.strong_count() > 0);
         let revision = self.inner.revision.load(Ordering::Acquire);
         if revision == self.inner.revision.load(Ordering::Acquire) {
-            leases.push((revision, Arc::downgrade(&cancellation)));
+            leases.push((revision, Arc::downgrade(&authorization_cancellation)));
         } else {
-            cancellation.cancel();
+            authorization_cancellation.cancel();
         }
         McpRequestLease {
             revision,
-            cancellation,
+            request_id: self
+                .inner
+                .next_request_id
+                .fetch_add(1, Ordering::Relaxed),
+            authorization_cancellation,
+            request_cancellation: CancellationToken::new(),
+            deadline: Instant::now() + WRITE_REQUEST_TIMEOUT,
             authorization: self.clone(),
         }
     }
@@ -177,6 +191,7 @@ impl McpAuthorization {
             }
             false
         });
+        self.inner.confirmations.cancel_all();
         revision
     }
 
@@ -230,6 +245,27 @@ impl McpAuthorization {
             auth_revision: lease.revision(),
             policy_revision: snapshot.revision,
             generation,
+            request_id: lease.request_id(),
+            confirmed: false,
+            operation,
+        })
+    }
+
+    /// 確認済みの一回の要求に限り、確認必須操作のpermitを発行する。
+    pub(crate) fn issue_confirmed_write_permit(
+        &self,
+        lease: &McpRequestLease,
+        snapshot: &McpWritePolicySnapshot,
+        generation: u64,
+        operation: McpWriteOperation,
+    ) -> Result<McpWritePermit, ScopeError> {
+        self.check_write_request_after_confirmation(lease, snapshot, &operation)?;
+        Ok(McpWritePermit {
+            auth_revision: lease.revision(),
+            policy_revision: snapshot.revision,
+            generation,
+            request_id: lease.request_id(),
+            confirmed: true,
             operation,
         })
     }
@@ -257,6 +293,45 @@ impl McpAuthorization {
         Ok(())
     }
 
+    /// 範囲解決前に認証改訂とread-onlyを検査する。
+    pub(crate) fn check_write_preflight(
+        &self,
+        lease: &McpRequestLease,
+        snapshot: &McpWritePolicySnapshot,
+    ) -> Result<(), ScopeError> {
+        if !lease.is_current() {
+            return Err(ScopeError::AuthorizationRevoked);
+        }
+        let current = self.write_policy_snapshot();
+        if current.revision != snapshot.revision || current.settings != snapshot.settings {
+            return Err(ScopeError::AuthorizationRevoked);
+        }
+        if snapshot.settings.mode == McpWriteMode::ReadOnly {
+            return Err(ScopeError::ReadOnly);
+        }
+        Ok(())
+    }
+
+    /// 承認後の再照合では読み取り専用を維持し、確認条件だけを通す。
+    pub(crate) fn check_write_request_after_confirmation(
+        &self,
+        lease: &McpRequestLease,
+        snapshot: &McpWritePolicySnapshot,
+        _operation: &McpWriteOperation,
+    ) -> Result<(), ScopeError> {
+        if !lease.is_current() {
+            return Err(ScopeError::AuthorizationRevoked);
+        }
+        let current = self.write_policy_snapshot();
+        if current.revision != snapshot.revision || current.settings != snapshot.settings {
+            return Err(ScopeError::AuthorizationRevoked);
+        }
+        if snapshot.settings.mode == McpWriteMode::ReadOnly {
+            return Err(ScopeError::ReadOnly);
+        }
+        Ok(())
+    }
+
     /// actorが実行直前に、permitと接続・認証・設定改訂を再照合する。
     pub(crate) fn validate_write_permit(
         &self,
@@ -270,24 +345,34 @@ impl McpAuthorization {
             || permit.auth_revision != lease.revision()
             || permit.policy_revision != current.revision
             || permit.generation != generation
+            || permit.request_id != lease.request_id()
             || permit.operation != *operation
         {
             return Err(ScopeError::AuthorizationRevoked);
         }
-        ensure_write_mode(current.settings.mode, operation)
+        ensure_write_mode(current.settings.mode, operation, permit.confirmed)
     }
 
     /// 認証改訂が変わったとき actor が所有中のまとまりを失効させる購読。
     pub(crate) fn subscribe_revision(&self) -> watch::Receiver<u64> {
         self.inner.revision_tx.subscribe()
     }
+
+    pub(crate) fn confirmations(&self) -> McpConfirmationBroker {
+        self.inner.confirmations.clone()
+    }
 }
 
-fn ensure_write_mode(mode: McpWriteMode, operation: &McpWriteOperation) -> Result<(), ScopeError> {
+fn ensure_write_mode(
+    mode: McpWriteMode,
+    operation: &McpWriteOperation,
+    confirmed: bool,
+) -> Result<(), ScopeError> {
     match mode {
         McpWriteMode::ReadOnly => Err(ScopeError::ReadOnly),
+        McpWriteMode::Confirm if confirmed => Ok(()),
         McpWriteMode::Confirm => Err(ScopeError::ConfirmationRequired),
-        McpWriteMode::Enabled if operation.requires_confirmation() => {
+        McpWriteMode::Enabled if operation.requires_confirmation() && !confirmed => {
             Err(ScopeError::ConfirmationRequired)
         }
         McpWriteMode::Enabled => Ok(()),
@@ -298,7 +383,10 @@ fn ensure_write_mode(mode: McpWriteMode, operation: &McpWriteOperation) -> Resul
 #[derive(Clone)]
 pub struct McpRequestLease {
     revision: u64,
-    cancellation: Arc<CancellationToken>,
+    request_id: u64,
+    authorization_cancellation: Arc<CancellationToken>,
+    request_cancellation: CancellationToken,
+    deadline: Instant,
     authorization: McpAuthorization,
 }
 
@@ -310,17 +398,53 @@ impl McpRequestLease {
 
     /// 要求の停止・確認待ちの取消に使う通知。
     pub fn cancellation_token(&self) -> CancellationToken {
-        self.cancellation.as_ref().clone()
+        self.authorization_cancellation.as_ref().clone()
     }
 
     /// 認証失効まで待機し、確認や要求処理を中断する。
     pub async fn cancelled(&self) {
-        self.cancellation.cancelled().await;
+        self.authorization_cancellation.cancelled().await;
+    }
+
+    pub(crate) fn request_id(&self) -> u64 {
+        self.request_id
+    }
+
+    pub(crate) fn request_deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    pub(crate) fn set_request_deadline(&mut self, deadline: Instant) {
+        self.deadline = deadline;
+    }
+
+    pub(crate) fn confirmation_deadline(&self) -> Option<Instant> {
+        let deadline = self
+            .deadline
+            .min(Instant::now() + confirmation::CONFIRMATION_TIMEOUT);
+        (deadline > Instant::now()).then_some(deadline)
+    }
+
+    pub(crate) fn cancel_request(&self) {
+        self.request_cancellation.cancel();
+    }
+
+    pub(crate) async fn request_cancelled(&self) {
+        self.request_cancellation.cancelled().await;
+    }
+
+    pub(crate) async fn authorization_cancelled(&self) {
+        self.authorization_cancellation.cancelled().await;
+    }
+
+    pub(crate) fn is_authorization_current(&self) -> bool {
+        !self.authorization_cancellation.is_cancelled()
+            && self.authorization.is_current(self.revision)
     }
 
     /// 要求がまだ現在の認証改訂に属するかを返す。
     pub fn is_current(&self) -> bool {
-        !self.cancellation.is_cancelled() && self.authorization.is_current(self.revision)
+        self.is_authorization_current() && !self.request_cancellation.is_cancelled()
     }
 }
 
@@ -656,6 +780,7 @@ struct ConnectionState {
     stream_permit: Mutex<Option<OwnedSemaphorePermit>>,
     request_deadline: Mutex<Option<Instant>>,
     head_request: Mutex<bool>,
+    active_request: Mutex<Option<McpRequestLease>>,
 }
 
 impl ConnectionState {
@@ -737,6 +862,51 @@ impl ConnectionState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    fn retain_request(&self, lease: McpRequestLease) -> bool {
+        let mut active = self
+            .active_request
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active.is_some() {
+            false
+        } else {
+            *active = Some(lease);
+            true
+        }
+    }
+
+    fn finish_request(&self, request_id: u64) {
+        let mut active = self
+            .active_request
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active
+            .as_ref()
+            .is_some_and(|lease| lease.request_id() == request_id)
+        {
+            active.take();
+        }
+    }
+
+    fn active_request_id(&self) -> Option<u64> {
+        self.active_request
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(McpRequestLease::request_id)
+    }
+
+    fn cancel_active_request(&self) {
+        let lease = self
+            .active_request
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(lease) = lease {
+            lease.cancel_request();
+        }
+    }
 }
 
 /// axum が受け入れる TCP 接続数を上限内に保つ listener。
@@ -812,6 +982,7 @@ struct ConnectionIo {
 
 impl Drop for ConnectionIo {
     fn drop(&mut self) {
+        self.state.cancel_active_request();
         self.registry.remove(self.remote, &self.state);
     }
 }
@@ -899,6 +1070,7 @@ struct ResponseBody {
     chunked: bool,
     written: usize,
     chunk_tail: Vec<u8>,
+    request_id: Option<u64>,
 }
 
 impl SseWireTracker {
@@ -968,6 +1140,9 @@ impl SseWireTracker {
         if connection.is_head_request()
             || status_code.is_some_and(|code| matches!(code, 204..=205 | 304))
         {
+            if let Some(request_id) = connection.active_request_id() {
+                connection.finish_request(request_id);
+            }
             connection.release_stream();
             connection.release_ordinary();
             connection.set_request_deadline(None);
@@ -1008,8 +1183,12 @@ impl SseWireTracker {
             chunked,
             written: 0,
             chunk_tail: Vec::with_capacity(7),
+            request_id: connection.active_request_id(),
         });
         if content_length == Some(0) {
+            if let Some(request_id) = connection.active_request_id() {
+                connection.finish_request(request_id);
+            }
             if is_sse {
                 connection.release_stream();
             }
@@ -1022,8 +1201,13 @@ impl SseWireTracker {
     }
 
     fn finish_response(&mut self, connection: &ConnectionState) {
-        let was_sse = self.body.as_ref().is_some_and(|body| body.is_sse);
-        self.body = None;
+        let Some(body) = self.body.take() else {
+            return;
+        };
+        let was_sse = body.is_sse;
+        if let Some(request_id) = body.request_id {
+            connection.finish_request(request_id);
+        }
         self.watchdog = None;
         self.line.reset();
         if was_sse {
@@ -1153,12 +1337,11 @@ async fn authenticate_and_limit(
     {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Some(auth_lease) = authorized_request(request.headers(), &state.auth) else {
+    let Some(mut auth_lease) = authorized_request(request.headers(), &state.auth) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
 
     let request_started = Instant::now();
-    let request_deadline = request_started + state.policy.request;
     let (parts, body) = request.into_parts();
     let remote = parts
         .extensions
@@ -1166,17 +1349,34 @@ async fn authenticate_and_limit(
         .map(|connect| connect.0 .0);
     let connection = remote.and_then(|remote| state.registry.get(remote));
     let is_head_request = parts.method == Method::HEAD;
+    let body_deadline = request_started + WRITE_REQUEST_TIMEOUT;
     let body =
-        match time::timeout_at(request_deadline, to_bytes(body, MAX_REQUEST_BODY_BYTES)).await {
+        match time::timeout_at(body_deadline, to_bytes(body, MAX_REQUEST_BODY_BYTES)).await {
             Ok(Ok(body)) => body,
             Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
-            Err(_) => return StatusCode::REQUEST_TIMEOUT.into_response(),
+            Err(_) => {
+                auth_lease.cancel_request();
+                return StatusCode::REQUEST_TIMEOUT.into_response();
+            }
         };
+    let is_write_request = parts.method == Method::POST && contains_write_tool_call(&body);
+    let request_deadline = request_started
+        + if is_write_request {
+            WRITE_REQUEST_TIMEOUT
+        } else {
+            state.policy.request
+        };
+    if Instant::now() >= request_deadline {
+        auth_lease.cancel_request();
+        return StatusCode::REQUEST_TIMEOUT.into_response();
+    }
     let is_long_stream = parts.method == Method::GET
         || (parts.method == Method::POST && contains_listen_request(&body));
     if !auth_lease.is_current() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    auth_lease.set_request_deadline(request_deadline);
+    let request_lease = auth_lease.clone();
     let mut request = Request::from_parts(parts, Body::from(body));
     request.extensions_mut().insert(auth_lease);
 
@@ -1213,6 +1413,14 @@ async fn authenticate_and_limit(
     }
 
     if let Some(connection) = &connection {
+        if !connection.retain_request(request_lease.clone()) {
+            connection.release_ordinary();
+            connection.release_stream();
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+    }
+
+    if let Some(connection) = &connection {
         connection.set_request_deadline(Some(request_deadline));
         connection.set_head_request(is_head_request);
     }
@@ -1220,17 +1428,24 @@ async fn authenticate_and_limit(
     let response = if is_long_stream {
         match time::timeout_at(request_started + state.policy.maximum, next.run(request)).await {
             Ok(response) => response,
-            Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
+            Err(_) => {
+                request_lease.cancel_request();
+                StatusCode::GATEWAY_TIMEOUT.into_response()
+            }
         }
     } else {
         match time::timeout_at(request_deadline, next.run(request)).await {
             Ok(response) => response,
-            Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
+            Err(_) => {
+                request_lease.cancel_request();
+                StatusCode::GATEWAY_TIMEOUT.into_response()
+            }
         }
     };
 
     if !is_sse_response(&response) {
         if let Some(connection) = &connection {
+            connection.finish_request(request_lease.request_id());
             connection.release_ordinary();
             connection.release_stream();
         }
@@ -1284,6 +1499,27 @@ fn contains_listen_request(body: &[u8]) -> bool {
     serde_json::from_slice::<Value>(body)
         .ok()
         .is_some_and(|value| is_listen(&value))
+}
+
+fn contains_write_tool_call(body: &[u8]) -> bool {
+    fn is_write(value: &Value) -> bool {
+        match value {
+            Value::Array(items) => items.iter().any(is_write),
+            Value::Object(object) => {
+                object.get("method").and_then(Value::as_str) == Some("tools/call")
+                    && object
+                        .get("params")
+                        .and_then(Value::as_object)
+                        .and_then(|params| params.get("name"))
+                        .and_then(Value::as_str)
+                        .is_some_and(tool_catalog::is_write_tool_name)
+            }
+            _ => false,
+        }
+    }
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .is_some_and(|value| is_write(&value))
 }
 
 fn is_sse_response(response: &Response) -> bool {

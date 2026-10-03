@@ -2,16 +2,19 @@
 
 use std::{io, path::PathBuf, sync::Arc, time::Duration};
 
-use tauri::{async_runtime::JoinHandle, State, WebviewWindow};
+use tauri::{async_runtime::JoinHandle, AppHandle, Emitter, State, WebviewWindow};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    dto::{McpServerStateDto, McpSettingsPayload, McpTokenPayload},
+    dto::{
+        McpConfirmationRequestDto, McpServerStateDto, McpSettingsPayload, McpTokenPayload,
+    },
     error::BackendError,
     mcp::{reads::McpReadContext, McpAuthorization, McpHttpAuth, McpHttpServer, McpWriteMode},
     mcp_settings::{McpSettings, McpSettingsError},
     mcp_token::{McpToken, McpTokenStore},
+    protocol_names::events,
 };
 
 use super::authorization::{McpWriteSettings, ScopeError};
@@ -35,6 +38,7 @@ struct McpRuntimeInner {
     authorization: McpAuthorization,
     reads: Option<McpReadContext>,
     control: Mutex<McpControl>,
+    confirmation_events: Mutex<Option<ConfirmationEventTask>>,
 }
 
 struct McpControl {
@@ -52,16 +56,41 @@ struct RunningServer {
     task: JoinHandle<io::Result<()>>,
 }
 
+struct ConfirmationEventTask {
+    shutdown: CancellationToken,
+    task: JoinHandle<()>,
+}
+
 impl McpRuntime {
     /// 保存済み設定を読み、listener は非同期の初期化まで開かない。
     pub fn new(config_dir: PathBuf, authorization: McpAuthorization) -> Self {
-        Self::build(config_dir, authorization, McpReadContext::default_context())
+        Self::build(
+            config_dir,
+            authorization,
+            McpReadContext::default_context(),
+            None,
+        )
+    }
+
+    /// main画面へ確認待ちの更新を送るruntimeを作る。
+    pub fn new_with_app(
+        config_dir: PathBuf,
+        authorization: McpAuthorization,
+        app: AppHandle,
+    ) -> Self {
+        Self::build(
+            config_dir,
+            authorization,
+            McpReadContext::default_context(),
+            Some(app),
+        )
     }
 
     fn build(
         config_dir: PathBuf,
         authorization: McpAuthorization,
         reads: Option<McpReadContext>,
+        app: Option<AppHandle>,
     ) -> Self {
         let _ = authorization.set_write_settings(McpWriteSettings::default());
         if let Some(reads) = &reads {
@@ -77,6 +106,32 @@ impl McpRuntime {
                 true,
             ),
         };
+        let confirmation_events = app.map(|app| {
+            let mut updates = authorization.confirmations().subscribe();
+            let shutdown = CancellationToken::new();
+            let task_shutdown = shutdown.clone();
+            let task = tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = task_shutdown.cancelled() => break,
+                        changed = updates.changed() => {
+                            if changed.is_err() {
+                                break;
+                            }
+                            let pending = updates.borrow_and_update().clone();
+                            if let Err(error) = app.emit_to(
+                                tauri::EventTarget::webview_window("main"),
+                                events::MCP_CONFIRMATIONS_CHANGED,
+                                pending,
+                            ) {
+                                tracing::warn!(error = %error, "MCP確認待ちの画面通知に失敗しました");
+                            }
+                        }
+                    }
+                }
+            });
+            ConfirmationEventTask { shutdown, task }
+        });
         Self {
             inner: Arc::new(McpRuntimeInner {
                 config_dir,
@@ -91,6 +146,7 @@ impl McpRuntime {
                     initialized,
                     closing: false,
                 }),
+                confirmation_events: Mutex::new(confirmation_events),
             }),
         }
     }
@@ -182,6 +238,42 @@ impl McpRuntime {
         Ok(self.payload(&control))
     }
 
+    /// main画面が表示できる承認待ちだけを返す。
+    pub async fn pending_confirmations(
+        &self,
+    ) -> Result<Vec<McpConfirmationRequestDto>, BackendError> {
+        let control = self.inner.control.lock().await;
+        if control.closing {
+            return Err(runtime_stopping_error());
+        }
+        Ok(self.inner.authorization.confirmations().pending())
+    }
+
+    /// 一度だけ使える要求固有IDを承認または拒否する。
+    pub async fn decide_confirmation(
+        &self,
+        id: &str,
+        approved: bool,
+    ) -> Result<(), BackendError> {
+        let control = self.inner.control.lock().await;
+        if control.closing {
+            return Err(runtime_stopping_error());
+        }
+        let broker = self.inner.authorization.confirmations();
+        let accepted = if approved {
+            broker.approve(id)
+        } else {
+            broker.reject(id)
+        };
+        if accepted {
+            Ok(())
+        } else {
+            Err(BackendError::Request {
+                message: "確認待ちが取り下げ済みか、期限切れです。".to_owned(),
+            })
+        }
+    }
+
     /// 明示要求時だけ保存済みの秘密を返す。通常の状態DTOやイベントへは載せない。
     pub async fn token(&self) -> Result<McpTokenPayload, BackendError> {
         let mut control = self.inner.control.lock().await;
@@ -237,6 +329,8 @@ impl McpRuntime {
         self.stop_server(&mut control).await;
         control.state = McpServerStateDto::Disabled;
         control.error = None;
+        drop(control);
+        stop_confirmation_event_task(&self.inner.confirmation_events).await;
     }
 
     async fn initialize_locked(&self, control: &mut McpControl) {
@@ -390,9 +484,29 @@ async fn stop_server_task(mut task: JoinHandle<io::Result<()>>, grace: Duration)
     }
 }
 
+async fn stop_confirmation_event_task(task: &Mutex<Option<ConfirmationEventTask>>) {
+    let Some(event_task) = task.lock().await.take() else {
+        return;
+    };
+    event_task.shutdown.cancel();
+    let mut join = event_task.task;
+    if tokio::time::timeout(SERVER_STOP_GRACE, &mut join)
+        .await
+        .is_err()
+    {
+        join.abort();
+        let _ = join.await;
+    }
+}
+
 /// MCP設定を操作できるWebviewラベルだけを許可する。
 pub fn is_trusted_settings_window(label: &str) -> bool {
     matches!(label, "main" | "settings")
+}
+
+/// MCP確認の閲覧と承認をできるのはmain画面だけ。
+pub fn is_main_confirmation_window(label: &str) -> bool {
+    label == "main"
 }
 
 fn require_trusted_window(window: &WebviewWindow) -> Result<(), BackendError> {
@@ -401,6 +515,16 @@ fn require_trusted_window(window: &WebviewWindow) -> Result<(), BackendError> {
     } else {
         Err(BackendError::Request {
             message: "このウィンドウからMCP設定を操作できません。".to_owned(),
+        })
+    }
+}
+
+fn require_main_confirmation_window(window: &WebviewWindow) -> Result<(), BackendError> {
+    if is_main_confirmation_window(window.label()) {
+        Ok(())
+    } else {
+        Err(BackendError::Request {
+            message: "MCP確認はメイン画面からだけ操作できます。".to_owned(),
         })
     }
 }
@@ -434,6 +558,35 @@ pub async fn set_mcp_write_access(
 ) -> Result<McpSettingsPayload, BackendError> {
     require_trusted_window(&window)?;
     runtime.set_write_access(mode, scene_root_id).await
+}
+
+#[tauri::command]
+pub async fn get_mcp_confirmations(
+    window: WebviewWindow,
+    runtime: State<'_, McpRuntime>,
+) -> Result<Vec<McpConfirmationRequestDto>, BackendError> {
+    require_main_confirmation_window(&window)?;
+    runtime.pending_confirmations().await
+}
+
+#[tauri::command]
+pub async fn approve_mcp_confirmation(
+    window: WebviewWindow,
+    runtime: State<'_, McpRuntime>,
+    confirmation_id: String,
+) -> Result<(), BackendError> {
+    require_main_confirmation_window(&window)?;
+    runtime.decide_confirmation(&confirmation_id, true).await
+}
+
+#[tauri::command]
+pub async fn reject_mcp_confirmation(
+    window: WebviewWindow,
+    runtime: State<'_, McpRuntime>,
+    confirmation_id: String,
+) -> Result<(), BackendError> {
+    require_main_confirmation_window(&window)?;
+    runtime.decide_confirmation(&confirmation_id, false).await
 }
 
 #[tauri::command]

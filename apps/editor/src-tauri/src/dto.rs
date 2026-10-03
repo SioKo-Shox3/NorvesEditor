@@ -87,6 +87,29 @@ pub struct McpTokenPayload {
     pub token: String,
 }
 
+/// main画面で一度だけ承認できるMCP書き込み確認。
+#[derive(Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConfirmationRequestDto {
+    pub id: String,
+    pub tool_name: String,
+    pub method: String,
+    pub target_ids: Vec<String>,
+    pub target_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<EditSourceDto>,
+    pub undo_available: bool,
+    pub clears_history: bool,
+    pub history_generation: Option<u64>,
+    pub history_revision: u64,
+    pub undo_head_id: Option<u64>,
+    pub expires_at: u64,
+}
+
 /// Payload returned by workspace management commands.
 // Phase A: mirror this shape in bridge-ui/src/ipc-types.ts.
 #[derive(Debug, Clone, Serialize, PartialEq)]

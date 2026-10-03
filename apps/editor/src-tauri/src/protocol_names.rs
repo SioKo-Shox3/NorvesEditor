@@ -50,6 +50,9 @@ pub mod commands {
     pub const GET_MCP_SETTINGS: &str = "get_mcp_settings";
     pub const SET_MCP_SETTINGS: &str = "set_mcp_settings";
     pub const SET_MCP_WRITE_ACCESS: &str = "set_mcp_write_access";
+    pub const GET_MCP_CONFIRMATIONS: &str = "get_mcp_confirmations";
+    pub const APPROVE_MCP_CONFIRMATION: &str = "approve_mcp_confirmation";
+    pub const REJECT_MCP_CONFIRMATION: &str = "reject_mcp_confirmation";
     pub const GET_MCP_TOKEN: &str = "get_mcp_token";
     pub const REGENERATE_MCP_TOKEN: &str = "regenerate_mcp_token";
     pub const WORKSPACE_OPEN: &str = "workspace_open";
@@ -79,6 +82,7 @@ pub mod events {
     pub const OBJECT_CHANGED: &str = "bridge:object-changed";
     pub const EDIT_APPLIED: &str = "bridge:edit-applied";
     pub const EDIT_HISTORY_CHANGED: &str = "bridge:edit-history-changed";
+    pub const MCP_CONFIRMATIONS_CHANGED: &str = "bridge:mcp-confirmations-changed";
 }
 
 #[cfg(test)]

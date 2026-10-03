@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::McpWriteMode;
-use crate::edit_service::{HistoryDirection, HistoryRecord};
+use crate::edit_service::{EditSource, HistoryDirection, HistoryRecord};
 
 /// 1回の範囲解決で走査するノード数。
 pub(crate) const MAX_SCOPE_NODES: usize = 2_000;
@@ -65,6 +65,8 @@ pub(crate) struct McpHistoryAction {
     pub(crate) direction: McpHistoryDirection,
     pub(crate) head_id: u64,
     pub(crate) revision: u64,
+    pub(crate) group_name: String,
+    pub(crate) source: EditSource,
     pub(crate) records: Vec<HistoryRecord>,
 }
 
@@ -589,11 +591,13 @@ where
 }
 
 /// 1回の要求を許可した設定改訂に結び付ける、使い捨てpermit。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct McpWritePermit {
     pub(crate) auth_revision: u64,
     pub(crate) policy_revision: u64,
     pub(crate) generation: u64,
+    pub(crate) request_id: u64,
+    pub(crate) confirmed: bool,
     pub(crate) operation: McpWriteOperation,
 }
 
@@ -895,6 +899,8 @@ mod tests {
             direction: McpHistoryDirection::Undo,
             head_id: 9,
             revision: 4,
+            group_name: "ユーザー編集".to_owned(),
+            source: EditSource::Ui,
             records: vec![
                 HistoryRecord::SetProperty {
                     object_id: "allowed-child".to_owned(),
@@ -921,6 +927,8 @@ mod tests {
                 direction,
                 head_id: 10,
                 revision: 5,
+                group_name: "ユーザー編集".to_owned(),
+                source: EditSource::Ui,
                 records: vec![HistoryRecord::Reparent {
                     object_id: "allowed-child".to_owned(),
                     old_parent_id: Some("allowed".to_owned()),
@@ -936,6 +944,8 @@ mod tests {
             direction: McpHistoryDirection::Undo,
             head_id: 13,
             revision: 8,
+            group_name: "ユーザー編集".to_owned(),
+            source: EditSource::Ui,
             records: vec![HistoryRecord::Create {
                 created_id: "allowed".to_owned(),
                 parent_id: Some("scene".to_owned()),
@@ -950,6 +960,8 @@ mod tests {
             direction: McpHistoryDirection::Redo,
             head_id: 11,
             revision: 6,
+            group_name: "ユーザー編集".to_owned(),
+            source: EditSource::Ui,
             records: vec![HistoryRecord::Create {
                 created_id: "future-child".to_owned(),
                 parent_id: Some("outside".to_owned()),
@@ -964,6 +976,8 @@ mod tests {
             direction: McpHistoryDirection::Redo,
             head_id: 12,
             revision: 7,
+            group_name: "ユーザー編集".to_owned(),
+            source: EditSource::Ui,
             records: vec![HistoryRecord::Duplicate {
                 source_object_id: "allowed".to_owned(),
                 created_id: "future-copy".to_owned(),
@@ -1022,6 +1036,8 @@ mod tests {
             direction: McpHistoryDirection::Undo,
             head_id: 1,
             revision: 1,
+            group_name: "ユーザー編集".to_owned(),
+            source: EditSource::Ui,
             records: vec![HistoryRecord::Create {
                 created_id: "node".to_owned(),
                 parent_id: None,

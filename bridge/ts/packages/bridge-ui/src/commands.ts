@@ -19,6 +19,7 @@ import type {
   EditDiscardResult,
   EngineSettingsPayload,
   McpSettingsPayload,
+  McpConfirmationRequest,
   McpTokenPayload,
   McpWriteMode,
   UiParentCapture,
@@ -70,6 +71,9 @@ export const BRIDGE_COMMANDS = {
   getMcpSettings: 'get_mcp_settings',
   setMcpSettings: 'set_mcp_settings',
   setMcpWriteAccess: 'set_mcp_write_access',
+  getMcpConfirmations: 'get_mcp_confirmations',
+  approveMcpConfirmation: 'approve_mcp_confirmation',
+  rejectMcpConfirmation: 'reject_mcp_confirmation',
   getMcpToken: 'get_mcp_token',
   regenerateMcpToken: 'regenerate_mcp_token',
   workspaceOpen: 'workspace_open',
@@ -83,6 +87,21 @@ export const BRIDGE_COMMANDS = {
 
 /** Union of all valid Tauri command name strings. */
 export type BridgeCommandName = (typeof BRIDGE_COMMANDS)[keyof typeof BRIDGE_COMMANDS];
+
+/** 承認待ち確認をmain画面で取得する。 */
+export function getMcpConfirmations(): Promise<McpConfirmationRequest[]> {
+  return invoke(BRIDGE_COMMANDS.getMcpConfirmations);
+}
+
+/** 一度だけ使える確認IDを承認する。 */
+export function approveMcpConfirmation(confirmationId: string): Promise<void> {
+  return invoke(BRIDGE_COMMANDS.approveMcpConfirmation, { confirmationId });
+}
+
+/** 一度だけ使える確認IDを拒否する。 */
+export function rejectMcpConfirmation(confirmationId: string): Promise<void> {
+  return invoke(BRIDGE_COMMANDS.rejectMcpConfirmation, { confirmationId });
+}
 
 export async function sceneCreateObject(
   parentId?: string,

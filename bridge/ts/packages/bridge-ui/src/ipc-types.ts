@@ -54,6 +54,24 @@ export interface McpTokenPayload {
   token: string;
 }
 
+/** main画面に送る、一度だけ承認できるMCP書き込み確認。 */
+export interface McpConfirmationRequest {
+  id: string;
+  toolName: string;
+  method: string;
+  targetIds: string[];
+  targetCount: number;
+  before?: unknown;
+  after?: unknown;
+  source?: EditSource;
+  undoAvailable: boolean;
+  clearsHistory: boolean;
+  historyGeneration: number | null;
+  historyRevision: number;
+  undoHeadId: number | null;
+  expiresAt: number;
+}
+
 /**
  * Payload returned by workspace_open / workspace_get.
  *

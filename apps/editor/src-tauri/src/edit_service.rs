@@ -71,6 +71,14 @@ pub(crate) struct EditEventInput {
     pub(crate) value: Option<Value>,
 }
 
+/// MCP確認中に比較する編集履歴の改訂とundo先頭。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EditHistoryConfirmationSnapshot {
+    pub(crate) generation: Option<u64>,
+    pub(crate) history_revision: u64,
+    pub(crate) undo_head_id: Option<u64>,
+}
+
 async fn join_after_grace(mut join: JoinHandle<()>) {
     if tokio::time::timeout(SHUTDOWN_GRACE, &mut join)
         .await
@@ -878,6 +886,27 @@ impl EditService {
         })
     }
 
+    /// 確認待ちの前後で履歴影響を比較する読み取り窓口を作る。
+    pub(crate) fn confirmation_history_source(
+        &self,
+    ) -> Arc<dyn Fn() -> EditHistoryConfirmationSnapshot + Send + Sync> {
+        let bridge = self.bridge.clone();
+        let history = Arc::clone(&self.history);
+        Arc::new(move || {
+            let generation = bridge.current_generation();
+            let mut state = history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.synchronize(generation);
+            let summary = state.summary();
+            EditHistoryConfirmationSnapshot {
+                generation: summary.generation,
+                history_revision: summary.history_revision,
+                undo_head_id: summary.undo_head_id,
+            }
+        })
+    }
+
     pub(crate) fn history_cursor(&self, direction: HistoryDirection) -> (Option<u64>, u64) {
         self.bridge.with_current_generation(|generation| {
             let mut history = self
@@ -914,6 +943,8 @@ impl EditService {
                 },
                 head_id: action.entry_id,
                 revision,
+                group_name: action.group.name.clone(),
+                source: action.group.source,
                 records: action.steps.into_iter().map(|step| step.record).collect(),
             })
         })

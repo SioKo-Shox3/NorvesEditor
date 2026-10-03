@@ -326,6 +326,13 @@ fn tool_specs() -> &'static [ToolSpec] {
         .as_slice()
 }
 
+/// HTTP要求の全体期限を選ぶため、道具名から書き込み要求を判定する。
+pub(crate) fn is_write_tool_name(name: &str) -> bool {
+    tool_specs()
+        .iter()
+        .any(|spec| spec.name == name && spec.access == ToolAccess::Write)
+}
+
 impl Default for McpToolCatalog {
     fn default() -> Self {
         let (revision_tx, _) = watch::channel(0);

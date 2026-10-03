@@ -50,12 +50,23 @@ pub fn run() {
             let config_dir = app.path().app_config_dir().map_err(std::io::Error::other)?;
             let authorization = McpAuthorization::default();
             let bridge = app.state::<BridgeState>();
-            app.manage(EditService::new_with_app_and_authorization(
+            let edit_service = EditService::new_with_app_and_authorization(
                 bridge.edit_facade(),
                 app.handle().clone(),
                 authorization.clone(),
-            ));
-            let mcp_runtime = McpRuntime::new(config_dir, authorization);
+            );
+            let history_source = edit_service.confirmation_history_source();
+            crate::mcp::reads::McpReadContext::install_default(
+                bridge
+                    .mcp_read_context()
+                    .with_history_source(history_source),
+            );
+            app.manage(edit_service);
+            let mcp_runtime = McpRuntime::new_with_app(
+                config_dir,
+                authorization,
+                app.handle().clone(),
+            );
             app.manage(mcp_runtime.clone());
             tauri::async_runtime::spawn(async move {
                 mcp_runtime.initialize().await;
@@ -99,6 +110,9 @@ pub fn run() {
             mcp::runtime::get_mcp_settings,
             mcp::runtime::set_mcp_settings,
             mcp::runtime::set_mcp_write_access,
+            mcp::runtime::get_mcp_confirmations,
+            mcp::runtime::approve_mcp_confirmation,
+            mcp::runtime::reject_mcp_confirmation,
             mcp::runtime::get_mcp_token,
             mcp::runtime::regenerate_mcp_token,
             workspace::workspace_open,
