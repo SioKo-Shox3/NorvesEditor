@@ -297,7 +297,7 @@ M2 の共通規則:
 - notes: 先行 MCP-015/MCP-016/MCP-017。実mockを使うmcp_readsをこのタスクで実行する。envなしの通常cargo testではopt-inをSKIPと明示し、env指定の不正パス/起動失敗は必ず失敗させる。cursorをBridgeへ送らない。
 
 ## MCP-019: PNG を検証・縮小して MCP に返す
-- status: todo
+- status: done
 - done-when: NE11。memory-buffer-policyにMCPの処理上限と所有権を先に追記する。既存viewport.getThumbnailをMCP画像(base64/mimeType)で返し、全入口で1fpsを共有する。長辺上限を超えた画像の縮小試験、PNG不正・base64不正・宣言寸法不一致・寸法爆弾・byte超過の拒否試験がある。既存Bridge上限640x360/256KiBを緩めず、処理の有界workerと停止を試験する。UI/MCPは同じin-flight取得に合流し、世代別の最新1秒PNGを共有する。MCP要求でGameViewをbackoffさせない試験がある。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

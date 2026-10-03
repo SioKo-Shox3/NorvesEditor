@@ -1786,6 +1786,21 @@ mod tests {
         let mcp = tokio::spawn(async move { context.call_thumbnail_image(json!({})).await });
         let (id, method, _) = next_request(&mut peer).await;
         assert_eq!(method, "viewport.getThumbnail");
+
+        let ui_service = service.clone();
+        let ui_bridge = bridge.clone();
+        let ui = tokio::spawn(async move {
+            ui_service
+                .get_raw(&ui_bridge, Some(640), Some(360), RequestOrigin::Ui)
+                .await
+        });
+        timeout(Duration::from_millis(100), async {
+            while service.in_flight_waiter_count().await < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Game ViewがMCPの進行中要求へ合流する");
         peer.send(error_response_frame(
             id,
             "thumbnail is not available".to_owned(),
@@ -1798,12 +1813,6 @@ mod tests {
             .expect_err("MCPが取得失敗を受け取る");
         assert!(mcp_error.contains("未信頼のエンジン由来データ"));
 
-        let ui_service = service.clone();
-        let ui = tokio::spawn(async move {
-            ui_service
-                .get_raw(&bridge, Some(640), Some(360), RequestOrigin::Ui)
-                .await
-        });
         let (id, method, _) = next_request(&mut peer).await;
         assert_eq!(method, "viewport.getThumbnail");
         let image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mNwaDgARAwQCgAoDgYBqzvMVQAAAABJRU5ErkJggg==";

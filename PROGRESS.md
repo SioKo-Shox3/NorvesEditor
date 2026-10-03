@@ -4,6 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
+- MCP-019: `viewport.getThumbnail` をPNG限定で検査し、MCP `image/png` contentのbase64 dataとして返す。Bridgeの640×360/256KiB上限を維持し、長辺512・MCP PNG 512KiB、宣言寸法/IHDR検査、2 worker/128MiB予算を適用。Game View/MCPは進行中要求と世代別1秒snapshotを共有し、MCP失敗にGame Viewをbackoffさせない。通常切断はcacheを失効し、アプリ終了時にworkerを停止・joinする。fmt/clippy/cargo test exit 0（299単体・1 mock統合・14 process_e2e）。証拠 `.harness/runs/20261003-161248/preflight-MCP-019.txt` / `verify-MCP-019-2.txt`〜`verify-MCP-019-4.txt`。
 - MCP-018: 状態・能力・ツリー・snapshot・schema・資産manifest/resolve・最近のログを読み取り道具として接続。ツリー範囲をバックエンドで適用し、Bridge側の資産manifestページは内部で集約してからcursorで継続する。応答256KiB/200項目、世代固定・5分cursor、16MiB snapshot上限とLRU追い出し、巨大項目/snapshot拒否をmock試験で確認。エンジンのerror code(最大128B)とmessage(最大4KiB)を固定の日本語説明に続くJSONデータとして返し、300KiBの悪意ある文が上限内でデータ化されることを`call_tool`経由で試験。開始 `scripts/verify.ps1` とfmt/clippy/cargo testがexit 0（284単体・14統合）、環境変数指定の実mock `mcp_reads` は1/1・0.53秒。証拠 `.harness/runs/20261003-161248/preflight-MCP-018.txt` / `verify-MCP-018-11.txt`〜`verify-MCP-018-14.txt`。
 - MCP-017: MCP試験プロフィールに `asset.read` と固定マニフェスト、既知/未知パスの解決結果を追加。既定プロフィールの能力一覧と未対応応答は維持。実プロセスから型schema・可変シーン・manifest/resolveを照会する試験を追加。`verify.ps1 -Cpp` exit 0（CTest 8/8）、既定プロフィールconformance 1/1、MCPプロフィール実プロセス試験 1/1。証拠 `.harness/runs/20261003-161248/verify-MCP-017-1.txt`〜`verify-MCP-017-3.txt`。
 - MCP-016: 世代固定のlog.subscribe、relayで保管してからUIへ通知、1000件/2MiBの上限、巨大文字列の切り詰め、世代・時刻・連番の検索、保持範囲と欠落状態を実装。Laggedの通知数はログ件数と区別して世代ごとの不確かな欠落に記録し、hasGapとmissingBeforeCursorへ反映。再接続時に旧世代を終了し、購読済み状態もCancelledへ更新。未取消の遅延ackと旧relayを破棄する試験を追加。実mock試験は本番のsubscribe/ack解析とrelay記録関数を通し、UI/MCPなしで購読後のログ3件を保持。fmt/clippy exit 0、cargo testは267単体成功。通常cargo testではNORVES_ENGINE_PATH未指定のためprocess_e2e 14件とmcp_reads実mock経路は実行対象外。指定環境のmcp_readsは1/1、0.51秒、SKIPなし。証拠 `.harness/runs/20261003-161248/verify-MCP-016-32.txt`〜`verify-MCP-016-35.txt`。
@@ -42,10 +43,10 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-014とMCP-016〜MCP-018が完了。MCP-015はblocked。
+- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-014とMCP-016〜MCP-019が完了。MCP-015はblocked。
 
 ## Next
-- 次のタスク: MCP-019（PNGを検証・縮小してMCPに返す）。MCP-015はblockedのまま判断待ち。
+- 次のタスク: MCP-020（時刻見出し付きの画像一覧ヘルパーを作る）。MCP-015はblockedのまま判断待ち。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -56,6 +57,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-03 MCP-019: 通常切断で画像workerを永久停止すると再接続後に取得できないため、cache失効とworker停止を分離し、worker停止/joinはアプリ終了時だけにした。保存出力 `preflight-MCP-019.txt` / `verify-MCP-019-2.txt`〜`verify-MCP-019-4.txt` を開いて確認し、全ゲートexit 0。
 - 2026-10-03 MCP-018: Engine errorのmessage/codeを日本語の固定説明とJSONデータに分け、それぞれ4KiB/128Bで切り詰める。300KiBの応答を`call_tool`経由で確認する回帰試験を追加。開始 `scripts/verify.ps1`、fmt、clippy、cargo test(284単体・14統合)、環境変数指定の実mock `mcp_reads` (1/1) はすべてexit 0。保存出力を開いて確認: `preflight-MCP-018.txt` / `verify-MCP-018-11.txt`〜`verify-MCP-018-14.txt`。
 - 2026-10-03 MCP-017: 試験アセット `textures/hero.png` を唯一のmanifest項目とし、未知logicalPathは `cookedEntryMissing` / `none` として値DTOで返す。`asset.read` のみ広告し、reloadやasset bytesは含めない。指定3ゲートを実行し、各保存出力を開いて確認した。
 - 2026-10-03 MCP-016差し戻し対応: relayのbroadcast lagではログか他イベントかを区別できないため、`missedEventCount`は取りこぼし通知数として別枠にし、欠落の可能性を保守的に表示する。旧世代のSubscribed状態を終了時にCancelledへ変え、`bridge_reconnect`から終了処理を呼ぶ。指定4ゲートはすべてexit 0。通常のcargo testには実エンジン環境が無いので、実mock合格の根拠は明示環境のmcp_reads 1/1。保存出力を開いて確認した: `verify-MCP-016-32.txt`〜`verify-MCP-016-35.txt`。

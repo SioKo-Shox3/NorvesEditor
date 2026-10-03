@@ -1018,7 +1018,7 @@ pub(crate) async fn disconnect_quietly(state: &BridgeState) {
     if let Some(conn) = taken {
         tear_down(conn).await;
     }
-    state.thumbnail_service.shutdown().await;
+    state.thumbnail_service.invalidate().await;
 }
 
 /// アプリ終了時に接続を無効化し、relayとdispatcherを非同期に終了する。
@@ -1043,6 +1043,7 @@ pub(crate) async fn shutdown_on_exit(state: &BridgeState) {
     if let Some(conn) = taken {
         tear_down(conn).await;
     }
+    state.thumbnail_service.shutdown().await;
 }
 
 /// `bridge_disconnect`: stop the relay, shut down the handle, clear state, emit
@@ -1074,6 +1075,7 @@ pub async fn bridge_disconnect(
     if let Some(conn) = taken {
         tear_down(conn).await;
     }
+    state.thumbnail_service.invalidate().await;
     let payload = ConnectionStatePayload::disconnected(Some("disconnected by editor".to_owned()));
     let _ = app.emit(events::CONNECTION_STATE, payload.clone());
     Ok(payload)
