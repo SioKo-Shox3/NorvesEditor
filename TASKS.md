@@ -222,7 +222,7 @@ M2 の共通規則:
 - notes: 先行 MCP-009。E1の完了境界。クリックはTauri経由の共通列へ渡す。
 
 ## MCP-011: MCP の設定と保護したトークンを保存する
-- status: todo
+- status: done
 - done-when: NE07。既定無効・ポート49770を保存し、32バイトのOS乱数から作った永続トークンをapp_config_dirだけへ保存する。Windowsは利用者スコープDPAPI、Unixは0700/0600。保存/保護失敗時は起動できず、秘密をエラーやログへ含めない。再読込・破損・原子的置換・作り直し・権限の試験が通る。依存は要件12章のgetrandom/base64/subtle/urlと既存windows-sys機能追加に限りlockをコミットする。秘密はapp_config_dir/mcp/mcp-token.bin、Unixの0700は専用mcpディレクトリだけに適用する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

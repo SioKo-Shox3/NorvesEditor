@@ -48,6 +48,11 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # tauri-plugin-dialog は webview の window.alert / window.confirm を差し替える初期化スクリプトと JS 向け
 # コマンドを持ち込むので使わず、同プラグインが内部で使う rfd を同じ版・同じ機能で直接使う。
 rfd = { version = "0.16", default-features = false, features = ["common-controls-v6", "gtk3"] }
+# MCP の設定、認証トークン、loopback URL を扱う。
+base64 = "0.23"
+getrandom = "0.4"
+subtle = "2.6"
+url = "2"
 
 # エディタが強制終了してもエンジンが残らないよう、起動した子を Job Object に入れる
 # (`src/job_object.rs`)。依存木に既にある 0.61 系に揃える。
@@ -55,6 +60,7 @@ rfd = { version = "0.16", default-features = false, features = ["common-controls
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Cryptography",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }

@@ -95,6 +95,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1850,16 +1856,20 @@ dependencies = [
 name = "norves-editor"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
+ "getrandom 0.4.2",
  "norves-bridge-core",
  "norves-bridge-editor-client",
  "rfd",
  "serde",
  "serde_json",
+ "subtle",
  "tauri",
  "tauri-build",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "windows-sys 0.61.2",
 ]
 
@@ -2998,6 +3008,12 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "swift-rs"
