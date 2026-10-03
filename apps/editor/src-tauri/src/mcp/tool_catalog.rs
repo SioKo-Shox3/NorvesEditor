@@ -90,6 +90,11 @@ const SIMPLE_PAGE_SCHEMA: &str = r#"{
     },
     "additionalProperties":false
 }"#;
+const EMPTY_INPUT_SCHEMA: &str = r#"{
+    "type":"object",
+    "properties":{},
+    "additionalProperties":false
+}"#;
 const ASSET_MANIFEST_PAGE_SCHEMA: &str = r#"{
     "type":"object",
     "properties":{
@@ -124,6 +129,14 @@ fn tool_specs() -> &'static [ToolSpec] {
         ToolAccess::Read,
         &[],
         false,
+    ),
+    custom_tool(
+        "viewport_get_thumbnail",
+        "Game Viewの画像を取得する",
+        "接続中のGame ViewをPNG画像として取得します。",
+        ToolAccess::Read,
+        &["viewport.thumbnail"],
+        EMPTY_INPUT_SCHEMA,
     ),
     custom_tool(
         "bridge_get_capabilities",
@@ -1015,5 +1028,21 @@ mod tests {
         catalog.set_connection(Some(1), &[]);
         assert!(catalog.get("engine_get_status").is_some());
         assert!(catalog.get("scene_get_tree").is_none());
+    }
+
+    #[test]
+    fn thumbnail_tool_requires_engine_capability_and_has_no_input_arguments() {
+        let catalog = connected_catalog(&[]);
+        assert!(catalog.get("viewport_get_thumbnail").is_none());
+
+        catalog.set_connection(Some(2), &[descriptor("viewport.thumbnail")]);
+        assert!(catalog.get("viewport_get_thumbnail").is_some());
+        assert!(catalog
+            .validate_call("viewport_get_thumbnail", &json!({}))
+            .is_ok());
+        assert_eq!(
+            catalog.validate_call("viewport_get_thumbnail", &json!({"maxWidth":640})),
+            Err(ToolInputError::Invalid)
+        );
     }
 }

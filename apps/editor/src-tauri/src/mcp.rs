@@ -53,6 +53,7 @@ use axum::extract::connect_info::Connected;
 pub mod log_buffer;
 pub(crate) mod reads;
 pub mod runtime;
+pub(crate) mod thumbnail;
 pub(crate) mod tool_catalog;
 
 /// MCP POST 本体の最大サイズ。
@@ -1156,6 +1157,13 @@ fn structured_read_result(value: Value) -> CallToolResult {
     result
 }
 
+fn thumbnail_image_result(image: thumbnail::McpThumbnailImage) -> CallToolResult {
+    let mut result =
+        CallToolResult::success(vec![ContentBlock::image(image.data, image.mime_type)]);
+    result.result_type = Some(ResultType::COMPLETE);
+    result
+}
+
 #[cfg(test)]
 static TEST_TOOL_RELEASE: std::sync::OnceLock<CancellationToken> = std::sync::OnceLock::new();
 
@@ -1226,6 +1234,12 @@ impl ServerHandler for McpServerHandler {
             .arguments
             .map(Value::Object)
             .unwrap_or_else(|| Value::Object(Map::new()));
+        if request.name == "viewport_get_thumbnail" {
+            return match reads.call_thumbnail_image(arguments).await {
+                Ok(image) => Ok(thumbnail_image_result(image).into()),
+                Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)]).into()),
+            };
+        }
         match reads.call_tool(&request.name, arguments).await {
             Ok(value) => Ok(structured_read_result(value).into()),
             Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)]).into()),
@@ -1273,6 +1287,19 @@ mod tests {
             untrusted
         );
         assert!(!serialized["content"].to_string().contains(untrusted));
+    }
+
+    #[test]
+    fn thumbnail_tool_returns_mcp_image_content_with_png_mime_type() {
+        let result = thumbnail_image_result(thumbnail::McpThumbnailImage {
+            data: "iVBORw0KGgo=".to_owned(),
+            mime_type: "image/png",
+        });
+        let serialized = serde_json::to_value(result).expect("MCP画像応答をJSONにする");
+        assert_eq!(serialized["content"][0]["type"], "image");
+        assert_eq!(serialized["content"][0]["mimeType"], "image/png");
+        assert_eq!(serialized["content"][0]["data"], "iVBORw0KGgo=");
+        assert_eq!(serialized["isError"], false);
     }
 
     struct TestTokenDirectory(PathBuf);

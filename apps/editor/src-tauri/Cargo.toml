@@ -47,6 +47,7 @@ rfd = { version = "0.16", default-features = false, features = ["common-controls
 # MCP の設定、認証トークン、loopback URL を扱う。
 base64 = "0.23"
 getrandom = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
 subtle = "2.6"
 url = "2"
 

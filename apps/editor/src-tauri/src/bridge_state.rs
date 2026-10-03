@@ -274,6 +274,8 @@ pub struct BridgeState {
     /// relayが受信したログをUI通知前に有界保持する。
     log_buffer: Arc<StdMutex<LogBuffer>>,
     mcp_tool_catalog: crate::mcp::tool_catalog::McpToolCatalog,
+    /// Game View と MCP で共有するthumbnail取得・処理状態。
+    thumbnail_service: crate::mcp::thumbnail::McpThumbnailService,
 }
 
 impl Default for BridgeState {
@@ -288,6 +290,7 @@ impl Default for BridgeState {
             attempt_cancellation: StdMutex::new(None),
             log_buffer: Arc::new(StdMutex::new(LogBuffer::default())),
             mcp_tool_catalog: crate::mcp::tool_catalog::McpToolCatalog::default(),
+            thumbnail_service: crate::mcp::thumbnail::McpThumbnailService::default(),
         };
         crate::mcp::reads::McpReadContext::install_default(state.mcp_read_context());
         state
@@ -337,6 +340,7 @@ impl BridgeState {
             self.edit_facade(),
             self.mcp_tool_catalog.clone(),
             Arc::clone(&self.log_buffer),
+            self.thumbnail_service.clone(),
         )
     }
 
@@ -1014,6 +1018,7 @@ pub(crate) async fn disconnect_quietly(state: &BridgeState) {
     if let Some(conn) = taken {
         tear_down(conn).await;
     }
+    state.thumbnail_service.shutdown().await;
 }
 
 /// アプリ終了時に接続を無効化し、relayとdispatcherを非同期に終了する。
@@ -1497,46 +1502,32 @@ pub async fn schema_get_snapshot(state: State<'_, BridgeState>) -> Result<Value,
     Ok(value)
 }
 
-/// `viewport_get_thumbnail`: `viewport.getThumbnail` with optional `maxWidth` /
-/// `maxHeight`. Returns the raw wire-shaped `result` Value (UI types it as
-/// `ViewportThumbnail`).
+/// `viewport_get_thumbnail`は`viewport.getThumbnail`を呼び、UI向けのwire形式を返す。
+/// `maxWidth`と`maxHeight`は省略でき、省略時はBridge上限の640×360を使う。
 ///
-/// Sends `params = { maxWidth?, maxHeight? }` (both optional; omitted keys let the
-/// engine pick). Validated with `parse_thumbnail_result` so a malformed result
-/// surfaces as a clean backend error rather than being forwarded; the ORIGINAL
-/// wire Value (carrying the engine's base64 image) is still returned (same
-/// validate-then-forward pattern as the read commands). The image is a snapshot
-/// copy carried inline as base64, never a live engine pointer (see
-/// docs/memory-buffer-policy.md large-payload strategy: PNG, max 640x360, 256 KiB
-/// hard cap, pull-style, <= 1 fps). An engine that does not provide thumbnails
-/// answers with a protocol error, which `send_method` maps to
-/// [`BackendError::Engine`] (e.g. `METHOD_NOT_SUPPORTED`) for the UI to degrade
-/// on (it falls back to the external-window notice).
+/// 取得結果は`parse_thumbnail_result`で検査する。Game ViewとMCPは同じ取得器を通るため、
+/// 進行中の要求と接続世代ごとの1秒snapshotを共有する。画像はframebufferのsnapshotを
+/// base64化した値で、エンジンのlive memoryへの参照は渡さない。MCP向けのPNG復号・縮小は
+/// `docs/memory-buffer-policy.md`に定める上限付きworkerで別途行う。
 ///
-/// No lock is held across the request `.await` — `send_method` clones the handle
-/// out of state and drops the guard before awaiting (see module docs).
+/// 要求中に接続状態のlockは保持しない。Bridge handleを複製してから非同期要求を行う。
 #[tauri::command]
 pub async fn viewport_get_thumbnail(
     state: State<'_, BridgeState>,
     max_width: Option<u32>,
     max_height: Option<u32>,
 ) -> Result<Value, BackendError> {
-    let mut params = serde_json::Map::new();
-    if let Some(w) = max_width {
-        params.insert("maxWidth".to_owned(), Value::from(w));
-    }
-    if let Some(h) = max_height {
-        params.insert("maxHeight".to_owned(), Value::from(h));
-    }
-    let value = send_method(state.inner(), "viewport.getThumbnail", Some(params)).await?;
-    // Validate shape (drift guard) but forward the original wire Value so the UI
-    // sees exactly the engine's base64 image and mimeType.
-    norves_bridge_editor_client::parse_thumbnail_result(&value).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed viewport.getThumbnail result: {err}"),
-        }
-    })?;
-    Ok(value)
+    let bridge = state.edit_facade();
+    state
+        .thumbnail_service
+        .get_raw(
+            &bridge,
+            max_width,
+            max_height,
+            crate::mcp::thumbnail::RequestOrigin::Ui,
+        )
+        .await
+        .map(|snapshot| snapshot.value().clone())
 }
 
 /// `asset_resolve`: `asset.resolve` for `logical_path` plus optional
