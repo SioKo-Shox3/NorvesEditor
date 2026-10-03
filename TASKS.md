@@ -240,7 +240,7 @@ M2 の共通規則:
 - notes: 先行 MCP-010/MCP-011。rmcp/axum/tokio-utilとdev用reqwest/towerを承認一覧から導入する。上限はaxum/tokioで実装し、製品towerの追加は要らない。CORS/Tauri権限を広げない。legacy_session_modeを明示。推移依存増分をcargo tree/lockで示す。危険地帯の評価・本文必須。
 
 ## MCP-013: MCP サーバーの設定連携と寿命を管理する
-- status: todo
+- status: done
 - done-when: NE07。既定無効でポートが開かず、bind失敗をUI向け状態で返す。有効化/無効化/ポート変更/トークン再生成/終了を直列化する。旧版session/GET SSEと現行listenを停止し、保留確認・開いたまとまり・投入済み要求の認証改訂を失効させる。MCP actor実行直前も認証改訂を検査する。停止は2秒猶予後の中止/joinまで試験し、秘密をDTOや通常イベントへ含めない。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
