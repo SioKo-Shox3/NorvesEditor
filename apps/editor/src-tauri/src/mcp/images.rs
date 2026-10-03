@@ -3,8 +3,8 @@
 use std::io::{self, Cursor, Write};
 
 use image::{
-    codecs::png::PngEncoder, imageops::FilterType, DynamicImage, ExtendedColorType, ImageEncoder,
-    ImageFormat, ImageReader, Limits, Rgba, RgbaImage,
+    codecs::png::PngEncoder, DynamicImage, ExtendedColorType, ImageEncoder, ImageFormat,
+    ImageReader, Limits, Rgba, RgbaImage,
 };
 
 use crate::error::BackendError;
@@ -118,7 +118,7 @@ pub(crate) fn build_timestamped_image_list(
         let resized = if (width, height) == (info.width, info.height) {
             decoded
         } else {
-            decoded.resize_exact(width, height, FilterType::Triangle)
+            decoded.thumbnail_exact(width, height)
         };
         let rgba = resized.into_rgba8();
         let image_x = cell_x
@@ -509,6 +509,60 @@ mod tests {
         cursor.into_inner()
     }
 
+    fn png_with_padding(color: [u8; 4], width: u32, height: u32) -> Vec<u8> {
+        let encoded = png(color, width, height);
+        let padding_len = MAX_INPUT_PNG_BYTES
+            .checked_sub(encoded.len())
+            .and_then(|remaining| remaining.checked_sub(12))
+            .expect("試験PNGに上限までの余白がある");
+        let padding = vec![0; padding_len];
+        let chunk_type = b"npAD";
+        let checksum = png_chunk_crc32(chunk_type, &padding);
+        let iend_start = encoded.len().checked_sub(12).expect("IENDがある");
+        assert_eq!(&encoded[iend_start + 4..iend_start + 8], b"IEND");
+
+        let mut padded = Vec::with_capacity(MAX_INPUT_PNG_BYTES);
+        padded.extend_from_slice(&encoded[..iend_start]);
+        padded.extend_from_slice(
+            &u32::try_from(padding_len)
+                .expect("PNGチャンク長を変換する")
+                .to_be_bytes(),
+        );
+        padded.extend_from_slice(chunk_type);
+        padded.extend_from_slice(&padding);
+        padded.extend_from_slice(&checksum.to_be_bytes());
+        padded.extend_from_slice(&encoded[iend_start..]);
+        padded
+    }
+
+    fn png_chunk_crc32(chunk_type: &[u8], data: &[u8]) -> u32 {
+        const TABLE: [u32; 16] = [
+            0x0000_0000,
+            0x1db7_1064,
+            0x3b6e_20c8,
+            0x26d9_30ac,
+            0x76dc_4190,
+            0x6b6b_51f4,
+            0x4db2_6158,
+            0x5005_713c,
+            0xedb8_8320,
+            0xf00f_9344,
+            0xd6d6_a3e8,
+            0xcb61_b38c,
+            0x9b64_c2b0,
+            0x86d3_d2d4,
+            0xa00a_e278,
+            0xbdbd_f21c,
+        ];
+        let mut crc = u32::MAX;
+        for byte in chunk_type.iter().chain(data) {
+            crc ^= u32::from(*byte);
+            crc = (crc >> 4) ^ TABLE[(crc & 0x0f) as usize];
+            crc = (crc >> 4) ^ TABLE[(crc & 0x0f) as usize];
+        }
+        !crc
+    }
+
     fn request_error(error: BackendError) -> String {
         match error {
             BackendError::Request { message } => message,
@@ -574,6 +628,72 @@ mod tests {
             rendered.get_pixel(first_colon_x, first_header_y + 2).0,
             TEXT_COLOR.0,
             "時刻のコロンが見出し内に描かれる"
+        );
+
+        let second_number_x = OUTER_MARGIN + CELL_WIDTH + CELL_GAP + CONTENT_INSET + 2;
+        assert_eq!(
+            rendered.get_pixel(second_number_x, first_header_y + 2).0,
+            TEXT_COLOR.0,
+            "2枚目の見出し番号の0を正しい位置に描画する"
+        );
+        assert_eq!(
+            rendered
+                .get_pixel(
+                    second_number_x + GLYPH_WIDTH + GLYPH_SPACING,
+                    first_header_y + 2
+                )
+                .0,
+            HEADER_COLOR.0,
+            "2枚目の見出し番号の2を正しい位置に描画する"
+        );
+    }
+
+    #[test]
+    fn maximum_dimension_image_fits_the_full_working_budget() {
+        let large = png_with_padding([170, 35, 75, 255], 4096, 4096);
+        let small = png_with_padding([25, 180, 60, 255], 1, 1);
+        assert_eq!(large.len(), MAX_INPUT_PNG_BYTES);
+        assert_eq!(small.len(), MAX_INPUT_PNG_BYTES);
+
+        let mut images = Vec::with_capacity(MAX_IMAGE_COUNT);
+        images.push(large);
+        for _ in 1..MAX_IMAGE_COUNT {
+            images.push(small.clone());
+        }
+        drop(small);
+        assert!(images
+            .iter()
+            .all(|image| image.len() == MAX_INPUT_PNG_BYTES));
+
+        let timestamps = (0..MAX_IMAGE_COUNT)
+            .map(|index| format!("00:00:{index:02}.000"))
+            .collect::<Vec<_>>();
+        let frames = timestamps
+            .iter()
+            .zip(&images)
+            .map(|(timestamp, png)| TimestampedImage { timestamp, png })
+            .collect::<Vec<_>>();
+
+        let list = build_timestamped_image_list(&frames)
+            .expect("最大寸法と最大入力サイズの一覧を生成する");
+        assert_eq!((list.width, list.height), (2048, 2048));
+        assert!(list.png.len() <= MAX_OUTPUT_PNG_BYTES);
+
+        let rendered = ImageReader::new(Cursor::new(&list.png))
+            .with_guessed_format()
+            .expect("一覧PNGの形式を読む")
+            .decode()
+            .expect("一覧PNGを復号する")
+            .into_rgba8();
+        let (width, height) = fit_dimensions(4096, 4096, CONTENT_WIDTH, CONTENT_HEIGHT)
+            .expect("最大寸法画像を縮小する");
+        let image_x = OUTER_MARGIN + CONTENT_INSET + (CONTENT_WIDTH - width) / 2;
+        let image_y = OUTER_MARGIN + HEADER_HEIGHT + CONTENT_INSET + (CONTENT_HEIGHT - height) / 2;
+        assert_eq!(
+            rendered
+                .get_pixel(image_x + width / 2, image_y + height / 2)
+                .0,
+            [170, 35, 75, 255]
         );
     }
 

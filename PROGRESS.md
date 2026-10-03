@@ -4,7 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
-- MCP-020: 時刻付き画像一覧ヘルパーを追加し、PNG byte列1〜16枚を入力順の4列に配置。時刻はHH:MM:SS.mmmで検査し、番号・時刻を5×7固定字形とテキストへ併記する。各辺4096/16777216画素、入力・出力PNG各2 MiB、作業見積り最大126 MiB、出力長辺2048を制限し、空・枚数超過・不正時刻・overflowを拒否。画像試験で順序と見出し位置を確認。fmt/clippy exit 0、cargo test 328単体・1 mcp_reads・14 process_e2e成功。証拠 .harness/runs/20261003-161248/preflight-MCP-020-current.txt / verify-MCP-020-1.txt〜verify-MCP-020-3.txt。
+- MCP-020: 時刻付き画像一覧ヘルパーを追加し、PNG byte列1〜16枚を入力順の4列に配置。時刻はHH:MM:SS.mmmで検査し、番号・時刻を5×7固定字形とテキストへ併記する。各辺4096/16777216画素、入力・出力PNG各2 MiB、作業見積り最大126 MiB、出力長辺2048を制限し、空・枚数超過・不正時刻・overflowを拒否。縮小は`thumbnail_exact`を使い、4096×4096画像と独立した16枚分の最大入力PNGを組み合わせた試験を追加。画像試験で並び、1枚目・2枚目の見出し位置を確認。fmt/clippy exit 0、cargo test 329単体・1 mcp_reads・14 process_e2e成功。証拠 `.harness/runs/20261003-161248/preflight-MCP-020-16.txt` / `verify-MCP-020-4.txt`〜`verify-MCP-020-6.txt`。
 - MCP-015: 接続中の能力と許可から道具一覧を生成し、Bridge params schemaを仕様から埋め込み、書き込みparams/groupIdと独自schemaを分離。jsonschemaをオフライン検証し、未知項目・型違い・上限超過・外部参照を拒否する。現行版listenのSubscriptionSink通知と旧版各peer通知、両版の実HTTP通知・停止・期限・再購読を試験。fmt/clippy exit 0、cargo testは319単体・1 MCP mock・14 process_e2e成功。証拠 `.harness/runs/20261003-161248/preflight-MCP-015-current.txt` / `verify-MCP-015-8.txt`〜`verify-MCP-015-10.txt`。
 - MCP-019: `viewport.getThumbnail` をPNG限定で検査し、MCP `image/png` contentのbase64 dataとして返す。Bridgeの640×360/256KiB上限を維持し、長辺512・MCP PNG 512KiB、宣言寸法/IHDR検査、2 worker/128MiB予算を適用。Game View/MCPは進行中要求と世代別1秒snapshotを共有し、MCP失敗にGame Viewをbackoffさせない。通常切断はcacheを失効し、アプリ終了時にworkerを停止・joinする。fmt/clippy/cargo test exit 0（299単体・1 mock統合・14 process_e2e）。証拠 `.harness/runs/20261003-161248/preflight-MCP-019.txt` / `verify-MCP-019-2.txt`〜`verify-MCP-019-4.txt`。
 - MCP-018: 状態・能力・ツリー・snapshot・schema・資産manifest/resolve・最近のログを読み取り道具として接続。ツリー範囲をバックエンドで適用し、Bridge側の資産manifestページは内部で集約してからcursorで継続する。応答256KiB/200項目、世代固定・5分cursor、16MiB snapshot上限とLRU追い出し、巨大項目/snapshot拒否をmock試験で確認。エンジンのerror code(最大128B)とmessage(最大4KiB)を固定の日本語説明に続くJSONデータとして返し、300KiBの悪意ある文が上限内でデータ化されることを`call_tool`経由で試験。開始 `scripts/verify.ps1` とfmt/clippy/cargo testがexit 0（284単体・14統合）、環境変数指定の実mock `mcp_reads` は1/1・0.53秒。証拠 `.harness/runs/20261003-161248/preflight-MCP-018.txt` / `verify-MCP-018-11.txt`〜`verify-MCP-018-14.txt`。
@@ -59,6 +59,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-03 MCP-020差し戻し対応: `resize_exact`の入力幅に比例する中間画像を避けるため`thumbnail_exact`へ切り替えた。最大寸法・独立した全画像2 MiBの回帰試験と2枚目の番号字形試験を追加。指定3ゲートはexit 0、cargo testは329単体・1 mcp_reads・14 process_e2e成功。保存出力を開いて確認した: `preflight-MCP-020-16.txt` / `verify-MCP-020-4.txt`〜`verify-MCP-020-6.txt`。
 - 2026-10-03 MCP-020: scripts/verify.ps1 と指定fmt/clippy/cargo testを実行し、保存出力を開いて確認。最終cargo testは328単体・1 mcp_reads・14 process_e2e成功。初回だけ既存edit_serviceの世代変更テストが1件失敗したが、コード変更せず同じ全テストを再実行して成功した。時刻書式はHH:MM:SS.mmm、PNGは8 bit以下を許可し16 bitは作業上限のため拒否する。
 - 2026-10-03 MCP-015: `scripts/verify.ps1` と指定fmt/clippy/cargo testを実行し、各保存ログを開いて確認した。実HTTPで現行版と旧版の道具一覧通知、現行listen/旧GET SSEの停止・期限・再購読を確認。
 - 2026-10-03 MCP-019: 通常切断で画像workerを永久停止すると再接続後に取得できないため、cache失効とworker停止を分離し、worker停止/joinはアプリ終了時だけにした。保存出力 `preflight-MCP-019.txt` / `verify-MCP-019-2.txt`〜`verify-MCP-019-4.txt` を開いて確認し、全ゲートexit 0。
