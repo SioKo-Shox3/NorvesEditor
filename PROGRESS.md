@@ -5,6 +5,7 @@
 
 ## Done
 - (反復ごとに1行: タスク id、コミット、検証の要点)
+- MCP-009: 名前・出どころ・時刻を持つまとまりと逆順undo/順redoを実装。部分失敗では成功位置と未処理部分を保留し、既知拒否だけを再試行して成功分を重複適用しない。結果不明のtimeout/通信断は再送せず、破棄結果に残存変更を返す。新IDのまとまり内置換、世代切り替え、保留中の編集・undo/redo・play/pause/stop拒否を試験。fmt/clippy/cargo test（218単体+14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべて成功。証拠 `.harness/runs/20261003-035149/verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt`。
 - MCP-008: 画面storeから編集履歴の正本と逆操作を外し、編集・undo/redo・実行制御を共通サービスのTauri入口へ接続。旧値/親と適用改訂の捕捉、要約イベントによる表示、捕捉不足時の再取得と再操作案内を画面側試験で確認し、連打中の二重送信と自動キー反復も抑止。typecheck exit 0、vitest 621/621、IPC名35 commands/13 events一致。証拠 `.harness/runs/20261003-035149/verify-MCP-008-7.txt`〜`verify-MCP-008-9.txt`。
 - MCP-007: 編集サービスの接続世代・適用改訂・sequenceを基準化し、購読開始中に届いたイベントも要約取得後に再同期する。世代・改訂が古い通知を捨て、必要なシーン/Inspector snapshotを取り直す。サービスイベントだけで値・改名・構造変更がOutlinerとInspectorへ反映される試験を追加。typecheck exit 0、vitest 657/657。証拠 `.harness/runs/20261003-035149/verify-MCP-007-5.txt` / `verify-MCP-007-6.txt`。
 - MCP-001: ADR 0010 / 0011 の承認設計と要件書に合わせ、`docs/architecture.md` の読み取り・書き込み・画面操作経路を明確化。`git diff 700dfa8 --check` exit 0、証拠 `.harness/runs/20261003-035149/verify-MCP-001-4.txt`。
@@ -31,10 +32,10 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-008完了、次はMCP-009。
+- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-009完了、次はMCP-010。
 
 ## Next
-- 次のタスク: MCP-009（まとまりと部分失敗の進行位置を実装する）。
+- 次のタスク: MCP-010（まとまりの要約と失敗時の選択を画面へ出す）。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -45,6 +46,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-03 MCP-009: 開始ゲート `scripts/verify.ps1` exit 0。最終 fmt/clippy/cargo test（218単体・14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべてexit 0。実Bridge要求timeout後の結果不明・保留要約・再送なし・再接続世代変更による解消を新試験で確認し、保存ログを開いて合格を確認。
 - 2026-10-03 MCP-008: 開始ゲート `./scripts/verify.ps1` と最終 `pnpm -C apps/editor typecheck` / `pnpm -C apps/editor test` / `node scripts/check-protocol-names.mjs` はすべて exit 0。保存ログを開いて確認し、フロントエンドvitest 621/621、IPC名35 commands/13 events一致。store・hookに画面履歴の記録/逆操作が残らないことも検索で確認した。
 - 2026-10-03 MCP-007: 再接続後は接続要約が確定するまで編集イベントを適用せず、取得中に通知が届いた場合は要約をもう一度照会する。古い取得応答は要求ID/接続世代/適用改訂で破棄。typecheckとフロントエンドvitestを保存ログから確認。
 - 2026-10-03 MCP-006: fmt / clippy / cargo test（211単体・14統合）/ IPC名検査（35 commands・13 events）/ pnpm typecheck がすべて exit 0。各出力を `.harness/runs/20261003-035149/verify-MCP-006-20.txt`〜`verify-MCP-006-24.txt` に保存して開いて確認。

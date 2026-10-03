@@ -2426,6 +2426,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timed_out_group_result_is_held_until_reconnect_without_retrying() {
+        let (service, control, handle, mut peer) = test_service_with_peer(6);
+        let group = service
+            .begin_group_from_mcp("timeout後に再送しないまとまり".to_owned())
+            .await
+            .expect("まとまりが始まる");
+        for object_id in ["first", "second"] {
+            enqueue_grouped_property(
+                &service,
+                group,
+                object_id,
+                "visible",
+                serde_json::json!(false),
+                serde_json::json!(true),
+            )
+            .result()
+            .await
+            .expect("まとまり内の編集が適用される");
+        }
+        service
+            .end_group_from_mcp(group)
+            .await
+            .expect("まとまりを閉じる");
+
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        let (applied_id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "object.setProperty");
+        assert_eq!(
+            params
+                .as_ref()
+                .and_then(|params| params.get("objectId"))
+                .and_then(Value::as_str),
+            Some("second")
+        );
+        respond(
+            &mut peer,
+            applied_id,
+            serde_json::json!({ "accepted": true, "appliedValue": false }),
+        )
+        .await;
+
+        let (_unknown_id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "object.setProperty");
+        assert_eq!(
+            params
+                .as_ref()
+                .and_then(|params| params.get("objectId"))
+                .and_then(Value::as_str),
+            Some("first")
+        );
+        assert!(matches!(
+            undo.result().await,
+            Err(BackendError::Request { .. })
+        ));
+
+        let pending = service
+            .history_summary()
+            .pending_group
+            .expect("timeoutの結果不明を要約する");
+        assert_eq!(pending.completed_count, 1);
+        assert_eq!(pending.total_count, 2);
+        assert!(pending.outcome_unknown);
+        assert!(!pending.retry_allowed);
+        assert!(service.retry_pending_from_ui().await.is_err());
+        assert!(tokio::time::timeout(Duration::from_millis(30), peer.recv())
+            .await
+            .is_err());
+
+        let (new_transport, _new_peer) = loopback_pair(4);
+        let new_handle = Dispatcher::spawn(new_transport);
+        control.set_generation(2, new_handle.clone());
+        let summary = service.history_summary();
+        assert_eq!(summary.generation, Some(2));
+        assert!(!summary.pending);
+        assert!(summary.undo_group.is_none());
+        assert!(summary.redo_group.is_none());
+        service.shutdown().await;
+        handle.shutdown().await;
+        new_handle.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn generation_change_clears_pending_group_and_rejects_old_group_handle() {
         let (service, control, handle, mut peer) = test_service_with_peer(6);
         let group = service

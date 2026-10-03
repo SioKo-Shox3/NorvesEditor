@@ -203,7 +203,7 @@ M2 の共通規則:
 - notes: 先行 MCP-007。試験削除で数だけ合わせず、移した契約の対応を示す。画面自身が履歴を記録する残存経路が無いことを検索する。E1の単発操作の互換境界として評価する。
 
 ## MCP-009: まとまりと部分失敗の進行位置を実装する
-- status: todo
+- status: done
 - done-when: NE06。まとまりに名前・人/MCPの出どころ・時刻がある。3件がundoで逆順、redoで順に1回で戻る。複数編集の途中失敗は成功位置と未処理部分を持ち先頭に残り、再試行は成功済みを重複実行しない。保留中の新書き込みを拒否し、破棄は残る状態を報告する。順操作の失敗では成功分だけ残す。単発のNE03-6は維持する。新IDの置換と世代切り替えの試験もある。同じまとまりの対象ID欄を旧ID→新IDで置換し、create→set/create子/duplicate→reparentと途中失敗後の再試行、次のundoを試験する。保留中は通常undo/redoとplay/pause/stopも拒否する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

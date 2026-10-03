@@ -32,6 +32,7 @@
 - `edit_service::tests::duplicate_redo_remaps_reparent_target_and_the_next_undo_target`: 複製の新IDを親変更の対象へ置換し、再redoと次undoが再採番後のIDを使う。
 - `edit_service::tests::forward_group_failure_keeps_only_the_successful_prefix`: 前進中の拒否で、成功した2件だけをまとまりとして保持し、undoする。
 - `edit_service::tests::unknown_group_result_is_not_retried_and_discard_reports_remaining_changes`: 通信断で結果不明を保持し、再試行を拒否する。破棄結果に完了件数・総数・不明状態・残存変更を返す。
+- `edit_service::tests::timed_out_group_result_is_held_until_reconnect_without_retrying`: 実Bridge要求のtimeoutで結果不明と進行位置を要約し、同じ操作を送らず、再接続の世代変更で保留・旧履歴を解消する。
 - `edit_service::tests::pending_partial_failure_rejects_edits_undo_redo_and_runtime_controls`: 保留中の通常編集、undo/redo、play/pause/stop相当の実行制御を拒否する。
 - `edit_service::tests::generation_change_clears_pending_group_and_rejects_old_group_handle`: 世代交替で保留・履歴・旧まとまりハンドルを無効化する。
 - 単発のNE03-6は `edit_service::tests::single_undo_redo_failure_drops_only_the_attempted_entry_and_reports_error` で維持する。
