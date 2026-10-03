@@ -322,7 +322,7 @@ M2 の共通規則:
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - verify: `node scripts/check-protocol-names.mjs`
 - verify: `pnpm -r --if-present typecheck`
-- paths: apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/dto.rs, apps/editor/src-tauri/src/protocol_names.rs, bridge/ts/packages/bridge-ui/src/**, bridge/ts/packages/bridge-types/src/**
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/dto.rs, apps/editor/src-tauri/src/protocol_names.rs, bridge/ts/packages/bridge-ui/src/**, bridge/ts/packages/bridge-types/src/**
 - notes: 先行 MCP-020。この段ではwrite道具を公開しない。資産のprefix許可はNE19まで実装せず範囲外として記録する。Tauriセキュリティの評価・本文必須。
 
 ## MCP-022: 要求ごとの書き込み確認をバックエンドで管理する
@@ -333,7 +333,7 @@ M2 の共通規則:
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - verify: `node scripts/check-protocol-names.mjs`
 - verify: `pnpm -r --if-present typecheck`
-- paths: apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/dto.rs, apps/editor/src-tauri/src/protocol_names.rs, bridge/ts/packages/bridge-ui/src/**, bridge/ts/packages/bridge-types/src/**
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/dto.rs, apps/editor/src-tauri/src/protocol_names.rs, bridge/ts/packages/bridge-ui/src/**, bridge/ts/packages/bridge-types/src/**
 - notes: 先行 MCP-021。状態の再検証を列内で行い、確認待ちを列内へ持ち込まない。確認IDも秘密として通常ログへ出さない。UI表示は次タスク。Tauriセキュリティの評価・本文必須。
 
 ## MCP-023: 許可モードと確認待ちを画面へ出す
@@ -351,7 +351,7 @@ M2 の共通規則:
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - verify: `pnpm -C apps/editor test`
-- paths: apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src/hooks/__tests__/useBridge.lifecycle.test.tsx, apps/editor/src/components/shell/__tests__/ToolbarActions.test.tsx
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src/hooks/__tests__/useBridge.lifecycle.test.tsx, apps/editor/src/components/shell/__tests__/ToolbarActions.test.tsx
 - notes: 先行 MCP-023。asset編集/object.invoke/runtime.stepはE4。1呼び出し1まとまり。component付け外しは既存の非取り消し操作であることを結果へ明示する。
 
 ## MCP-025: 名前付きまとまりの開始・終了と自動閉鎖を公開する
@@ -360,7 +360,7 @@ M2 の共通規則:
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
-- paths: apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**
 - notes: 先行 MCP-024。stateless HTTP断でクライアント同一性を推定しない。legacy session IDは補助のみ。別まとまり横断のID復元は行わない。
 
 ## MCP-026: 言語モデルの操作結果を記録・保存する
@@ -371,7 +371,7 @@ M2 の共通規則:
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - verify: `node scripts/check-protocol-names.mjs`
 - verify: `pnpm -r --if-present typecheck`
-- paths: apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/dto.rs, apps/editor/src-tauri/src/protocol_names.rs, bridge/ts/packages/bridge-ui/src/**, bridge/ts/packages/bridge-types/src/**
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/dto.rs, apps/editor/src-tauri/src/protocol_names.rs, bridge/ts/packages/bridge-ui/src/**, bridge/ts/packages/bridge-types/src/**
 - notes: 先行 MCP-025。backend.logと同じディレクトリ、別ファイル。試験は一時ディレクトリ。操作記録の要約はエンジン由来文字列を命令として使わない。
 
 ## MCP-027: AI の操作パネルと履歴へのリンクを出す
