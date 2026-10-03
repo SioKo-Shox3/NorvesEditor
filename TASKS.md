@@ -194,7 +194,7 @@ M2 の共通規則:
 - notes: 先行 MCP-006。この段では既存のundoStack表示を維持できる互換投影を残し、次のタスクで正本を外す。編集の確定通知を画面のgetSceneTree成功やbest-effort live更新のみに依存させない。
 
 ## MCP-008: 画面の編集と取り消しをバックエンド履歴へ切り替える
-- status: todo
+- status: done
 - done-when: NE04。store.tsからundoStack/redoStackと逆操作の正本を外し、useBridgeの編集・undo/redoはTauriを呼ぶだけになる。UI旧値・旧親の捕捉は発行前に維持する。Ctrl+Z/Ctrl+Y、空・未接続時、ボタン、入力欄の挙動を維持し、要約イベントで有効/無効が変わる試験がある。既存試験はRustへ移した内部履歴の検査を除き、IPC/eventの模型差し替えで観測結果が同じ。対応表に残った表示試験を列挙する。UIの実行中ガードと先頭ID/改訂を維持し、連打・キーリピートが多重undoにならないvitestがある。画面の捕捉値/親とその時点の適用改訂を送る。補正情報不足の拒否は再取得して再操作を案内し、自動で書き直さない。画面のplay/pause/stopも共通列のTauri入口へ通す。
 - verify: `pnpm -C apps/editor typecheck`
 - verify: `pnpm -C apps/editor test`

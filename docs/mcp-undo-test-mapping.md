@@ -16,7 +16,7 @@
 
 ## 画面の観測を残す試験
 
-- `hooks/__tests__/useUndoRedoKeybindings.test.tsx`: Ctrl+Z/Ctrl+Y/Ctrl+Shift+Z、入力欄とcontentEditableの除外、既に処理済みのevent、購読解除を検査する。キーリピート中に同じundo commandを一度だけ送る境界は `useBridge.lifecycle.test.tsx` の `キーリピート中は先頭ID・改訂のundoを一度だけ送る` で検査する。
+- `hooks/__tests__/useUndoRedoKeybindings.test.tsx`: Ctrl+Z/Ctrl+Y/Ctrl+Shift+Z、入力欄とcontentEditableの除外、既に処理済みのevent、購読解除を検査する。自動キー反復の2回目を抑止する `キーを押し続けたときの自動反復では追加のundoを送らない` と、実行中に同じundo commandを一度だけ送る境界は `useBridge.lifecycle.test.tsx` の `キーリピート中は先頭ID・改訂のundoを一度だけ送る` で検査する。
 - `components/shell/__tests__/ToolbarActions.test.tsx`: 空/有効/未接続/未対応/保留中の要約に対するUndo/Redoボタン、要約event後の有効・無効切り替え、保留中のPlay/Pause/Stop無効化、クリック先を検査する。
 - `hooks/__tests__/useBridge.lifecycle.test.tsx`: 親変更前の同期捕捉、シーン直下の親null、値編集の旧値とsnapshot改訂、旧値なしの書き込み、捕捉不足時の再取得と自動再送なし、先頭ID/改訂付きundo/redo、play/pause/stopのTauri入口を検査する。
 - `hooks/__tests__/useBridge.lifecycle.test.tsx` の購読試験: `購読開始時に履歴を取得し、改訂が古いイベントを捨て、欠落時に再同期する` と `再接続後は新しい接続の世代と改訂で履歴要約を受け入れる`。

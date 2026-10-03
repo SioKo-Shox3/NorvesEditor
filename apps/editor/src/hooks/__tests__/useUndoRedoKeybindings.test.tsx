@@ -96,6 +96,15 @@ describe('useUndoRedoKeybindings dispatch mapping', () => {
     expect(ev.defaultPrevented).toBe(true);
   });
 
+  it('キーを押し続けたときの自動反復では追加のundoを送らない', () => {
+    const { undo, redo } = setup();
+    press({ key: 'z', ctrlKey: true });
+    const repeatEvent = press({ key: 'z', ctrlKey: true, repeat: true });
+    expect(undo).toHaveBeenCalledOnce();
+    expect(redo).not.toHaveBeenCalled();
+    expect(repeatEvent.defaultPrevented).toBe(true);
+  });
+
   it('Cmd+Z (metaKey) triggers undo on macOS', () => {
     const { undo } = setup();
     press({ key: 'z', metaKey: true });
