@@ -295,11 +295,35 @@ impl ConnectionRegistry {
 
 #[derive(Default)]
 struct ConnectionState {
+    ordinary_permit: Mutex<Option<OwnedSemaphorePermit>>,
     stream_permit: Mutex<Option<OwnedSemaphorePermit>>,
     request_deadline: Mutex<Option<Instant>>,
+    head_request: Mutex<bool>,
 }
 
 impl ConnectionState {
+    fn retain_ordinary(&self, permit: OwnedSemaphorePermit) -> bool {
+        let mut current = self
+            .ordinary_permit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_some() {
+            false
+        } else {
+            *current = Some(permit);
+            true
+        }
+    }
+
+    fn release_ordinary(&self) {
+        let permit = self
+            .ordinary_permit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        drop(permit);
+    }
+
     fn retain_stream(&self, permit: OwnedSemaphorePermit) -> bool {
         let mut current = self
             .stream_permit
@@ -339,6 +363,20 @@ impl ConnectionState {
     fn request_deadline(&self) -> Option<Instant> {
         *self
             .request_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn set_head_request(&self, is_head: bool) {
+        *self
+            .head_request
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = is_head;
+    }
+
+    fn is_head_request(&self) -> bool {
+        *self
+            .head_request
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -541,7 +579,8 @@ impl SseWireTracker {
                     if body.chunk_tail.len() > 7 {
                         body.chunk_tail.remove(0);
                     }
-                    finished = body.chunk_tail.as_slice() == b"\r\n0\r\n\r\n";
+                    finished = body.chunk_tail.as_slice() == b"\r\n0\r\n\r\n"
+                        || body.chunk_tail.as_slice() == b"0\r\n\r\n";
                 } else if body
                     .content_length
                     .is_some_and(|length| body.written >= length)
@@ -557,6 +596,30 @@ impl SseWireTracker {
 
     fn begin_response(&mut self, now: Instant, policy: StreamPolicy, connection: &ConnectionState) {
         let headers = std::mem::take(&mut self.headers).to_ascii_lowercase();
+        let status_code = headers
+            .split(|byte| *byte == b'\n')
+            .next()
+            .and_then(|line| line.split(|byte| *byte == b' ').nth(1))
+            .and_then(|code| {
+                std::str::from_utf8(code.trim_ascii())
+                    .ok()
+                    .and_then(|value| value.parse::<u16>().ok())
+            });
+        if status_code.is_some_and(|code| (100..200).contains(&code)) {
+            return;
+        }
+        if connection.is_head_request()
+            || status_code.is_some_and(|code| matches!(code, 204..=205 | 304))
+        {
+            connection.release_stream();
+            connection.release_ordinary();
+            connection.set_request_deadline(None);
+            connection.set_head_request(false);
+            self.body = None;
+            self.watchdog = None;
+            self.line.reset();
+            return;
+        }
         let is_sse = headers.split(|byte| *byte == b'\n').any(|line| {
             line.starts_with(b"content-type:")
                 && line.windows(17).any(|part| part == b"text/event-stream")
@@ -593,7 +656,9 @@ impl SseWireTracker {
             if is_sse {
                 connection.release_stream();
             }
+            connection.release_ordinary();
             connection.set_request_deadline(None);
+            connection.set_head_request(false);
             self.body = None;
             self.watchdog = None;
         }
@@ -607,7 +672,9 @@ impl SseWireTracker {
         if was_sse {
             connection.release_stream();
         }
+        connection.release_ordinary();
         connection.set_request_deadline(None);
+        connection.set_head_request(false);
     }
 
     fn poll_expired(&mut self, cx: &mut Context<'_>) -> bool {
@@ -741,6 +808,7 @@ async fn authenticate_and_limit(
         .get::<ConnectInfo<RemoteAddr>>()
         .map(|connect| connect.0 .0);
     let connection = remote.and_then(|remote| state.registry.get(remote));
+    let is_head_request = parts.method == Method::HEAD;
     let body =
         match time::timeout_at(request_deadline, to_bytes(body, MAX_REQUEST_BODY_BYTES)).await {
             Ok(Ok(body)) => body,
@@ -763,43 +831,49 @@ async fn authenticate_and_limit(
         }
     };
 
+    match admission {
+        RequestAdmission::Ordinary(permit) => {
+            // legacy session のツール実行は SSE 本文が閉じるまで続くため、実行前に通常枠を予約する。
+            let Some(connection) = &connection else {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            };
+            if !connection.retain_ordinary(permit) {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+        }
+        RequestAdmission::Stream(permit) => {
+            let Some(connection) = &connection else {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            };
+            if !connection.retain_stream(permit) {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+        }
+    }
+
+    if let Some(connection) = &connection {
+        connection.set_request_deadline(Some(request_deadline));
+        connection.set_head_request(is_head_request);
+    }
+
     let response = if is_long_stream {
         match time::timeout_at(request_started + state.policy.maximum, next.run(request)).await {
             Ok(response) => response,
-            Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
+            Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
         }
     } else {
         match time::timeout_at(request_deadline, next.run(request)).await {
             Ok(response) => response,
-            Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
+            Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
         }
     };
-
-    if let Some(connection) = &connection {
-        connection.set_request_deadline(Some(request_deadline));
-    }
 
     if !is_sse_response(&response) {
-        drop(admission);
-        return response;
-    }
-
-    let stream_permit = match admission {
-        RequestAdmission::Stream(permit) => permit,
-        RequestAdmission::Ordinary(ordinary_permit) => {
-            // legacy_session_mode の通常応答も有限の SSE になりうるため、stream 枠には数えない。
-            drop(ordinary_permit);
-            return response;
+        if let Some(connection) = &connection {
+            connection.release_ordinary();
+            connection.release_stream();
         }
-    };
-    let Some(remote) = remote else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let Some(connection) = state.registry.get(remote) else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    if !connection.retain_stream(stream_permit) {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return response;
     }
     response
 }
@@ -870,6 +944,9 @@ fn is_sse_response(response: &Response) -> bool {
 
 struct EmptyMcpServer;
 
+#[cfg(test)]
+static TEST_TOOL_RELEASE: std::sync::OnceLock<CancellationToken> = std::sync::OnceLock::new();
+
 impl ServerHandler for EmptyMcpServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
@@ -894,6 +971,23 @@ impl ServerHandler for EmptyMcpServer {
         requested
             .eq(&SubscriptionFilter::default())
             .then(SubscriptionFilter::default)
+    }
+
+    #[cfg(test)]
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        if request.name == "hold-for-concurrency-test" {
+            if let Some(release) = TEST_TOOL_RELEASE.get() {
+                release.cancelled().await;
+                return Ok(rmcp::model::CallToolResult::success(vec![]).into());
+            }
+        }
+        Err(rmcp::ErrorData::method_not_found::<
+            rmcp::model::CallToolRequestMethod,
+        >())
     }
 }
 
@@ -1038,6 +1132,39 @@ mod tests {
             .to_owned();
         let _ = response.bytes().await.expect("Initialize 応答を読む");
         session
+    }
+
+    async fn post_blocking_tool_call(
+        client: &reqwest::Client,
+        server: &RunningServer,
+        token: &str,
+        session: &str,
+        id: u64,
+    ) -> reqwest::Response {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": "hold-for-concurrency-test",
+                "arguments": {}
+            }
+        }))
+        .expect("試験用 tools/call を作る");
+        client
+            .post(server.url())
+            .bearer_auth(token)
+            .header("Mcp-Session-Id", session)
+            .header(
+                "Mcp-Protocol-Version",
+                ProtocolVersion::V_2025_11_25.as_str(),
+            )
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .expect("blocking tools/call を送る")
     }
 
     #[tokio::test]
@@ -1492,6 +1619,158 @@ mod tests {
 
         drop(responses);
         server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn ordinary_sse_admission_stays_held_until_http_body_finishes() {
+        let release = CancellationToken::new();
+        assert!(TEST_TOOL_RELEASE.set(release.clone()).is_ok());
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let server = RunningServer::start(Arc::new(McpHttpAuth::new(token)), normal_policy()).await;
+        let client = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .build()
+            .expect("HTTP 試験クライアントを作る");
+        let session = initialize_legacy_session(&client, &server, &token_value).await;
+        let mut responses = Vec::new();
+
+        for accepted in 0..MAX_ORDINARY_REQUESTS {
+            let response = post_blocking_tool_call(
+                &client,
+                &server,
+                &token_value,
+                &session,
+                accepted as u64 + 1,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(response
+                .headers()
+                .get(CONTENT_TYPE)
+                .is_some_and(|value| value.as_bytes().starts_with(b"text/event-stream")));
+            responses.push(response);
+            assert_eq!(
+                server.state.limits.ordinary.available_permits(),
+                MAX_ORDINARY_REQUESTS - accepted - 1,
+                "SSE 本文が送信中の間は通常枠を保持する"
+            );
+        }
+
+        let rejected = post_blocking_tool_call(
+            &client,
+            &server,
+            &token_value,
+            &session,
+            MAX_ORDINARY_REQUESTS as u64 + 1,
+        )
+        .await;
+        assert_eq!(rejected.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        release.cancel();
+        let _ = responses
+            .remove(0)
+            .bytes()
+            .await
+            .expect("SSE 本文を読み切る");
+        time::timeout(Duration::from_secs(2), async {
+            while server.state.limits.ordinary.available_permits() == 0 {
+                time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("本文完了で通常枠が返る");
+
+        let retried = post_blocking_tool_call(
+            &client,
+            &server,
+            &token_value,
+            &session,
+            MAX_ORDINARY_REQUESTS as u64 + 2,
+        )
+        .await;
+        assert_eq!(retried.status(), StatusCode::OK);
+        let _ = retried.bytes().await.expect("再試行した SSE 本文を読む");
+
+        for response in responses {
+            let _ = response.bytes().await.expect("SSE 本文を読む");
+        }
+
+        time::timeout(Duration::from_secs(2), async {
+            while server.state.limits.ordinary.available_permits() != MAX_ORDINARY_REQUESTS {
+                time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("すべてのSSE本文完了で通常枠が返る");
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn sse_tracker_skips_interim_and_bodyless_responses() {
+        let limits = HttpLimits::default();
+        let connection = ConnectionState::default();
+        connection.retain_ordinary(
+            limits
+                .ordinary
+                .clone()
+                .try_acquire_owned()
+                .expect("通常枠を得る"),
+        );
+        connection.set_request_deadline(Some(Instant::now() + Duration::from_secs(30)));
+        let mut tracker = SseWireTracker::default();
+        let now = Instant::now();
+
+        tracker.observe(
+            b"HTTP/1.1 100 Continue\r\n\r\n",
+            now,
+            &connection,
+            normal_policy(),
+        );
+        assert!(tracker.body.is_none(), "100 Continue は最終応答ではない");
+        tracker.observe(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+            now,
+            &connection,
+            normal_policy(),
+        );
+        assert!(tracker.body.as_ref().is_some_and(|body| body.is_sse));
+        tracker.observe(b"0\r\n\r\n", now, &connection, normal_policy());
+        assert_eq!(limits.ordinary.available_permits(), MAX_ORDINARY_REQUESTS);
+
+        let head_connection = ConnectionState::default();
+        head_connection.set_head_request(true);
+        head_connection.retain_ordinary(
+            limits
+                .ordinary
+                .clone()
+                .try_acquire_owned()
+                .expect("HEAD 用の通常枠を得る"),
+        );
+        tracker.observe(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 512\r\n\r\n",
+            now,
+            &head_connection,
+            normal_policy(),
+        );
+        assert_eq!(limits.ordinary.available_permits(), MAX_ORDINARY_REQUESTS);
+
+        let no_content_connection = ConnectionState::default();
+        no_content_connection.retain_ordinary(
+            limits
+                .ordinary
+                .clone()
+                .try_acquire_owned()
+                .expect("204 用の通常枠を得る"),
+        );
+        tracker.observe(
+            b"HTTP/1.1 204 No Content\r\n\r\n",
+            now,
+            &no_content_connection,
+            normal_policy(),
+        );
+        assert_eq!(limits.ordinary.available_permits(), MAX_ORDINARY_REQUESTS);
     }
 
     #[tokio::test]

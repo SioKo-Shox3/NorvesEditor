@@ -5,6 +5,8 @@
 
 ## Done
 - MCP-012: 127.0.0.1 専用の認証付き HTTP 入口を追加。Bearer トークン・完全一致 Host・許可 Origin を実 HTTP で検査し、1 MiB/32 接続/通常16/stream8、通常30秒・streamアイドル5分/最大30分を適用。有限の legacy SSE 応答は長寿命枠から分離。rmcp 2026 Discover と 2025 Initialize の実クライアントで空 tools/list、2026 subscriptions/listen と 2025 GET SSE の期限を確認。axum 0.8.9/rmcp 3.5.0/tokio-util 0.7、開発用 reqwest 0.13/rmcp client/tower util。lockfile に新規16 package。cargo tree で tower は axum/tauri/reqwest の推移依存、直接追加は開発用だけと確認。fmt/clippy exit 0、cargo test 237単体+14統合成功。証拠 `verify-MCP-012-11.txt`〜`verify-MCP-012-13.txt`、依存記録 `deps-MCP-012.txt`。
+- MCP-012 差し戻し対応: legacy 通常要求の permit を rmcp 実行前に接続へ予約し、有限 SSE の HTTP 本文終端で返す。実 HTTP で16件を保持中の17件目が503、本文完了後に枠が再利用できることを確認。HTTP追跡器は100 Continue、HEAD/204/205/304、空chunked本文を扱う。fmt/clippy exit 0、cargo test 239単体+14統合成功。証拠 `verify-MCP-012-21.txt`〜`verify-MCP-012-23.txt`。
+- MCP-012: 127.0.0.1 専用の認証付き HTTP 入口を追加。Bearer トークン・完全一致 Host・許可 Origin を実 HTTP で検査し、1 MiB/32 接続/通常16/stream8、通常30秒・streamアイドル5分/最大30分を適用。rmcp 2026 Discover と 2025 Initialize の実クライアントで空 tools/list、2026 subscriptions/listen と 2025 GET SSE の期限を確認。axum 0.8.9/rmcp 3.5.0/tokio-util 0.7、開発用 reqwest 0.13/rmcp client/tower util。lockfile に新規16 package。cargo tree で tower は axum/tauri/reqwest の推移依存、直接追加は開発用だけと確認。以前の fmt/clippy/cargo test 成功証拠は `verify-MCP-012-11.txt`〜`verify-MCP-012-13.txt`、依存記録は `deps-MCP-012.txt`。
 - MCP-011: `mcp-settings.json` に既定無効・49770を保存し、設定破損は拒否。`mcp/mcp-token.bin` は32バイトOS乱数を利用者スコープDPAPI(Windows)またはUnixの0700/0600で保護し、原子的保存・再読込・破損拒否・明示的作り直し・定時間照合を追加。Unix向けdead_code警告を修正し、DPAPI出力は返却長で消去してからLocalFreeする。Windowsのfmt/clippy exit 0、cargo testは単体227件・統合14件成功。証拠 `.harness/runs/20261003-035149/verify-MCP-011-7.txt`〜`verify-MCP-011-9.txt`。
 - MCP-010: 通常時にUndo/Redoの横へ先頭まとまりの名前・出どころ・件数を表示。部分失敗時は再試行/状態確認/破棄を示し、保留中の編集・Ctrl+Z/Y・通常undo/redo・実行制御を無効化。破棄後の残存変更を通知し、他のキー操作とシーンの視認性を保つ。typecheck exit 0、vitest 628/628。証拠 `.harness/runs/20261003-035149/verify-MCP-010-7.txt` / `verify-MCP-010-8.txt`。
 - MCP-009 差し戻し対応: 部分失敗のエラー経路でBridge世代を履歴ロックより先に読み、履歴参照側とロック順を統一してデッドロックを防止。fmt/clippy/cargo test（218単体+14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべて成功。証拠 `.harness/runs/20261003-035149/verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt`。
@@ -38,7 +40,7 @@
 - MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-012完了、次はMCP-013。
 
 ## Next
-- 次のタスク: MCP-013（MCP サーバーの設定連携と寿命を管理する）。
+- 次のタスク: MCP-013（MCP サーバーの設定連携と寿命を管理する）。MCP-012 の差し戻し対応も検証済み。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -49,7 +51,8 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
-- 2026-10-03 MCP-012: 開始 `scripts/verify.ps1` exit 0。最終 fmt / clippy / cargo test はすべて exit 0（237単体・14統合）。保存ログを開いて確認。実 HTTP で不正Origin403、トークンなし/違う/旧トークン401、OriginなしCLI、正しいHostと不一致Hostを確認。通常応答の有限SSEが8つの長寿命stream枠を塞がないよう修正。`cargo tree` と lockfile 差分を `.harness/runs/20261003-035149/deps-MCP-012.txt` に保存。
+- 2026-10-03 MCP-012差し戻し: 起動時 cargo test は237単体・14統合で成功。修正後の fmt / clippy / cargo test はすべて exit 0（239単体・14統合）。legacy `tools/call` を停止する gate で16件保持中の17件目503、解放後の再利用を実HTTPで確認し、100 Continue・空chunked・本文のない応答も追跡器試験で確認。保存ログを開いて読んだ: `verify-MCP-012-21.txt`〜`verify-MCP-012-23.txt`。
+- 2026-10-03 MCP-012: 開始 `scripts/verify.ps1` exit 0。実 HTTP で不正Origin403、トークンなし/違う/旧トークン401、OriginなしCLI、正しいHostと不一致Hostを確認。通常応答の有限SSEが8つの長寿命stream枠を塞がないよう修正。`cargo tree` と lockfile 差分を `.harness/runs/20261003-035149/deps-MCP-012.txt` に保存。
 - 2026-10-03 MCP-011差し戻し対応: 開始ゲート `scripts/verify.ps1` exit 0。Windowsの最終 fmt / clippy / cargo test はすべて exit 0、単体227件・統合14件とDPAPIの保護・復号試験を確認。DPAPI復号後の平文出力を返却長で消去し、Unixでのみ未構築になるエラーvariantのclippy警告を抑制した。証拠 `.harness/runs/20261003-035149/verify-MCP-011-7.txt`〜`verify-MCP-011-9.txt`。Unix権限試験は未確認。WSL UbuntuにCargoが無く実行できなかった。
 - 2026-10-03 MCP-010差し戻し対応: 要約イベントから通常時のUndo/Redo先頭まとまりの名前・出どころ・件数を表示し、要約イベント/コマンド呼び出しの試験を追加。保留中はCtrl+Z/Y以外のキーを止めず、背後のシーンを見やすくした。開始ゲート `scripts/verify.ps1` exit 0、最終 typecheck exit 0、vitest 628/628。保存ログ `.harness/runs/20261003-035149/preflight-MCP-010-r19.txt` / `verify-MCP-010-7.txt` / `verify-MCP-010-8.txt` を開いて確認。
 - 2026-10-03 MCP-009差し戻し: 部分失敗処理で世代ロック→履歴ロックの順に統一。指定された最終ゲート5件はexit 0で、保存ログを開いて確認した。
