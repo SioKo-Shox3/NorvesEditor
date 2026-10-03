@@ -4,6 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
+- MCP-016: BridgeStateが世代固定でlog.streamを1回購読し、relayはlog.messageをUI emit前に保管。1000件/2MiBの上限、巨大文字列の切り詰め、世代・受信時刻・連番の絞り込み、保持範囲と欠落、購読状態を実装。古いrelay/ackの破棄、切断時の取消、受信したsubscriptionIdだけを使うbest-effort unsubscribeを試験し、実mockの購読後ログ3件を保持。fmt/clippy exit 0、cargo test 264単体+14 process_e2e、実mock mcp_reads 1/1成功。証拠 `.harness/runs/20261003-161248/verify-MCP-016-19.txt`〜`verify-MCP-016-22.txt`。
 - MCP-014: SettingsにMCPの有効化・ポート・待ち受け状態・bindエラー・接続手順を追加。別窓でバックエンドから設定を取得し、トークンは要求後だけ表示、再生成前に影響を確認して旧トークンを隠す。StrictMode、連打、取消、応答順、秘密の未要求時非表示を試験。typecheck exit 0、vitest 639/639。証拠 `.harness/runs/20261003-035149/verify-MCP-014-8.txt` / `verify-MCP-014-9.txt`。
 - MCP-013: `McpRuntime` を追加し、既定無効の待受と起動時設定復元、設定変更・トークン再生成・終了を単一ロックで直列化。bind失敗は状態DTOへ返し、両版のstreamを停止して要求リース・MCPまとまりを失効させる。2秒後のtask中止/joinと状態DTOの秘密非露出を試験。fmt/clippy、cargo test（253単体・14統合）、IPC名41/13、pnpm typecheckは成功。証拠 `.harness/runs/20261003-035149/verify-MCP-013-1.txt`〜`verify-MCP-013-5.txt`。
 - MCP-012: 127.0.0.1 専用の認証付き HTTP 入口を追加。Bearer トークン・完全一致 Host・許可 Origin を実 HTTP で検査し、1 MiB/32 接続/通常16/stream8、通常30秒・streamアイドル5分/最大30分を適用。有限の legacy SSE 応答は長寿命枠から分離。rmcp 2026 Discover と 2025 Initialize の実クライアントで空 tools/list、2026 subscriptions/listen と 2025 GET SSE の期限を確認。axum 0.8.9/rmcp 3.5.0/tokio-util 0.7、開発用 reqwest 0.13/rmcp client/tower util。lockfile に新規16 package。cargo tree で tower は axum/tauri/reqwest の推移依存、直接追加は開発用だけと確認。fmt/clippy exit 0、cargo test 237単体+14統合成功。証拠 `verify-MCP-012-11.txt`〜`verify-MCP-012-13.txt`、依存記録 `deps-MCP-012.txt`。
@@ -39,10 +40,10 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-014完了、次はMCP-015。
+- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-014とMCP-016が完了。MCP-015はblocked。
 
 ## Next
-- 次のタスク: MCP-015（能力と仕様から道具と入力検証を生成する）。MCP-014の接続設定画面はtypecheckとvitestで検証済み。
+- 次のタスク: MCP-017（モックの試験プロフィールに資産の読み取りを足す）。MCP-015はblockedのまま判断待ち。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -53,6 +54,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-03 MCP-016: 開始 `scripts/verify.ps1` はexit 0。対象crateの開始 `cargo test` は途中実装のコンパイルエラーで失敗したため、BridgeStateの所有フィールド・取消経路とログ保管器を修正。最終fmt/clippy/cargo testと指定実mock試験はすべてexit 0。出力を開いて確認: `preflight-MCP-016.txt`, `preflight-tauri-MCP-016.txt`, `verify-MCP-016-19.txt`〜`verify-MCP-016-22.txt`。
 - 2026-10-03 MCP-014: 開始ゲート `scripts/verify.ps1` exit 0。最終 `pnpm -C apps/editor typecheck` exit 0、`pnpm -C apps/editor test` exit 0（29 files / 639 tests）。保存した出力を開いて確認: `verify-MCP-014-8.txt` / `verify-MCP-014-9.txt`。
 - 2026-10-03 MCP-013: 開始 `scripts/verify.ps1` は exit 0。Rust runtimeで既定無効、bind失敗状態、設定の同時変更、再生成・終了時の失効、旧版GET SSE/現行listen停止、2秒猶予後の中止・joinを確認。指定5ゲートはすべて exit 0、cargo testは253単体・14統合成功。保存ログを開いて確認した: `verify-MCP-013-1.txt`〜`verify-MCP-013-5.txt`。
 - 2026-10-03 MCP-012差し戻し: 起動時 cargo test は237単体・14統合で成功。修正後の fmt / clippy / cargo test はすべて exit 0（239単体・14統合）。legacy `tools/call` を停止する gate で16件保持中の17件目503、解放後の再利用を実HTTPで確認し、100 Continue・空chunked・本文のない応答も追跡器試験で確認。保存ログを開いて読んだ: `verify-MCP-012-21.txt`〜`verify-MCP-012-23.txt`。

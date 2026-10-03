@@ -128,10 +128,6 @@ pub(crate) struct BridgeLease {
 #[derive(Clone)]
 pub(crate) struct BridgeFacade {
     current_generation: Arc<StdMutex<Option<u64>>>,
-    /// 世代切り替えでlog.subscribe要求を取り消す。
-    attempt_cancellation: StdMutex<Option<(u64, CancellationToken)>>,
-    /// relayが受信したログをUI通知前に保持する。
-    log_buffer: StdMutex<LogBuffer>,
     session: watch::Receiver<Option<BridgeLease>>,
     next_request_id: Arc<AtomicU64>,
 }
@@ -266,6 +262,10 @@ pub struct BridgeState {
     next_generation: AtomicU64,
     session_tx: watch::Sender<Option<BridgeLease>>,
     current_generation: Arc<StdMutex<Option<u64>>>,
+    /// 世代切り替えでlog.subscribe要求を取り消す。
+    attempt_cancellation: StdMutex<Option<(u64, CancellationToken)>>,
+    /// relayが受信したログをUI通知前に有界保持する。
+    log_buffer: StdMutex<LogBuffer>,
 }
 
 impl Default for BridgeState {
@@ -611,14 +611,14 @@ async fn subscribe_log_stream(
     let subscription = match response {
         Ok(ResponsePayload::Result(value)) => parse_log_subscription_ack(&value),
         Ok(ResponsePayload::Error(error)) => {
-            tracing::warn!(generation, error = %error, "log.subscribeが拒否されました");
+            tracing::warn!(generation, error = ?error, "log.subscribeが拒否されました");
             LogSubscription {
                 status: LogSubscriptionStatus::Failed,
                 subscription_id: None,
             }
         }
         Err(error) => {
-            tracing::warn!(generation, %error, "log.subscribeに失敗しました");
+            tracing::warn!(generation, error = ?error, "log.subscribeに失敗しました");
             LogSubscription {
                 status: LogSubscriptionStatus::Failed,
                 subscription_id: None,
@@ -650,11 +650,7 @@ async fn unsubscribe_log_stream(conn: &LiveConnection) {
     let Ok(request) = build_request(request_id, "log.unsubscribe", Some(params)) else {
         return;
     };
-    if let Err(error) = conn
-        .handle
-        .request(request, LOG_UNSUBSCRIBE_TIMEOUT)
-        .await
-    {
+    if let Err(error) = conn.handle.request(request, LOG_UNSUBSCRIBE_TIMEOUT).await {
         tracing::debug!(generation = conn.generation, %error, "ログ購読解除は完了しませんでした");
     }
 }
@@ -692,17 +688,25 @@ fn spawn_relay(
                                     .log_buffer
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                match record_relay_log(&phase, &mut log_buffer, generation, params) {
+                                match record_relay_log(&phase, &mut log_buffer, generation, params)
+                                {
                                     Ok(RelayLogRecord::Retained(outcome)) if outcome.truncated => {
-                                        tracing::warn!(generation, sequence = outcome.sequence, "容量を超えたエンジンログの文字列を切り詰めました");
+                                        tracing::warn!(
+                                            generation,
+                                            sequence = outcome.sequence,
+                                            "容量を超えたエンジンログの文字列を切り詰めました"
+                                        );
                                     }
                                     Ok(RelayLogRecord::Retained(_)) => {}
                                     Ok(RelayLogRecord::Stale) => {
-                                        tracing::debug!(generation, "古い世代のログrelayを破棄しました");
+                                        tracing::debug!(
+                                            generation,
+                                            "古い世代のログrelayを破棄しました"
+                                        );
                                         continue;
                                     }
                                     Err(error) => {
-                                        tracing::warn!(generation, %error, "不正なエンジンログを保持できませんでした");
+                                        tracing::warn!(generation, error = %error, "不正なエンジンログを保持できませんでした");
                                     }
                                 }
                             } else if !phase_has_generation(&phase, generation) {
@@ -804,10 +808,11 @@ async fn run_connect_flow(
     if cancellation.is_cancelled() {
         return Err(BackendError::NotConnected);
     }
+    let retry_config = RetryConfig::default();
     let handle = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(BackendError::NotConnected),
-        result = connect_with_retry(&endpoint, &RetryConfig::default()) => result?,
+        result = connect_with_retry(&endpoint, &retry_config) => result?,
     };
 
     // 2. Subscribe to events BEFORE hello so no early event is missed.
@@ -992,7 +997,7 @@ pub(crate) async fn connect_on_port(
                 return Err(BackendError::AlreadyConnected);
             }
         }
-    } // guard dropped: connect I/O runs WITHOUT the lock.
+    }; // guard dropped: connect I/O runs WITHOUT the lock.
 
     let endpoint = ws_url_for_port(port);
     let result = run_connect_flow(app.clone(), state, endpoint, token, cancellation).await;
@@ -1169,8 +1174,7 @@ pub async fn bridge_reconnect(
     tear_down(old).await;
 
     // Re-run the full connect flow (subscribe -> spawn relay -> hello).
-    let result =
-        run_connect_flow(app.clone(), state.inner(), endpoint, token, cancellation).await;
+    let result = run_connect_flow(app.clone(), state.inner(), endpoint, token, cancellation).await;
     state.inner().finish_attempt(token);
     match result {
         Ok(conn) => {
@@ -2313,10 +2317,12 @@ mod tests {
                 22,
                 current_params.as_object().expect("object")
             ),
-            Ok(RelayLogRecord::Retained(crate::mcp::log_buffer::LogRecordOutcome {
-                sequence: 1,
-                truncated: false
-            }))
+            Ok(RelayLogRecord::Retained(
+                crate::mcp::log_buffer::LogRecordOutcome {
+                    sequence: 1,
+                    truncated: false
+                }
+            ))
         ));
 
         let next_params = serde_json::json!({ "level": "warn", "message": "next" });
@@ -2336,10 +2342,12 @@ mod tests {
                 23,
                 next_params.as_object().expect("object")
             ),
-            Ok(RelayLogRecord::Retained(crate::mcp::log_buffer::LogRecordOutcome {
-                sequence: 1,
-                truncated: false
-            }))
+            Ok(RelayLogRecord::Retained(
+                crate::mcp::log_buffer::LogRecordOutcome {
+                    sequence: 1,
+                    truncated: false
+                }
+            ))
         ));
 
         let snapshot = buffer.read(&crate::mcp::log_buffer::LogQuery {
@@ -2356,7 +2364,10 @@ mod tests {
         let acknowledgement = parse_log_subscription_ack(&serde_json::json!({
             "subscribed": true
         }));
-        assert_eq!(acknowledgement.status, LogSubscriptionStatus::IncompatibleAck);
+        assert_eq!(
+            acknowledgement.status,
+            LogSubscriptionStatus::IncompatibleAck
+        );
         assert_eq!(acknowledgement.subscription_id, None);
 
         let valid = parse_log_subscription_ack(&serde_json::json!({
@@ -2367,6 +2378,191 @@ mod tests {
             valid.subscription_id.as_deref(),
             Some("engine-subscription-3")
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_subscription_discards_its_late_ack_after_a_generation_change() {
+        let state = Arc::new(BridgeState::default());
+        let cancellation = {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connecting(41);
+            state.begin_attempt(41)
+        };
+
+        let (transport, mut engine) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let task_state = Arc::clone(&state);
+        let task_handle = handle.clone();
+        let task_cancellation = cancellation.clone();
+        let capabilities = vec![
+            serde_json::from_value(serde_json::json!({"name":"log.stream"}))
+                .expect("log.stream能力を作る"),
+        ];
+        let task = tokio::spawn(async move {
+            subscribe_log_stream(
+                &task_state,
+                &task_handle,
+                &capabilities,
+                41,
+                &task_cancellation,
+            )
+            .await
+        });
+        let (id, method, params) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "log.subscribe");
+        assert!(matches!(params, Some(params) if params.is_empty()));
+
+        {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Disconnected;
+        }
+        state.cancel_attempt(41);
+        state.end_log_generation(41);
+        {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connecting(42);
+            state.begin_attempt(42);
+        }
+        assert!(tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, task)
+            .await
+            .expect("取消後に購読taskが終わる")
+            .expect("購読taskがjoinする")
+            .is_none());
+
+        engine
+            .send(connection_setup_response_frame(
+                id,
+                ResponsePayload::Result(serde_json::json!({
+                    "subscriptionId": "stale-subscription"
+                })),
+            ))
+            .await
+            .expect("遅れて到着したackを送る");
+        tokio::task::yield_now().await;
+
+        {
+            let logs = state
+                .log_buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let old_status = logs.read(&crate::mcp::log_buffer::LogQuery {
+                generation: Some(41),
+                ..crate::mcp::log_buffer::LogQuery::default()
+            });
+            assert_eq!(
+                old_status.retention[0].subscription,
+                LogSubscriptionStatus::Cancelled
+            );
+            let new_status = logs.read(&crate::mcp::log_buffer::LogQuery {
+                generation: Some(42),
+                ..crate::mcp::log_buffer::LogQuery::default()
+            });
+            assert_eq!(
+                new_status.retention[0].subscription,
+                LogSubscriptionStatus::NotAttempted
+            );
+        }
+
+        state.cancel_attempt(42);
+        state.end_log_generation(42);
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn failed_log_subscription_is_visible_in_generation_status() {
+        let state = Arc::new(BridgeState::default());
+        let cancellation = {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connecting(43);
+            state.begin_attempt(43)
+        };
+        let (transport, mut engine) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let task_state = Arc::clone(&state);
+        let task_handle = handle.clone();
+        let capabilities = vec![
+            serde_json::from_value(serde_json::json!({"name":"log.stream"}))
+                .expect("log.stream能力を作る"),
+        ];
+        let task = tokio::spawn(async move {
+            subscribe_log_stream(&task_state, &task_handle, &capabilities, 43, &cancellation).await
+        });
+        let (_, method, _) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "log.subscribe");
+        drop(engine);
+
+        assert!(matches!(
+            tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, task)
+                .await
+                .expect("購読失敗が返る")
+                .expect("購読taskがjoinする"),
+            Some(LogSubscription {
+                status: LogSubscriptionStatus::Failed,
+                subscription_id: None
+            })
+        ));
+        let snapshot = state
+            .log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read(&crate::mcp::log_buffer::LogQuery {
+                generation: Some(43),
+                ..crate::mcp::log_buffer::LogQuery::default()
+            });
+        assert_eq!(
+            snapshot.retention[0].subscription,
+            LogSubscriptionStatus::Failed
+        );
+
+        state.cancel_attempt(43);
+        state.end_log_generation(43);
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_uses_the_received_id_and_skips_an_incompatible_ack() {
+        let (transport, mut engine) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let relay = tauri::async_runtime::spawn(async {});
+        let mut conn = LiveConnection {
+            generation: 55,
+            handle: handle.clone(),
+            relay,
+            endpoint: "ws://127.0.0.1:0".to_owned(),
+            session_id: "session".to_owned(),
+            server_name: "server".to_owned(),
+            capabilities: Vec::new(),
+            log_subscription_id: None,
+        };
+
+        unsubscribe_log_stream(&conn).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), engine.recv())
+                .await
+                .is_err()
+        );
+
+        conn.log_subscription_id = Some("engine-subscription-5".to_owned());
+        let task = tokio::spawn(async move { unsubscribe_log_stream(&conn).await });
+        let (id, method, params) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "log.unsubscribe");
+        assert_eq!(
+            params.and_then(|params| params.get("subscriptionId").cloned()),
+            Some(Value::String("engine-subscription-5".to_owned()))
+        );
+        engine
+            .send(connection_setup_response_frame(
+                id,
+                ResponsePayload::Result(serde_json::json!({"ok":true})),
+            ))
+            .await
+            .expect("unsubscribe応答を送る");
+        tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, task)
+            .await
+            .expect("unsubscribeの応答が返る")
+            .expect("unsubscribe taskがjoinする");
+
+        handle.shutdown().await;
     }
 
     /// Builds a real `LiveConnection` (via a loopback-backed dispatcher and a

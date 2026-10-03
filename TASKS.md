@@ -268,7 +268,7 @@ M2 の共通規則:
 - notes: 先行 MCP-013。jsonschemaを承認した系列・既定機能無効で導入する。Bridgeのschema自体は編集しない。ページング/ログ/履歴/まとまりは独自schemaを明示する。二つのMCP版それぞれのlist変更経路を試験する。
 
 ## MCP-016: 最近のエンジンログをバックエンドへ保持する
-- status: todo
+- status: done
 - done-when: NE10。1000件または合計2MiBの上限を超えると古い順に消える。世代・時刻・連番で絞れ、保持範囲と欠落が分かる。relayのlog.messageをUIへのemit前に保管し、UI不在でも読める。切断・再接続と古いrelayのログが混ざらない試験が通る。log.stream接続時にlog.subscribeを世代固定で1回送り、UI/MCP不在でも保持する。購読失敗を状態で返し、切断時のunsubscribeは最善努力、終了/世代変更でタスクを取り消す。古いackを捨てる。実mockのsubscribe後のバーストを保持する試験がある。subscriptionId不在は不適合状態で、IDを捏造してunsubscribeしない。受信ログは保持する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
