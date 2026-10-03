@@ -424,16 +424,42 @@ describe('ToolbarActions Undo/Redo', () => {
     expect(actions.redo).toHaveBeenCalledOnce();
   });
 
-  it('changes button state when a new history summary event is reduced', () => {
+  it('履歴要約イベントで取り消しボタンと先頭まとまり情報を更新する', () => {
     const { setState } = setup('connected');
     expect(undoBtn().disabled).toBe(true);
 
     const withUndo = bridgeReducer(
       makeState('connected'),
-      { type: 'editHistorySummaryReceived', summary: makeHistory({ canUndo: true, undoHeadId: 12 }) },
+      {
+        type: 'editHistorySummaryReceived',
+        summary: makeHistory({
+          canUndo: true,
+          undoHeadId: 12,
+          canRedo: true,
+          redoHeadId: 13,
+          undoGroup: {
+            id: 'group-undo',
+            name: '火花の色を調整',
+            source: 'mcp',
+            count: 12,
+            createdAt: 10,
+          },
+          redoGroup: {
+            id: 'group-redo',
+            name: '照明強度を戻す',
+            source: 'ui',
+            count: 2,
+            createdAt: 11,
+          },
+        }),
+      },
     );
     setState(withUndo);
     expect(undoBtn().disabled).toBe(false);
+    expect(screen.getByText('火花の色を調整')).toBeTruthy();
+    expect(screen.getByText('（MCP・12件）')).toBeTruthy();
+    expect(screen.getByText('照明強度を戻す')).toBeTruthy();
+    expect(screen.getByText('（画面操作・2件）')).toBeTruthy();
 
     const pending = bridgeReducer(
       withUndo,
@@ -443,7 +469,7 @@ describe('ToolbarActions Undo/Redo', () => {
     expect(undoBtn().disabled).toBe(true);
   });
 
-  it('shows pending group details and offers retry and discard', () => {
+  it('保留中のまとまり情報と再試行・破棄を表示する', () => {
     setup('connected', {}, {}, {
       editHistorySummary: makeHistory({
         pending: true,
@@ -469,7 +495,7 @@ describe('ToolbarActions Undo/Redo', () => {
     expect(document.querySelector('.history-problem-shield')).not.toBeNull();
   });
 
-  it('does not offer retry when the pending result is unknown', () => {
+  it('結果不明では再試行を表示しない', () => {
     setup('connected', {}, {}, {
       editHistorySummary: makeHistory({
         pending: true,

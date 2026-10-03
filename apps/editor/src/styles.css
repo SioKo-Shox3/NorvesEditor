@@ -481,6 +481,29 @@ html, body, #root {
   font-size: 11px;
 }
 
+/* 履歴の先頭まとまりを操作ボタンの横に表示する。 */
+.toolbar__history-summary {
+  display: inline-flex;
+  flex: 0 1 240px;
+  min-width: 0;
+  max-width: 240px;
+  gap: 2px;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.toolbar__history-summary-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toolbar__history-summary-count {
+  flex: 0 0 auto;
+}
+
 /*
  * .toolbar__sep: thin vertical rule that visually groups button sets.
  * Uses var(--color-border) so it stays consistent with the rest of the shell.
@@ -589,8 +612,7 @@ html, body, #root {
   position: fixed;
   inset: calc(var(--header-h) * 2) 0 0;
   z-index: 10000;
-  background: color-mix(in srgb, var(--color-bg) 78%, transparent);
-  backdrop-filter: blur(2px);
+  background: color-mix(in srgb, var(--color-bg) 30%, transparent);
 }
 
 .history-problem-notice {

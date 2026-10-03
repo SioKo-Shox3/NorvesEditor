@@ -225,6 +225,19 @@ describe('部分失敗した編集まとまりの通知', () => {
     ).toBe(false);
   });
 
+  it('保留中でも編集ショートカット以外のキーを止めない', async () => {
+    await renderConnectedNotice();
+    currentSummary = knownPendingSummary;
+    await act(async () => {
+      emit(BRIDGE_EVENTS.editHistoryChanged, knownPendingSummary);
+    });
+
+    const event = new KeyboardEvent('keydown', { key: 'F5', bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   it('破棄後に一部変更が残ることを通知する', async () => {
     await renderConnectedNotice();
     currentSummary = unknownPendingSummary;

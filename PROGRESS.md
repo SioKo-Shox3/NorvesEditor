@@ -4,7 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
-- MCP-010: 部分失敗した先頭まとまりの名前・出どころ・件数・進捗と復旧操作を表示し、結果不明では再試行を出さず状態確認・破棄へ案内。保留中は編集領域・Ctrl+Z/Y・通常undo/redo・実行制御を無効化し、破棄後に残る変更を通知。typecheck exit 0、vitest 627/627。証拠 `.harness/runs/20261003-035149/verify-MCP-010-5.txt` / `verify-MCP-010-6.txt`。
+- MCP-010: 通常時にUndo/Redoの横へ先頭まとまりの名前・出どころ・件数を表示。部分失敗時は再試行/状態確認/破棄を示し、保留中の編集・Ctrl+Z/Y・通常undo/redo・実行制御を無効化。破棄後の残存変更を通知し、他のキー操作とシーンの視認性を保つ。typecheck exit 0、vitest 628/628。証拠 `.harness/runs/20261003-035149/verify-MCP-010-7.txt` / `verify-MCP-010-8.txt`。
 - MCP-009 差し戻し対応: 部分失敗のエラー経路でBridge世代を履歴ロックより先に読み、履歴参照側とロック順を統一してデッドロックを防止。fmt/clippy/cargo test（218単体+14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべて成功。証拠 `.harness/runs/20261003-035149/verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt`。
 - MCP-009: 名前・出どころ・時刻を持つまとまりと逆順undo/順redoを実装。部分失敗では成功位置と未処理部分を保留し、既知拒否だけを再試行して成功分を重複適用しない。結果不明のtimeout/通信断は再送せず、破棄結果に残存変更を返す。新IDのまとまり内置換、世代切り替え、保留中の編集・undo/redo・play/pause/stop拒否を試験。fmt/clippy/cargo test（218単体+14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべて成功。証拠 `.harness/runs/20261003-035149/verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt`。
 - MCP-008: 画面storeから編集履歴の正本と逆操作を外し、編集・undo/redo・実行制御を共通サービスのTauri入口へ接続。旧値/親と適用改訂の捕捉、要約イベントによる表示、捕捉不足時の再取得と再操作案内を画面側試験で確認し、連打中の二重送信と自動キー反復も抑止。typecheck exit 0、vitest 621/621、IPC名35 commands/13 events一致。証拠 `.harness/runs/20261003-035149/verify-MCP-008-7.txt`〜`verify-MCP-008-9.txt`。
@@ -47,7 +47,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
-- 2026-10-03 MCP-010: 要約イベントを画面へ反映し、再試行/状態確認/破棄をTauri共通経路へ接続。結果不明の再試行なし、破棄後の残存変更を表示。最終 typecheck と vitest の出力を開いて確認。
+- 2026-10-03 MCP-010差し戻し対応: 要約イベントから通常時のUndo/Redo先頭まとまりの名前・出どころ・件数を表示し、要約イベント/コマンド呼び出しの試験を追加。保留中はCtrl+Z/Y以外のキーを止めず、背後のシーンを見やすくした。開始ゲート `scripts/verify.ps1` exit 0、最終 typecheck exit 0、vitest 628/628。保存ログ `.harness/runs/20261003-035149/preflight-MCP-010-r19.txt` / `verify-MCP-010-7.txt` / `verify-MCP-010-8.txt` を開いて確認。
 - 2026-10-03 MCP-009差し戻し: 部分失敗処理で世代ロック→履歴ロックの順に統一。指定された最終ゲート5件はexit 0で、保存ログを開いて確認した。
 - 2026-10-03 MCP-009: 開始ゲート `scripts/verify.ps1` exit 0。最終 fmt/clippy/cargo test（218単体・14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべてexit 0。実Bridge要求timeout後の結果不明・保留要約・再送なし・再接続世代変更による解消を新試験で確認し、保存ログを開いて合格を確認。
 - 2026-10-03 MCP-008: 開始ゲート `./scripts/verify.ps1` と最終 `pnpm -C apps/editor typecheck` / `pnpm -C apps/editor test` / `node scripts/check-protocol-names.mjs` はすべて exit 0。保存ログを開いて確認し、フロントエンドvitest 621/621、IPC名35 commands/13 events一致。store・hookに画面履歴の記録/逆操作が残らないことも検索で確認した。

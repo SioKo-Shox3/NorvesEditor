@@ -83,13 +83,25 @@ export function HistoryProblemNotice(): React.JSX.Element | null {
       if (insideToolbar) {
         if (event.key === 'Tab') {
           event.preventDefault();
-          firstActionRef.current?.focus();
+          const buttons = Array.from(
+            document.querySelectorAll<HTMLButtonElement>(
+              '[data-history-problem-notice] button:not(:disabled)',
+            ),
+          );
+          (event.shiftKey ? buttons.at(-1) : buttons[0])?.focus();
         }
         return;
       }
 
-      event.preventDefault();
-      event.stopImmediatePropagation();
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        const buttons = Array.from(
+          document.querySelectorAll<HTMLButtonElement>(
+            '[data-history-problem-notice] button:not(:disabled)',
+          ),
+        );
+        (event.shiftKey ? buttons.at(-1) : buttons[0])?.focus();
+      }
     };
 
     window.addEventListener('keydown', onKeyDown, true);

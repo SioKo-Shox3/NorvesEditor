@@ -21,6 +21,7 @@
  */
 
 import type React from 'react';
+import type { EditGroupSummary } from '@norves/bridge-ui';
 import { useBridgeState } from '../../state/BridgeContext.js';
 import { useBridgeActions } from '../../hooks/useBridge.js';
 import { HistoryProblemNotice } from '../HistoryProblemNotice.js';
@@ -58,6 +59,12 @@ export interface ToolbarActionsProps {
 
 function Sep(): React.JSX.Element {
   return <span className="toolbar__sep" aria-hidden="true" />;
+}
+
+function historyGroupLabel(group: EditGroupSummary, direction: 'undo' | 'redo'): string {
+  const operation = direction === 'undo' ? '取り消し' : 'やり直し';
+  const source = group.source === 'mcp' ? 'MCP' : '画面操作';
+  return `${operation}: ${group.name}（${source}・${group.count}件）`;
 }
 
 // -------------------------------------------------------------------------
@@ -212,7 +219,7 @@ export function ToolbarActions({
 
       <Sep />
 
-      {/* Scene-edit undo / redo (Phase U1) */}
+      {/* シーン編集の取り消し・やり直し */}
       <button
         className="btn toolbar__btn"
         type="button"
@@ -223,6 +230,17 @@ export function ToolbarActions({
       >
         Undo
       </button>
+      {history?.undoGroup != null && (
+        <span
+          className="toolbar__history-summary"
+          title={historyGroupLabel(history.undoGroup, 'undo')}
+        >
+          <span className="toolbar__history-summary-name">{history.undoGroup.name}</span>
+          <span className="toolbar__history-summary-count">
+            （{history.undoGroup.source === 'mcp' ? 'MCP' : '画面操作'}・{history.undoGroup.count}件）
+          </span>
+        </span>
+      )}
       <button
         className="btn toolbar__btn"
         type="button"
@@ -233,6 +251,17 @@ export function ToolbarActions({
       >
         Redo
       </button>
+      {history?.redoGroup != null && (
+        <span
+          className="toolbar__history-summary"
+          title={historyGroupLabel(history.redoGroup, 'redo')}
+        >
+          <span className="toolbar__history-summary-name">{history.redoGroup.name}</span>
+          <span className="toolbar__history-summary-count">
+            （{history.redoGroup.source === 'mcp' ? 'MCP' : '画面操作'}・{history.redoGroup.count}件）
+          </span>
+        </span>
+      )}
 
       <Sep />
 
