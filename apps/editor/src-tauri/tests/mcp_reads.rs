@@ -1,4 +1,4 @@
-//! 実mockのlog.subscribe応答とイベントバーストをログ保管庫へ通す試験。
+//! 実mockの読み取りBridgeメソッドとlog.subscribe保管経路を検証する試験。
 
 use std::net::TcpListener;
 use std::path::PathBuf;
