@@ -275,7 +275,7 @@ M2 の共通規則:
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - paths: apps/editor/src-tauri/src/mcp/log_buffer.rs, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/tests/mcp_reads.rs
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_ENGINE_PATH=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test --manifest-path apps/editor/src-tauri/Cargo.toml --test mcp_reads -- --nocapture; exit $LASTEXITCODE"`
-- notes: 先行 MCP-002。ログの内容は非信頼データ。無制限の文字列を件数上限だけで保管しない。Bridge購読寿命の危険地帯として評価・本文必須。
+- notes: 先行 MCP-002。ログの内容は非信頼データ。無制限の文字列を件数上限だけで保管しない。broadcastのlagはログ件数と断定せず、取りこぼした通知数と欠落の可能性を別で示す。Bridge購読寿命の危険地帯として評価・本文必須。
 
 ## MCP-017: モックの試験プロフィールに資産の読み取りを足す
 - status: todo

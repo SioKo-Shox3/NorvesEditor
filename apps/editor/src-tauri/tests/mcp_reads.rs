@@ -9,9 +9,13 @@ use norves_bridge_core::{
     CorrelationId, MethodName, ResponsePayload, ValidatedEnvelope, VersionString,
 };
 use norves_bridge_editor_client::{connect_with_retry, parse_capabilities_result, RetryConfig};
-use norves_editor_lib::mcp::log_buffer::{LogBuffer, LogQuery, LogSubscriptionStatus};
+use norves_editor_lib::mcp::log_buffer::{
+    record_relay_log, subscribe_log_stream, LogBuffer, LogQuery, LogSubscriptionStatus,
+    RelayLogRecord,
+};
 use serde_json::Value;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 struct MockEngine(Child);
 
@@ -106,24 +110,24 @@ async fn real_mock_subscription_burst_is_retained_without_a_ui_or_mcp_client() {
         "mock profileがlog.streamを広告する"
     );
 
-    let acknowledgement = result(
-        &handle,
-        "mcp-log-subscribe",
-        "log.subscribe",
-        serde_json::json!({}),
-    )
-    .await;
-    let subscription_id = acknowledgement
-        .get("subscriptionId")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .expect("実mockのackにsubscriptionIdがある")
-        .to_owned();
-
     let generation = 41;
     let mut buffer = LogBuffer::default();
     buffer.begin_generation(generation);
-    buffer.set_subscription_status(generation, LogSubscriptionStatus::Subscribed);
+    let log_buffer = std::sync::Mutex::new(buffer);
+    let subscription = subscribe_log_stream(
+        &log_buffer,
+        &handle,
+        request("mcp-log-subscribe", "log.subscribe", serde_json::json!({})),
+        &capabilities.capabilities,
+        generation,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("backendのlog.subscribeが完了");
+    assert_eq!(subscription.status, LogSubscriptionStatus::Subscribed);
+    let subscription_id = subscription
+        .subscription_id
+        .expect("実mockのackにsubscriptionIdがある");
 
     for _ in 0..3 {
         let envelope = timeout(Duration::from_secs(5), async {
@@ -150,13 +154,26 @@ async fn real_mock_subscription_burst_is_retained_without_a_ui_or_mcp_client() {
         else {
             panic!("log.messageのparamsがありません")
         };
-        buffer.record(generation, params).expect("受信ログを保持");
+        assert!(matches!(
+            record_relay_log(
+                &mut log_buffer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                generation,
+                params
+            )
+            .expect("受信ログを保持"),
+            RelayLogRecord::Retained(_)
+        ));
     }
 
-    let snapshot = buffer.read(&LogQuery {
-        generation: Some(generation),
-        ..LogQuery::default()
-    });
+    let snapshot = log_buffer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .read(&LogQuery {
+            generation: Some(generation),
+            ..LogQuery::default()
+        });
     assert_eq!(snapshot.entries.len(), 3);
     assert!(snapshot
         .entries

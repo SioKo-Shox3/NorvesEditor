@@ -62,7 +62,7 @@ use crate::edit_service::{
 };
 use crate::error::BackendError;
 use crate::events_map::ui_channel_for_event;
-use crate::mcp::log_buffer::{LogBuffer, LogSubscriptionStatus};
+use crate::mcp::log_buffer::{LogBuffer, LogSubscription, RelayLogRecord};
 use crate::protocol_names::events;
 
 /// Wire protocol version this editor stamps on every envelope it sends.
@@ -87,7 +87,6 @@ const CLIENT_NAME: &str = "NorvesEditor";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const DISPATCHER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const LOG_UNSUBSCRIBE_TIMEOUT: Duration = Duration::from_millis(500);
-const MAX_SUBSCRIPTION_ID_BYTES: usize = 256;
 
 /// Builds the loopback WebSocket URL for a local engine `port`.
 ///
@@ -349,27 +348,16 @@ impl BridgeState {
         }
     }
 
-    async fn set_log_subscription_status(
-        &self,
-        generation: u64,
-        status: LogSubscriptionStatus,
-    ) -> bool {
-        let phase = self.inner.lock().await;
-        if !phase_has_generation(&phase, generation) {
-            return false;
-        }
-        self.log_buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .set_subscription_status(generation, status);
-        true
-    }
-
     fn end_log_generation(&self, generation: u64) {
         self.log_buffer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .end_generation(generation);
+    }
+
+    fn retire_log_generation(&self, generation: u64) {
+        self.cancel_attempt(generation);
+        self.end_log_generation(generation);
     }
 }
 
@@ -499,25 +487,6 @@ fn phase_has_generation(phase: &Phase, generation: u64) -> bool {
         || matches!(phase, Phase::Connected(conn) if conn.generation == generation)
 }
 
-enum RelayLogRecord {
-    Stale,
-    Retained(crate::mcp::log_buffer::LogRecordOutcome),
-}
-
-fn record_relay_log(
-    phase: &Phase,
-    log_buffer: &mut LogBuffer,
-    generation: u64,
-    params: &serde_json::Map<String, Value>,
-) -> Result<RelayLogRecord, crate::mcp::log_buffer::LogBufferError> {
-    if !phase_has_generation(phase, generation) {
-        return Ok(RelayLogRecord::Stale);
-    }
-    log_buffer
-        .record(generation, params)
-        .map(RelayLogRecord::Retained)
-}
-
 /// Transitions an owned attempt/session to disconnected and runs the synchronous
 /// callback only after that transition. Callers keep the state mutex held while
 /// this function executes, making transition + event publication one ordering
@@ -535,31 +504,7 @@ where
     }
 }
 
-struct LogSubscription {
-    status: LogSubscriptionStatus,
-    subscription_id: Option<String>,
-}
-
-fn parse_log_subscription_ack(value: &Value) -> LogSubscription {
-    let subscription_id = value
-        .as_object()
-        .and_then(|result| result.get("subscriptionId"))
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty() && id.len() <= MAX_SUBSCRIPTION_ID_BYTES)
-        .map(str::to_owned);
-    match subscription_id {
-        Some(subscription_id) => LogSubscription {
-            status: LogSubscriptionStatus::Subscribed,
-            subscription_id: Some(subscription_id),
-        },
-        None => LogSubscription {
-            status: LogSubscriptionStatus::IncompatibleAck,
-            subscription_id: None,
-        },
-    }
-}
-
-/// 能力がある接続に世代固定で一度だけログ購読を要求する。
+/// 状態ロックを解放したまま、現行世代のログ購読を一度要求する。
 async fn subscribe_log_stream(
     state: &BridgeState,
     handle: &DispatchHandle,
@@ -567,72 +512,26 @@ async fn subscribe_log_stream(
     generation: u64,
     cancellation: &CancellationToken,
 ) -> Option<LogSubscription> {
-    if !capabilities
-        .iter()
-        .any(|capability| capability.name.as_str() == "log.stream")
-    {
-        if !state
-            .set_log_subscription_status(generation, LogSubscriptionStatus::Unsupported)
-            .await
-        {
-            return None;
-        }
-        return Some(LogSubscription {
-            status: LogSubscriptionStatus::Unsupported,
-            subscription_id: None,
-        });
-    }
-
-    if !state
-        .set_log_subscription_status(generation, LogSubscriptionStatus::Pending)
-        .await
-    {
+    let phase = state.inner.lock().await;
+    if !phase_has_generation(&phase, generation) {
         return None;
     }
-    if cancellation.is_cancelled() {
-        return None;
-    }
-
+    drop(phase);
     let request = build_request(
         state.alloc_request_id(),
         "log.subscribe",
         Some(serde_json::Map::new()),
     )
     .ok()?;
-    let response = tokio::select! {
-        biased;
-        _ = cancellation.cancelled() => return None,
-        response = handle.request(request, REQUEST_TIMEOUT) => response,
-    };
-    if cancellation.is_cancelled() {
-        return None;
-    }
-
-    let subscription = match response {
-        Ok(ResponsePayload::Result(value)) => parse_log_subscription_ack(&value),
-        Ok(ResponsePayload::Error(error)) => {
-            tracing::warn!(generation, error = ?error, "log.subscribeが拒否されました");
-            LogSubscription {
-                status: LogSubscriptionStatus::Failed,
-                subscription_id: None,
-            }
-        }
-        Err(error) => {
-            tracing::warn!(generation, error = ?error, "log.subscribeに失敗しました");
-            LogSubscription {
-                status: LogSubscriptionStatus::Failed,
-                subscription_id: None,
-            }
-        }
-    };
-
-    if !state
-        .set_log_subscription_status(generation, subscription.status)
-        .await
-    {
-        return None;
-    }
-    Some(subscription)
+    crate::mcp::log_buffer::subscribe_log_stream(
+        &state.log_buffer,
+        handle,
+        request,
+        capabilities,
+        generation,
+        cancellation,
+    )
+    .await
 }
 
 /// subscriptionIdがある接続だけ、同じdispatcherへ購読解除を送る。
@@ -655,20 +554,11 @@ async fn unsubscribe_log_stream(conn: &LiveConnection) {
     }
 }
 
-/// Spawns the backend->UI relay task and returns its join handle.
+/// バックエンドからUIへのrelayを開始し、join handleを返す。
 ///
-/// The task loops `events.recv().await`, maps each Bridge event NAME to a Tauri
-/// channel, and emits the event `params` as a raw [`Value`] (already wire-shaped
-/// — never re-modeled). On `Closed`, it publishes disconnected state only when
-/// it still owns the current generation; it logs-and-continues on `Lagged` and
-/// on unknown event names.
-///
-/// `generation` is this relay's attempt/session id. On an unsolicited `Closed`,
-/// the relay self-heals and publishes `Disconnected` only if the current phase
-/// still carries that generation, so it cannot clobber or misreport a newer
-/// attempt/session. It reaches `BridgeState` via
-/// the Tauri managed state (`app.state::<BridgeState>()`); no extra `Arc` is
-/// threaded through because the state is already managed by this `AppHandle`.
+/// BridgeイベントをTauri channelへ対応付け、元のwire形式のparamsをそのままemitする。
+/// `log.message`はUI通知より先に現行世代の保管庫へ記録する。`Lagged`では欠落した通知数を
+/// 世代状態に記録し、`Closed`ではrelayが所有する世代だけを切断状態へ戻す。
 fn spawn_relay(
     app: AppHandle,
     generation: u64,
@@ -688,8 +578,16 @@ fn spawn_relay(
                                     .log_buffer
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                match record_relay_log(&phase, &mut log_buffer, generation, params)
-                                {
+                                let record = if phase_has_generation(&phase, generation) {
+                                    crate::mcp::log_buffer::record_relay_log(
+                                        &mut log_buffer,
+                                        generation,
+                                        params,
+                                    )
+                                } else {
+                                    Ok(RelayLogRecord::Stale)
+                                };
+                                match record {
                                     Ok(RelayLogRecord::Retained(outcome)) if outcome.truncated => {
                                         tracing::warn!(
                                             generation,
@@ -717,8 +615,7 @@ fn spawn_relay(
                         }
                         match ui_channel_for_event(name) {
                             Some(channel) => {
-                                // Forward params as raw wire JSON; an absent
-                                // params object emits `null`.
+                                // wire形式のparamsをそのまま渡し、paramsが無ければnullをemitする。
                                 let payload = params
                                     .as_ref()
                                     .map(|map| Value::Object(map.clone()))
@@ -742,6 +639,15 @@ fn spawn_relay(
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
+                    let state = app.state::<BridgeState>();
+                    let phase = state.inner.lock().await;
+                    if phase_has_generation(&phase, generation) {
+                        state
+                            .log_buffer
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .note_missed_events(generation, n);
+                    }
                     tracing::warn!(skipped = n, "relay: broadcast lagged, continuing");
                 }
                 Err(RecvError::Closed) => {
@@ -1154,6 +1060,7 @@ pub async fn bridge_reconnect(
         match std::mem::replace(&mut *guard, Phase::Connecting(token)) {
             Phase::Connected(conn) => {
                 let endpoint = conn.endpoint.clone();
+                state.retire_log_generation(conn.generation);
                 state.publish_session(None);
                 let cancellation = state.begin_attempt(token);
                 (conn, endpoint, cancellation)
@@ -1839,6 +1746,7 @@ pub async fn focus_viewport(state: State<'_, BridgeState>) -> Result<Value, Back
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::log_buffer::LogSubscriptionStatus;
     use norves_bridge_core::{decode_typed, encode_envelope, BridgeError, Envelope, ErrorCode};
     use norves_bridge_editor_client::{loopback_pair, Dispatcher, LoopbackTransport, Transport};
     use tokio::sync::oneshot;
@@ -2298,12 +2206,12 @@ mod tests {
     #[test]
     fn old_relay_logs_are_rejected_and_current_logs_keep_their_generation() {
         let mut buffer = LogBuffer::default();
+        buffer.begin_generation(22);
         let old_params = serde_json::json!({ "level": "error", "message": "old" });
         let current_params = serde_json::json!({ "level": "info", "message": "current" });
 
         assert!(matches!(
-            record_relay_log(
-                &Phase::Connecting(22),
+            crate::mcp::log_buffer::record_relay_log(
                 &mut buffer,
                 21,
                 old_params.as_object().expect("object")
@@ -2311,8 +2219,7 @@ mod tests {
             Ok(RelayLogRecord::Stale)
         ));
         assert!(matches!(
-            record_relay_log(
-                &Phase::Connecting(22),
+            crate::mcp::log_buffer::record_relay_log(
                 &mut buffer,
                 22,
                 current_params.as_object().expect("object")
@@ -2325,10 +2232,11 @@ mod tests {
             ))
         ));
 
+        buffer.end_generation(22);
+        buffer.begin_generation(23);
         let next_params = serde_json::json!({ "level": "warn", "message": "next" });
         assert!(matches!(
-            record_relay_log(
-                &Phase::Connecting(23),
+            crate::mcp::log_buffer::record_relay_log(
                 &mut buffer,
                 22,
                 &next_params.as_object().expect("object").clone()
@@ -2336,8 +2244,7 @@ mod tests {
             Ok(RelayLogRecord::Stale)
         ));
         assert!(matches!(
-            record_relay_log(
-                &Phase::Connecting(23),
+            crate::mcp::log_buffer::record_relay_log(
                 &mut buffer,
                 23,
                 next_params.as_object().expect("object")
@@ -2360,24 +2267,45 @@ mod tests {
     }
 
     #[test]
-    fn missing_subscription_id_is_reported_without_inventing_an_unsubscribe_id() {
-        let acknowledgement = parse_log_subscription_ack(&serde_json::json!({
-            "subscribed": true
-        }));
-        assert_eq!(
-            acknowledgement.status,
-            LogSubscriptionStatus::IncompatibleAck
-        );
-        assert_eq!(acknowledgement.subscription_id, None);
+    fn reconnect_retires_subscribed_generation_before_starting_the_replacement() {
+        let state = BridgeState::default();
+        state.begin_attempt(70);
+        state
+            .log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_subscription_status(70, LogSubscriptionStatus::Subscribed);
 
-        let valid = parse_log_subscription_ack(&serde_json::json!({
-            "subscriptionId": "engine-subscription-3"
-        }));
-        assert_eq!(valid.status, LogSubscriptionStatus::Subscribed);
+        state.retire_log_generation(70);
+        state.begin_attempt(71);
+
+        let snapshot = state
+            .log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read(&crate::mcp::log_buffer::LogQuery {
+                generation: Some(70),
+                ..crate::mcp::log_buffer::LogQuery::default()
+            });
         assert_eq!(
-            valid.subscription_id.as_deref(),
-            Some("engine-subscription-3")
+            snapshot.retention[0].subscription,
+            LogSubscriptionStatus::Cancelled
         );
+        let mut buffer = state
+            .log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let late_log = serde_json::json!({"level":"error", "message":"old relay"});
+        assert!(matches!(
+            crate::mcp::log_buffer::record_relay_log(
+                &mut buffer,
+                70,
+                late_log.as_object().expect("object")
+            ),
+            Ok(RelayLogRecord::Stale)
+        ));
+        drop(buffer);
+        state.retire_log_generation(71);
     }
 
     #[tokio::test]
@@ -2465,6 +2393,69 @@ mod tests {
 
         state.cancel_attempt(42);
         state.end_log_generation(42);
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn subscription_ack_without_cancellation_is_discarded_after_generation_change() {
+        let state = Arc::new(BridgeState::default());
+        let cancellation = {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connecting(44);
+            state.begin_attempt(44)
+        };
+        let (transport, mut engine) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let task_state = Arc::clone(&state);
+        let task_handle = handle.clone();
+        let capabilities = vec![
+            serde_json::from_value(serde_json::json!({"name":"log.stream"}))
+                .expect("log.stream能力を作る"),
+        ];
+        let task = tokio::spawn(async move {
+            subscribe_log_stream(&task_state, &task_handle, &capabilities, 44, &cancellation).await
+        });
+        let (id, method, _) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "log.subscribe");
+
+        {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connecting(45);
+            state.end_log_generation(44);
+            state.begin_attempt(45);
+        }
+        engine
+            .send(connection_setup_response_frame(
+                id,
+                ResponsePayload::Result(serde_json::json!({
+                    "subscriptionId": "late-subscription"
+                })),
+            ))
+            .await
+            .expect("現行でない世代のackを送る");
+        assert!(tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, task)
+            .await
+            .expect("古い世代の購読taskが終わる")
+            .expect("購読taskがjoinする")
+            .is_none());
+
+        {
+            let logs = state
+                .log_buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let snapshot = logs.read(&crate::mcp::log_buffer::LogQuery {
+                generation: Some(45),
+                ..crate::mcp::log_buffer::LogQuery::default()
+            });
+            assert_eq!(
+                snapshot.retention[0].subscription,
+                LogSubscriptionStatus::NotAttempted
+            );
+        }
+
+        state.cancel_attempt(45);
+        state.end_log_generation(45);
         handle.shutdown().await;
     }
 

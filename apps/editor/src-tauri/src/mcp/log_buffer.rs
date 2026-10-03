@@ -3,11 +3,15 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::mem::size_of;
+use std::sync::{Mutex as StdMutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use norves_bridge_core::LogLevel;
+use norves_bridge_core::{CapabilityDescriptor, LogLevel, ResponsePayload, ValidatedEnvelope};
+use norves_bridge_editor_client::DispatchHandle;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use tokio::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 /// 保持するログレコードの上限。
 pub const MAX_LOG_ENTRIES: usize = 1000;
@@ -18,6 +22,121 @@ pub const MAX_LOG_PAGE_SIZE: usize = 1000;
 /// 欠落情報を追跡する世代状態の上限。
 pub const MAX_TRACKED_GENERATIONS: usize = MAX_LOG_ENTRIES + 1;
 const DEFAULT_LOG_PAGE_SIZE: usize = 100;
+const LOG_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_SUBSCRIPTION_ID_BYTES: usize = 256;
+
+/// 購読要求の結果。subscriptionIdはエンジン応答で受け取った値だけを保持する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogSubscription {
+    /// 購読状態。
+    pub status: LogSubscriptionStatus,
+    /// 購読解除に使う、応答から受け取ったID。
+    pub subscription_id: Option<String>,
+}
+
+/// relayでログを保管した結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayLogRecord {
+    /// relayの世代がすでに終了している。
+    Stale,
+    /// 現行世代のログを保管した。
+    Retained(LogRecordOutcome),
+}
+
+/// 有効な世代に対して一度ログ購読を要求し、応答の状態を保管する。
+pub async fn subscribe_log_stream(
+    log_buffer: &StdMutex<LogBuffer>,
+    handle: &DispatchHandle,
+    request: ValidatedEnvelope,
+    capabilities: &[CapabilityDescriptor],
+    generation: u64,
+    cancellation: &CancellationToken,
+) -> Option<LogSubscription> {
+    let supported = capabilities
+        .iter()
+        .any(|capability| capability.name.as_str() == "log.stream");
+    let initial_status = if supported {
+        LogSubscriptionStatus::Pending
+    } else {
+        LogSubscriptionStatus::Unsupported
+    };
+    if !set_active_subscription_status(log_buffer, generation, initial_status) {
+        return None;
+    }
+    if !supported {
+        return Some(LogSubscription {
+            status: LogSubscriptionStatus::Unsupported,
+            subscription_id: None,
+        });
+    }
+    if cancellation.is_cancelled() {
+        return None;
+    }
+
+    let response = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return None,
+        response = handle.request(request, LOG_SUBSCRIPTION_TIMEOUT) => response,
+    };
+    if cancellation.is_cancelled() {
+        return None;
+    }
+
+    let subscription = match response {
+        Ok(ResponsePayload::Result(value)) => parse_log_subscription_ack(&value),
+        Ok(ResponsePayload::Error(error)) => {
+            tracing::warn!(generation, error = ?error, "log.subscribeが拒否されました");
+            LogSubscription {
+                status: LogSubscriptionStatus::Failed,
+                subscription_id: None,
+            }
+        }
+        Err(error) => {
+            tracing::warn!(generation, error = ?error, "log.subscribeに失敗しました");
+            LogSubscription {
+                status: LogSubscriptionStatus::Failed,
+                subscription_id: None,
+            }
+        }
+    };
+    if !set_active_subscription_status(log_buffer, generation, subscription.status) {
+        return None;
+    }
+    Some(subscription)
+}
+
+/// relayの現行世代に属するlog.messageだけを保管する。
+pub fn record_relay_log(
+    log_buffer: &mut LogBuffer,
+    generation: u64,
+    params: &Map<String, Value>,
+) -> Result<RelayLogRecord, LogBufferError> {
+    if log_buffer.active_generation != Some(generation) {
+        return Ok(RelayLogRecord::Stale);
+    }
+    log_buffer
+        .record(generation, params)
+        .map(RelayLogRecord::Retained)
+}
+
+fn parse_log_subscription_ack(value: &Value) -> LogSubscription {
+    let subscription_id = value
+        .as_object()
+        .and_then(|result| result.get("subscriptionId"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= MAX_SUBSCRIPTION_ID_BYTES)
+        .map(str::to_owned);
+    match subscription_id {
+        Some(subscription_id) => LogSubscription {
+            status: LogSubscriptionStatus::Subscribed,
+            subscription_id: Some(subscription_id),
+        },
+        None => LogSubscription {
+            status: LogSubscriptionStatus::IncompatibleAck,
+            subscription_id: None,
+        },
+    }
+}
 
 /// Bridgeのログ購読状態。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,7 +153,7 @@ pub enum LogSubscriptionStatus {
     Unsupported,
     /// 購読要求または応答の処理に失敗した。
     Failed,
-    /// 接続世代の終了により購読要求が取り消された。
+    /// 接続世代の終了により購読が停止した。
     Cancelled,
     /// 成功応答に有効なsubscriptionIdがない。
     IncompatibleAck,
@@ -106,9 +225,11 @@ pub struct LogRetention {
     pub first_received_at_ms: Option<u64>,
     /// 現在保持している最新の受信時刻。
     pub last_received_at_ms: Option<u64>,
-    /// 容量超過または個別サイズ超過で失われたレコード数。
+    /// 保持上限により削除されたログレコード数。
     pub missing_count: u64,
-    /// 連番の欠落または切り詰めがある。
+    /// broadcast relayが取りこぼした通知数。ログの件数とは限らない。
+    pub missed_event_count: u64,
+    /// 連番の欠落、relay通知の取りこぼし、または切り詰めがある。
     pub has_gap: bool,
     /// 購読状態。subscriptionId自体は公開しない。
     pub subscription: LogSubscriptionStatus,
@@ -163,6 +284,7 @@ impl std::error::Error for LogBufferError {}
 struct GenerationState {
     last_observed_sequence: u64,
     missing_count: u64,
+    missed_event_count: u64,
     subscription: LogSubscriptionStatus,
 }
 
@@ -192,7 +314,10 @@ impl LogBuffer {
             self.active_generation = None;
             self.last_generation = Some(generation);
             if let Some(state) = self.generations.get_mut(&generation) {
-                if state.subscription == LogSubscriptionStatus::Pending {
+                if matches!(
+                    state.subscription,
+                    LogSubscriptionStatus::Pending | LogSubscriptionStatus::Subscribed
+                ) {
                     state.subscription = LogSubscriptionStatus::Cancelled;
                 }
             }
@@ -210,7 +335,32 @@ impl LogBuffer {
         self.prune_generation_metadata();
     }
 
-    /// log.messageのparamsを保管する。個別サイズを超えた場合は連番と欠落数だけを残す。
+    fn set_subscription_status_if_active(
+        &mut self,
+        generation: u64,
+        status: LogSubscriptionStatus,
+    ) -> bool {
+        if self.active_generation != Some(generation) {
+            return false;
+        }
+        self.set_subscription_status(generation, status);
+        true
+    }
+
+    /// relay取りこぼし数を、ログ件数と区別して記録する。
+    pub fn note_missed_events(&mut self, generation: u64, count: u64) -> bool {
+        if self.active_generation != Some(generation) {
+            return false;
+        }
+        if let Some(state) = self.generations.get_mut(&generation) {
+            state.missed_event_count = state.missed_event_count.saturating_add(count);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// log.messageのparamsを保持し、個別サイズを超える文字列は切り詰める。
     pub fn record(
         &mut self,
         generation: u64,
@@ -314,9 +464,10 @@ impl LogBuffer {
             .collect::<Vec<_>>();
         let missing_before_cursor = query.after_sequence.is_some_and(|cursor| {
             retention.iter().any(|range| {
-                range
-                    .first_sequence
-                    .is_some_and(|first| first > cursor.saturating_add(1))
+                range.missed_event_count > 0
+                    || range
+                        .first_sequence
+                        .is_some_and(|first| first > cursor.saturating_add(1))
                     || (range.first_sequence.is_none() && range.last_observed_sequence > cursor)
             })
         });
@@ -363,6 +514,7 @@ impl LogBuffer {
         let first_sequence = first.map(|entry| entry.sequence);
         let last_sequence = last.map(|entry| entry.sequence);
         let has_gap = state.missing_count > 0
+            || state.missed_event_count > 0
             || first_sequence.is_some_and(|sequence| sequence > 1)
             || last_sequence.is_some_and(|sequence| sequence < state.last_observed_sequence)
             || self
@@ -378,6 +530,7 @@ impl LogBuffer {
             first_received_at_ms: first.map(|entry| entry.received_at_ms),
             last_received_at_ms: last.map(|entry| entry.received_at_ms),
             missing_count: state.missing_count,
+            missed_event_count: state.missed_event_count,
             has_gap,
             subscription: state.subscription,
         }
@@ -393,6 +546,9 @@ impl LogBuffer {
     }
 
     fn prune_generation_metadata(&mut self) {
+        if self.generations.len() <= MAX_TRACKED_GENERATIONS {
+            return;
+        }
         let retained_generations = self
             .entries
             .iter()
@@ -414,6 +570,17 @@ impl LogBuffer {
         self.generation_order
             .retain(|generation| self.generations.contains_key(generation));
     }
+}
+
+fn set_active_subscription_status(
+    log_buffer: &StdMutex<LogBuffer>,
+    generation: u64,
+    status: LogSubscriptionStatus,
+) -> bool {
+    log_buffer
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .set_subscription_status_if_active(generation, status)
 }
 
 struct BorrowedLog<'a> {
@@ -623,6 +790,43 @@ mod tests {
         assert_eq!(
             incompatible.retention[0].subscription,
             LogSubscriptionStatus::IncompatibleAck
+        );
+    }
+
+    #[test]
+    fn relay_lag_is_reported_as_uncertain_event_loss_without_inventing_log_count() {
+        let mut buffer = LogBuffer::default();
+        buffer.begin_generation(12);
+        buffer
+            .record_at(12, &params("retained"), 100)
+            .expect("ログを記録");
+        assert!(buffer.note_missed_events(12, 7));
+
+        let snapshot = buffer.read(&LogQuery {
+            generation: Some(12),
+            after_sequence: Some(0),
+            ..LogQuery::default()
+        });
+        assert!(snapshot.retention[0].has_gap);
+        assert_eq!(snapshot.retention[0].missed_event_count, 7);
+        assert_eq!(snapshot.retention[0].missing_count, 0);
+        assert!(snapshot.missing_before_cursor);
+        assert!(!buffer.note_missed_events(11, 3));
+    }
+
+    #[test]
+    fn missing_subscription_id_is_incompatible_and_is_never_synthesized() {
+        let missing = parse_log_subscription_ack(&serde_json::json!({"subscribed":true}));
+        assert_eq!(missing.status, LogSubscriptionStatus::IncompatibleAck);
+        assert_eq!(missing.subscription_id, None);
+
+        let valid = parse_log_subscription_ack(
+            &serde_json::json!({"subscriptionId":"engine-subscription-3"}),
+        );
+        assert_eq!(valid.status, LogSubscriptionStatus::Subscribed);
+        assert_eq!(
+            valid.subscription_id.as_deref(),
+            Some("engine-subscription-3")
         );
     }
 
