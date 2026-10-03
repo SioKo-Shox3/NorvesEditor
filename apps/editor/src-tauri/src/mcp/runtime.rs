@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     dto::{McpServerStateDto, McpSettingsPayload, McpTokenPayload},
     error::BackendError,
-    mcp::{McpAuthorization, McpHttpAuth, McpHttpServer},
+    mcp::{reads::McpReadContext, McpAuthorization, McpHttpAuth, McpHttpServer},
     mcp_settings::{McpSettings, McpSettingsError},
     mcp_token::{McpToken, McpTokenStore},
 };
@@ -31,6 +31,7 @@ struct McpRuntimeInner {
     config_dir: PathBuf,
     token_store: McpTokenStore,
     authorization: McpAuthorization,
+    reads: Option<McpReadContext>,
     control: Mutex<McpControl>,
 }
 
@@ -52,6 +53,14 @@ struct RunningServer {
 impl McpRuntime {
     /// 保存済み設定を読み、listener は非同期の初期化まで開かない。
     pub fn new(config_dir: PathBuf, authorization: McpAuthorization) -> Self {
+        Self::build(config_dir, authorization, McpReadContext::default_context())
+    }
+
+    fn build(
+        config_dir: PathBuf,
+        authorization: McpAuthorization,
+        reads: Option<McpReadContext>,
+    ) -> Self {
         let loaded = McpSettings::load(&config_dir);
         let (settings, state, error, initialized) = match loaded {
             Ok(settings) => (settings, McpServerStateDto::Disabled, None, false),
@@ -67,6 +76,7 @@ impl McpRuntime {
                 config_dir,
                 token_store: McpTokenStore::default(),
                 authorization,
+                reads,
                 control: Mutex::new(McpControl {
                     settings,
                     server: None,
@@ -226,7 +236,18 @@ impl McpRuntime {
             token,
             self.inner.authorization.clone(),
         ));
-        match McpHttpServer::bind(control.settings.port, Arc::clone(&auth)).await {
+        let server_result = match &self.inner.reads {
+            Some(reads) => {
+                McpHttpServer::bind_with_reads(
+                    control.settings.port,
+                    Arc::clone(&auth),
+                    reads.clone(),
+                )
+                .await
+            }
+            None => McpHttpServer::bind(control.settings.port, Arc::clone(&auth)).await,
+        };
+        match server_result {
             Ok(server) => {
                 let shutdown = CancellationToken::new();
                 let task = tauri::async_runtime::spawn(server.serve(shutdown.clone()));

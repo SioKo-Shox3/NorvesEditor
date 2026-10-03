@@ -110,6 +110,69 @@ async fn real_mock_subscription_burst_is_retained_without_a_ui_or_mcp_client() {
         "mock profileがlog.streamを広告する"
     );
 
+    let status = result(
+        &handle,
+        "mcp-read-status",
+        "engine.getStatus",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status["engineState"], "ready");
+    assert_eq!(status["engineName"], "MockEngine");
+
+    let tree = result(
+        &handle,
+        "mcp-read-tree",
+        "scene.getTree",
+        serde_json::json!({"rootId":"missing-root","maxDepth":0}),
+    )
+    .await;
+    assert_eq!(tree["root"]["id"], "n-0", "mockはtree範囲指定を無視する");
+    assert_eq!(tree["root"]["children"].as_array().unwrap().len(), 2);
+
+    let object_snapshot = result(
+        &handle,
+        "mcp-read-object",
+        "object.getSnapshot",
+        serde_json::json!({"objectId":"n-1"}),
+    )
+    .await;
+    assert_eq!(object_snapshot["objectId"], "n-1");
+    assert!(object_snapshot["properties"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+
+    let schema = result(
+        &handle,
+        "mcp-read-schema",
+        "schema.getSnapshot",
+        serde_json::json!({}),
+    )
+    .await;
+    assert!(schema["types"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+
+    let manifest = result(
+        &handle,
+        "mcp-read-manifest",
+        "asset.getManifest",
+        serde_json::json!({"page":0,"pageSize":50}),
+    )
+    .await;
+    assert_eq!(manifest["entries"][0]["logicalPath"], "textures/hero.png");
+    assert_eq!(manifest["totalCount"], 1);
+
+    let asset = result(
+        &handle,
+        "mcp-read-asset",
+        "asset.resolve",
+        serde_json::json!({"logicalPath":"textures/hero.png"}),
+    )
+    .await;
+    assert_eq!(asset["status"], "successCooked");
+    assert_eq!(asset["source"], "cooked");
+
     let generation = 41;
     let mut buffer = LogBuffer::default();
     buffer.begin_generation(generation);

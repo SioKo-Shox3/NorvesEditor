@@ -121,6 +121,7 @@ pub(crate) struct BridgeLease {
     pub(crate) generation: u64,
     #[allow(dead_code)]
     pub(crate) handle: DispatchHandle,
+    pub(crate) capabilities: Vec<CapabilityDescriptor>,
 }
 
 /// 編集側が接続のロックを持ち越さず、世代付きhandleを得るための内部窓口。
@@ -208,8 +209,11 @@ impl BridgeSessionTestControl {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *current = Some(generation);
-        self.session_tx
-            .send_replace(Some(BridgeLease { generation, handle }));
+        self.session_tx.send_replace(Some(BridgeLease {
+            generation,
+            handle,
+            capabilities: Vec::new(),
+        }));
     }
 
     pub(crate) fn disconnect(&self) {
@@ -226,7 +230,11 @@ pub(crate) fn test_edit_facade(
     generation: u64,
     handle: DispatchHandle,
 ) -> (BridgeFacade, BridgeSessionTestControl) {
-    let (session_tx, session_rx) = watch::channel(Some(BridgeLease { generation, handle }));
+    let (session_tx, session_rx) = watch::channel(Some(BridgeLease {
+        generation,
+        handle,
+        capabilities: Vec::new(),
+    }));
     let current_generation = Arc::new(StdMutex::new(Some(generation)));
     (
         BridgeFacade {
@@ -264,21 +272,25 @@ pub struct BridgeState {
     /// 世代切り替えでlog.subscribe要求を取り消す。
     attempt_cancellation: StdMutex<Option<(u64, CancellationToken)>>,
     /// relayが受信したログをUI通知前に有界保持する。
-    log_buffer: StdMutex<LogBuffer>,
+    log_buffer: Arc<StdMutex<LogBuffer>>,
+    mcp_tool_catalog: crate::mcp::tool_catalog::McpToolCatalog,
 }
 
 impl Default for BridgeState {
     fn default() -> Self {
         let (session_tx, _) = watch::channel(None);
-        BridgeState {
+        let state = BridgeState {
             inner: Mutex::new(Phase::Disconnected),
             next_request_id: Arc::new(AtomicU64::new(0)),
             next_generation: AtomicU64::new(0),
             session_tx,
             current_generation: Arc::new(StdMutex::new(None)),
             attempt_cancellation: StdMutex::new(None),
-            log_buffer: StdMutex::new(LogBuffer::default()),
-        }
+            log_buffer: Arc::new(StdMutex::new(LogBuffer::default())),
+            mcp_tool_catalog: crate::mcp::tool_catalog::McpToolCatalog::default(),
+        };
+        crate::mcp::reads::McpReadContext::install_default(state.mcp_read_context());
+        state
     }
 }
 
@@ -300,6 +312,13 @@ impl BridgeState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *current = lease.as_ref().map(|session| session.generation);
+        self.mcp_tool_catalog.set_connection(
+            lease.as_ref().map(|session| session.generation),
+            lease
+                .as_ref()
+                .map(|session| session.capabilities.as_slice())
+                .unwrap_or_default(),
+        );
         self.session_tx.send_replace(lease);
     }
 
@@ -310,6 +329,15 @@ impl BridgeState {
             session: self.session_tx.subscribe(),
             next_request_id: Arc::clone(&self.next_request_id),
         }
+    }
+
+    /// MCP読み取りへ接続世代と保持済みログの共有窓口を渡す。
+    pub(crate) fn mcp_read_context(&self) -> crate::mcp::reads::McpReadContext {
+        crate::mcp::reads::McpReadContext::new(
+            self.edit_facade(),
+            self.mcp_tool_catalog.clone(),
+            Arc::clone(&self.log_buffer),
+        )
     }
 
     fn begin_attempt(&self, generation: u64) -> CancellationToken {
@@ -367,6 +395,7 @@ fn edit_lease(phase: &Phase) -> Option<BridgeLease> {
         Phase::Connected(conn) => Some(BridgeLease {
             generation: conn.generation,
             handle: conn.handle.clone(),
+            capabilities: conn.capabilities.clone(),
         }),
         Phase::Disconnected | Phase::Connecting(_) => None,
     }
