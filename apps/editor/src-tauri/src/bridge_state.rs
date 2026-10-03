@@ -51,6 +51,7 @@ use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{watch, Mutex};
+use tokio_util::sync::CancellationToken;
 
 use crate::dto::{
     ConnectionStatePayload, EditHistorySummaryDto, UiParentCaptureDto, UiPropertyCaptureDto,
@@ -61,6 +62,7 @@ use crate::edit_service::{
 };
 use crate::error::BackendError;
 use crate::events_map::ui_channel_for_event;
+use crate::mcp::log_buffer::{LogBuffer, LogSubscriptionStatus};
 use crate::protocol_names::events;
 
 /// Wire protocol version this editor stamps on every envelope it sends.
@@ -84,6 +86,8 @@ const CLIENT_NAME: &str = "NorvesEditor";
 /// Default per-request timeout for engine method calls.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const DISPATCHER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const LOG_UNSUBSCRIBE_TIMEOUT: Duration = Duration::from_millis(500);
+const MAX_SUBSCRIPTION_ID_BYTES: usize = 256;
 
 /// Builds the loopback WebSocket URL for a local engine `port`.
 ///
@@ -109,6 +113,7 @@ struct LiveConnection {
     session_id: String,
     server_name: String,
     capabilities: Vec<CapabilityDescriptor>,
+    log_subscription_id: Option<String>,
 }
 
 /// 編集actorへ渡す、接続世代に固定されたBridgeの入口。
@@ -123,6 +128,10 @@ pub(crate) struct BridgeLease {
 #[derive(Clone)]
 pub(crate) struct BridgeFacade {
     current_generation: Arc<StdMutex<Option<u64>>>,
+    /// 世代切り替えでlog.subscribe要求を取り消す。
+    attempt_cancellation: StdMutex<Option<(u64, CancellationToken)>>,
+    /// relayが受信したログをUI通知前に保持する。
+    log_buffer: StdMutex<LogBuffer>,
     session: watch::Receiver<Option<BridgeLease>>,
     next_request_id: Arc<AtomicU64>,
 }
@@ -268,6 +277,8 @@ impl Default for BridgeState {
             next_generation: AtomicU64::new(0),
             session_tx,
             current_generation: Arc::new(StdMutex::new(None)),
+            attempt_cancellation: StdMutex::new(None),
+            log_buffer: StdMutex::new(LogBuffer::default()),
         }
     }
 }
@@ -300,6 +311,65 @@ impl BridgeState {
             session: self.session_tx.subscribe(),
             next_request_id: Arc::clone(&self.next_request_id),
         }
+    }
+
+    fn begin_attempt(&self, generation: u64) -> CancellationToken {
+        let cancellation = CancellationToken::new();
+        *self
+            .attempt_cancellation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((generation, cancellation.clone()));
+        self.log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .begin_generation(generation);
+        cancellation
+    }
+
+    fn cancel_attempt(&self, generation: u64) {
+        let mut attempt = self
+            .attempt_cancellation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(attempt.as_ref(), Some((current, _)) if *current == generation) {
+            if let Some((_, cancellation)) = attempt.take() {
+                cancellation.cancel();
+            }
+        }
+    }
+
+    fn finish_attempt(&self, generation: u64) {
+        let mut attempt = self
+            .attempt_cancellation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(attempt.as_ref(), Some((current, _)) if *current == generation) {
+            attempt.take();
+        }
+    }
+
+    async fn set_log_subscription_status(
+        &self,
+        generation: u64,
+        status: LogSubscriptionStatus,
+    ) -> bool {
+        let phase = self.inner.lock().await;
+        if !phase_has_generation(&phase, generation) {
+            return false;
+        }
+        self.log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_subscription_status(generation, status);
+        true
+    }
+
+    fn end_log_generation(&self, generation: u64) {
+        self.log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .end_generation(generation);
     }
 }
 
@@ -420,8 +490,32 @@ where
 /// session that owns the relay's generation. A different generation means a
 /// newer attempt already replaced this one, so the relay must leave it alone.
 fn relay_should_reset_phase(phase: &Phase, relay_generation: u64) -> bool {
-    matches!(phase, Phase::Connecting(token) if *token == relay_generation)
-        || matches!(phase, Phase::Connected(conn) if conn.generation == relay_generation)
+    phase_has_generation(phase, relay_generation)
+}
+
+/// 接続準備中または接続済みの世代がrelayと一致するか返す。
+fn phase_has_generation(phase: &Phase, generation: u64) -> bool {
+    matches!(phase, Phase::Connecting(token) if *token == generation)
+        || matches!(phase, Phase::Connected(conn) if conn.generation == generation)
+}
+
+enum RelayLogRecord {
+    Stale,
+    Retained(crate::mcp::log_buffer::LogRecordOutcome),
+}
+
+fn record_relay_log(
+    phase: &Phase,
+    log_buffer: &mut LogBuffer,
+    generation: u64,
+    params: &serde_json::Map<String, Value>,
+) -> Result<RelayLogRecord, crate::mcp::log_buffer::LogBufferError> {
+    if !phase_has_generation(phase, generation) {
+        return Ok(RelayLogRecord::Stale);
+    }
+    log_buffer
+        .record(generation, params)
+        .map(RelayLogRecord::Retained)
 }
 
 /// Transitions an owned attempt/session to disconnected and runs the synchronous
@@ -438,6 +532,130 @@ where
         true
     } else {
         false
+    }
+}
+
+struct LogSubscription {
+    status: LogSubscriptionStatus,
+    subscription_id: Option<String>,
+}
+
+fn parse_log_subscription_ack(value: &Value) -> LogSubscription {
+    let subscription_id = value
+        .as_object()
+        .and_then(|result| result.get("subscriptionId"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= MAX_SUBSCRIPTION_ID_BYTES)
+        .map(str::to_owned);
+    match subscription_id {
+        Some(subscription_id) => LogSubscription {
+            status: LogSubscriptionStatus::Subscribed,
+            subscription_id: Some(subscription_id),
+        },
+        None => LogSubscription {
+            status: LogSubscriptionStatus::IncompatibleAck,
+            subscription_id: None,
+        },
+    }
+}
+
+/// 能力がある接続に世代固定で一度だけログ購読を要求する。
+async fn subscribe_log_stream(
+    state: &BridgeState,
+    handle: &DispatchHandle,
+    capabilities: &[CapabilityDescriptor],
+    generation: u64,
+    cancellation: &CancellationToken,
+) -> Option<LogSubscription> {
+    if !capabilities
+        .iter()
+        .any(|capability| capability.name.as_str() == "log.stream")
+    {
+        if !state
+            .set_log_subscription_status(generation, LogSubscriptionStatus::Unsupported)
+            .await
+        {
+            return None;
+        }
+        return Some(LogSubscription {
+            status: LogSubscriptionStatus::Unsupported,
+            subscription_id: None,
+        });
+    }
+
+    if !state
+        .set_log_subscription_status(generation, LogSubscriptionStatus::Pending)
+        .await
+    {
+        return None;
+    }
+    if cancellation.is_cancelled() {
+        return None;
+    }
+
+    let request = build_request(
+        state.alloc_request_id(),
+        "log.subscribe",
+        Some(serde_json::Map::new()),
+    )
+    .ok()?;
+    let response = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return None,
+        response = handle.request(request, REQUEST_TIMEOUT) => response,
+    };
+    if cancellation.is_cancelled() {
+        return None;
+    }
+
+    let subscription = match response {
+        Ok(ResponsePayload::Result(value)) => parse_log_subscription_ack(&value),
+        Ok(ResponsePayload::Error(error)) => {
+            tracing::warn!(generation, error = %error, "log.subscribeが拒否されました");
+            LogSubscription {
+                status: LogSubscriptionStatus::Failed,
+                subscription_id: None,
+            }
+        }
+        Err(error) => {
+            tracing::warn!(generation, %error, "log.subscribeに失敗しました");
+            LogSubscription {
+                status: LogSubscriptionStatus::Failed,
+                subscription_id: None,
+            }
+        }
+    };
+
+    if !state
+        .set_log_subscription_status(generation, subscription.status)
+        .await
+    {
+        return None;
+    }
+    Some(subscription)
+}
+
+/// subscriptionIdがある接続だけ、同じdispatcherへ購読解除を送る。
+async fn unsubscribe_log_stream(conn: &LiveConnection) {
+    let Some(subscription_id) = conn.log_subscription_id.as_deref() else {
+        return;
+    };
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "subscriptionId".to_owned(),
+        Value::String(subscription_id.to_owned()),
+    );
+    let request_id = CorrelationId::try_from(format!("log-unsub-{}", conn.generation))
+        .expect("世代番号から作った要求IDは有効");
+    let Ok(request) = build_request(request_id, "log.unsubscribe", Some(params)) else {
+        return;
+    };
+    if let Err(error) = conn
+        .handle
+        .request(request, LOG_UNSUBSCRIBE_TIMEOUT)
+        .await
+    {
+        tracing::debug!(generation = conn.generation, %error, "ログ購読解除は完了しませんでした");
     }
 }
 
@@ -466,6 +684,33 @@ fn spawn_relay(
                 Ok(envelope) => {
                     if let ValidatedEnvelope::Event { event, params, .. } = &*envelope {
                         let name = event.as_str();
+                        if name == "log.message" {
+                            let state = app.state::<BridgeState>();
+                            let phase = state.inner.lock().await;
+                            if let Some(params) = params {
+                                let mut log_buffer = state
+                                    .log_buffer
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                match record_relay_log(&phase, &mut log_buffer, generation, params) {
+                                    Ok(RelayLogRecord::Retained(outcome)) if outcome.truncated => {
+                                        tracing::warn!(generation, sequence = outcome.sequence, "容量を超えたエンジンログの文字列を切り詰めました");
+                                    }
+                                    Ok(RelayLogRecord::Retained(_)) => {}
+                                    Ok(RelayLogRecord::Stale) => {
+                                        tracing::debug!(generation, "古い世代のログrelayを破棄しました");
+                                        continue;
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(generation, %error, "不正なエンジンログを保持できませんでした");
+                                    }
+                                }
+                            } else if !phase_has_generation(&phase, generation) {
+                                tracing::debug!(generation, "古い世代のログrelayを破棄しました");
+                                continue;
+                            }
+                            drop(phase);
+                        }
                         match ui_channel_for_event(name) {
                             Some(channel) => {
                                 // Forward params as raw wire JSON; an absent
@@ -501,6 +746,8 @@ fn spawn_relay(
                     let mut guard = state.inner.lock().await;
                     reset_owned_phase_and_then(&mut guard, generation, |_| {
                         state.publish_session(None);
+                        state.cancel_attempt(generation);
+                        state.end_log_generation(generation);
                         // `emit` is synchronous in Tauri 2. Keep transition and
                         // publication in this one mutex interval so a connect
                         // commit cannot interleave between them.
@@ -525,6 +772,7 @@ fn spawn_relay(
 /// 古い接続のrelayとdispatcherを終了させる。
 async fn tear_down(conn: LiveConnection) {
     conn.relay.abort();
+    unsubscribe_log_stream(&conn).await;
     if !wait_for_dispatcher_shutdown(conn.handle.shutdown()).await {
         tracing::warn!("Bridge dispatcherの停止応答が2秒以内に返りませんでした");
     }
@@ -550,9 +798,17 @@ async fn run_connect_flow(
     state: &BridgeState,
     endpoint: String,
     generation: u64,
+    cancellation: CancellationToken,
 ) -> Result<LiveConnection, BackendError> {
     // 1. Dial with retry -> DispatchHandle.
-    let handle = connect_with_retry(&endpoint, &RetryConfig::default()).await?;
+    if cancellation.is_cancelled() {
+        return Err(BackendError::NotConnected);
+    }
+    let handle = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(BackendError::NotConnected),
+        result = connect_with_retry(&endpoint, &RetryConfig::default()) => result?,
+    };
 
     // 2. Subscribe to events BEFORE hello so no early event is missed.
     let events = handle.subscribe_events();
@@ -562,6 +818,27 @@ async fn run_connect_flow(
     let relay = spawn_relay(app, generation, events);
 
     let setup = complete_connection_setup(handle, relay, state).await?;
+    if cancellation.is_cancelled() {
+        tear_down_partial(setup.handle, setup.relay).await;
+        return Err(BackendError::NotConnected);
+    }
+    let Some(log_subscription) = subscribe_log_stream(
+        state,
+        &setup.handle,
+        &setup.capabilities,
+        generation,
+        &cancellation,
+    )
+    .await
+    else {
+        tear_down_partial(setup.handle, setup.relay).await;
+        return Err(BackendError::NotConnected);
+    };
+    tracing::debug!(
+        generation,
+        status = ?log_subscription.status,
+        "ログ購読状態を更新しました"
+    );
 
     Ok(LiveConnection {
         generation,
@@ -571,6 +848,7 @@ async fn run_connect_flow(
         session_id: setup.hello.session_id,
         server_name: setup.hello.server_name,
         capabilities: setup.capabilities,
+        log_subscription_id: log_subscription.subscription_id,
     })
 }
 
@@ -702,12 +980,13 @@ pub(crate) async fn connect_on_port(
 ) -> Result<ConnectionStatePayload, BackendError> {
     // Brief lock: transition Disconnected -> Connecting, reject overlap.
     let token = state.alloc_generation();
-    {
+    let cancellation = {
         let mut guard = state.inner.lock().await;
         match &*guard {
             Phase::Disconnected => {
                 *guard = Phase::Connecting(token);
                 state.publish_session(None);
+                state.begin_attempt(token)
             }
             Phase::Connecting(_) | Phase::Connected(_) => {
                 return Err(BackendError::AlreadyConnected);
@@ -716,7 +995,8 @@ pub(crate) async fn connect_on_port(
     } // guard dropped: connect I/O runs WITHOUT the lock.
 
     let endpoint = ws_url_for_port(port);
-    let result = run_connect_flow(app.clone(), state, endpoint, token).await;
+    let result = run_connect_flow(app.clone(), state, endpoint, token, cancellation).await;
+    state.finish_attempt(token);
 
     match result {
         Ok(conn) => {
@@ -742,6 +1022,7 @@ pub(crate) async fn connect_on_port(
             let mut guard = state.inner.lock().await;
             if reset_connecting_if_matches(&mut guard, token) {
                 state.publish_session(None);
+                state.end_log_generation(token);
             }
             Err(err)
         }
@@ -773,15 +1054,23 @@ pub async fn bridge_connect(
 /// emitting the disconnected `CONNECTION_STATE` (`stop_engine` does so, as its
 /// single source).
 pub(crate) async fn disconnect_quietly(state: &BridgeState) {
-    let taken = {
+    let (taken, generation) = {
         let mut guard = state.inner.lock().await;
-        let taken = match std::mem::replace(&mut *guard, Phase::Disconnected) {
-            Phase::Connected(conn) => Some(conn),
-            _ => None,
+        let (taken, generation) = match std::mem::replace(&mut *guard, Phase::Disconnected) {
+            Phase::Connected(conn) => {
+                let generation = conn.generation;
+                (Some(conn), Some(generation))
+            }
+            Phase::Connecting(generation) => (None, Some(generation)),
+            Phase::Disconnected => (None, None),
         };
         state.publish_session(None);
-        taken
+        (taken, generation)
     };
+    if let Some(generation) = generation {
+        state.cancel_attempt(generation);
+        state.end_log_generation(generation);
+    }
     if let Some(conn) = taken {
         tear_down(conn).await;
     }
@@ -789,15 +1078,23 @@ pub(crate) async fn disconnect_quietly(state: &BridgeState) {
 
 /// アプリ終了時に接続を無効化し、relayとdispatcherを非同期に終了する。
 pub(crate) async fn shutdown_on_exit(state: &BridgeState) {
-    let taken = {
+    let (taken, generation) = {
         let mut guard = state.inner.lock().await;
-        let taken = match std::mem::replace(&mut *guard, Phase::Disconnected) {
-            Phase::Connected(conn) => Some(conn),
-            Phase::Connecting(_) | Phase::Disconnected => None,
+        let (taken, generation) = match std::mem::replace(&mut *guard, Phase::Disconnected) {
+            Phase::Connected(conn) => {
+                let generation = conn.generation;
+                (Some(conn), Some(generation))
+            }
+            Phase::Connecting(generation) => (None, Some(generation)),
+            Phase::Disconnected => (None, None),
         };
         state.publish_session(None);
-        taken
+        (taken, generation)
     };
+    if let Some(generation) = generation {
+        state.cancel_attempt(generation);
+        state.end_log_generation(generation);
+    }
     if let Some(conn) = taken {
         tear_down(conn).await;
     }
@@ -812,16 +1109,23 @@ pub async fn bridge_disconnect(
     app: AppHandle,
 ) -> Result<ConnectionStatePayload, BackendError> {
     // Take the live connection out under the lock, then tear down WITHOUT it.
-    let taken = {
+    let (taken, generation) = {
         let mut guard = state.inner.lock().await;
-        let taken = match std::mem::replace(&mut *guard, Phase::Disconnected) {
-            Phase::Connected(conn) => Some(conn),
-            // Connecting or Disconnected: nothing live to tear down.
-            _ => None,
+        let (taken, generation) = match std::mem::replace(&mut *guard, Phase::Disconnected) {
+            Phase::Connected(conn) => {
+                let generation = conn.generation;
+                (Some(conn), Some(generation))
+            }
+            Phase::Connecting(generation) => (None, Some(generation)),
+            Phase::Disconnected => (None, None),
         };
         state.publish_session(None);
-        taken
+        (taken, generation)
     };
+    if let Some(generation) = generation {
+        state.cancel_attempt(generation);
+        state.end_log_generation(generation);
+    }
     if let Some(conn) = taken {
         tear_down(conn).await;
     }
@@ -840,13 +1144,14 @@ pub async fn bridge_reconnect(
     // Take the old connection (and remember its endpoint) under the lock, then
     // move to Connecting so an overlapping connect/reconnect is rejected.
     let token = state.alloc_generation();
-    let (old, endpoint) = {
+    let (old, endpoint, cancellation) = {
         let mut guard = state.inner.lock().await;
         match std::mem::replace(&mut *guard, Phase::Connecting(token)) {
             Phase::Connected(conn) => {
                 let endpoint = conn.endpoint.clone();
                 state.publish_session(None);
-                (conn, endpoint)
+                let cancellation = state.begin_attempt(token);
+                (conn, endpoint, cancellation)
             }
             Phase::Connecting(current) => {
                 // A connect/reconnect is already in progress: do not disturb it.
@@ -864,7 +1169,9 @@ pub async fn bridge_reconnect(
     tear_down(old).await;
 
     // Re-run the full connect flow (subscribe -> spawn relay -> hello).
-    let result = run_connect_flow(app.clone(), state.inner(), endpoint, token).await;
+    let result =
+        run_connect_flow(app.clone(), state.inner(), endpoint, token, cancellation).await;
+    state.inner().finish_attempt(token);
     match result {
         Ok(conn) => {
             let payload = connection_state_payload(&conn);
@@ -885,6 +1192,7 @@ pub async fn bridge_reconnect(
             let mut guard = state.inner.lock().await;
             if reset_connecting_if_matches(&mut guard, token) {
                 state.publish_session(None);
+                state.inner().end_log_generation(token);
             }
             Err(err)
         }
@@ -1602,6 +1910,7 @@ mod tests {
                 session_id: "edit-service-test".to_owned(),
                 server_name: "loopback".to_owned(),
                 capabilities: Vec::new(),
+                log_subscription_id: None,
             });
             state.publish_session(edit_lease(&phase));
         }
@@ -1982,6 +2291,84 @@ mod tests {
         assert!(!relay_should_reset_phase(&Phase::Connecting(1), 0));
     }
 
+    #[test]
+    fn old_relay_logs_are_rejected_and_current_logs_keep_their_generation() {
+        let mut buffer = LogBuffer::default();
+        let old_params = serde_json::json!({ "level": "error", "message": "old" });
+        let current_params = serde_json::json!({ "level": "info", "message": "current" });
+
+        assert!(matches!(
+            record_relay_log(
+                &Phase::Connecting(22),
+                &mut buffer,
+                21,
+                old_params.as_object().expect("object")
+            ),
+            Ok(RelayLogRecord::Stale)
+        ));
+        assert!(matches!(
+            record_relay_log(
+                &Phase::Connecting(22),
+                &mut buffer,
+                22,
+                current_params.as_object().expect("object")
+            ),
+            Ok(RelayLogRecord::Retained(crate::mcp::log_buffer::LogRecordOutcome {
+                sequence: 1,
+                truncated: false
+            }))
+        ));
+
+        let next_params = serde_json::json!({ "level": "warn", "message": "next" });
+        assert!(matches!(
+            record_relay_log(
+                &Phase::Connecting(23),
+                &mut buffer,
+                22,
+                &next_params.as_object().expect("object").clone()
+            ),
+            Ok(RelayLogRecord::Stale)
+        ));
+        assert!(matches!(
+            record_relay_log(
+                &Phase::Connecting(23),
+                &mut buffer,
+                23,
+                next_params.as_object().expect("object")
+            ),
+            Ok(RelayLogRecord::Retained(crate::mcp::log_buffer::LogRecordOutcome {
+                sequence: 1,
+                truncated: false
+            }))
+        ));
+
+        let snapshot = buffer.read(&crate::mcp::log_buffer::LogQuery {
+            generation: Some(23),
+            ..crate::mcp::log_buffer::LogQuery::default()
+        });
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.entries[0].message, "next");
+        assert_eq!(snapshot.entries[0].generation, 23);
+    }
+
+    #[test]
+    fn missing_subscription_id_is_reported_without_inventing_an_unsubscribe_id() {
+        let acknowledgement = parse_log_subscription_ack(&serde_json::json!({
+            "subscribed": true
+        }));
+        assert_eq!(acknowledgement.status, LogSubscriptionStatus::IncompatibleAck);
+        assert_eq!(acknowledgement.subscription_id, None);
+
+        let valid = parse_log_subscription_ack(&serde_json::json!({
+            "subscriptionId": "engine-subscription-3"
+        }));
+        assert_eq!(valid.status, LogSubscriptionStatus::Subscribed);
+        assert_eq!(
+            valid.subscription_id.as_deref(),
+            Some("engine-subscription-3")
+        );
+    }
+
     /// Builds a real `LiveConnection` (via a loopback-backed dispatcher and a
     /// trivial relay task) carrying `generation`. Needs a runtime, hence the
     /// `#[tokio::test]` caller.
@@ -2002,6 +2389,7 @@ mod tests {
                 "version": "0.2"
             }))
             .expect("valid capability descriptor")],
+            log_subscription_id: None,
         }
     }
 

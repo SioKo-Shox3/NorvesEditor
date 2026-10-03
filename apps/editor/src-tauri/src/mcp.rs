@@ -50,6 +50,7 @@ use crate::mcp_token::McpToken;
 use axum::extract::connect_info::Connected;
 
 pub mod runtime;
+pub mod log_buffer;
 
 /// MCP POST 本体の最大サイズ。
 pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
