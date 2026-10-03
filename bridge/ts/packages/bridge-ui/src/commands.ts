@@ -16,6 +16,7 @@ import type {
   AssetManifestResult,
   AssetResolveResult,
   EditHistorySummary,
+  EditDiscardResult,
   EngineSettingsPayload,
   UiParentCapture,
   UiPropertyCapture,
@@ -50,6 +51,8 @@ export const BRIDGE_COMMANDS = {
   editUndo: 'edit_undo',
   editRedo: 'edit_redo',
   editGetHistory: 'edit_get_history',
+  editRetry: 'edit_retry',
+  editDiscard: 'edit_discard',
   viewportGetThumbnail: 'viewport_get_thumbnail',
   runtimePlay: 'runtime_play',
   runtimePause: 'runtime_pause',
@@ -151,6 +154,14 @@ export async function editRedo(
 
 export async function editGetHistory(): Promise<EditHistorySummary> {
   return invoke<EditHistorySummary>(BRIDGE_COMMANDS.editGetHistory);
+}
+
+export async function editRetry(): Promise<unknown> {
+  return invoke(BRIDGE_COMMANDS.editRetry);
+}
+
+export async function editDiscard(): Promise<EditDiscardResult> {
+  return invoke<EditDiscardResult>(BRIDGE_COMMANDS.editDiscard);
 }
 
 export async function componentAdd(objectId: string, kind: string): Promise<unknown> {

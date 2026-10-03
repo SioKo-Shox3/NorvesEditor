@@ -96,6 +96,8 @@ export type {
   UiParentCapture,
   EditSource,
   EditGroupSummary,
+  EditPendingGroup,
+  EditDiscardResult,
   EditHistorySummary,
   EditAppliedOperation,
   EditAppliedPayload,

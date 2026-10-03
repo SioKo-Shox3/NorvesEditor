@@ -133,6 +133,34 @@ pub struct EditGroupSummaryDto {
     pub name: String,
     pub source: EditSourceDto,
     pub count: usize,
+    /// グループ開始時刻。Unix epochからのミリ秒。
+    pub created_at: u64,
+}
+
+/// 再試行または破棄が必要な、部分適用状態のまとまり。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditPendingGroupDto {
+    pub id: String,
+    pub name: String,
+    pub direction: String,
+    pub source: EditSourceDto,
+    pub created_at: u64,
+    pub total_count: usize,
+    pub completed_count: usize,
+    pub outcome_unknown: bool,
+    pub retry_allowed: bool,
+}
+
+/// 破棄後に残る適用状態。自動で巻き戻さない。
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditDiscardResultDto {
+    pub group_id: String,
+    pub completed_count: usize,
+    pub total_count: usize,
+    pub outcome_unknown: bool,
+    pub changes_remain: bool,
 }
 
 /// 画面初期取得と履歴変更イベントで共有するサービス要約。
@@ -151,6 +179,7 @@ pub struct EditHistorySummaryDto {
     pub redo_revision: u64,
     pub redo_group: Option<EditGroupSummaryDto>,
     pub pending: bool,
+    pub pending_group: Option<EditPendingGroupDto>,
 }
 
 /// 共通サービスが適用した編集を画面へ伝えるイベント。

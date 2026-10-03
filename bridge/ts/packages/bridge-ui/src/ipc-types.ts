@@ -68,6 +68,27 @@ export interface EditGroupSummary {
   name: string;
   source: EditSource;
   count: number;
+  createdAt: number;
+}
+
+export interface EditPendingGroup {
+  id: string;
+  name: string;
+  direction: 'undo' | 'redo';
+  source: EditSource;
+  createdAt: number;
+  totalCount: number;
+  completedCount: number;
+  outcomeUnknown: boolean;
+  retryAllowed: boolean;
+}
+
+export interface EditDiscardResult {
+  groupId: string;
+  completedCount: number;
+  totalCount: number;
+  outcomeUnknown: boolean;
+  changesRemain: boolean;
 }
 
 /** 編集サービスが初期取得と変更イベントで共有する履歴要約。 */
@@ -84,6 +105,7 @@ export interface EditHistorySummary {
   redoRevision: number;
   redoGroup: EditGroupSummary | null;
   pending: boolean;
+  pendingGroup?: EditPendingGroup | null;
 }
 
 export type EditAppliedOperation =

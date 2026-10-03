@@ -7,7 +7,10 @@ use serde_json::Value;
 
 use super::{EditKind, EditSource};
 use crate::bridge_state::BridgeLease;
-use crate::dto::{EditGroupSummaryDto, EditHistorySummaryDto, EditSourceDto};
+use crate::dto::{
+    EditDiscardResultDto, EditGroupSummaryDto, EditHistorySummaryDto, EditPendingGroupDto,
+    EditSourceDto,
+};
 use crate::error::BackendError;
 
 const MAX_CORRECTION_ENTRIES: usize = 512;
@@ -46,10 +49,43 @@ pub(crate) enum HistoryRecord {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct GroupKey {
+    pub(super) generation: u64,
+    pub(super) sequence: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct GroupMetadata {
+    pub(super) key: GroupKey,
+    pub(super) name: String,
+    pub(super) source: EditSource,
+    pub(super) created_at: u64,
+    pub(super) count: usize,
+    pub(super) named: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct HistoryEntry {
     marker: HistoryMarker,
     record: HistoryRecord,
+    group: GroupMetadata,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ActiveGroup {
+    token: u64,
+    metadata: GroupMetadata,
+    entries: Vec<HistoryEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PendingGroupAction {
+    direction: HistoryDirection,
+    metadata: GroupMetadata,
+    completed: usize,
+    outcome_unknown: bool,
+    retry_allowed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -111,6 +147,15 @@ pub(crate) enum HistoryDirection {
     Redo,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct HistoryOperationContext {
+    pub(super) source: EditSource,
+    pub(super) kind: EditKind,
+    pub(super) sequence: u64,
+    pub(super) generation: u64,
+    pub(super) group_token: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct HistoryActionRequest {
     pub(crate) direction: HistoryDirection,
@@ -123,6 +168,15 @@ pub(crate) struct HistoryAction {
     pub(crate) direction: HistoryDirection,
     pub(super) entry_id: u64,
     pub(crate) record: HistoryRecord,
+    pub(super) group: GroupMetadata,
+    pub(super) steps: Vec<HistoryActionStep>,
+    pub(super) grouped: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct HistoryActionStep {
+    pub(super) entry_id: u64,
+    pub(super) record: HistoryRecord,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -356,6 +410,8 @@ pub(super) struct HistoryState {
     corrections: CorrectionCache,
     edit_unsupported: bool,
     pending: bool,
+    pending_group: Option<PendingGroupAction>,
+    active_group: Option<ActiveGroup>,
 }
 
 impl HistoryState {
@@ -369,6 +425,8 @@ impl HistoryState {
             self.applied_revision = 0;
             self.markers.clear();
             self.pending = false;
+            self.pending_group = None;
+            self.active_group = None;
             self.revision = self.revision.wrapping_add(1);
         }
     }
@@ -391,6 +449,7 @@ impl HistoryState {
             redo_revision,
             redo_group,
             pending: self.pending,
+            pending_group: self.pending_summary(),
         }
     }
 
@@ -401,13 +460,38 @@ impl HistoryState {
         };
         let entry = stack.last()?;
         Some(EditGroupSummaryDto {
-            id: group_id(entry.marker.generation, entry.marker.sequence),
-            name: entry.record.summary_name().to_owned(),
-            source: match entry.marker.source {
+            id: group_id(entry.group.key.generation, entry.group.key.sequence),
+            name: entry.group.name.clone(),
+            source: match entry.group.source {
                 EditSource::Ui => EditSourceDto::Ui,
                 EditSource::Mcp => EditSourceDto::Mcp,
             },
-            count: 1,
+            count: entry.group.count,
+            created_at: entry.group.created_at,
+        })
+    }
+
+    fn pending_summary(&self) -> Option<EditPendingGroupDto> {
+        let pending = self.pending_group.as_ref()?;
+        Some(EditPendingGroupDto {
+            id: group_id(
+                pending.metadata.key.generation,
+                pending.metadata.key.sequence,
+            ),
+            name: pending.metadata.name.clone(),
+            direction: match pending.direction {
+                HistoryDirection::Undo => "undo".to_owned(),
+                HistoryDirection::Redo => "redo".to_owned(),
+            },
+            source: match pending.metadata.source {
+                EditSource::Ui => EditSourceDto::Ui,
+                EditSource::Mcp => EditSourceDto::Mcp,
+            },
+            created_at: pending.metadata.created_at,
+            total_count: pending.metadata.count,
+            completed_count: pending.completed,
+            outcome_unknown: pending.outcome_unknown,
+            retry_allowed: pending.retry_allowed,
         })
     }
 
@@ -440,10 +524,26 @@ impl HistoryState {
             HistoryDirection::Redo => &self.redo,
         };
         let entry = stack.last()?;
-        (entry.marker.sequence == expected_head_id).then(|| HistoryAction {
+        if entry.marker.sequence != expected_head_id {
+            return None;
+        }
+        let steps = stack
+            .iter()
+            .rev()
+            .take_while(|candidate| candidate.group.key == entry.group.key)
+            .map(|candidate| HistoryActionStep {
+                entry_id: candidate.marker.sequence,
+                record: candidate.record.clone(),
+            })
+            .collect::<Vec<_>>();
+        let first = steps.first()?;
+        Some(HistoryAction {
             direction: request.direction,
-            entry_id: expected_head_id,
-            record: entry.record.clone(),
+            entry_id: first.entry_id,
+            record: first.record.clone(),
+            grouped: entry.group.named,
+            group: entry.group.clone(),
+            steps,
         })
     }
 
@@ -465,42 +565,13 @@ impl HistoryState {
             });
         }
 
-        let updated_record = match (&action.record, action.direction) {
-            (
-                HistoryRecord::Create {
-                    parent_id, kind, ..
-                },
-                HistoryDirection::Redo,
-            ) => {
-                let Some(created_id) = non_empty_new_id(&result) else {
-                    self.discard_action(&action);
-                    return Err(malformed_history_result("newId"));
-                };
-                HistoryRecord::Create {
-                    created_id,
-                    parent_id: parent_id.clone(),
-                    kind: kind.clone(),
-                }
+        let updated_record = match updated_history_record(&action.record, action.direction, &result)
+        {
+            Ok(record) => record,
+            Err(error) => {
+                self.discard_action(&action);
+                return Err(error);
             }
-            (
-                HistoryRecord::Duplicate {
-                    source_object_id,
-                    parent_id,
-                    ..
-                },
-                HistoryDirection::Redo,
-            ) => {
-                let Some(created_id) = non_empty_new_id(&result) else {
-                    self.discard_action(&action);
-                    return Err(malformed_history_result("newId"));
-                };
-                HistoryRecord::Duplicate {
-                    source_object_id: source_object_id.clone(),
-                    created_id,
-                    parent_id: parent_id.clone(),
-                }
-            }
-            _ => action.record.clone(),
         };
 
         let Some(mut entry) = self.pop_action_entry(&action) else {
@@ -515,6 +586,250 @@ impl HistoryState {
             HistoryDirection::Redo => self.undo.push(entry),
         }
         Ok(true)
+    }
+
+    pub(super) fn begin_group(
+        &mut self,
+        token: u64,
+        name: String,
+        source: EditSource,
+        generation: u64,
+    ) -> Result<(), BackendError> {
+        let name = name.trim().to_owned();
+        if name.is_empty() || name.len() > 256 {
+            return Err(BackendError::Request {
+                message: "まとまり名は1〜256バイトで指定してください。".to_owned(),
+            });
+        }
+        self.close_active_group();
+        self.active_group = Some(ActiveGroup {
+            token,
+            metadata: GroupMetadata {
+                key: GroupKey {
+                    generation,
+                    sequence: token,
+                },
+                name,
+                source,
+                created_at: unix_millis(),
+                count: 0,
+                named: true,
+            },
+            entries: Vec::new(),
+        });
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
+    }
+
+    pub(super) fn end_group(&mut self, token: u64) -> Result<bool, BackendError> {
+        if self.active_group.as_ref().map(|group| group.token) != Some(token) {
+            return Err(BackendError::Request {
+                message: "まとまりIDが現在のまとまりと一致しません。".to_owned(),
+            });
+        }
+        Ok(self.close_active_group())
+    }
+
+    pub(super) fn close_group_unless(&mut self, token: Option<u64>) -> bool {
+        if self.active_group.as_ref().map(|group| group.token) != token {
+            self.close_active_group()
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn has_group(&self, token: u64, generation: u64) -> bool {
+        self.active_group.as_ref().is_some_and(|group| {
+            group.token == token && group.metadata.key.generation == generation
+        })
+    }
+
+    pub(super) fn has_active_group(&self) -> bool {
+        self.active_group.is_some()
+    }
+
+    fn close_active_group(&mut self) -> bool {
+        let Some(mut group) = self.active_group.take() else {
+            return false;
+        };
+        if group.entries.is_empty() {
+            self.revision = self.revision.wrapping_add(1);
+            return true;
+        }
+        group.metadata.count = group.entries.len();
+        for entry in &mut group.entries {
+            entry.group = group.metadata.clone();
+        }
+        self.undo.extend(group.entries);
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    pub(super) fn prepare_retry(&self) -> Option<HistoryAction> {
+        let pending = self.pending_group.as_ref()?;
+        if !pending.retry_allowed || pending.outcome_unknown {
+            return None;
+        }
+        let stack = match pending.direction {
+            HistoryDirection::Undo => &self.undo,
+            HistoryDirection::Redo => &self.redo,
+        };
+        let steps = stack
+            .iter()
+            .rev()
+            .take_while(|entry| entry.group.key == pending.metadata.key)
+            .map(|entry| HistoryActionStep {
+                entry_id: entry.marker.sequence,
+                record: entry.record.clone(),
+            })
+            .collect::<Vec<_>>();
+        let first = steps.first()?;
+        Some(HistoryAction {
+            direction: pending.direction,
+            entry_id: first.entry_id,
+            record: first.record.clone(),
+            group: pending.metadata.clone(),
+            steps,
+            grouped: true,
+        })
+    }
+
+    pub(super) fn refresh_action_step(
+        &self,
+        direction: HistoryDirection,
+        group_key: &GroupKey,
+        entry_id: u64,
+    ) -> Option<HistoryActionStep> {
+        let stack = match direction {
+            HistoryDirection::Undo => &self.undo,
+            HistoryDirection::Redo => &self.redo,
+        };
+        stack
+            .iter()
+            .find(|entry| entry.marker.sequence == entry_id && &entry.group.key == group_key)
+            .map(|entry| HistoryActionStep {
+                entry_id,
+                record: entry.record.clone(),
+            })
+    }
+
+    pub(super) fn start_pending_group(
+        &mut self,
+        action: &HistoryAction,
+        completed: usize,
+        outcome_unknown: bool,
+        retry_allowed: bool,
+    ) {
+        self.pending = true;
+        self.pending_group = Some(PendingGroupAction {
+            direction: action.direction,
+            metadata: action.group.clone(),
+            completed,
+            outcome_unknown,
+            retry_allowed,
+        });
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub(super) fn finish_group_step(
+        &mut self,
+        action: &HistoryAction,
+        step: &HistoryActionStep,
+        context: HistoryOperationContext,
+        result: &Value,
+    ) -> Result<bool, BackendError> {
+        if result.get("accepted").and_then(Value::as_bool) != Some(true) {
+            return Ok(false);
+        }
+        let updated_record = updated_history_record(&step.record, action.direction, result)?;
+        let Some(mut entry) =
+            self.pop_action_entry_id(action.direction, step.entry_id, &action.group.key)
+        else {
+            return Ok(false);
+        };
+        self.applied_revision = self.applied_revision.wrapping_add(1);
+        self.update_action_corrections(&step.record, &updated_record, action.direction, result);
+        if let Some((old_id, new_id)) = changed_created_id(&step.record, &updated_record) {
+            self.remap_group_ids(&action.group.key, &old_id, &new_id);
+        }
+        entry.record = updated_record;
+        self.push_marker(
+            context.source,
+            context.kind,
+            context.sequence,
+            context.generation,
+        );
+        match action.direction {
+            HistoryDirection::Undo => self.redo.push(entry),
+            HistoryDirection::Redo => self.undo.push(entry),
+        }
+        let pending_remaining = if let Some(pending) = self.pending_group.as_mut() {
+            if pending.metadata.key == action.group.key {
+                pending.completed = pending.completed.saturating_add(1);
+                Some((pending.direction, pending.metadata.key.clone()))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some((direction, key)) = pending_remaining {
+            if !self.has_group_on_stack(direction, &key) {
+                self.pending = false;
+                self.pending_group = None;
+            }
+        }
+        Ok(true)
+    }
+
+    pub(super) fn finish_group_failure(
+        &mut self,
+        action: &HistoryAction,
+        completed: usize,
+        error: &BackendError,
+    ) {
+        let retry_allowed = matches!(error, BackendError::Engine { .. });
+        self.start_pending_group(action, completed, !retry_allowed, retry_allowed);
+    }
+
+    pub(super) fn clear_completed_pending_group(&mut self, key: &GroupKey) {
+        if self
+            .pending_group
+            .as_ref()
+            .is_some_and(|pending| &pending.metadata.key == key)
+            && !self
+                .pending_group
+                .as_ref()
+                .is_some_and(|pending| self.has_group_on_stack(pending.direction, key))
+        {
+            self.pending = false;
+            self.pending_group = None;
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    pub(super) fn discard_pending_group(&mut self) -> Result<EditDiscardResultDto, BackendError> {
+        let Some(pending) = self.pending_group.take() else {
+            return Err(BackendError::Request {
+                message: "破棄できる保留中のまとまりはありません。".to_owned(),
+            });
+        };
+        self.undo
+            .retain(|entry| entry.group.key != pending.metadata.key);
+        self.redo
+            .retain(|entry| entry.group.key != pending.metadata.key);
+        self.pending = false;
+        self.revision = self.revision.wrapping_add(1);
+        Ok(EditDiscardResultDto {
+            group_id: group_id(
+                pending.metadata.key.generation,
+                pending.metadata.key.sequence,
+            ),
+            completed_count: pending.completed,
+            total_count: pending.metadata.count,
+            outcome_unknown: pending.outcome_unknown,
+            changes_remain: pending.completed > 0 || pending.outcome_unknown,
+        })
     }
 
     pub(super) fn finish_action_failure(&mut self, action: &HistoryAction) {
@@ -543,18 +858,53 @@ impl HistoryState {
         self.corrections.clear();
         self.edit_unsupported = false;
         self.pending = false;
+        self.pending_group = None;
+        self.active_group = None;
         self.revision = self.revision.wrapping_add(1);
     }
 
     fn pop_action_entry(&mut self, action: &HistoryAction) -> Option<HistoryEntry> {
-        let stack = match action.direction {
+        self.pop_action_entry_id(action.direction, action.entry_id, &action.group.key)
+    }
+
+    fn pop_action_entry_id(
+        &mut self,
+        direction: HistoryDirection,
+        entry_id: u64,
+        group_key: &GroupKey,
+    ) -> Option<HistoryEntry> {
+        let stack = match direction {
             HistoryDirection::Undo => &mut self.undo,
             HistoryDirection::Redo => &mut self.redo,
         };
-        if stack.last()?.marker.sequence != action.entry_id {
+        let entry = stack.last()?;
+        if entry.marker.sequence != entry_id || &entry.group.key != group_key {
             return None;
         }
         stack.pop()
+    }
+
+    fn has_group_on_stack(&self, direction: HistoryDirection, key: &GroupKey) -> bool {
+        let stack = match direction {
+            HistoryDirection::Undo => &self.undo,
+            HistoryDirection::Redo => &self.redo,
+        };
+        stack.iter().any(|entry| &entry.group.key == key)
+    }
+
+    fn remap_group_ids(&mut self, key: &GroupKey, old_id: &str, new_id: &str) {
+        for entry in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            if &entry.group.key == key {
+                replace_record_ids(&mut entry.record, old_id, new_id);
+            }
+        }
+        if let Some(group) = self.active_group.as_mut() {
+            if &group.metadata.key == key {
+                for entry in &mut group.entries {
+                    replace_record_ids(&mut entry.record, old_id, new_id);
+                }
+            }
+        }
     }
 
     fn discard_action(&mut self, action: &HistoryAction) {
@@ -781,6 +1131,7 @@ impl HistoryState {
         Ok(capture.value)
     }
 
+    #[cfg(test)]
     pub(super) fn record_success(
         &mut self,
         prepared: PreparedHistoryRequest,
@@ -788,6 +1139,25 @@ impl HistoryState {
         kind: EditKind,
         sequence: u64,
         generation: u64,
+        result: QueuedEditResult,
+    ) {
+        self.record_success_in_group(
+            prepared,
+            HistoryOperationContext {
+                source,
+                kind,
+                sequence,
+                generation,
+                group_token: None,
+            },
+            result,
+        );
+    }
+
+    pub(super) fn record_success_in_group(
+        &mut self,
+        prepared: PreparedHistoryRequest,
+        context: HistoryOperationContext,
         result: QueuedEditResult,
     ) {
         if result.value.get("accepted").and_then(Value::as_bool) != Some(true) {
@@ -800,12 +1170,22 @@ impl HistoryState {
                 .clear_and_mark_lost_through(self.applied_revision);
             self.undo.clear();
             self.redo.clear();
-            self.push_marker(source, kind, sequence, generation);
+            self.push_marker(
+                context.source,
+                context.kind,
+                context.sequence,
+                context.generation,
+            );
             return;
         }
 
         self.applied_revision = self.applied_revision.wrapping_add(1);
-        self.push_marker(source, kind, sequence, generation);
+        self.push_marker(
+            context.source,
+            context.kind,
+            context.sequence,
+            context.generation,
+        );
         let revision = self.applied_revision;
         let record = match prepared {
             PreparedHistoryRequest::CreateObject { parent_id, kind } => result
@@ -911,15 +1291,53 @@ impl HistoryState {
         };
 
         if let Some(record) = record {
-            self.undo.push(HistoryEntry {
-                marker: self
-                    .markers
-                    .last()
-                    .expect("accepted マーカーを記録済み")
-                    .clone(),
-                record,
+            let marker = self
+                .markers
+                .last()
+                .expect("accepted マーカーを記録済み")
+                .clone();
+            let active_match = self.active_group.as_ref().filter(|group| {
+                Some(group.token) == context.group_token
+                    && group.metadata.key.generation == context.generation
+                    && group.metadata.source == context.source
             });
-            self.redo.clear();
+            if let Some(group) = active_match {
+                let mut metadata = group.metadata.clone();
+                metadata.count = group.entries.len().saturating_add(1);
+                let entry = HistoryEntry {
+                    marker,
+                    record,
+                    group: metadata,
+                };
+                if let Some(group) = self.active_group.as_mut() {
+                    group.entries.push(entry);
+                }
+                if self
+                    .active_group
+                    .as_ref()
+                    .is_some_and(|group| group.entries.len() == 1)
+                {
+                    self.redo.clear();
+                }
+            } else {
+                let metadata = GroupMetadata {
+                    key: GroupKey {
+                        generation: context.generation,
+                        sequence: context.sequence,
+                    },
+                    name: record.summary_name().to_owned(),
+                    source: context.source,
+                    created_at: unix_millis(),
+                    count: 1,
+                    named: false,
+                };
+                self.undo.push(HistoryEntry {
+                    marker,
+                    record,
+                    group: metadata,
+                });
+                self.redo.clear();
+            }
         }
     }
 
@@ -947,6 +1365,7 @@ impl HistoryState {
     #[cfg(test)]
     pub(super) fn set_pending_for_test(&mut self, pending: bool) {
         self.pending = pending;
+        self.pending_group = None;
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -963,14 +1382,17 @@ impl HistoryState {
     #[cfg(test)]
     pub(super) fn seed_undo_record(&mut self, sequence: u64, record: HistoryRecord) {
         self.generation.get_or_insert(1);
+        let generation = self.generation.unwrap_or_default();
+        let group = test_group_metadata(generation, sequence, &record);
         self.undo.push(HistoryEntry {
             marker: HistoryMarker {
                 sequence,
                 source: EditSource::Ui,
                 kind: EditKind::Edit,
-                generation: self.generation.unwrap_or_default(),
+                generation,
             },
             record,
+            group,
         });
         self.revision = self.revision.wrapping_add(1);
     }
@@ -978,14 +1400,17 @@ impl HistoryState {
     #[cfg(test)]
     pub(super) fn seed_redo_record(&mut self, sequence: u64, record: HistoryRecord) {
         self.generation.get_or_insert(1);
+        let generation = self.generation.unwrap_or_default();
+        let group = test_group_metadata(generation, sequence, &record);
         self.redo.push(HistoryEntry {
             marker: HistoryMarker {
                 sequence,
                 source: EditSource::Ui,
                 kind: EditKind::Edit,
-                generation: self.generation.unwrap_or_default(),
+                generation,
             },
             record,
+            group,
         });
         self.revision = self.revision.wrapping_add(1);
     }
@@ -1020,6 +1445,134 @@ impl HistoryState {
 
 pub(super) fn group_id(generation: u64, sequence: u64) -> String {
     format!("edit-{generation}-{sequence}")
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+fn test_group_metadata(generation: u64, sequence: u64, record: &HistoryRecord) -> GroupMetadata {
+    GroupMetadata {
+        key: GroupKey {
+            generation,
+            sequence,
+        },
+        name: record.summary_name().to_owned(),
+        source: EditSource::Ui,
+        created_at: unix_millis(),
+        count: 1,
+        named: false,
+    }
+}
+
+fn updated_history_record(
+    record: &HistoryRecord,
+    direction: HistoryDirection,
+    result: &Value,
+) -> Result<HistoryRecord, BackendError> {
+    match (record, direction) {
+        (
+            HistoryRecord::Create {
+                parent_id, kind, ..
+            },
+            HistoryDirection::Redo,
+        ) => {
+            let Some(created_id) = non_empty_new_id(result) else {
+                return Err(malformed_history_result("newId"));
+            };
+            Ok(HistoryRecord::Create {
+                created_id,
+                parent_id: parent_id.clone(),
+                kind: kind.clone(),
+            })
+        }
+        (
+            HistoryRecord::Duplicate {
+                source_object_id,
+                parent_id,
+                ..
+            },
+            HistoryDirection::Redo,
+        ) => {
+            let Some(created_id) = non_empty_new_id(result) else {
+                return Err(malformed_history_result("newId"));
+            };
+            Ok(HistoryRecord::Duplicate {
+                source_object_id: source_object_id.clone(),
+                created_id,
+                parent_id: parent_id.clone(),
+            })
+        }
+        _ => Ok(record.clone()),
+    }
+}
+
+fn changed_created_id(old: &HistoryRecord, new: &HistoryRecord) -> Option<(String, String)> {
+    match (old, new) {
+        (
+            HistoryRecord::Create {
+                created_id: old_id, ..
+            },
+            HistoryRecord::Create {
+                created_id: new_id, ..
+            },
+        )
+        | (
+            HistoryRecord::Duplicate {
+                created_id: old_id, ..
+            },
+            HistoryRecord::Duplicate {
+                created_id: new_id, ..
+            },
+        ) if old_id != new_id => Some((old_id.clone(), new_id.clone())),
+        _ => None,
+    }
+}
+
+fn replace_record_ids(record: &mut HistoryRecord, old_id: &str, new_id: &str) {
+    let replace = |value: &mut String| {
+        if value == old_id {
+            *value = new_id.to_owned();
+        }
+    };
+    let replace_option = |value: &mut Option<String>| {
+        if value.as_deref() == Some(old_id) {
+            *value = Some(new_id.to_owned());
+        }
+    };
+    match record {
+        HistoryRecord::Create {
+            created_id,
+            parent_id,
+            ..
+        } => {
+            replace(created_id);
+            replace_option(parent_id);
+        }
+        HistoryRecord::Duplicate {
+            source_object_id,
+            created_id,
+            parent_id,
+        } => {
+            replace(source_object_id);
+            replace(created_id);
+            replace_option(parent_id);
+        }
+        HistoryRecord::Reparent {
+            object_id,
+            old_parent_id,
+            new_parent_id,
+        } => {
+            replace(object_id);
+            replace_option(old_parent_id);
+            replace_option(new_parent_id);
+        }
+        HistoryRecord::SetProperty { object_id, .. } => replace(object_id),
+    }
 }
 
 impl HistoryRecord {

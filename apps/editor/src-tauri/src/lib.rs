@@ -74,6 +74,8 @@ pub fn run() {
             bridge_state::edit_undo,
             bridge_state::edit_redo,
             bridge_state::edit_get_history,
+            edit_service::edit_retry,
+            edit_service::edit_discard,
             bridge_state::focus_viewport,
             process_runtime::launch_engine,
             process_runtime::stop_engine,

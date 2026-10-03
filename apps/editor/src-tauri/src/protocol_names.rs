@@ -34,6 +34,8 @@ pub mod commands {
     pub const EDIT_UNDO: &str = "edit_undo";
     pub const EDIT_REDO: &str = "edit_redo";
     pub const EDIT_GET_HISTORY: &str = "edit_get_history";
+    pub const EDIT_RETRY: &str = "edit_retry";
+    pub const EDIT_DISCARD: &str = "edit_discard";
     pub const VIEWPORT_GET_THUMBNAIL: &str = "viewport_get_thumbnail";
     pub const RUNTIME_PLAY: &str = "runtime_play";
     pub const RUNTIME_PAUSE: &str = "runtime_pause";
@@ -117,6 +119,8 @@ mod tests {
         assert_eq!(commands::EDIT_UNDO, "edit_undo");
         assert_eq!(commands::EDIT_REDO, "edit_redo");
         assert_eq!(commands::EDIT_GET_HISTORY, "edit_get_history");
+        assert_eq!(commands::EDIT_RETRY, "edit_retry");
+        assert_eq!(commands::EDIT_DISCARD, "edit_discard");
     }
 
     #[test]
@@ -317,6 +321,8 @@ mod tests {
             commands::EDIT_UNDO,
             commands::EDIT_REDO,
             commands::EDIT_GET_HISTORY,
+            commands::EDIT_RETRY,
+            commands::EDIT_DISCARD,
             commands::VIEWPORT_GET_THUMBNAIL,
             commands::RUNTIME_PLAY,
             commands::RUNTIME_PAUSE,

@@ -7,17 +7,20 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tauri::async_runtime::JoinHandle;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
 use crate::bridge_state::{BridgeFacade, BridgeLease};
-use crate::dto::{EditAppliedDto, EditHistorySummaryDto, EditSourceDto};
+use crate::dto::{EditAppliedDto, EditDiscardResultDto, EditHistorySummaryDto, EditSourceDto};
 use crate::error::BackendError;
 use crate::protocol_names::events;
 
 mod history;
 
-use history::{HistoryAction, HistoryActionRequest, HistoryDirection, HistoryMarker, HistoryState};
+use history::{
+    HistoryAction, HistoryActionRequest, HistoryDirection, HistoryMarker, HistoryOperationContext,
+    HistoryState,
+};
 pub(crate) use history::{HistoryCapture, HistoryRequest, PriorCapture, QueuedEditResult};
 
 const QUEUE_CAPACITY: usize = 64;
@@ -30,6 +33,21 @@ type EditAction = Box<dyn FnOnce(BridgeLease) -> EditFuture + Send + 'static>;
 enum QueuedAction {
     Edit(EditAction),
     History(HistoryActionRequest),
+    Retry,
+    Discard,
+    Group(GroupControl),
+}
+
+enum GroupControl {
+    Begin {
+        token: u64,
+        generation: u64,
+        name: String,
+    },
+    End {
+        token: u64,
+        generation: u64,
+    },
 }
 
 type EditEventSink = Arc<dyn Fn(EditServiceEvent) + Send + Sync + 'static>;
@@ -81,11 +99,21 @@ struct QueueItem {
     kind: EditKind,
     lease: BridgeLease,
     action: QueuedAction,
+    group_token: Option<u64>,
     history_request: Option<HistoryRequest>,
     event_request: Option<HistoryRequest>,
     event_input: Option<EditEventInput>,
     cancelled: oneshot::Receiver<()>,
     result: oneshot::Sender<Result<QueuedEditResult, BackendError>>,
+}
+
+struct EnqueueContext {
+    source: EditSource,
+    kind: EditKind,
+    group_token: Option<u64>,
+    history_request: Option<HistoryRequest>,
+    event_request: Option<HistoryRequest>,
+    event_input: Option<EditEventInput>,
 }
 
 struct Admission {
@@ -98,6 +126,12 @@ struct Admission {
 pub(crate) struct EditTicket {
     result: oneshot::Receiver<Result<QueuedEditResult, BackendError>>,
     cancel: oneshot::Sender<()>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EditGroupHandle {
+    token: u64,
+    generation: u64,
 }
 
 #[allow(dead_code)]
@@ -240,6 +274,82 @@ impl EditService {
         self.enqueue_recorded(EditSource::Mcp, kind, request, action)
     }
 
+    /// MCPの名前付きまとまりを列へ投入し、後続の明示的な編集に使うハンドルを返す。
+    pub(crate) async fn begin_group_from_mcp(
+        &self,
+        name: String,
+    ) -> Result<EditGroupHandle, BackendError> {
+        let (ticket, token, generation) =
+            self.enqueue_control(EditSource::Mcp, |sequence, generation| {
+                QueuedAction::Group(GroupControl::Begin {
+                    token: sequence,
+                    generation,
+                    name,
+                })
+            })?;
+        ticket.result().await?;
+        Ok(EditGroupHandle { token, generation })
+    }
+
+    pub(crate) async fn end_group_from_mcp(
+        &self,
+        group: EditGroupHandle,
+    ) -> Result<Value, BackendError> {
+        if self.bridge.current_generation() != Some(group.generation) {
+            return Err(BackendError::NotConnected);
+        }
+        let (ticket, _, _) = self.enqueue_control(EditSource::Mcp, |_, _| {
+            QueuedAction::Group(GroupControl::End {
+                token: group.token,
+                generation: group.generation,
+            })
+        })?;
+        ticket.result().await
+    }
+
+    pub(crate) fn enqueue_recorded_in_group_from_mcp<F, Fut>(
+        &self,
+        group: EditGroupHandle,
+        kind: EditKind,
+        request: HistoryRequest,
+        action: F,
+    ) -> Result<EditTicket, BackendError>
+    where
+        F: FnOnce(BridgeLease) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<QueuedEditResult, BackendError>> + Send + 'static,
+    {
+        let generation = self.bridge.current_generation().unwrap_or_default();
+        if generation != group.generation {
+            return Err(BackendError::NotConnected);
+        }
+        self.enqueue_with_context(
+            EnqueueContext {
+                source: EditSource::Mcp,
+                kind,
+                group_token: Some(group.token),
+                history_request: Some(request.clone()),
+                event_request: Some(request),
+                event_input: None,
+            },
+            Box::new(|lease| Box::pin(action(lease))),
+        )
+    }
+
+    pub(crate) async fn retry_pending_from_ui(&self) -> Result<Value, BackendError> {
+        let (ticket, _, _) = self.enqueue_control(EditSource::Ui, |_, _| QueuedAction::Retry)?;
+        ticket.result().await
+    }
+
+    pub(crate) async fn discard_pending_from_ui(
+        &self,
+    ) -> Result<crate::dto::EditDiscardResultDto, BackendError> {
+        let (ticket, _, _) = self.enqueue_control(EditSource::Ui, |_, _| QueuedAction::Discard)?;
+        let result = ticket.result().await?;
+        serde_json::from_value(result).map_err(|error| BackendError::Request {
+            message: format!("破棄結果の形式が不正です: {error}"),
+        })
+    }
+
     pub(crate) async fn submit_from_ui<F, Fut>(
         &self,
         kind: EditKind,
@@ -319,7 +429,12 @@ impl EditService {
             expected_revision,
         };
         let can_run = self.can_prepare_history_action(lease.generation, request);
-        if !can_run {
+        let pending = self
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_pending();
+        if !can_run && !pending {
             return Ok(completed_noop_ticket());
         }
 
@@ -334,6 +449,7 @@ impl EditService {
             },
             lease,
             action: QueuedAction::History(request),
+            group_token: None,
             history_request: None,
             event_request: None,
             event_input: None,
@@ -378,7 +494,7 @@ impl EditService {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             history.synchronize(generation);
-            history.prepare_action(request).is_some()
+            history.has_active_group() || history.prepare_action(request).is_some()
         })
     }
 
@@ -434,6 +550,32 @@ impl EditService {
         event_input: Option<EditEventInput>,
         action: EditAction,
     ) -> Result<EditTicket, BackendError> {
+        self.enqueue_with_context(
+            EnqueueContext {
+                source,
+                kind,
+                group_token: None,
+                history_request,
+                event_request,
+                event_input,
+            },
+            action,
+        )
+    }
+
+    fn enqueue_with_context(
+        &self,
+        context: EnqueueContext,
+        action: EditAction,
+    ) -> Result<EditTicket, BackendError> {
+        let EnqueueContext {
+            source,
+            kind,
+            group_token,
+            history_request,
+            event_request,
+            event_input,
+        } = context;
         let mut admission = self
             .admission
             .lock()
@@ -450,6 +592,7 @@ impl EditService {
             kind,
             lease,
             action: QueuedAction::Edit(action),
+            group_token,
             history_request,
             event_request,
             event_input,
@@ -463,6 +606,56 @@ impl EditService {
                     result: result_rx,
                     cancel,
                 })
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => Err(BackendError::EditQueueFull),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(BackendError::EditServiceStopping),
+        }
+    }
+
+    fn enqueue_control<F>(
+        &self,
+        source: EditSource,
+        build: F,
+    ) -> Result<(EditTicket, u64, u64), BackendError>
+    where
+        F: FnOnce(u64, u64) -> QueuedAction,
+    {
+        let mut admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !admission.accepting {
+            return Err(BackendError::EditServiceStopping);
+        }
+        let lease = self.bridge.pin()?;
+        let sequence = admission.next_sequence;
+        let generation = lease.generation;
+        let (cancel, cancelled) = oneshot::channel();
+        let (result, result_rx) = oneshot::channel();
+        let item = QueueItem {
+            sequence,
+            source,
+            kind: EditKind::Edit,
+            lease,
+            action: build(sequence, generation),
+            group_token: None,
+            history_request: None,
+            event_request: None,
+            event_input: None,
+            cancelled,
+            result,
+        };
+        match self.sender.try_send(item) {
+            Ok(()) => {
+                admission.next_sequence = admission.next_sequence.wrapping_add(1);
+                Ok((
+                    EditTicket {
+                        result: result_rx,
+                        cancel,
+                    },
+                    sequence,
+                    generation,
+                ))
             }
             Err(mpsc::error::TrySendError::Full(_)) => Err(BackendError::EditQueueFull),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(BackendError::EditServiceStopping),
@@ -776,6 +969,9 @@ async fn process_item(
         let _ = item.result.send(Err(BackendError::EditCancelled));
         return false;
     }
+    if matches!(item.action, QueuedAction::Group(_) | QueuedAction::Discard) {
+        return process_control_item(bridge, history, event_sink, item);
+    }
     if !bridge.is_current(item.lease.generation) {
         let outcome = if matches!(item.action, QueuedAction::History(_)) {
             Ok(QueuedEditResult::plain(Value::Null))
@@ -797,48 +993,111 @@ async fn process_item(
     let event_kind = item.kind;
     let event_sequence = item.sequence;
     let event_generation = item.lease.generation;
+    let retry_action = matches!(item.action, QueuedAction::Retry);
     let (prepared_action, history_before) = {
         let current_generation = bridge.current_generation();
         let mut state = history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.synchronize(current_generation);
-        if state.is_pending() {
+        let history_before = state.summary();
+        if state.is_pending() && !retry_action {
             let _ = item.result.send(Err(BackendError::Request {
                 message: "編集履歴に部分失敗が残っています。保留中は編集・取り消し・実行制御を受け付けません。"
                     .to_owned(),
             }));
             return false;
         }
+        if !retry_action {
+            state.close_group_unless(item.group_token);
+            if let Some(token) = item.group_token {
+                if !state.has_group(token, item.lease.generation) {
+                    let after = state.summary();
+                    drop(state);
+                    if after != history_before {
+                        emit_service_event(event_sink, EditServiceEvent::HistoryChanged(after));
+                    }
+                    let _ = item.result.send(Err(BackendError::Request {
+                        message: "まとまりIDが現在の接続世代または所有中のまとまりと一致しません。"
+                            .to_owned(),
+                    }));
+                    return false;
+                }
+            }
+        }
         if let Some(request) = item.history_request.take() {
             match state.prepare(request, item.source, item.lease.generation) {
                 Ok(prepared) => prepared_history = Some(prepared),
                 Err(error) => {
+                    let after = state.summary();
+                    drop(state);
+                    if after != history_before {
+                        emit_service_event(event_sink, EditServiceEvent::HistoryChanged(after));
+                    }
                     let _ = item.result.send(Err(error));
                     return false;
                 }
             }
         }
-        let prepared_action = if let QueuedAction::History(request) = &item.action {
-            let Some(action) = state.prepare_action(*request) else {
-                let _ = item.result.send(Ok(QueuedEditResult::plain(Value::Null)));
-                return false;
-            };
-            Some(action)
-        } else {
-            None
+        let prepared_action = match &item.action {
+            QueuedAction::History(request) => {
+                let Some(action) = state.prepare_action(*request) else {
+                    let after = state.summary();
+                    drop(state);
+                    if after != history_before {
+                        emit_service_event(event_sink, EditServiceEvent::HistoryChanged(after));
+                    }
+                    let _ = item.result.send(Ok(QueuedEditResult::plain(Value::Null)));
+                    return false;
+                };
+                Some(action)
+            }
+            QueuedAction::Retry => {
+                let Some(action) = state.prepare_retry() else {
+                    let _ = item.result.send(Err(BackendError::Request {
+                        message:
+                            "保留中のまとまりは再試行できません。状態を確認して破棄してください。"
+                                .to_owned(),
+                    }));
+                    return false;
+                };
+                Some(action)
+            }
+            _ => None,
         };
-        (prepared_action, state.summary())
+        (prepared_action, history_before)
     };
 
-    let action = match item.action {
+    let grouped_action = prepared_action
+        .as_ref()
+        .is_some_and(|action| action.grouped || retry_action);
+    let group_events = Arc::new(StdMutex::new(Vec::new()));
+    let action: EditFuture = match item.action {
         QueuedAction::Edit(action) => action(item.lease.clone()),
-        QueuedAction::History(_) => {
+        QueuedAction::History(_) | QueuedAction::Retry => {
             let Some(plan) = prepared_action.clone() else {
                 let _ = item.result.send(Ok(QueuedEditResult::plain(Value::Null)));
                 return false;
             };
-            Box::pin(run_history_action(bridge.clone(), item.lease.clone(), plan))
+            if grouped_action {
+                Box::pin(run_group_history_action(
+                    plan,
+                    GroupActionContext {
+                        bridge: bridge.clone(),
+                        lease: item.lease.clone(),
+                        history: Arc::clone(history),
+                        source: item.source,
+                        sequence: item.sequence,
+                        events: Arc::clone(&group_events),
+                        retrying: retry_action,
+                    },
+                )) as EditFuture
+            } else {
+                Box::pin(run_history_action(bridge.clone(), item.lease.clone(), plan)) as EditFuture
+            }
+        }
+        QueuedAction::Group(_) | QueuedAction::Discard => {
+            unreachable!("制御要求は列の先頭で処理する")
         }
     };
     tokio::pin!(action);
@@ -879,7 +1138,9 @@ async fn process_item(
                         if current != Some(item.lease.generation) {
                             return Err(BackendError::NotConnected);
                         }
-                        if let Some(plan) = prepared_action.clone() {
+                        if grouped_action {
+                            Ok(value)
+                        } else if let Some(plan) = prepared_action.clone() {
                             match state.finish_action_success(
                                 plan,
                                 item.source,
@@ -894,12 +1155,15 @@ async fn process_item(
                             }
                         } else {
                             if let Some(prepared) = prepared_history.take() {
-                                state.record_success(
+                                state.record_success_in_group(
                                     prepared,
-                                    item.source,
-                                    item.kind,
-                                    item.sequence,
-                                    item.lease.generation,
+                                    HistoryOperationContext {
+                                        source: item.source,
+                                        kind: item.kind,
+                                        sequence: item.sequence,
+                                        generation: item.lease.generation,
+                                        group_token: item.group_token,
+                                    },
                                     value.clone(),
                                 );
                             } else if item.kind == EditKind::Edit
@@ -923,7 +1187,7 @@ async fn process_item(
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
                             state.synchronize(current);
                             if current == Some(item.lease.generation) {
-                                if let Some(plan) = prepared_action.as_ref() {
+                                if let Some(plan) = prepared_action.as_ref().filter(|_| !grouped_action) {
                                     state.finish_action_failure(plan);
                                 } else if matches!(
                                     error,
@@ -947,36 +1211,50 @@ async fn process_item(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .summary();
-    if let (Some(sink), Ok(result)) = (event_sink, outcome.as_ref()) {
-        if history_after.applied_revision != history_before.applied_revision
-            && result.value.get("accepted").and_then(Value::as_bool) == Some(true)
-            && event_kind != EditKind::RuntimeControl
-        {
-            if let Some(details) = edit_event_details(
-                event_request.as_ref(),
-                event_input.as_ref(),
-                prepared_action.as_ref(),
-                &result.value,
-            ) {
-                let group_sequence = prepared_action
-                    .as_ref()
-                    .map_or(event_sequence, |action| action.entry_id);
-                emit_service_event(
-                    Some(sink),
-                    EditServiceEvent::Applied(EditAppliedDto {
-                        operation: details.operation,
-                        object_id: details.object_id,
-                        property: details.property,
-                        value: details.value,
-                        new_id: details.new_id,
-                        source: source_dto(event_source),
-                        group_id: history::group_id(event_generation, group_sequence),
-                        generation: event_generation,
-                        sequence: event_sequence,
-                        history_revision: history_after.history_revision,
-                        applied_revision: history_after.applied_revision,
-                    }),
-                );
+    for payload in group_events
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .drain(..)
+    {
+        emit_service_event(event_sink, EditServiceEvent::Applied(payload));
+    }
+    if !grouped_action {
+        if let (Some(sink), Ok(result)) = (event_sink, outcome.as_ref()) {
+            if history_after.applied_revision != history_before.applied_revision
+                && result.value.get("accepted").and_then(Value::as_bool) == Some(true)
+                && event_kind != EditKind::RuntimeControl
+            {
+                if let Some(details) = edit_event_details(
+                    event_request.as_ref(),
+                    event_input.as_ref(),
+                    prepared_action.as_ref(),
+                    &result.value,
+                ) {
+                    let group_sequence = item
+                        .group_token
+                        .or_else(|| {
+                            prepared_action
+                                .as_ref()
+                                .map(|action| action.group.key.sequence)
+                        })
+                        .unwrap_or(event_sequence);
+                    emit_service_event(
+                        Some(sink),
+                        EditServiceEvent::Applied(EditAppliedDto {
+                            operation: details.operation,
+                            object_id: details.object_id,
+                            property: details.property,
+                            value: details.value,
+                            new_id: details.new_id,
+                            source: source_dto(event_source),
+                            group_id: history::group_id(event_generation, group_sequence),
+                            generation: event_generation,
+                            sequence: event_sequence,
+                            history_revision: history_after.history_revision,
+                            applied_revision: history_after.applied_revision,
+                        }),
+                    );
+                }
             }
         }
     }
@@ -985,6 +1263,227 @@ async fn process_item(
     }
     let _ = item.result.send(outcome);
     stopping
+}
+
+fn process_control_item(
+    bridge: &BridgeFacade,
+    history: &Arc<StdMutex<HistoryState>>,
+    event_sink: Option<&EditEventSink>,
+    item: QueueItem,
+) -> bool {
+    let before = history
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .summary();
+    let outcome = bridge.with_current_generation(|generation| {
+        let mut state = history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.synchronize(generation);
+        if generation != Some(item.lease.generation) {
+            return Err(BackendError::NotConnected);
+        }
+        if state.is_pending() && !matches!(item.action, QueuedAction::Discard) {
+            return Err(BackendError::Request {
+                message: "編集履歴に部分失敗が残っています。先に再試行または破棄してください。"
+                    .to_owned(),
+            });
+        }
+        match item.action {
+            QueuedAction::Group(GroupControl::Begin {
+                token,
+                generation: expected_generation,
+                name,
+            }) if expected_generation == item.lease.generation => {
+                state.begin_group(token, name, item.source, item.lease.generation)?;
+                Ok(QueuedEditResult::plain(Value::Null))
+            }
+            QueuedAction::Group(GroupControl::End {
+                token,
+                generation: expected_generation,
+            }) if expected_generation == item.lease.generation => {
+                state.end_group(token)?;
+                Ok(QueuedEditResult::plain(Value::Null))
+            }
+            QueuedAction::Discard => {
+                let discarded = state.discard_pending_group()?;
+                let value =
+                    serde_json::to_value(discarded).map_err(|error| BackendError::Request {
+                        message: format!("破棄結果を直列化できません: {error}"),
+                    })?;
+                Ok(QueuedEditResult::plain(value))
+            }
+            _ => Err(BackendError::Request {
+                message: "編集制御要求の形式が不正です。".to_owned(),
+            }),
+        }
+    });
+    let after = history
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .summary();
+    if after != before {
+        emit_service_event(event_sink, EditServiceEvent::HistoryChanged(after));
+    }
+    let _ = item.result.send(outcome);
+    false
+}
+
+struct GroupActionContext {
+    bridge: BridgeFacade,
+    lease: BridgeLease,
+    history: Arc<StdMutex<HistoryState>>,
+    source: EditSource,
+    sequence: u64,
+    events: Arc<StdMutex<Vec<EditAppliedDto>>>,
+    retrying: bool,
+}
+
+async fn run_group_history_action(
+    action: HistoryAction,
+    context: GroupActionContext,
+) -> Result<QueuedEditResult, BackendError> {
+    let GroupActionContext {
+        bridge,
+        lease,
+        history,
+        source,
+        sequence,
+        events,
+        retrying,
+    } = context;
+    let mut completed = if retrying {
+        history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .summary()
+            .pending_group
+            .map_or(0, |pending| pending.completed_count)
+    } else {
+        0
+    };
+    let total = action.group.count;
+    for queued_step in &action.steps {
+        if !bridge.is_current(lease.generation) {
+            return Err(BackendError::NotConnected);
+        }
+        let step = history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .refresh_action_step(action.direction, &action.group.key, queued_step.entry_id)
+            .ok_or(BackendError::NotConnected)?;
+        let step_action = HistoryAction {
+            direction: action.direction,
+            entry_id: step.entry_id,
+            record: step.record.clone(),
+            group: action.group.clone(),
+            steps: vec![step.clone()],
+            grouped: true,
+        };
+        let result = run_history_action(bridge.clone(), lease.clone(), step_action.clone()).await;
+        let value = match result {
+            Ok(value) if value.value.get("accepted").and_then(Value::as_bool) == Some(true) => {
+                value
+            }
+            Ok(_) => {
+                let current_generation = bridge.current_generation();
+                let mut state = history
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.synchronize(current_generation);
+                if current_generation != Some(lease.generation) {
+                    return Err(BackendError::NotConnected);
+                }
+                state.start_pending_group(&action, completed, false, true);
+                return Err(BackendError::Request {
+                    message: "まとまり内の編集をエンジンが受け付けませんでした。未処理の操作は再試行できます。"
+                        .to_owned(),
+                });
+            }
+            Err(error) => {
+                let mut state = history
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let current_generation = bridge.current_generation();
+                state.synchronize(current_generation);
+                if current_generation == Some(lease.generation) {
+                    state.finish_group_failure(&action, completed, &error);
+                }
+                return Err(error);
+            }
+        };
+        let current_generation = bridge.current_generation();
+        let mut state = history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.synchronize(current_generation);
+        if current_generation != Some(lease.generation) {
+            return Err(BackendError::NotConnected);
+        }
+        match state.finish_group_step(
+            &action,
+            &step,
+            HistoryOperationContext {
+                source,
+                kind: match action.direction {
+                    HistoryDirection::Undo => EditKind::Undo,
+                    HistoryDirection::Redo => EditKind::Redo,
+                },
+                sequence,
+                generation: lease.generation,
+                group_token: None,
+            },
+            &value.value,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                state.start_pending_group(&action, completed, true, false);
+                return Err(BackendError::Request {
+                    message: "まとまり内の編集結果を履歴へ反映できませんでした。結果確認まで再送しません。"
+                        .to_owned(),
+                });
+            }
+            Err(error) => {
+                state.finish_group_failure(&action, completed, &error);
+                return Err(error);
+            }
+        }
+        completed = completed.saturating_add(1);
+        if let Some(details) = edit_event_details(None, None, Some(&step_action), &value.value) {
+            let summary = state.summary();
+            events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(EditAppliedDto {
+                    operation: details.operation,
+                    object_id: details.object_id,
+                    property: details.property,
+                    value: details.value,
+                    new_id: details.new_id,
+                    source: source_dto(source),
+                    group_id: history::group_id(
+                        action.group.key.generation,
+                        action.group.key.sequence,
+                    ),
+                    generation: lease.generation,
+                    sequence,
+                    history_revision: summary.history_revision,
+                    applied_revision: summary.applied_revision,
+                });
+        }
+    }
+    if retrying {
+        let mut state = history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.clear_completed_pending_group(&action.group.key);
+    }
+    Ok(QueuedEditResult::plain(serde_json::json!({
+        "accepted": true,
+        "groupId": history::group_id(action.group.key.generation, action.group.key.sequence),
+        "completedCount": completed.min(total),
+        "totalCount": total,
+    })))
 }
 
 struct EditEventDetails {
@@ -1222,6 +1721,20 @@ fn tauri_event_sink(app: AppHandle) -> EditEventSink {
     })
 }
 
+/// 保留中のまとまりで未処理と確定した操作を再試行する。
+#[tauri::command]
+pub async fn edit_retry(edit_service: State<'_, EditService>) -> Result<Value, BackendError> {
+    edit_service.retry_pending_from_ui().await
+}
+
+/// 保留中のまとまりを履歴から破棄し、適用済み変更が残るか返す。
+#[tauri::command]
+pub async fn edit_discard(
+    edit_service: State<'_, EditService>,
+) -> Result<EditDiscardResultDto, BackendError> {
+    edit_service.discard_pending_from_ui().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1330,8 +1843,726 @@ mod tests {
         .expect("history action is accepted")
     }
 
+    fn enqueue_grouped_property(
+        service: &EditService,
+        group: EditGroupHandle,
+        object_id: &str,
+        property: &str,
+        old_value: Value,
+        new_value: Value,
+    ) -> EditTicket {
+        let request = HistoryRequest::SetProperty {
+            object_id: object_id.to_owned(),
+            property: property.to_owned(),
+            requested_value: new_value,
+            old_value: PriorCapture::InAction,
+        };
+        service
+            .enqueue_recorded_in_group_from_mcp(
+                group,
+                EditKind::Edit,
+                request,
+                move |_| async move {
+                    Ok(QueuedEditResult::with_prior(
+                        serde_json::json!({ "accepted": true }),
+                        history::HistoryPrior::Property(old_value),
+                    ))
+                },
+            )
+            .expect("まとまり内の編集を列へ入れる")
+    }
+
+    fn enqueue_grouped_create(
+        service: &EditService,
+        group: EditGroupHandle,
+        parent_id: Option<String>,
+        kind: Option<String>,
+        new_id: String,
+    ) -> EditTicket {
+        let request = HistoryRequest::CreateObject {
+            parent_id: parent_id.clone(),
+            kind: kind.clone(),
+        };
+        service
+            .enqueue_recorded_in_group_from_mcp(
+                group,
+                EditKind::Edit,
+                request,
+                move |_| async move {
+                    Ok(QueuedEditResult::plain(serde_json::json!({
+                        "accepted": true,
+                        "newId": new_id,
+                    })))
+                },
+            )
+            .expect("まとまり内の作成を列へ入れる")
+    }
+
+    fn enqueue_grouped_duplicate(
+        service: &EditService,
+        group: EditGroupHandle,
+        source_object_id: String,
+        parent_id: Option<String>,
+        new_id: String,
+    ) -> EditTicket {
+        let request = HistoryRequest::DuplicateObject {
+            source_object_id,
+            parent_id,
+        };
+        service
+            .enqueue_recorded_in_group_from_mcp(
+                group,
+                EditKind::Edit,
+                request,
+                move |_| async move {
+                    Ok(QueuedEditResult::plain(serde_json::json!({
+                        "accepted": true,
+                        "newId": new_id,
+                    })))
+                },
+            )
+            .expect("まとまり内の複製を列へ入れる")
+    }
+
+    fn enqueue_grouped_reparent(
+        service: &EditService,
+        group: EditGroupHandle,
+        object_id: String,
+        new_parent_id: Option<String>,
+        old_parent_id: Option<String>,
+    ) -> EditTicket {
+        let request = HistoryRequest::ReparentObject {
+            object_id,
+            new_parent_id,
+            old_parent: PriorCapture::InAction,
+        };
+        service
+            .enqueue_recorded_in_group_from_mcp(
+                group,
+                EditKind::Edit,
+                request,
+                move |_| async move {
+                    Ok(QueuedEditResult::with_prior(
+                        serde_json::json!({ "accepted": true }),
+                        history::HistoryPrior::Parent(old_parent_id),
+                    ))
+                },
+            )
+            .expect("まとまり内の親変更を列へ入れる")
+    }
+
     fn success(value: Value) -> Result<Value, BackendError> {
         Ok(value)
+    }
+
+    #[tokio::test]
+    async fn named_group_undo_runs_reverse_and_redo_runs_forward_once() {
+        let (service, _control, handle, mut peer) = test_service_with_peer(8);
+        let group = service
+            .begin_group_from_mcp("色をまとめて変更".to_owned())
+            .await
+            .expect("名前付きまとまりが始まる");
+        for (object_id, old, new) in [
+            ("first", "white", "red"),
+            ("second", "white", "green"),
+            ("third", "white", "blue"),
+        ] {
+            enqueue_grouped_property(
+                &service,
+                group,
+                object_id,
+                "color",
+                serde_json::json!(old),
+                serde_json::json!(new),
+            )
+            .result()
+            .await
+            .expect("まとまり内の編集が適用される");
+        }
+        service
+            .end_group_from_mcp(group)
+            .await
+            .expect("まとまりが閉じる");
+
+        let summary = service.history_summary();
+        let display = summary.undo_group.expect("まとまりの要約がある");
+        assert_eq!(display.name, "色をまとめて変更");
+        assert_eq!(display.source, EditSourceDto::Mcp);
+        assert_eq!(display.count, 3);
+        assert!(display.created_at > 0);
+
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        for expected_object in ["third", "second", "first"] {
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, "object.setProperty");
+            assert_eq!(
+                params
+                    .as_ref()
+                    .and_then(|params| params.get("objectId"))
+                    .and_then(Value::as_str),
+                Some(expected_object)
+            );
+            respond(
+                &mut peer,
+                id,
+                serde_json::json!({ "accepted": true, "appliedValue": "white" }),
+            )
+            .await;
+        }
+        assert!(undo.result().await.is_ok());
+        let summary = service.history_summary();
+        assert!(!summary.pending);
+        assert!(summary.can_redo);
+        assert_eq!(
+            summary.redo_group.as_ref().map(|group| group.count),
+            Some(3)
+        );
+        assert!(tokio::time::timeout(Duration::from_millis(30), peer.recv())
+            .await
+            .is_err());
+
+        let redo = queue_history_action(&service, HistoryDirection::Redo);
+        for expected_object in ["first", "second", "third"] {
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, "object.setProperty");
+            assert_eq!(
+                params
+                    .as_ref()
+                    .and_then(|params| params.get("objectId"))
+                    .and_then(Value::as_str),
+                Some(expected_object)
+            );
+            respond(
+                &mut peer,
+                id,
+                serde_json::json!({ "accepted": true, "appliedValue": "new" }),
+            )
+            .await;
+        }
+        assert!(redo.result().await.is_ok());
+        assert!(!service.history_summary().pending);
+        assert!(tokio::time::timeout(Duration::from_millis(30), peer.recv())
+            .await
+            .is_err());
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn redo_remaps_created_ids_across_children_and_resumes_after_known_rejection() {
+        let (service, _control, handle, mut peer) = test_service_with_peer(8);
+        let group = service
+            .begin_group_from_mcp("ノードを作成して設定".to_owned())
+            .await
+            .expect("まとまりが始まる");
+        enqueue_grouped_create(
+            &service,
+            group,
+            None,
+            Some("Node".to_owned()),
+            "old-parent".to_owned(),
+        )
+        .result()
+        .await
+        .expect("親ノードを作成する");
+        enqueue_grouped_property(
+            &service,
+            group,
+            "old-parent",
+            "enabled",
+            serde_json::json!(false),
+            serde_json::json!("old-parent"),
+        )
+        .result()
+        .await
+        .expect("作成したノードの値を設定する");
+        enqueue_grouped_create(
+            &service,
+            group,
+            Some("old-parent".to_owned()),
+            Some("Child".to_owned()),
+            "old-child".to_owned(),
+        )
+        .result()
+        .await
+        .expect("子ノードを作成する");
+        service
+            .end_group_from_mcp(group)
+            .await
+            .expect("まとまりを閉じる");
+
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        for (expected_method, expected_id) in [
+            ("scene.deleteObject", "old-child"),
+            ("object.setProperty", "old-parent"),
+            ("scene.deleteObject", "old-parent"),
+        ] {
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, expected_method);
+            assert_eq!(
+                params
+                    .as_ref()
+                    .and_then(|params| params.get("objectId"))
+                    .and_then(Value::as_str),
+                Some(expected_id)
+            );
+            respond(
+                &mut peer,
+                id,
+                serde_json::json!({ "accepted": true, "appliedValue": false }),
+            )
+            .await;
+        }
+        assert!(undo.result().await.is_ok());
+
+        let redo = queue_history_action(&service, HistoryDirection::Redo);
+        let (create_id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.createObject");
+        assert_eq!(
+            params
+                .as_ref()
+                .map(|params| params.get("kind").and_then(Value::as_str)),
+            Some(Some("Node"))
+        );
+        respond(
+            &mut peer,
+            create_id,
+            serde_json::json!({ "accepted": true, "newId": "fresh-parent" }),
+        )
+        .await;
+
+        let (property_id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "object.setProperty");
+        assert_eq!(
+            params
+                .as_ref()
+                .and_then(|params| params.get("objectId"))
+                .and_then(Value::as_str),
+            Some("fresh-parent")
+        );
+        assert_eq!(
+            params.as_ref().and_then(|params| params.get("value")),
+            Some(&serde_json::json!("old-parent"))
+        );
+        respond_method_not_supported(&mut peer, property_id).await;
+        assert!(matches!(
+            redo.result().await,
+            Err(BackendError::Engine { .. })
+        ));
+
+        let pending = service.history_summary();
+        let pending_group = pending.pending_group.expect("途中失敗が保留される");
+        assert_eq!(pending_group.completed_count, 1);
+        assert_eq!(pending_group.total_count, 3);
+        assert!(pending_group.retry_allowed);
+        assert!(!pending_group.outcome_unknown);
+
+        let retry = service.retry_pending_from_ui();
+        tokio::pin!(retry);
+        let (retry_property_id, method, params) = tokio::select! {
+            result = &mut retry => panic!("再試行前に完了した: {result:?}"),
+            request = next_request(&mut peer) => request,
+        };
+        assert_eq!(method, "object.setProperty");
+        assert_eq!(
+            params
+                .as_ref()
+                .and_then(|params| params.get("objectId"))
+                .and_then(Value::as_str),
+            Some("fresh-parent")
+        );
+        respond(
+            &mut peer,
+            retry_property_id,
+            serde_json::json!({ "accepted": true, "appliedValue": "old-parent" }),
+        )
+        .await;
+        let (child_id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.createObject");
+        assert_eq!(
+            params
+                .as_ref()
+                .and_then(|params| params.get("parentId"))
+                .and_then(Value::as_str),
+            Some("fresh-parent")
+        );
+        respond(
+            &mut peer,
+            child_id,
+            serde_json::json!({ "accepted": true, "newId": "fresh-child" }),
+        )
+        .await;
+        assert!(retry.await.is_ok());
+        assert!(!service.history_summary().pending);
+
+        let next_undo = queue_history_action(&service, HistoryDirection::Undo);
+        for (expected_method, expected_id) in [
+            ("scene.deleteObject", "fresh-child"),
+            ("object.setProperty", "fresh-parent"),
+            ("scene.deleteObject", "fresh-parent"),
+        ] {
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, expected_method);
+            assert_eq!(
+                params
+                    .as_ref()
+                    .and_then(|params| params.get("objectId"))
+                    .and_then(Value::as_str),
+                Some(expected_id)
+            );
+            respond(
+                &mut peer,
+                id,
+                serde_json::json!({ "accepted": true, "appliedValue": false }),
+            )
+            .await;
+        }
+        assert!(next_undo.result().await.is_ok());
+        assert!(tokio::time::timeout(Duration::from_millis(30), peer.recv())
+            .await
+            .is_err());
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_redo_remaps_reparent_target_and_the_next_undo_target() {
+        let (service, _control, handle, mut peer) = test_service_with_peer(6);
+        let group = service
+            .begin_group_from_mcp("複製ノードを移動".to_owned())
+            .await
+            .expect("まとまりが始まる");
+        enqueue_grouped_duplicate(
+            &service,
+            group,
+            "source".to_owned(),
+            None,
+            "old-copy".to_owned(),
+        )
+        .result()
+        .await
+        .expect("複製が適用される");
+        enqueue_grouped_reparent(
+            &service,
+            group,
+            "old-copy".to_owned(),
+            Some("destination".to_owned()),
+            Some("original-parent".to_owned()),
+        )
+        .result()
+        .await
+        .expect("複製を移動する");
+        service
+            .end_group_from_mcp(group)
+            .await
+            .expect("まとまりを閉じる");
+
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        for (expected_method, expected_object, expected_parent) in [
+            ("scene.reparentObject", "old-copy", "original-parent"),
+            ("scene.deleteObject", "old-copy", ""),
+        ] {
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, expected_method);
+            assert_eq!(
+                params
+                    .as_ref()
+                    .and_then(|params| params.get("objectId"))
+                    .and_then(Value::as_str),
+                Some(expected_object)
+            );
+            if !expected_parent.is_empty() {
+                assert_eq!(
+                    params
+                        .as_ref()
+                        .and_then(|params| params.get("newParentId"))
+                        .and_then(Value::as_str),
+                    Some(expected_parent)
+                );
+            }
+            respond(&mut peer, id, serde_json::json!({ "accepted": true })).await;
+        }
+        assert!(undo.result().await.is_ok());
+
+        let redo = queue_history_action(&service, HistoryDirection::Redo);
+        let (duplicate_id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.duplicateObject");
+        assert_eq!(
+            params
+                .as_ref()
+                .and_then(|params| params.get("objectId"))
+                .and_then(Value::as_str),
+            Some("source")
+        );
+        respond(
+            &mut peer,
+            duplicate_id,
+            serde_json::json!({ "accepted": true, "newId": "fresh-copy" }),
+        )
+        .await;
+        let (reparent_id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.reparentObject");
+        assert_eq!(
+            params
+                .as_ref()
+                .and_then(|params| params.get("objectId"))
+                .and_then(Value::as_str),
+            Some("fresh-copy")
+        );
+        respond(
+            &mut peer,
+            reparent_id,
+            serde_json::json!({ "accepted": true }),
+        )
+        .await;
+        assert!(redo.result().await.is_ok());
+
+        let next_undo = queue_history_action(&service, HistoryDirection::Undo);
+        let (id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.reparentObject");
+        assert_eq!(
+            params
+                .as_ref()
+                .and_then(|params| params.get("objectId"))
+                .and_then(Value::as_str),
+            Some("fresh-copy")
+        );
+        respond(&mut peer, id, serde_json::json!({ "accepted": true })).await;
+        let (id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "scene.deleteObject");
+        assert_eq!(
+            params
+                .as_ref()
+                .and_then(|params| params.get("objectId"))
+                .and_then(Value::as_str),
+            Some("fresh-copy")
+        );
+        respond(&mut peer, id, serde_json::json!({ "accepted": true })).await;
+        assert!(next_undo.result().await.is_ok());
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unknown_group_result_is_not_retried_and_discard_reports_remaining_changes() {
+        let (service, _control, handle, mut peer) = test_service_with_peer(6);
+        let group = service
+            .begin_group_from_mcp("結果不明のまとまり".to_owned())
+            .await
+            .expect("まとまりが始まる");
+        for object_id in ["first", "second"] {
+            enqueue_grouped_property(
+                &service,
+                group,
+                object_id,
+                "visible",
+                serde_json::json!(false),
+                serde_json::json!(true),
+            )
+            .result()
+            .await
+            .expect("まとまりの編集が適用される");
+        }
+        service
+            .end_group_from_mcp(group)
+            .await
+            .expect("まとまりを閉じる");
+
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        let (first_id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "object.setProperty");
+        assert_eq!(
+            params
+                .as_ref()
+                .and_then(|params| params.get("objectId"))
+                .and_then(Value::as_str),
+            Some("second")
+        );
+        respond(
+            &mut peer,
+            first_id,
+            serde_json::json!({ "accepted": true, "appliedValue": false }),
+        )
+        .await;
+        let (_unknown_id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "object.setProperty");
+        assert_eq!(
+            params
+                .as_ref()
+                .and_then(|params| params.get("objectId"))
+                .and_then(Value::as_str),
+            Some("first")
+        );
+        drop(peer);
+        assert!(matches!(
+            undo.result().await,
+            Err(BackendError::Request { .. })
+        ));
+
+        let pending = service
+            .history_summary()
+            .pending_group
+            .expect("結果不明を保持する");
+        assert_eq!(pending.completed_count, 1);
+        assert_eq!(pending.total_count, 2);
+        assert!(pending.outcome_unknown);
+        assert!(!pending.retry_allowed);
+        assert!(service.retry_pending_from_ui().await.is_err());
+        let discarded = service
+            .discard_pending_from_ui()
+            .await
+            .expect("破棄結果が返る");
+        assert_eq!(discarded.group_id, pending.id);
+        assert_eq!(discarded.completed_count, 1);
+        assert_eq!(discarded.total_count, 2);
+        assert!(discarded.outcome_unknown);
+        assert!(discarded.changes_remain);
+        let summary = service.history_summary();
+        assert!(!summary.pending);
+        assert!(!summary.can_undo);
+        assert!(!summary.can_redo);
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn generation_change_clears_pending_group_and_rejects_old_group_handle() {
+        let (service, control, handle, mut peer) = test_service_with_peer(6);
+        let group = service
+            .begin_group_from_mcp("世代をまたがないまとまり".to_owned())
+            .await
+            .expect("まとまりが始まる");
+        for object_id in ["first", "second"] {
+            enqueue_grouped_property(
+                &service,
+                group,
+                object_id,
+                "visible",
+                serde_json::json!(false),
+                serde_json::json!(true),
+            )
+            .result()
+            .await
+            .expect("まとまりの編集が適用される");
+        }
+        service
+            .end_group_from_mcp(group)
+            .await
+            .expect("まとまりを閉じる");
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        let (id, method, _) = next_request(&mut peer).await;
+        assert_eq!(method, "object.setProperty");
+        respond_method_not_supported(&mut peer, id).await;
+        assert!(matches!(
+            undo.result().await,
+            Err(BackendError::Engine { .. })
+        ));
+        assert!(service.history_summary().pending);
+
+        control.set_generation(2, handle.clone());
+        let summary = service.history_summary();
+        assert_eq!(summary.generation, Some(2));
+        assert!(!summary.pending);
+        assert!(summary.undo_group.is_none());
+        assert!(summary.redo_group.is_none());
+        assert!(service.end_group_from_mcp(group).await.is_err());
+        let stale_write = service.enqueue_recorded_in_group_from_mcp(
+            group,
+            EditKind::Edit,
+            HistoryRequest::SetProperty {
+                object_id: "first".to_owned(),
+                property: "visible".to_owned(),
+                requested_value: serde_json::json!(true),
+                old_value: PriorCapture::InAction,
+            },
+            |_| async {
+                Ok(QueuedEditResult::plain(
+                    serde_json::json!({ "accepted": true }),
+                ))
+            },
+        );
+        assert!(matches!(stale_write, Err(BackendError::NotConnected)));
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn forward_group_failure_keeps_only_the_successful_prefix() {
+        let (service, _control, handle, mut peer) = test_service_with_peer(6);
+        let group = service
+            .begin_group_from_mcp("前半だけ適用".to_owned())
+            .await
+            .expect("まとまりが始まる");
+        for object_id in ["first", "second"] {
+            enqueue_grouped_property(
+                &service,
+                group,
+                object_id,
+                "enabled",
+                serde_json::json!(false),
+                serde_json::json!(true),
+            )
+            .result()
+            .await
+            .expect("成功分を記録する");
+        }
+        let rejected = service
+            .enqueue_recorded_in_group_from_mcp(
+                group,
+                EditKind::Edit,
+                HistoryRequest::SetProperty {
+                    object_id: "third".to_owned(),
+                    property: "enabled".to_owned(),
+                    requested_value: serde_json::json!(true),
+                    old_value: PriorCapture::InAction,
+                },
+                |_| async {
+                    Err(BackendError::Engine {
+                        code: "REJECTED".to_owned(),
+                        message: "未適用".to_owned(),
+                    })
+                },
+            )
+            .expect("まとまり内の3件目を列へ入れる");
+        assert!(matches!(
+            rejected.result().await,
+            Err(BackendError::Engine { .. })
+        ));
+        service
+            .end_group_from_mcp(group)
+            .await
+            .expect("部分適用されたまとまりを閉じる");
+        let summary = service.history_summary();
+        assert_eq!(
+            summary.undo_group.as_ref().map(|group| group.count),
+            Some(2)
+        );
+        assert!(!summary.pending);
+
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        for expected_object in ["second", "first"] {
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, "object.setProperty");
+            assert_eq!(
+                params
+                    .as_ref()
+                    .and_then(|params| params.get("objectId"))
+                    .and_then(Value::as_str),
+                Some(expected_object)
+            );
+            respond(
+                &mut peer,
+                id,
+                serde_json::json!({ "accepted": true, "appliedValue": false }),
+            )
+            .await;
+        }
+        assert!(undo.result().await.is_ok());
+        assert!(tokio::time::timeout(Duration::from_millis(30), peer.recv())
+            .await
+            .is_err());
+        service.shutdown().await;
+        handle.shutdown().await;
     }
 
     #[tokio::test]
@@ -1354,21 +2585,19 @@ mod tests {
         assert!(!summary.can_redo);
         assert_eq!(summary.undo_head_id, Some(17));
         assert_eq!(summary.undo_revision, summary.history_revision);
-        assert_eq!(
-            summary.undo_group,
-            Some(crate::dto::EditGroupSummaryDto {
-                id: "edit-1-17".to_owned(),
-                name: "プロパティを変更".to_owned(),
-                source: EditSourceDto::Ui,
-                count: 1,
-            })
-        );
+        let group = summary.undo_group.expect("先頭まとまりを表示する");
+        assert_eq!(group.id, "edit-1-17");
+        assert_eq!(group.name, "プロパティを変更");
+        assert_eq!(group.source, EditSourceDto::Ui);
+        assert_eq!(group.count, 1);
+        assert!(group.created_at > 0);
+        assert_eq!(summary.pending_group, None);
         service.shutdown().await;
     }
 
     #[tokio::test]
-    async fn pending_partial_failure_rejects_runtime_control_before_execution() {
-        let (service, _control, _handle) = test_service(4);
+    async fn pending_partial_failure_rejects_edits_undo_redo_and_runtime_controls() {
+        let (service, _control, _handle) = test_service(8);
         {
             let mut state = service
                 .history
@@ -1378,18 +2607,46 @@ mod tests {
             state.set_pending_for_test(true);
         }
         let invoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut tickets = Vec::new();
         let invoked_action = Arc::clone(&invoked);
-        let ticket = service
-            .enqueue_from_ui(EditKind::RuntimeControl, move |_| async move {
-                invoked_action.store(true, std::sync::atomic::Ordering::Release);
-                success(serde_json::json!({ "accepted": true }))
-            })
-            .expect("実行制御の受付が列に入る");
+        tickets.push(
+            service
+                .enqueue_from_ui(EditKind::Edit, move |_| async move {
+                    invoked_action.store(true, std::sync::atomic::Ordering::Release);
+                    success(serde_json::json!({ "accepted": true }))
+                })
+                .expect("通常編集の受付が列に入る"),
+        );
+        for operation in ["play", "pause", "stop"] {
+            let invoked_action = Arc::clone(&invoked);
+            tickets.push(
+                service
+                    .enqueue_from_ui(EditKind::RuntimeControl, move |_| async move {
+                        let _operation = operation;
+                        invoked_action.store(true, std::sync::atomic::Ordering::Release);
+                        success(serde_json::json!({ "accepted": true }))
+                    })
+                    .expect("実行制御の受付が列に入る"),
+            );
+        }
+        let (_, revision) = service.history_cursor(HistoryDirection::Undo);
+        tickets.push(
+            service
+                .enqueue_undo_from_ui(None, revision)
+                .expect("取り消し要求を列に入れる"),
+        );
+        tickets.push(
+            service
+                .enqueue_redo_from_ui(None, revision)
+                .expect("やり直し要求を列に入れる"),
+        );
 
-        assert!(matches!(
-            ticket.result().await,
-            Err(BackendError::Request { message }) if message.contains("部分失敗")
-        ));
+        for ticket in tickets {
+            assert!(matches!(
+                ticket.result().await,
+                Err(BackendError::Request { message }) if message.contains("部分失敗")
+            ));
+        }
         assert!(!invoked.load(std::sync::atomic::Ordering::Acquire));
         let summary = service.history_summary();
         assert!(summary.pending);

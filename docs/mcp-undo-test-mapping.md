@@ -25,13 +25,16 @@
 
 `store.test.ts` にあったundo/redo配列、逆操作、redo再採番、削除/切断時の履歴消去、同値判定の試験はRust側へ移したため削除した。storeには画面表示に必要な履歴要約・適用eventの世代/改訂処理を残す。親IDの捕捉に使う `findParentId` / `normalizeOldParentId` の試験は画面側に残す。
 
-## まとまりで追加する試験（NE06）
+## まとまりで追加した試験（NE06）
 
-`group_undo_is_reverse_order`、`group_redo_is_forward_order`、`group_partial_failure_resumes_remaining`、
-`failed_group_blocks_new_writes`、`discard_reports_partial_state`、`forward_failure_keeps_successful_prefix`。
-`group_redo_remaps_dependent_ids`、`group_redo_remap_survives_partial_failure`も追加する。
-作成→値設定、作成→子作成、複製→親変更の新ID参照と次のundo、3件の中間失敗、
-再試行でも二重実行しないこと、期限・認証失効・接続世代変更・groupIdなし/別ID/UIでの閉鎖を含む。
+- `edit_service::tests::named_group_undo_runs_reverse_and_redo_runs_forward_once`: 名前・出どころ・時刻・件数を要約し、3件を逆順undo・順redoで1回ずつ実行する。
+- `edit_service::tests::redo_remaps_created_ids_across_children_and_resumes_after_known_rejection`: 作成→値設定→子作成を再実行し、作成IDを同じまとまりの対象ID/親IDへ置換する。値中の同じ文字列は置換せず、確定拒否後は成功済み作成を再実行せず、再試行後の次undoが新IDを使う。
+- `edit_service::tests::duplicate_redo_remaps_reparent_target_and_the_next_undo_target`: 複製の新IDを親変更の対象へ置換し、再redoと次undoが再採番後のIDを使う。
+- `edit_service::tests::forward_group_failure_keeps_only_the_successful_prefix`: 前進中の拒否で、成功した2件だけをまとまりとして保持し、undoする。
+- `edit_service::tests::unknown_group_result_is_not_retried_and_discard_reports_remaining_changes`: 通信断で結果不明を保持し、再試行を拒否する。破棄結果に完了件数・総数・不明状態・残存変更を返す。
+- `edit_service::tests::pending_partial_failure_rejects_edits_undo_redo_and_runtime_controls`: 保留中の通常編集、undo/redo、play/pause/stop相当の実行制御を拒否する。
+- `edit_service::tests::generation_change_clears_pending_group_and_rejects_old_group_handle`: 世代交替で保留・履歴・旧まとまりハンドルを無効化する。
+- 単発のNE03-6は `edit_service::tests::single_undo_redo_failure_drops_only_the_attempted_entry_and_reports_error` で維持する。
 
 ## 完了の証拠
 
@@ -39,4 +42,4 @@ MCP-004で完了した行は実際のRust試験名と保存証拠を記録する
 
 MCP-005で完了したNE03の4〜8は、表の各行に実試験名を記録した。新規の逆操作、redo再採番、単発失敗、公開削除、エンジン終了後のBridge切断、エディタ終了、workspace閉鎖がBridge世代を変えない場合の履歴保持、世代をまたぐ古い要求と連打の試験は `.harness/runs/20261003-035149/verify-MCP-005-24.txt` で確認する。fmt・clippy・cargo test は `verify-MCP-005-22.txt`〜`verify-MCP-005-24.txt` に保存した。NE03の1〜9に予定名のままの行や空欄はない。
 
-未完のNE06の規則は、実装後に予定名を実際の `path::test_name` と証拠ログへ置き換える。Rust側が `cargo test`、画面側が `pnpm -C apps/editor typecheck` / `test` に通り、対応の空欄が無いことを評価する。ファイル名や行番号の一致だけでは移植完了にしない。
+NE06のRust側試験は `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml` の証拠 `.harness/runs/20261003-035149/verify-MCP-009-3.txt` で確認する。fmt、clippy、IPC名照合、TypeScript型検査も `verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt` に保存する。
