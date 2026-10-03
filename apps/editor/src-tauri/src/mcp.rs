@@ -1,0 +1,1582 @@
+//! 認証・上限・期限を適用する loopback MCP HTTP 入口。
+
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    future::{Future, IntoFuture},
+    io,
+    net::{Ipv4Addr, SocketAddr},
+    pin::Pin,
+    sync::{Arc, Mutex, RwLock, Weak},
+    task::{Context, Poll, Waker},
+    time::Duration,
+};
+
+use axum::{
+    body::{to_bytes, Body},
+    extract::{ConnectInfo, DefaultBodyLimit, Request, State},
+    http::{
+        header::{AUTHORIZATION, CONTENT_TYPE, HOST, ORIGIN},
+        HeaderMap, Method, StatusCode,
+    },
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    serve::{IncomingStream, Listener},
+    Router,
+};
+use rmcp::{
+    model::{
+        Implementation, ProtocolVersion, ServerCapabilities, ServerConfig, SubscriptionFilter,
+    },
+    transport::streamable_http_server::{
+        session::local::LocalSessionManager, tower::StreamableHttpService,
+        StreamableHttpServerConfig,
+    },
+    ServerHandler,
+};
+use serde_json::Value;
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::{TcpListener, TcpStream},
+    sync::{OwnedSemaphorePermit, Semaphore},
+    time::{self, Instant, Sleep},
+};
+use tokio_util::sync::CancellationToken;
+
+use crate::mcp_token::McpToken;
+use axum::extract::connect_info::Connected;
+
+/// MCP POST 本体の最大サイズ。
+pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+/// 同時に受け付ける TCP 接続の上限。
+pub const MAX_CONNECTIONS: usize = 32;
+/// 通常 MCP 要求の同時実行上限。
+pub const MAX_ORDINARY_REQUESTS: usize = 16;
+/// 同時に開く長寿命 SSE 応答の上限。
+pub const MAX_LONG_LIVED_STREAMS: usize = 8;
+/// 通常要求の全体期限。
+pub const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// 長寿命 SSE の無通信期限。
+pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// 長寿命 SSE の最大寿命。
+pub const STREAM_MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
+
+const SSE_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_secs(1);
+const MAX_RESPONSE_HEADER_BYTES: usize = 16 * 1024;
+
+/// 実行中のサーバーが照合するトークン。入れ替え後は古い値を即時に失効させる。
+pub struct McpHttpAuth {
+    token: RwLock<McpToken>,
+}
+
+impl McpHttpAuth {
+    /// 保存済みトークンで HTTP 認証を開始する。
+    pub fn new(token: McpToken) -> Self {
+        Self {
+            token: RwLock::new(token),
+        }
+    }
+
+    /// トークンを差し替え、以前の値を失効させる。
+    pub fn replace(&self, token: McpToken) {
+        let mut current = self
+            .token
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *current = token;
+    }
+
+    fn matches(&self, presented: &str) -> bool {
+        self.token
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .matches(presented)
+    }
+}
+
+/// 127.0.0.1 だけで待ち受ける MCP HTTP サーバー。
+pub struct McpHttpServer {
+    listener: ConnectionLimitedListener,
+    router: Router,
+    cancellation: CancellationToken,
+    #[cfg(test)]
+    state: Arc<HttpState>,
+}
+
+impl McpHttpServer {
+    /// IPv4 loopback だけにバインドする。
+    pub async fn bind(port: u16, auth: Arc<McpHttpAuth>) -> io::Result<Self> {
+        if port == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "MCP のポート番号は1〜65535で指定してください",
+            ));
+        }
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let listener = TcpListener::bind(address).await?;
+        Ok(Self::from_listener(
+            listener,
+            port,
+            auth,
+            StreamPolicy::default(),
+        ))
+    }
+
+    fn from_listener(
+        listener: TcpListener,
+        port: u16,
+        auth: Arc<McpHttpAuth>,
+        policy: StreamPolicy,
+    ) -> Self {
+        let authority = if port == 80 {
+            "127.0.0.1".to_owned()
+        } else {
+            format!("127.0.0.1:{port}")
+        };
+        let origin = format!("http://{authority}");
+        let state = Arc::new(HttpState {
+            auth,
+            authority: authority.clone(),
+            origin: origin.clone(),
+            limits: Arc::new(HttpLimits::default()),
+            registry: Arc::new(ConnectionRegistry::default()),
+            policy,
+        });
+        let cancellation = CancellationToken::new();
+        let mut rmcp_config = StreamableHttpServerConfig::default()
+            .with_allowed_hosts([authority])
+            .with_allowed_origins([origin])
+            .enforce_origin_validation()
+            .with_legacy_session_mode(true)
+            .with_json_response(true)
+            .with_sse_keep_alive(Some(SSE_KEEP_ALIVE_INTERVAL))
+            .with_cancellation_token(cancellation.clone());
+        rmcp_config.max_request_body_bytes = MAX_REQUEST_BODY_BYTES;
+
+        let service = StreamableHttpService::new(
+            || Ok(EmptyMcpServer),
+            LocalSessionManager::default().into(),
+            rmcp_config,
+        );
+        let router = Router::new()
+            .nest_service("/mcp", service)
+            .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+            .layer(middleware::from_fn_with_state(
+                Arc::clone(&state),
+                authenticate_and_limit,
+            ));
+        let listener = ConnectionLimitedListener {
+            listener,
+            slots: Arc::clone(&state.limits.connections),
+            registry: Arc::clone(&state.registry),
+            policy,
+        };
+        Self {
+            listener,
+            router,
+            cancellation,
+            #[cfg(test)]
+            state,
+        }
+    }
+
+    /// 現在の bind 先を返す。
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+
+    /// HTTP 要求とすべての RMCP ストリームを停止する。
+    pub async fn serve(self, shutdown: CancellationToken) -> io::Result<()> {
+        let cancellation = self.cancellation.clone();
+        axum::serve(
+            self.listener,
+            self.router
+                .into_make_service_with_connect_info::<RemoteAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            shutdown.cancelled_owned().await;
+            cancellation.cancel();
+        })
+        .into_future()
+        .await
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StreamPolicy {
+    request: Duration,
+    idle: Duration,
+    maximum: Duration,
+}
+
+impl Default for StreamPolicy {
+    fn default() -> Self {
+        Self {
+            request: ORDINARY_REQUEST_TIMEOUT,
+            idle: STREAM_IDLE_TIMEOUT,
+            maximum: STREAM_MAX_LIFETIME,
+        }
+    }
+}
+
+struct HttpState {
+    auth: Arc<McpHttpAuth>,
+    authority: String,
+    origin: String,
+    limits: Arc<HttpLimits>,
+    registry: Arc<ConnectionRegistry>,
+    policy: StreamPolicy,
+}
+
+struct HttpLimits {
+    connections: Arc<Semaphore>,
+    ordinary: Arc<Semaphore>,
+    streams: Arc<Semaphore>,
+}
+
+impl Default for HttpLimits {
+    fn default() -> Self {
+        Self {
+            connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+            ordinary: Arc::new(Semaphore::new(MAX_ORDINARY_REQUESTS)),
+            streams: Arc::new(Semaphore::new(MAX_LONG_LIVED_STREAMS)),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ConnectionRegistry {
+    entries: Mutex<HashMap<SocketAddr, Weak<ConnectionState>>>,
+}
+
+impl ConnectionRegistry {
+    fn insert(&self, remote: SocketAddr, state: &Arc<ConnectionState>) {
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(remote, Arc::downgrade(state));
+    }
+
+    fn get(&self, remote: SocketAddr) -> Option<Arc<ConnectionState>> {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = entries.get(&remote).and_then(Weak::upgrade);
+        if state.is_none() {
+            entries.remove(&remote);
+        }
+        state
+    }
+
+    fn remove(&self, remote: SocketAddr, state: &Arc<ConnectionState>) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let same_connection = entries
+            .get(&remote)
+            .and_then(Weak::upgrade)
+            .is_some_and(|current| Arc::ptr_eq(&current, state));
+        if same_connection {
+            entries.remove(&remote);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+}
+
+#[derive(Default)]
+struct ConnectionState {
+    stream_permit: Mutex<Option<OwnedSemaphorePermit>>,
+    request_deadline: Mutex<Option<Instant>>,
+}
+
+impl ConnectionState {
+    fn retain_stream(&self, permit: OwnedSemaphorePermit) -> bool {
+        let mut current = self
+            .stream_permit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_some() {
+            false
+        } else {
+            *current = Some(permit);
+            true
+        }
+    }
+
+    fn release_stream(&self) {
+        let permit = self
+            .stream_permit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        drop(permit);
+    }
+
+    fn has_stream(&self) -> bool {
+        self.stream_permit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
+
+    fn set_request_deadline(&self, deadline: Option<Instant>) {
+        *self
+            .request_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = deadline;
+    }
+
+    fn request_deadline(&self) -> Option<Instant> {
+        *self
+            .request_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// axum が受け入れる TCP 接続数を上限内に保つ listener。
+struct ConnectionLimitedListener {
+    listener: TcpListener,
+    slots: Arc<Semaphore>,
+    registry: Arc<ConnectionRegistry>,
+    policy: StreamPolicy,
+}
+
+impl axum::serve::Listener for ConnectionLimitedListener {
+    type Io = ConnectionIo;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let permit = self
+                .slots
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("接続数の制限は閉じられない");
+            match self.listener.accept().await {
+                Ok((stream, remote)) => {
+                    let state = Arc::new(ConnectionState::default());
+                    self.registry.insert(remote, &state);
+                    return (
+                        ConnectionIo {
+                            stream,
+                            remote,
+                            _connection_permit: permit,
+                            state,
+                            registry: Arc::clone(&self.registry),
+                            wire: SseWireTracker::default(),
+                            policy: self.policy,
+                            read_waker: None,
+                        },
+                        remote,
+                    );
+                }
+                Err(_) => {
+                    drop(permit);
+                    time::sleep(ACCEPT_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.listener.local_addr()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RemoteAddr(SocketAddr);
+
+impl<'a> Connected<IncomingStream<'a, ConnectionLimitedListener>> for RemoteAddr {
+    fn connect_info(stream: IncomingStream<'a, ConnectionLimitedListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
+struct ConnectionIo {
+    stream: TcpStream,
+    remote: SocketAddr,
+    _connection_permit: OwnedSemaphorePermit,
+    state: Arc<ConnectionState>,
+    registry: Arc<ConnectionRegistry>,
+    wire: SseWireTracker,
+    policy: StreamPolicy,
+    read_waker: Option<Waker>,
+}
+
+impl Drop for ConnectionIo {
+    fn drop(&mut self) {
+        self.registry.remove(self.remote, &self.state);
+    }
+}
+
+impl AsyncRead for ConnectionIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.as_mut().get_mut();
+        if this.wire.poll_expired(cx) {
+            return Poll::Ready(Err(stream_timeout_error()));
+        }
+        let result = Pin::new(&mut this.stream).poll_read(cx, buffer);
+        if result.is_pending() && !this.wire.is_streaming() {
+            this.read_waker = Some(cx.waker().clone());
+        }
+        result
+    }
+}
+
+impl AsyncWrite for ConnectionIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.as_mut().get_mut();
+        if this.wire.poll_expired(cx) {
+            return Poll::Ready(Err(stream_timeout_error()));
+        }
+        let result = Pin::new(&mut this.stream).poll_write(cx, buffer);
+        if let Poll::Ready(Ok(written)) = &result {
+            if *written > 0 {
+                let was_streaming = this.wire.is_streaming();
+                this.wire.observe(
+                    &buffer[..*written],
+                    Instant::now(),
+                    &this.state,
+                    this.policy,
+                );
+                if !was_streaming && this.wire.is_streaming() {
+                    if let Some(waker) = this.read_waker.take() {
+                        waker.wake();
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.as_mut().get_mut();
+        if this.wire.poll_expired(cx) {
+            return Poll::Ready(Err(stream_timeout_error()));
+        }
+        Pin::new(&mut this.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.as_mut().get_mut();
+        if this.wire.poll_expired(cx) {
+            return Poll::Ready(Err(stream_timeout_error()));
+        }
+        Pin::new(&mut this.stream).poll_shutdown(cx)
+    }
+}
+
+fn stream_timeout_error() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "MCP の SSE 接続期限を超えました")
+}
+
+#[derive(Default)]
+struct SseWireTracker {
+    headers: Vec<u8>,
+    body: Option<ResponseBody>,
+    watchdog: Option<StreamWatchdog>,
+    line: SseLineScanner,
+}
+
+struct ResponseBody {
+    is_sse: bool,
+    content_length: Option<usize>,
+    chunked: bool,
+    written: usize,
+    chunk_tail: Vec<u8>,
+}
+
+impl SseWireTracker {
+    fn is_streaming(&self) -> bool {
+        self.watchdog.is_some()
+    }
+
+    fn observe(
+        &mut self,
+        bytes: &[u8],
+        now: Instant,
+        connection: &ConnectionState,
+        policy: StreamPolicy,
+    ) {
+        for byte in bytes {
+            if self.body.is_none() {
+                if self.headers.len() == MAX_RESPONSE_HEADER_BYTES {
+                    self.headers.clear();
+                }
+                self.headers.push(*byte);
+                if self.headers.ends_with(b"\r\n\r\n") {
+                    self.begin_response(now, policy, connection);
+                }
+                continue;
+            }
+
+            let mut finished = false;
+            if let Some(body) = self.body.as_mut() {
+                if body.is_sse {
+                    self.line.observe(*byte, now, self.watchdog.as_mut());
+                }
+                body.written = body.written.saturating_add(1);
+                if body.chunked {
+                    body.chunk_tail.push(*byte);
+                    if body.chunk_tail.len() > 7 {
+                        body.chunk_tail.remove(0);
+                    }
+                    finished = body.chunk_tail.as_slice() == b"\r\n0\r\n\r\n";
+                } else if body
+                    .content_length
+                    .is_some_and(|length| body.written >= length)
+                {
+                    finished = true;
+                }
+            }
+            if finished {
+                self.finish_response(connection);
+            }
+        }
+    }
+
+    fn begin_response(&mut self, now: Instant, policy: StreamPolicy, connection: &ConnectionState) {
+        let headers = std::mem::take(&mut self.headers).to_ascii_lowercase();
+        let is_sse = headers.split(|byte| *byte == b'\n').any(|line| {
+            line.starts_with(b"content-type:")
+                && line.windows(17).any(|part| part == b"text/event-stream")
+        });
+        let chunked = headers.split(|byte| *byte == b'\n').any(|line| {
+            line.starts_with(b"transfer-encoding:")
+                && line.windows(7).any(|part| part == b"chunked")
+        });
+        let content_length = headers.split(|byte| *byte == b'\n').find_map(|line| {
+            let line = line.strip_prefix(b"content-length:")?;
+            std::str::from_utf8(line.trim_ascii())
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+        });
+        if is_sse {
+            self.watchdog = if connection.has_stream() {
+                Some(StreamWatchdog::new(now, policy.idle, policy.maximum))
+            } else {
+                connection
+                    .request_deadline()
+                    .map(|deadline| StreamWatchdog::new_until(now, deadline))
+            };
+        } else {
+            connection.set_request_deadline(None);
+        }
+        self.body = Some(ResponseBody {
+            is_sse,
+            content_length,
+            chunked,
+            written: 0,
+            chunk_tail: Vec::with_capacity(7),
+        });
+        if content_length == Some(0) {
+            if is_sse {
+                connection.release_stream();
+            }
+            connection.set_request_deadline(None);
+            self.body = None;
+            self.watchdog = None;
+        }
+    }
+
+    fn finish_response(&mut self, connection: &ConnectionState) {
+        let was_sse = self.body.as_ref().is_some_and(|body| body.is_sse);
+        self.body = None;
+        self.watchdog = None;
+        self.line.reset();
+        if was_sse {
+            connection.release_stream();
+        }
+        connection.set_request_deadline(None);
+    }
+
+    fn poll_expired(&mut self, cx: &mut Context<'_>) -> bool {
+        self.watchdog
+            .as_mut()
+            .is_some_and(|watchdog| watchdog.poll_expired(cx))
+    }
+}
+
+struct SseLineScanner {
+    prefix_length: usize,
+    matching_prefix: bool,
+    is_data_line: bool,
+}
+
+impl Default for SseLineScanner {
+    fn default() -> Self {
+        Self {
+            prefix_length: 0,
+            matching_prefix: true,
+            is_data_line: false,
+        }
+    }
+}
+
+impl SseLineScanner {
+    fn observe(&mut self, byte: u8, now: Instant, watchdog: Option<&mut StreamWatchdog>) {
+        if byte == b'\n' {
+            if self.is_data_line {
+                if let Some(watchdog) = watchdog {
+                    watchdog.record_event(now);
+                }
+            }
+            self.reset();
+            return;
+        }
+        if self.matching_prefix {
+            let expected = b"data:";
+            if expected.get(self.prefix_length) == Some(&byte) {
+                self.prefix_length += 1;
+                self.is_data_line = self.prefix_length == expected.len();
+            } else {
+                self.matching_prefix = false;
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.prefix_length = 0;
+        self.matching_prefix = true;
+        self.is_data_line = false;
+    }
+}
+
+struct StreamWatchdog {
+    started: Instant,
+    last_event: Instant,
+    idle_timeout: Duration,
+    maximum_lifetime: Duration,
+    timer: Pin<Box<Sleep>>,
+}
+
+impl StreamWatchdog {
+    fn new(now: Instant, idle_timeout: Duration, maximum_lifetime: Duration) -> Self {
+        let mut watchdog = Self {
+            started: now,
+            last_event: now,
+            idle_timeout,
+            maximum_lifetime,
+            timer: Box::pin(time::sleep_until(now + idle_timeout)),
+        };
+        watchdog.reset_timer();
+        watchdog
+    }
+
+    fn new_until(now: Instant, deadline: Instant) -> Self {
+        let maximum_lifetime = deadline.saturating_duration_since(now);
+        let mut watchdog = Self {
+            started: now,
+            last_event: now,
+            idle_timeout: maximum_lifetime,
+            maximum_lifetime,
+            timer: Box::pin(time::sleep_until(deadline)),
+        };
+        watchdog.reset_timer();
+        watchdog
+    }
+
+    fn deadline(&self) -> Instant {
+        (self.started + self.maximum_lifetime).min(self.last_event + self.idle_timeout)
+    }
+
+    fn expired_at(&self, now: Instant) -> bool {
+        now >= self.deadline()
+    }
+
+    fn record_event(&mut self, now: Instant) {
+        self.last_event = now;
+        self.reset_timer();
+    }
+
+    fn reset_timer(&mut self) {
+        let deadline = self.deadline();
+        self.timer.as_mut().reset(deadline);
+    }
+
+    fn poll_expired(&mut self, cx: &mut Context<'_>) -> bool {
+        self.expired_at(Instant::now()) || self.timer.as_mut().poll(cx).is_ready()
+    }
+}
+
+async fn authenticate_and_limit(
+    State(state): State<Arc<HttpState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !valid_host(request.headers(), &state.authority)
+        || !valid_origin(request.headers(), &state.origin)
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if !valid_authorization(request.headers(), &state.auth) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    let request_started = Instant::now();
+    let request_deadline = request_started + state.policy.request;
+    let (parts, body) = request.into_parts();
+    let remote = parts
+        .extensions
+        .get::<ConnectInfo<RemoteAddr>>()
+        .map(|connect| connect.0 .0);
+    let connection = remote.and_then(|remote| state.registry.get(remote));
+    let body =
+        match time::timeout_at(request_deadline, to_bytes(body, MAX_REQUEST_BODY_BYTES)).await {
+            Ok(Ok(body)) => body,
+            Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+            Err(_) => return StatusCode::REQUEST_TIMEOUT.into_response(),
+        };
+    let is_long_stream = parts.method == Method::GET
+        || (parts.method == Method::POST && contains_listen_request(&body));
+    let request = Request::from_parts(parts, Body::from(body));
+
+    let admission = if is_long_stream {
+        match state.limits.streams.clone().try_acquire_owned() {
+            Ok(permit) => RequestAdmission::Stream(permit),
+            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        }
+    } else {
+        match state.limits.ordinary.clone().try_acquire_owned() {
+            Ok(permit) => RequestAdmission::Ordinary(permit),
+            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        }
+    };
+
+    let response = if is_long_stream {
+        match time::timeout_at(request_started + state.policy.maximum, next.run(request)).await {
+            Ok(response) => response,
+            Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
+        }
+    } else {
+        match time::timeout_at(request_deadline, next.run(request)).await {
+            Ok(response) => response,
+            Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
+        }
+    };
+
+    if let Some(connection) = &connection {
+        connection.set_request_deadline(Some(request_deadline));
+    }
+
+    if !is_sse_response(&response) {
+        drop(admission);
+        return response;
+    }
+
+    let stream_permit = match admission {
+        RequestAdmission::Stream(permit) => permit,
+        RequestAdmission::Ordinary(ordinary_permit) => {
+            // legacy_session_mode の通常応答も有限の SSE になりうるため、stream 枠には数えない。
+            drop(ordinary_permit);
+            return response;
+        }
+    };
+    let Some(remote) = remote else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Some(connection) = state.registry.get(remote) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    if !connection.retain_stream(stream_permit) {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    response
+}
+
+enum RequestAdmission {
+    Ordinary(OwnedSemaphorePermit),
+    Stream(OwnedSemaphorePermit),
+}
+
+fn valid_host(headers: &HeaderMap, expected: &str) -> bool {
+    let mut values = headers.get_all(HOST).iter();
+    let Some(value) = values.next() else {
+        return false;
+    };
+    values.next().is_none() && value.to_str().is_ok_and(|value| value == expected)
+}
+
+fn valid_origin(headers: &HeaderMap, expected: &str) -> bool {
+    let mut values = headers.get_all(ORIGIN).iter();
+    let Some(value) = values.next() else {
+        return true;
+    };
+    values.next().is_none() && value.to_str().is_ok_and(|value| value == expected)
+}
+
+fn valid_authorization(headers: &HeaderMap, auth: &McpHttpAuth) -> bool {
+    let mut values = headers.get_all(AUTHORIZATION).iter();
+    let Some(value) = values.next() else {
+        return false;
+    };
+    if values.next().is_some() {
+        return false;
+    }
+    value
+        .to_str()
+        .ok()
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|token| auth.matches(token))
+}
+
+fn contains_listen_request(body: &[u8]) -> bool {
+    fn is_listen(value: &Value) -> bool {
+        match value {
+            Value::Array(items) => items.iter().any(is_listen),
+            Value::Object(object) => object
+                .get("method")
+                .and_then(Value::as_str)
+                .is_some_and(|method| method == "subscriptions/listen"),
+            _ => false,
+        }
+    }
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .is_some_and(|value| is_listen(&value))
+}
+
+fn is_sse_response(response: &Response) -> bool {
+    response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(';').next().is_some_and(|media_type| {
+                media_type.trim().eq_ignore_ascii_case("text/event-stream")
+            })
+        })
+}
+
+struct EmptyMcpServer;
+
+impl ServerHandler for EmptyMcpServer {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::V_2026_07_28)
+            .with_server_info(Implementation::new(
+                "NorvesEditor",
+                env!("CARGO_PKG_VERSION"),
+            ))
+    }
+
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Owned(vec![
+            ProtocolVersion::V_2026_07_28,
+            ProtocolVersion::V_2025_11_25,
+        ])
+    }
+
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        requested
+            .eq(&SubscriptionFilter::default())
+            .then(SubscriptionFilter::default)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::HeaderValue;
+    use axum::http::header::ACCEPT;
+    use rmcp::{
+        model::{ClientCapabilities, ClientConfig},
+        service::{ClientLifecycleMode, ClientServiceExt},
+        transport::{
+            streamable_http_client::StreamableHttpClientTransportConfig,
+            StreamableHttpClientTransport,
+        },
+    };
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+    use tokio::{net::TcpStream, task::JoinHandle};
+    use tower::ServiceExt;
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct TestTokenDirectory(PathBuf);
+
+    impl TestTokenDirectory {
+        fn new() -> Self {
+            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("norves-mcp-http-{}-{sequence}", std::process::id()));
+            fs::create_dir_all(&path).expect("試験用の設定ディレクトリを作る");
+            Self(path)
+        }
+
+        fn create(&self) -> McpToken {
+            crate::mcp_token::McpTokenStore::default()
+                .load_or_create(&self.0)
+                .expect("試験用のトークンを作る")
+        }
+
+        fn regenerate(&self) -> McpToken {
+            crate::mcp_token::McpTokenStore::default()
+                .regenerate(&self.0)
+                .expect("試験用のトークンを作り直す")
+        }
+    }
+
+    impl Drop for TestTokenDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct RunningServer {
+        address: SocketAddr,
+        state: Arc<HttpState>,
+        shutdown: CancellationToken,
+        task: JoinHandle<io::Result<()>>,
+    }
+
+    impl RunningServer {
+        async fn start(auth: Arc<McpHttpAuth>, policy: StreamPolicy) -> Self {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .expect("loopback listener を作る");
+            let address = listener.local_addr().expect("bind 先を読む");
+            let server = McpHttpServer::from_listener(listener, address.port(), auth, policy);
+            let state = Arc::clone(&server.state);
+            let shutdown = CancellationToken::new();
+            let task = tokio::spawn(server.serve(shutdown.clone()));
+            Self {
+                address,
+                state,
+                shutdown,
+                task,
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/mcp", self.address)
+        }
+
+        async fn stop(mut self) {
+            self.shutdown.cancel();
+            self.task.abort();
+            let _ = (&mut self.task).await;
+        }
+    }
+
+    impl Drop for RunningServer {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+        }
+    }
+
+    fn normal_policy() -> StreamPolicy {
+        StreamPolicy::default()
+    }
+
+    fn initialize_body() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": ProtocolVersion::V_2025_11_25.as_str(),
+                "capabilities": {},
+                "clientInfo": {"name": "http-test-client", "version": "1"}
+            }
+        }))
+        .expect("initialize JSON を作る")
+    }
+
+    async fn initialize_legacy_session(
+        client: &reqwest::Client,
+        server: &RunningServer,
+        token: &str,
+    ) -> String {
+        let response = client
+            .post(server.url())
+            .bearer_auth(token)
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .header(
+                "Mcp-Protocol-Version",
+                ProtocolVersion::V_2025_11_25.as_str(),
+            )
+            .body(initialize_body())
+            .send()
+            .await
+            .expect("Initialize を送る");
+        assert_eq!(response.status(), StatusCode::OK);
+        let session = response
+            .headers()
+            .get("Mcp-Session-Id")
+            .expect("旧版セッションIDが返る")
+            .to_str()
+            .expect("セッションIDが文字列")
+            .to_owned();
+        let _ = response.bytes().await.expect("Initialize 応答を読む");
+        session
+    }
+
+    #[tokio::test]
+    async fn http_security_checks_origin_host_and_current_token() {
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let auth = Arc::new(McpHttpAuth::new(token));
+        let server = RunningServer::start(auth.clone(), normal_policy()).await;
+        assert_eq!(server.address.ip(), Ipv4Addr::LOCALHOST);
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("HTTP 試験クライアントを作る");
+
+        let missing_token = client
+            .post(server.url())
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(b"{}".to_vec())
+            .send()
+            .await
+            .expect("トークンなし要求を送る");
+        assert_eq!(missing_token.status(), StatusCode::UNAUTHORIZED);
+
+        let wrong_token = client
+            .post(server.url())
+            .bearer_auth("wrong-token")
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(b"{}".to_vec())
+            .send()
+            .await
+            .expect("不一致トークン要求を送る");
+        assert_eq!(wrong_token.status(), StatusCode::UNAUTHORIZED);
+
+        for origin in ["null", "https://example.invalid", "http://127.0.0.1:1"] {
+            let rejected = client
+                .post(server.url())
+                .bearer_auth(&token_value)
+                .header(ORIGIN, origin)
+                .header(ACCEPT, "application/json, text/event-stream")
+                .header(CONTENT_TYPE, "application/json")
+                .body(b"{}".to_vec())
+                .send()
+                .await
+                .expect("不正 Origin を送る");
+            assert_eq!(rejected.status(), StatusCode::FORBIDDEN, "Origin: {origin}");
+        }
+
+        let wrong_port = client
+            .post(server.url())
+            .bearer_auth(&token_value)
+            .header(HOST, format!("127.0.0.1:{}", server.address.port() + 1))
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(b"{}".to_vec())
+            .send()
+            .await
+            .expect("別ポート Host を送る");
+        assert_eq!(wrong_port.status(), StatusCode::FORBIDDEN);
+
+        let missing_port = client
+            .post(server.url())
+            .bearer_auth(&token_value)
+            .header(HOST, "127.0.0.1")
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(b"{}".to_vec())
+            .send()
+            .await
+            .expect("ポートなし Host を送る");
+        assert_eq!(missing_port.status(), StatusCode::FORBIDDEN);
+
+        let cli_without_origin = client
+            .post(server.url())
+            .bearer_auth(&token_value)
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(b"{}".to_vec())
+            .send()
+            .await
+            .expect("Origin なし CLI 要求を送る");
+        assert_eq!(
+            cli_without_origin.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        let replacement = directory.regenerate();
+        let replacement_value = replacement.expose();
+        auth.replace(replacement);
+        let expired_token = client
+            .post(server.url())
+            .bearer_auth(&token_value)
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(b"{}".to_vec())
+            .send()
+            .await
+            .expect("失効したトークンを送る");
+        assert_eq!(expired_token.status(), StatusCode::UNAUTHORIZED);
+
+        let current_token = client
+            .post(server.url())
+            .bearer_auth(&replacement_value)
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(b"{}".to_vec())
+            .send()
+            .await
+            .expect("新しいトークンを送る");
+        assert_eq!(current_token.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn request_body_is_limited_to_one_mibibyte() {
+        let directory = TestTokenDirectory::new();
+        let token_value = directory.create().expose();
+        let server = RunningServer::start(
+            Arc::new(McpHttpAuth::new(directory.create())),
+            normal_policy(),
+        )
+        .await;
+        let client = reqwest::Client::new();
+        let response = client
+            .post(server.url())
+            .bearer_auth(token_value)
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(vec![b'x'; MAX_REQUEST_BODY_BYTES + 1])
+            .send()
+            .await
+            .expect("上限超過の本体を送る");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn discover_and_initialize_rmcp_clients_receive_empty_tool_lists() {
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let server = RunningServer::start(Arc::new(McpHttpAuth::new(token)), normal_policy()).await;
+
+        let modern_transport = StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(server.url())
+                .auth_header(token_value.clone()),
+        );
+        let modern_client = ClientConfig::new(
+            ClientCapabilities::default(),
+            Implementation::new("mcp-012-discover-test", "1"),
+        )
+        .serve_with_lifecycle(
+            modern_transport,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await
+        .expect("2026-07-28 Discover を完了する");
+        let modern_tools = modern_client
+            .list_tools(None)
+            .await
+            .expect("Discover 後に道具一覧を取得する");
+        assert!(modern_tools.tools.is_empty());
+        modern_client
+            .cancel()
+            .await
+            .expect("Discover クライアントを閉じる");
+
+        let legacy_transport = StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(server.url()).auth_header(token_value),
+        );
+        let legacy_client = ClientConfig::new(
+            ClientCapabilities::default(),
+            Implementation::new("mcp-012-initialize-test", "1"),
+        )
+        .with_protocol_version(ProtocolVersion::V_2025_11_25)
+        .serve_with_lifecycle(legacy_transport, ClientLifecycleMode::Initialize)
+        .await
+        .expect("2025-11-25 Initialize を完了する");
+        let legacy_tools = legacy_client
+            .list_tools(None)
+            .await
+            .expect("Initialize 後に道具一覧を取得する");
+        assert!(legacy_tools.tools.is_empty());
+        legacy_client
+            .cancel()
+            .await
+            .expect("Initialize クライアントを閉じる");
+
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn long_lived_get_sse_ignores_the_normal_request_deadline() {
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let policy = StreamPolicy {
+            request: Duration::from_millis(30),
+            idle: Duration::from_millis(500),
+            maximum: Duration::from_secs(2),
+        };
+        let server = RunningServer::start(Arc::new(McpHttpAuth::new(token)), policy).await;
+        let client = reqwest::Client::new();
+        let session = initialize_legacy_session(&client, &server, &token_value).await;
+        let mut response = client
+            .get(server.url())
+            .bearer_auth(&token_value)
+            .header("Mcp-Session-Id", session)
+            .header(
+                "Mcp-Protocol-Version",
+                ProtocolVersion::V_2025_11_25.as_str(),
+            )
+            .header(ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("旧版 GET SSE を開始する");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream")));
+        let first_event = time::timeout(Duration::from_millis(200), response.chunk())
+            .await
+            .expect("GET SSE が最初のイベントを返す")
+            .expect("GET SSE 本文を読む");
+        assert!(first_event.is_some());
+
+        let next_event = time::timeout(Duration::from_millis(80), response.chunk()).await;
+        assert!(next_event.is_err(), "GET SSE は通常要求期限で閉じない");
+        drop(response);
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn long_lived_get_sse_closes_after_idle_and_maximum_lifetimes() {
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let policy = StreamPolicy {
+            request: Duration::from_millis(20),
+            idle: Duration::from_millis(120),
+            maximum: Duration::from_millis(800),
+        };
+        let server = RunningServer::start(Arc::new(McpHttpAuth::new(token)), policy).await;
+        let client = reqwest::Client::new();
+        let session = initialize_legacy_session(&client, &server, &token_value).await;
+        let mut response = client
+            .get(server.url())
+            .bearer_auth(&token_value)
+            .header("Mcp-Session-Id", session)
+            .header(
+                "Mcp-Protocol-Version",
+                ProtocolVersion::V_2025_11_25.as_str(),
+            )
+            .header(ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("アイドル期限付き GET SSE を開始する");
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = response.chunk().await.expect("初回 SSE データを受け取る");
+        let closed = time::timeout(Duration::from_millis(400), response.chunk())
+            .await
+            .expect("無通信の SSE がアイドル期限で閉じる");
+        assert!(closed.is_err() || closed.is_ok_and(|chunk| chunk.is_none()));
+        drop(response);
+
+        server.stop().await;
+
+        let token = directory.create();
+        let token_value = token.expose();
+        let policy = StreamPolicy {
+            request: Duration::from_millis(20),
+            idle: Duration::from_secs(5),
+            maximum: Duration::from_millis(800),
+        };
+        let server = RunningServer::start(Arc::new(McpHttpAuth::new(token)), policy).await;
+        let client = reqwest::Client::new();
+        let session = initialize_legacy_session(&client, &server, &token_value).await;
+        let mut response = client
+            .get(server.url())
+            .bearer_auth(&token_value)
+            .header("Mcp-Session-Id", session)
+            .header(
+                "Mcp-Protocol-Version",
+                ProtocolVersion::V_2025_11_25.as_str(),
+            )
+            .header(ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("最大寿命付き GET SSE を開始する");
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = response.chunk().await.expect("初回 SSE データを受け取る");
+        let closed = time::timeout(Duration::from_secs(2), response.chunk())
+            .await
+            .expect("イベントがなくても最大寿命で閉じる");
+        assert!(closed.is_err() || closed.is_ok_and(|chunk| chunk.is_none()));
+        drop(response);
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn current_subscriptions_listen_opens_a_bounded_http_stream() {
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let policy = StreamPolicy {
+            request: Duration::from_millis(30),
+            idle: Duration::from_millis(500),
+            maximum: Duration::from_secs(2),
+        };
+        let server = RunningServer::start(Arc::new(McpHttpAuth::new(token)), policy).await;
+        let transport = StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(server.url()).auth_header(token_value),
+        );
+        let client = ClientConfig::new(
+            ClientCapabilities::default(),
+            Implementation::new("mcp-012-listen-test", "1"),
+        )
+        .serve_with_lifecycle(
+            transport,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await
+        .expect("2026-07-28 Discover を完了する");
+
+        let mut subscription = client
+            .peer()
+            .listen(SubscriptionFilter::default())
+            .await
+            .expect("subscriptions/listen の通知確認を受け取る");
+        assert_eq!(
+            server.state.limits.streams.available_permits(),
+            MAX_LONG_LIVED_STREAMS - 1
+        );
+        assert_eq!(
+            server.state.limits.ordinary.available_permits(),
+            MAX_ORDINARY_REQUESTS
+        );
+
+        let pending_notification =
+            time::timeout(Duration::from_millis(80), subscription.next()).await;
+        assert!(
+            pending_notification.is_err(),
+            "長寿命 listen は通常要求期限で閉じない"
+        );
+        assert_eq!(
+            server.state.limits.streams.available_permits(),
+            MAX_LONG_LIVED_STREAMS - 1
+        );
+
+        drop(subscription);
+        client
+            .cancel()
+            .await
+            .expect("Discover クライアントを閉じる");
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn accepted_tcp_connections_never_exceed_thirty_two() {
+        let directory = TestTokenDirectory::new();
+        let server = RunningServer::start(
+            Arc::new(McpHttpAuth::new(directory.create())),
+            normal_policy(),
+        )
+        .await;
+        let mut connections = Vec::new();
+        for _ in 0..MAX_CONNECTIONS {
+            connections.push(
+                TcpStream::connect(server.address)
+                    .await
+                    .expect("loopback TCP 接続を開く"),
+            );
+        }
+        time::timeout(Duration::from_secs(2), async {
+            while server.state.limits.connections.available_permits() != 0 {
+                time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("32 接続を受け入れる");
+        assert_eq!(server.state.registry.len(), MAX_CONNECTIONS);
+
+        let queued = TcpStream::connect(server.address)
+            .await
+            .expect("上限超過の TCP handshake は OS backlog に入る");
+        time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(server.state.registry.len(), MAX_CONNECTIONS);
+        drop(connections.pop());
+        time::timeout(Duration::from_secs(2), async {
+            while server.state.registry.len() != MAX_CONNECTIONS {
+                time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("空いた枠で待機中の接続を受け入れる");
+        drop(queued);
+        drop(connections);
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn sse_stream_slots_are_bounded_to_eight_live_connections() {
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let server = RunningServer::start(Arc::new(McpHttpAuth::new(token)), normal_policy()).await;
+        let client = reqwest::Client::new();
+        let mut responses = Vec::new();
+        for _ in 0..MAX_LONG_LIVED_STREAMS {
+            let session = initialize_legacy_session(&client, &server, &token_value).await;
+            let mut response = client
+                .get(server.url())
+                .bearer_auth(&token_value)
+                .header("Mcp-Session-Id", session)
+                .header(
+                    "Mcp-Protocol-Version",
+                    ProtocolVersion::V_2025_11_25.as_str(),
+                )
+                .header(ACCEPT, "text/event-stream")
+                .send()
+                .await
+                .expect("長寿命 SSE を開く");
+            assert_eq!(response.status(), StatusCode::OK);
+            let _ = response.chunk().await.expect("SSE priming を読む");
+            responses.push(response);
+        }
+        assert_eq!(server.state.limits.streams.available_permits(), 0);
+
+        let session = initialize_legacy_session(&client, &server, &token_value).await;
+        let rejected = client
+            .get(server.url())
+            .bearer_auth(&token_value)
+            .header("Mcp-Session-Id", session)
+            .header(
+                "Mcp-Protocol-Version",
+                ProtocolVersion::V_2025_11_25.as_str(),
+            )
+            .header(ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("上限後の SSE 要求を送る");
+        assert_eq!(rejected.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        drop(responses);
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn axum_router_returns_413_before_rmcp_for_oversized_body() {
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let auth = Arc::new(McpHttpAuth::new(token));
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("loopback listener を作る");
+        let port = listener.local_addr().expect("bind 先を読む").port();
+        let server = McpHttpServer::from_listener(listener, port, auth, normal_policy());
+        let request = axum::http::Request::builder()
+            .method(Method::POST)
+            .uri("/mcp")
+            .header(HOST, format!("127.0.0.1:{port}"))
+            .header(AUTHORIZATION, format!("Bearer {token_value}"))
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(vec![b'x'; MAX_REQUEST_BODY_BYTES + 1]))
+            .expect("上限超過要求を作る");
+        let response = server
+            .router
+            .oneshot(request)
+            .await
+            .expect("Router が要求を処理する");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn admission_limits_and_deadlines_match_the_mcp_contract() {
+        assert_eq!(MAX_REQUEST_BODY_BYTES, 1024 * 1024);
+        assert_eq!(MAX_CONNECTIONS, 32);
+        assert_eq!(MAX_ORDINARY_REQUESTS, 16);
+        assert_eq!(MAX_LONG_LIVED_STREAMS, 8);
+        assert_eq!(ORDINARY_REQUEST_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(STREAM_IDLE_TIMEOUT, Duration::from_secs(5 * 60));
+        assert_eq!(STREAM_MAX_LIFETIME, Duration::from_secs(30 * 60));
+
+        let limits = HttpLimits::default();
+        let requests = (0..MAX_ORDINARY_REQUESTS)
+            .map(|_| {
+                limits
+                    .ordinary
+                    .clone()
+                    .try_acquire_owned()
+                    .expect("通常枠を得る")
+            })
+            .collect::<Vec<_>>();
+        assert!(limits.ordinary.clone().try_acquire_owned().is_err());
+        drop(requests);
+        let streams = (0..MAX_LONG_LIVED_STREAMS)
+            .map(|_| {
+                limits
+                    .streams
+                    .clone()
+                    .try_acquire_owned()
+                    .expect("stream 枠を得る")
+            })
+            .collect::<Vec<_>>();
+        assert!(limits.streams.clone().try_acquire_owned().is_err());
+        drop(streams);
+
+        let now = Instant::now();
+        let mut watchdog =
+            StreamWatchdog::new(now, Duration::from_secs(5), Duration::from_secs(30));
+        assert!(!watchdog.expired_at(now + Duration::from_secs(4)));
+        watchdog.record_event(now + Duration::from_secs(4));
+        assert!(!watchdog.expired_at(now + Duration::from_secs(8)));
+        assert!(watchdog.expired_at(now + Duration::from_secs(10)));
+        watchdog.record_event(now + Duration::from_secs(29));
+        assert!(watchdog.expired_at(now + Duration::from_secs(30)));
+
+        let request_deadline = now + Duration::from_secs(30);
+        let mut ordinary_response = StreamWatchdog::new_until(now, request_deadline);
+        ordinary_response.record_event(now + Duration::from_secs(29));
+        assert!(ordinary_response.expired_at(request_deadline));
+
+        let response = Response::builder()
+            .header(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"))
+            .body(Body::empty())
+            .expect("SSE 応答を作る");
+        assert!(is_sse_response(&response));
+        let json = br#"{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen"}"#;
+        assert!(contains_listen_request(json));
+    }
+}

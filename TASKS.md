@@ -231,7 +231,7 @@ M2 の共通規則:
 - notes: 先行 MCP-001。試験では一時ディレクトリだけを使う。DPAPI・unsafe・秘密の境界を評価しコミット本文を書く。OS対応を確認できない箇所は未確認と報告する。
 
 ## MCP-012: 認証付き loopback HTTP の入口を実装する
-- status: todo
+- status: done
 - done-when: NE07。127.0.0.1だけへbindし、不正Origin403、Originなしの認証済みCLI、トークンなし/違う/失効済みの拒否、Host完全一致を実HTTPで試験する。axumとrmcpの検証設定を明示する。body1MiB/接続32/通常並行16/stream8の上限と通常30秒を守り、listen/GET SSEへ通常timeoutを適用しない。長寿命streamはアイドル5分/最大30分。Discover2026-07-28とInitialize2025-11-25を明示した実クライアントで空tools/listが返る。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

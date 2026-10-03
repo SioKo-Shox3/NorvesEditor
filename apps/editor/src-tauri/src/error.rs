@@ -92,9 +92,6 @@ impl std::error::Error for BackendError {}
 #[cfg(test)]
 #[path = "mcp_settings.rs"]
 mod mcp_settings_tests;
-#[cfg(test)]
-#[path = "mcp_token.rs"]
-mod mcp_token_tests;
 
 impl From<ConnectError> for BackendError {
     fn from(err: ConnectError) -> Self {
