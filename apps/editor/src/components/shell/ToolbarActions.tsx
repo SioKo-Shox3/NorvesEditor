@@ -75,11 +75,14 @@ export function ToolbarActions({
   const connectionStatus = state.connection.status;
   const connected        = connectionStatus === 'connected';
 
-  // Scene-edit undo/redo (Phase U1). Read stack lengths from the store; the
-  // hook guards double-click / in-flight internally (a no-op while issuing).
+  // 編集可否は編集サービスが配信する履歴要約から読む。
   const sceneEditUnsupported = state.sceneEditUnsupported === true;
-  const canUndo = connected && !sceneEditUnsupported && state.undoStack.length > 0;
-  const canRedo = connected && !sceneEditUnsupported && state.redoStack.length > 0;
+  const history = state.editHistorySummary;
+  const historyPending = history?.pending === true;
+  const canUndo =
+    connected && !sceneEditUnsupported && history?.canUndo === true && !historyPending;
+  const canRedo =
+    connected && !sceneEditUnsupported && history?.canRedo === true && !historyPending;
 
   // -----------------------------------------------------------------------
   // Disabled conditions — copied verbatim from GameViewPanel (the "正")
@@ -102,8 +105,8 @@ export function ToolbarActions({
     connectionStatus === 'disconnected' ||
     connectionStatus === undefined;
 
-  /** Runtime actions: disabled while not connected. */
-  const runtimeDisabled = !connected;
+  /** 通常の実行制御は未接続または履歴保留中に無効。 */
+  const runtimeDisabled = !connected || historyPending;
 
   // -----------------------------------------------------------------------
   // Action handlers (same pattern as GameViewPanel)
@@ -197,7 +200,7 @@ export function ToolbarActions({
       <button
         className="btn toolbar__btn"
         type="button"
-        disabled={runtimeDisabled}
+        disabled={!connected}
         onClick={handleFocusViewport}
         title="Bring the engine viewport to the foreground"
         aria-label="Focus Viewport"

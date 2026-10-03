@@ -26,6 +26,8 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { ToolbarActions } from '../ToolbarActions.js';
 import type { BridgeActions } from '../../../hooks/useBridge.js';
 import type { BridgeState } from '../../../state/store.js';
+import { bridgeReducer } from '../../../state/store.js';
+import type { EditHistorySummary } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
 // Module mocks
@@ -96,11 +98,26 @@ function makeState(
 ): BridgeState {
   return {
     connection: { status },
-    // Undo/Redo buttons read these lengths; default to empty stacks.
-    undoStack: [],
-    redoStack: [],
     ...overrides,
   } as BridgeState;
+}
+
+function makeHistory(overrides: Partial<EditHistorySummary> = {}): EditHistorySummary {
+  return {
+    generation: 3,
+    historyRevision: 0,
+    appliedRevision: 0,
+    canUndo: false,
+    canRedo: false,
+    undoHeadId: null,
+    undoRevision: 0,
+    undoGroup: null,
+    redoHeadId: null,
+    redoRevision: 0,
+    redoGroup: null,
+    pending: false,
+    ...overrides,
+  };
 }
 
 function setup(
@@ -110,10 +127,16 @@ function setup(
   stateOverrides: Partial<BridgeState> = {},
 ) {
   const actions = makeActions(actionOverrides);
+  let state = makeState(status, stateOverrides);
   (useBridgeActions as Mock).mockReturnValue(actions);
-  (useBridgeState   as Mock).mockReturnValue(makeState(status, stateOverrides));
+  (useBridgeState   as Mock).mockReturnValue(state);
   const { rerender } = render(<ToolbarActions {...props} />);
-  return { actions, rerender };
+  const setState = (next: BridgeState): void => {
+    state = next;
+    (useBridgeState as Mock).mockReturnValue(state);
+    rerender(<ToolbarActions {...props} />);
+  };
+  return { actions, rerender, setState };
 }
 
 afterEach(cleanup);
@@ -257,6 +280,11 @@ describe('ToolbarActions disabled: runtime buttons', () => {
     setup('connected');
     expect((screen.getByRole('button', { name: label }) as HTMLButtonElement).disabled).toBe(false);
   });
+
+  it.each(['Play', 'Pause', 'Stop runtime'])('%s is disabled while an edit group is pending', (label) => {
+    setup('connected', {}, {}, { editHistorySummary: makeHistory({ pending: true }) });
+    expect((screen.getByRole('button', { name: label }) as HTMLButtonElement).disabled).toBe(true);
+  });
 });
 
 // -------------------------------------------------------------------------
@@ -325,18 +353,18 @@ describe('ToolbarActions Undo/Redo', () => {
   const redoBtn = (): HTMLButtonElement =>
     screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement;
 
-  it('Undo is disabled when the undo stack is empty', () => {
-    setup('connected', {}, {}, { undoStack: [], redoStack: [] });
+  it('Undo is disabled when the history summary says it is empty', () => {
+    setup('connected', {}, {}, { editHistorySummary: makeHistory() });
     expect(undoBtn().disabled).toBe(true);
   });
 
-  it('Undo is enabled when connected and the undo stack is non-empty', () => {
-    setup('connected', {}, {}, { undoStack: [{ kind: 'create', createdId: 'a' }], redoStack: [] });
+  it('Undo is enabled when the service summary permits it', () => {
+    setup('connected', {}, {}, { editHistorySummary: makeHistory({ canUndo: true, undoHeadId: 12 }) });
     expect(undoBtn().disabled).toBe(false);
   });
 
-  it('Undo is disabled when not connected even with a non-empty stack', () => {
-    setup('disconnected', {}, {}, { undoStack: [{ kind: 'create', createdId: 'a' }], redoStack: [] });
+  it('Undo is disabled when disconnected even if the summary permits it', () => {
+    setup('disconnected', {}, {}, { editHistorySummary: makeHistory({ canUndo: true, undoHeadId: 12 }) });
     expect(undoBtn().disabled).toBe(true);
   });
 
@@ -345,18 +373,18 @@ describe('ToolbarActions Undo/Redo', () => {
       'connected',
       {},
       {},
-      { undoStack: [{ kind: 'create', createdId: 'a' }], redoStack: [], sceneEditUnsupported: true },
+      { editHistorySummary: makeHistory({ canUndo: true, undoHeadId: 12 }), sceneEditUnsupported: true },
     );
     expect(undoBtn().disabled).toBe(true);
   });
 
-  it('Redo is disabled when the redo stack is empty', () => {
-    setup('connected', {}, {}, { undoStack: [], redoStack: [] });
+  it('Redo is disabled when the history summary says it is empty', () => {
+    setup('connected', {}, {}, { editHistorySummary: makeHistory() });
     expect(redoBtn().disabled).toBe(true);
   });
 
-  it('Redo is enabled when connected and the redo stack is non-empty', () => {
-    setup('connected', {}, {}, { undoStack: [], redoStack: [{ kind: 'create', createdId: 'a' }] });
+  it('Redo is enabled when the service summary permits it', () => {
+    setup('connected', {}, {}, { editHistorySummary: makeHistory({ canRedo: true, redoHeadId: 15 }) });
     expect(redoBtn().disabled).toBe(false);
   });
 
@@ -365,7 +393,7 @@ describe('ToolbarActions Undo/Redo', () => {
       'connected',
       {},
       {},
-      { undoStack: [], redoStack: [{ kind: 'create', createdId: 'a' }], sceneEditUnsupported: true },
+      { editHistorySummary: makeHistory({ canRedo: true, redoHeadId: 15 }), sceneEditUnsupported: true },
     );
     expect(redoBtn().disabled).toBe(true);
   });
@@ -375,7 +403,7 @@ describe('ToolbarActions Undo/Redo', () => {
       'connected',
       {},
       {},
-      { undoStack: [{ kind: 'create', createdId: 'a' }], redoStack: [] },
+      { editHistorySummary: makeHistory({ canUndo: true, undoHeadId: 12 }) },
     );
     fireEvent.click(undoBtn());
     expect(actions.undo).toHaveBeenCalledOnce();
@@ -386,10 +414,29 @@ describe('ToolbarActions Undo/Redo', () => {
       'connected',
       {},
       {},
-      { undoStack: [], redoStack: [{ kind: 'create', createdId: 'a' }] },
+      { editHistorySummary: makeHistory({ canRedo: true, redoHeadId: 15 }) },
     );
     fireEvent.click(redoBtn());
     expect(actions.redo).toHaveBeenCalledOnce();
+  });
+
+  it('changes button state when a new history summary event is reduced', () => {
+    const { setState } = setup('connected');
+    expect(undoBtn().disabled).toBe(true);
+
+    const withUndo = bridgeReducer(
+      makeState('connected'),
+      { type: 'editHistorySummaryReceived', summary: makeHistory({ canUndo: true, undoHeadId: 12 }) },
+    );
+    setState(withUndo);
+    expect(undoBtn().disabled).toBe(false);
+
+    const pending = bridgeReducer(
+      withUndo,
+      { type: 'editHistorySummaryReceived', summary: makeHistory({ canUndo: true, undoHeadId: 12, pending: true }) },
+    );
+    setState(pending);
+    expect(undoBtn().disabled).toBe(true);
   });
 });
 

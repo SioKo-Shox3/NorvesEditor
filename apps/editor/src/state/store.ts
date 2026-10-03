@@ -87,61 +87,6 @@ export function findAssetEntryByKey(
   return manifest.assets.find((entry) => assetKeyForEntry(entry) === key);
 }
 
-// -------------------------------------------------------------------------
-// Scene-edit undo/redo history (Phase U1)
-// -------------------------------------------------------------------------
-
-/**
- * A recorded, undoable scene-structure edit. Each variant carries exactly the
- * VALUES (ids/strings/property values) needed to compute an inverse and a redo —
- * never a live engine pointer or a subtree snapshot. Undo is composed from the
- * existing scene/object commands (createObject/duplicateObject/reparentObject/
- * deleteObject/setProperty).
- *
- * Scope (U1): create, duplicate, reparent. A delete is NOT undoable and instead
- * clears both stacks.
- *
- * Added in U2: setProperty (covers rename via the Entity `Name` property and any
- * Property Inspector scalar/array/object edit). It carries only the property's
- * VALUES (oldValue/newValue) as snapshot copies — never a live reference; its
- * inverse re-sets the property to oldValue and its redo re-sets it to newValue
- * (the id is stable across both).
- *
- * Engine-agnostic: all fields are opaque tokens / plain JSON property values.
- */
-export type SceneEditCommand =
-  | { kind: 'create'; createdId: string; parentId?: string; objectKind?: string }
-  | { kind: 'duplicate'; createdId: string; sourceId: string; parentId?: string }
-  | { kind: 'reparent'; objectId: string; oldParentId?: string; newParentId?: string }
-  | {
-      kind: 'setProperty';
-      objectId: string;
-      property: string;
-      oldValue: PropertyValue;
-      newValue: PropertyValue;
-    };
-
-/** MCP-007 中の表示互換用。実際の履歴は編集サービスが保持する。 */
-export interface ServiceHistoryProjection {
-  kind: 'serviceProjection';
-}
-
-export type SceneEditStackEntry = SceneEditCommand | ServiceHistoryProjection;
-
-const SERVICE_HISTORY_PROJECTION: ServiceHistoryProjection = {
-  kind: 'serviceProjection',
-};
-
-function historyProjection(summary: EditHistorySummary): {
-  undoStack: SceneEditStackEntry[];
-  redoStack: SceneEditStackEntry[];
-} {
-  return {
-    undoStack: summary.canUndo && !summary.pending ? [SERVICE_HISTORY_PROJECTION] : [],
-    redoStack: summary.canRedo && !summary.pending ? [SERVICE_HISTORY_PROJECTION] : [],
-  };
-}
-
 function isObjectNameProperty(property: string): boolean {
   return property.toLowerCase() === 'name';
 }
@@ -308,15 +253,12 @@ function applyServiceEdit(state: BridgeState, payload: EditAppliedPayload): Brid
           appliedRevision: Math.max(state.editHistorySummary.appliedRevision, payload.appliedRevision),
         }
       : undefined;
-  const projected = summary === undefined ? {} : historyProjection(summary);
   const treeRefresh = needsSceneRefresh ? refreshSceneTree(state) : {};
   const objectRefresh = needsObjectRefresh ? refreshObjectSnapshot(state) : {};
   const componentRefresh = needsComponentRefresh ? refreshComponentSnapshot(state) : {};
 
   return {
     ...state,
-    ...projected,
-    ...(generationChanged ? { undoStack: [], redoStack: [] } : {}),
     ...treeRefresh,
     ...objectRefresh,
     ...componentRefresh,
@@ -372,19 +314,6 @@ function applyServiceEdit(state: BridgeState, payload: EditAppliedPayload): Brid
     editAppliedRevision: payload.appliedRevision,
     editSequence: payload.sequence,
   };
-}
-
-/**
- * Structural equality for PropertyValue (JSON-ish: scalar/array/object).
- * Mirrors PropertyInspectorPanel's local `stableValueKey` semantics (JSON.stringify
- * comparison) but is a separate implementation — used to skip recording a
- * no-op property edit (old === new). Deliberately not shared with the panel's
- * local helper to avoid a cross-module dependency for a one-line comparison;
- * same JSON.stringify semantics (key-order sensitive, adequate here since both
- * values originate from the same snapshot/engine-echo source).
- */
-export function propertyValuesEqual(a: PropertyValue, b: PropertyValue): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /**
@@ -538,23 +467,6 @@ export interface BridgeState {
    */
   sceneEditUnsupported?: boolean;
   /**
-   * Editor-side undo history for scene-structure edits (Phase U1; U2 adds
-   * setProperty). Each entry is a recorded SceneEditCommand (create/duplicate/
-   * reparent/setProperty) whose inverse is composed from the existing scene/
-   * object commands. The top of the stack is the most recent edit. Cleared on
-   * disconnect / process exit (the ids belong to a dead engine) and by a
-   * non-undoable delete. Preserved across workspaceClosed (the Bridge connection
-   * persists).
-   */
-  undoStack: SceneEditStackEntry[];
-  /**
-   * Redo history for scene-structure edits (Phase U1). Populated by undo (a
-   * popped undoStack entry moves here) and drained by redo. A fresh recorded
-   * edit clears it (the classic "new edit invalidates the redo branch" rule).
-   * Cleared on the same events as undoStack.
-   */
-  redoStack: SceneEditStackEntry[];
-  /**
    * Set by a scene.treeChanged live event carrying fullRefreshRequired:true:
    * the incremental changedNodes are insufficient and the Outliner should
    * re-fetch the whole tree via scene.getTree. The Outliner has a consume effect
@@ -631,7 +543,7 @@ export interface BridgeState {
    * notice instead of showing a thumbnail. Reset on (re)connect.
    */
   viewportThumbnailUnsupported?: boolean;
-  /** 編集サービスが保持する履歴要約。undoStack/redoStackは一時的な表示投影。 */
+  /** 編集サービスが保持する履歴要約。 */
   editHistorySummary?: EditHistorySummary;
   /** 編集サービスが発行した世代。Bridge UI の世代とは別。 */
   editServiceGeneration?: number;
@@ -654,8 +566,6 @@ export const INITIAL_STATE: BridgeState = {
   assetResolveErrorByKey: undefined,
   assetCapabilitySupported: undefined,
   assetReloadUnsupported: false,
-  undoStack: [],
-  redoStack: [],
   sceneRefreshVersion: 0,
   objectSnapshotRefreshVersion: 0,
   componentSnapshotRefreshVersion: 0,
@@ -820,41 +730,12 @@ export type BridgeAction =
    * degradation signal: the GameView falls back to the external-window notice.
    */
   | { type: 'viewportThumbnailUnsupported' }
-  // --- Scene-edit undo/redo history (Phase U1) ---
-  /**
-   * Record a freshly accepted scene edit onto the undo stack and CLEAR the redo
-   * stack (a new edit invalidates the redo branch). Dispatched by the public
-   * scene-edit wrappers on accepted:true only.
-   */
-  | { type: 'recordSceneEdit'; command: SceneEditCommand }
-  /**
-   * Commit a successful undo: pop the undoStack top and push it onto redoStack.
-   * The entry is moved unchanged (reparent ids are stable across undo).
-   */
-  | { type: 'undoCommitted' }
-  /**
-   * Commit a successful redo: pop the redoStack top and push it onto undoStack.
-   * For a create/duplicate whose re-created object got a NEW id, `newId` replaces
-   * the entry's createdId so a subsequent undo deletes the new id (id-instability
-   * fix). For a reparent or setProperty (both id-stable) `newId` is omitted and
-   * the entry is pushed back unchanged.
-   */
-  | { type: 'redoCommitted'; newId?: string }
-  /**
-   * A failed undo (engine returned accepted:false or an error): drop the
-   * undoStack top and surface `message` via lastError. The entry is dropped
-   * because its inverse could not be applied (e.g. a stale id, out of U1 scope).
-   */
+  // --- 編集サービス操作のエラー ---
+  /** バックエンドが履歴を管理し、画面は失敗内容だけを表示する。 */
   | { type: 'undoFailed'; message: string }
-  /**
-   * A failed redo: drop the redoStack top and surface `message` via lastError.
-   */
   | { type: 'redoFailed'; message: string }
-  /**
-   * Clear BOTH undo and redo stacks. Dispatched by a non-undoable delete (delete
-   * is not undoable in U1, so any recorded history becomes unreconstructable).
-   */
-  | { type: 'sceneEditHistoryCleared' };
+  /** 捕捉値を安全に補正できず、対象の再取得が必要な編集エラー。 */
+  | { type: 'editRefreshRequired'; message: string };
 
 // -------------------------------------------------------------------------
 // Scene-tree merge helper (for scene.treeChanged live events)
@@ -1108,13 +989,6 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         selectedObjectId: p.connected ? state.selectedObjectId : undefined,
         sceneUnsupported: p.connected ? false : state.sceneUnsupported,
         sceneEditUnsupported: p.connected ? false : state.sceneEditUnsupported,
-        // The undo/redo history references object ids owned by the connected
-        // engine. A disconnect makes those ids meaningless, so drop both stacks;
-        // a fresh connection also starts with an empty history. (A reconnect to
-        // the same session keeps the tree above, but scene ids are not guaranteed
-        // stable across the transport drop, so we clear conservatively.)
-        undoStack: p.connected ? state.undoStack : [],
-        redoStack: p.connected ? state.redoStack : [],
         // A pending live-refresh request is meaningless across a (dis)connect.
         sceneRefreshRequired: p.connected ? state.sceneRefreshRequired : undefined,
         sceneRefreshVersion: connectionChanged || !p.connected
@@ -1225,10 +1099,6 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         sceneEditUnsupported: undefined,
         sceneRefreshRequired: undefined,
         sceneRefreshVersion: state.sceneRefreshVersion + 1,
-        // The engine is gone: its scene ids (and thus the undo/redo history) are
-        // no longer valid, so drop both stacks.
-        undoStack: [],
-        redoStack: [],
         // The Inspector data is likewise invalid once the engine dies.
         objectSnapshot: undefined,
         objectSnapshotAppliedRevision: undefined,
@@ -1311,7 +1181,6 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
 
       return {
         ...state,
-        ...historyProjection(incoming),
         ...treeRefresh,
         ...objectRefresh,
         ...componentRefresh,
@@ -1698,92 +1567,16 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
       };
     }
 
-    case 'recordSceneEdit': {
-      if (state.editHistorySummary !== undefined) {
-        return state;
-      }
-      // A fresh accepted edit goes on top of the undo stack and clears the redo
-      // branch (the classic "new edit invalidates redo" rule).
-      return {
-        ...state,
-        undoStack: [...state.undoStack, action.command],
-        redoStack: [],
-      };
-    }
-
-    case 'undoCommitted': {
-      if (state.editHistorySummary !== undefined) {
-        return state;
-      }
-      // Move the most recent edit from the undo stack to the redo stack. Guard an
-      // empty stack (a no-op undo should never dispatch this, but stay pure).
-      if (state.undoStack.length === 0) {
-        return state;
-      }
-      const top = state.undoStack[state.undoStack.length - 1]!;
-      return {
-        ...state,
-        undoStack: state.undoStack.slice(0, -1),
-        redoStack: [...state.redoStack, top],
-      };
-    }
-
-    case 'redoCommitted': {
-      if (state.editHistorySummary !== undefined) {
-        return state;
-      }
-      // Move the most recent undone edit back onto the undo stack. For a
-      // create/duplicate the re-created object has a NEW id, so replace createdId
-      // with action.newId before pushing — a subsequent undo then deletes the new
-      // id, not the stale one (id-instability fix). A reparent or setProperty is
-      // id-stable, so it falls through the guard below and is pushed unchanged.
-      if (state.redoStack.length === 0) {
-        return state;
-      }
-      const top = state.redoStack[state.redoStack.length - 1]!;
-      let restored: SceneEditStackEntry = top;
-      if (
-        action.newId !== undefined &&
-        (top.kind === 'create' || top.kind === 'duplicate')
-      ) {
-        restored = { ...top, createdId: action.newId };
-      }
-      return {
-        ...state,
-        redoStack: state.redoStack.slice(0, -1),
-        undoStack: [...state.undoStack, restored],
-      };
-    }
-
     case 'undoFailed': {
-      if (state.editHistorySummary !== undefined) {
-        return { ...state, lastError: { message: action.message } };
-      }
-      // The inverse could not be applied (stale id / engine rejection). Drop the
-      // offending entry and surface the reason via the shared lastError.
-      return {
-        ...state,
-        undoStack: state.undoStack.slice(0, -1),
-        lastError: { message: action.message },
-      };
+      return { ...state, lastError: { message: action.message } };
     }
 
     case 'redoFailed': {
-      if (state.editHistorySummary !== undefined) {
-        return { ...state, lastError: { message: action.message } };
-      }
-      return {
-        ...state,
-        redoStack: state.redoStack.slice(0, -1),
-        lastError: { message: action.message },
-      };
+      return { ...state, lastError: { message: action.message } };
     }
 
-    case 'sceneEditHistoryCleared': {
-      if (state.editHistorySummary !== undefined) {
-        return state;
-      }
-      return { ...state, undoStack: [], redoStack: [] };
+    case 'editRefreshRequired': {
+      return { ...state, lastError: { kind: 'edit', message: action.message } };
     }
 
     default: {
