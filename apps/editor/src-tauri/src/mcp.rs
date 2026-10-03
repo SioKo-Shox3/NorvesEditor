@@ -1540,6 +1540,11 @@ enum McpServerHandler {
     ReadTools(reads::McpReadContext),
     #[cfg(test)]
     CatalogOnly(tool_catalog::McpToolCatalog),
+    #[cfg(test)]
+    CancellationProbe {
+        catalog: tool_catalog::McpToolCatalog,
+        leases: tokio::sync::mpsc::UnboundedSender<McpRequestLease>,
+    },
 }
 
 fn structured_read_result(value: Value) -> CallToolResult {
@@ -1598,6 +1603,8 @@ impl ServerHandler for McpServerHandler {
             Self::ReadTools(reads) => reads.subscribe_tool_list_changes(),
             #[cfg(test)]
             Self::CatalogOnly(catalog) => catalog.subscribe_changes(),
+            #[cfg(test)]
+            Self::CancellationProbe { catalog, .. } => catalog.subscribe_changes(),
             Self::Empty => {
                 context.cancelled().await;
                 return Ok(());
@@ -1633,6 +1640,8 @@ impl ServerHandler for McpServerHandler {
             Self::ReadTools(reads) => reads.subscribe_tool_list_changes(),
             #[cfg(test)]
             Self::CatalogOnly(catalog) => catalog.subscribe_changes(),
+            #[cfg(test)]
+            Self::CancellationProbe { catalog, .. } => catalog.subscribe_changes(),
             Self::Empty => return,
         };
         let peer = context.peer;
@@ -1668,6 +1677,10 @@ impl ServerHandler for McpServerHandler {
         if let Self::CatalogOnly(catalog) = self {
             result.tools = catalog.list();
         }
+        #[cfg(test)]
+        if let Self::CancellationProbe { catalog, .. } = self {
+            result.tools = catalog.list();
+        }
         Ok(result)
     }
 
@@ -1677,6 +1690,8 @@ impl ServerHandler for McpServerHandler {
             Self::ReadTools(reads) => reads.get_tool(name),
             #[cfg(test)]
             Self::CatalogOnly(catalog) => catalog.get(name),
+            #[cfg(test)]
+            Self::CancellationProbe { catalog, .. } => catalog.get(name),
         }
     }
 
@@ -1685,6 +1700,17 @@ impl ServerHandler for McpServerHandler {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        #[cfg(test)]
+        if let Self::CancellationProbe { leases, .. } = self {
+            let Some(lease) = request_authorization_from_context(&context) else {
+                return Err(rmcp::ErrorData::method_not_found::<CallToolRequestMethod>());
+            };
+            leases
+                .send(lease.clone())
+                .map_err(|_| rmcp::ErrorData::method_not_found::<CallToolRequestMethod>())?;
+            lease.request_cancelled().await;
+            return Ok(CallToolResult::success(vec![]).into());
+        }
         let Self::ReadTools(reads) = self else {
             #[cfg(test)]
             if request.name == "hold-for-concurrency-test" {
@@ -1856,6 +1882,25 @@ mod tests {
             Self::start_server(server, address).await
         }
 
+        async fn start_with_handler(
+            auth: Arc<McpHttpAuth>,
+            policy: StreamPolicy,
+            handler: McpServerHandler,
+        ) -> Self {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .expect("loopback listener を作る");
+            let address = listener.local_addr().expect("bind 先を読む");
+            let server = McpHttpServer::from_listener_with_handler(
+                listener,
+                address.port(),
+                auth,
+                policy,
+                handler,
+            );
+            Self::start_server(server, address).await
+        }
+
         async fn start_server(server: McpHttpServer, address: SocketAddr) -> Self {
             let state = Arc::clone(&server.state);
             let shutdown = CancellationToken::new();
@@ -1937,13 +1982,13 @@ mod tests {
             .expect("試験用の能力descriptorを作る")
     }
 
-    fn initialize_body() -> Vec<u8> {
+    fn initialize_body_for(protocol_version: ProtocolVersion) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": ProtocolVersion::V_2025_11_25.as_str(),
+                "protocolVersion": protocol_version.as_str(),
                 "capabilities": {},
                 "clientInfo": {"name": "http-test-client", "version": "1"}
             }
@@ -1951,21 +1996,31 @@ mod tests {
         .expect("initialize JSON を作る")
     }
 
+    fn initialize_body() -> Vec<u8> {
+        initialize_body_for(ProtocolVersion::V_2025_11_25)
+    }
+
     async fn initialize_legacy_session(
         client: &reqwest::Client,
         server: &RunningServer,
         token: &str,
+    ) -> String {
+        initialize_session_for(client, server, token, ProtocolVersion::V_2025_11_25).await
+    }
+
+    async fn initialize_session_for(
+        client: &reqwest::Client,
+        server: &RunningServer,
+        token: &str,
+        protocol_version: ProtocolVersion,
     ) -> String {
         let response = client
             .post(server.url())
             .bearer_auth(token)
             .header(ACCEPT, "application/json, text/event-stream")
             .header(CONTENT_TYPE, "application/json")
-            .header(
-                "Mcp-Protocol-Version",
-                ProtocolVersion::V_2025_11_25.as_str(),
-            )
-            .body(initialize_body())
+            .header("Mcp-Protocol-Version", protocol_version.as_str())
+            .body(initialize_body_for(protocol_version))
             .send()
             .await
             .expect("Initialize を送る");
@@ -1979,6 +2034,36 @@ mod tests {
             .to_owned();
         let _ = response.bytes().await.expect("Initialize 応答を読む");
         session
+    }
+
+    async fn post_probe_tool_call(
+        client: &reqwest::Client,
+        url: &str,
+        token: &str,
+        session: &str,
+        protocol_version: ProtocolVersion,
+    ) -> reqwest::Response {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "engine_get_status",
+                "arguments": {}
+            }
+        }))
+        .expect("試験用 tools/call を作る");
+        client
+            .post(url)
+            .bearer_auth(token)
+            .header("Mcp-Session-Id", session)
+            .header("Mcp-Protocol-Version", protocol_version.as_str())
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .expect("確認待ちの tools/call を送る")
     }
 
     async fn post_blocking_tool_call(
@@ -2499,6 +2584,72 @@ mod tests {
         second.cancel().await.expect("再購読したstreamを閉じる");
         client.cancel().await.expect("Discoverクライアントを閉じる");
         server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn dropping_legacy_and_current_http_requests_cancels_their_request_leases() {
+        for protocol_version in [
+            ProtocolVersion::V_2025_11_25,
+            ProtocolVersion::V_2026_07_28,
+        ] {
+            let directory = TestTokenDirectory::new();
+            let token = directory.create();
+            let token_value = token.expose();
+            let authorization = McpAuthorization::default();
+            let (leases_tx, mut leases_rx) = tokio::sync::mpsc::unbounded_channel();
+            let catalog = tool_catalog::McpToolCatalog::default();
+            catalog.set_connection(Some(1), &[]);
+            let server = RunningServer::start_with_handler(
+                Arc::new(McpHttpAuth::with_authorization(
+                    token,
+                    authorization,
+                )),
+                normal_policy(),
+                McpServerHandler::CancellationProbe {
+                    catalog,
+                    leases: leases_tx,
+                },
+            )
+            .await;
+            let client = reqwest::Client::builder()
+                .pool_max_idle_per_host(0)
+                .build()
+                .expect("切断試験クライアントを作る");
+            let session = initialize_session_for(
+                &client,
+                &server,
+                &token_value,
+                protocol_version,
+            )
+            .await;
+            let request_client = client.clone();
+            let request_url = server.url();
+            let request_token = token_value.clone();
+            let request_session = session.clone();
+            let request = tokio::spawn(async move {
+                let _response = post_probe_tool_call(
+                    &request_client,
+                    &request_url,
+                    &request_token,
+                    &request_session,
+                    protocol_version,
+                )
+                .await;
+            });
+            let lease = time::timeout(Duration::from_secs(2), leases_rx.recv())
+                .await
+                .expect("HTTP道具要求が開始する")
+                .expect("要求リースを受け取る");
+            assert!(lease.is_current());
+
+            request.abort();
+            let _ = request.await;
+            time::timeout(Duration::from_secs(2), lease.request_cancelled())
+                .await
+                .expect("HTTP切断で要求固有の取消が届く");
+            assert!(!lease.is_current());
+            server.stop().await;
+        }
     }
 
     #[tokio::test]

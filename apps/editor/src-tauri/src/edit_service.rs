@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -29,6 +30,9 @@ pub(crate) use history::{HistoryDirection, HistoryRecord};
 
 const QUEUE_CAPACITY: usize = 64;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const TICKET_WAITING: u8 = 0;
+const TICKET_STARTED: u8 = 1;
+const TICKET_CANCELLED: u8 = 2;
 
 type EditFuture =
     Pin<Box<dyn Future<Output = Result<QueuedEditResult, BackendError>> + Send + 'static>>;
@@ -117,6 +121,7 @@ struct QueueItem {
     event_input: Option<EditEventInput>,
     auth_lease: Option<McpRequestLease>,
     cancelled: oneshot::Receiver<()>,
+    queue_state: Arc<AtomicU8>,
     result: oneshot::Sender<Result<QueuedEditResult, BackendError>>,
 }
 
@@ -139,7 +144,24 @@ struct Admission {
 #[allow(dead_code)]
 pub(crate) struct EditTicket {
     result: oneshot::Receiver<Result<QueuedEditResult, BackendError>>,
-    cancel: oneshot::Sender<()>,
+    cancel: TicketCancellationGuard,
+    queue_state: Arc<AtomicU8>,
+}
+
+struct TicketCancellationGuard {
+    _sender: oneshot::Sender<()>,
+    queue_state: Arc<AtomicU8>,
+}
+
+impl Drop for TicketCancellationGuard {
+    fn drop(&mut self) {
+        let _ = self.queue_state.compare_exchange(
+            TICKET_WAITING,
+            TICKET_CANCELLED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -152,12 +174,51 @@ pub(crate) struct EditGroupHandle {
 #[allow(dead_code)]
 impl EditTicket {
     pub(crate) async fn result(self) -> Result<Value, BackendError> {
-        let EditTicket { result, cancel } = self;
+        let EditTicket {
+            result,
+            cancel,
+            queue_state: _,
+        } = self;
         let outcome = result
             .await
             .unwrap_or(Err(BackendError::EditServiceStopping));
         drop(cancel);
         outcome.map(|result| result.value)
+    }
+
+    pub(crate) async fn result_until(
+        self,
+        deadline: tokio::time::Instant,
+    ) -> Result<Value, BackendError> {
+        let EditTicket {
+            result,
+            cancel,
+            queue_state,
+        } = self;
+        let outcome = tokio::time::timeout_at(deadline, result).await;
+        if let Err(_) = &outcome {
+            let _ = queue_state.compare_exchange(
+                TICKET_WAITING,
+                TICKET_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        drop(cancel);
+        match outcome {
+            Ok(Ok(outcome)) => outcome.map(|result| result.value),
+            Ok(Err(_)) => Err(BackendError::EditServiceStopping),
+            Err(_) if queue_state.load(Ordering::Acquire) == TICKET_STARTED => {
+                Err(BackendError::Request {
+                    message: "MCP要求の全体期限を超えました。開始済み操作のBridge結果は不明のため、自動再送せず状態を確認してください。"
+                        .to_owned(),
+                })
+            }
+            Err(_) => Err(BackendError::Request {
+                message: "MCP要求の全体期限を超えました。Bridge開始前の操作は編集列から取り消しました。"
+                    .to_owned(),
+            }),
+        }
     }
 }
 
@@ -550,8 +611,9 @@ impl EditService {
         F: FnOnce(BridgeLease) -> Fut + Send + 'static,
         Fut: Future<Output = Result<Value, BackendError>> + Send + 'static,
     {
+        let deadline = auth_lease.request_deadline();
         self.enqueue_from_mcp_authorized(auth_lease, kind, action)?
-            .result()
+            .result_until(deadline)
             .await
     }
 
@@ -621,6 +683,7 @@ impl EditService {
 
         let (cancel, cancelled) = oneshot::channel();
         let (result, result_rx) = oneshot::channel();
+        let queue_state = Arc::new(AtomicU8::new(TICKET_WAITING));
         let item = QueueItem {
             sequence: admission.next_sequence,
             source,
@@ -636,6 +699,7 @@ impl EditService {
             event_input: None,
             auth_lease: (source == EditSource::Mcp).then(|| self.authorization.current_lease()),
             cancelled,
+            queue_state: Arc::clone(&queue_state),
             result,
         };
         match self.sender.try_send(item) {
@@ -643,7 +707,11 @@ impl EditService {
                 admission.next_sequence = admission.next_sequence.wrapping_add(1);
                 Ok(EditTicket {
                     result: result_rx,
-                    cancel,
+                    cancel: TicketCancellationGuard {
+                        _sender: cancel,
+                        queue_state: Arc::clone(&queue_state),
+                    },
+                    queue_state,
                 })
             }
             Err(mpsc::error::TrySendError::Full(_)) => Err(BackendError::EditQueueFull),
@@ -773,6 +841,7 @@ impl EditService {
         let lease = self.bridge.pin()?;
         let (cancel, cancelled) = oneshot::channel();
         let (result, result_rx) = oneshot::channel();
+        let queue_state = Arc::new(AtomicU8::new(TICKET_WAITING));
         let item = QueueItem {
             sequence: admission.next_sequence,
             source,
@@ -785,6 +854,7 @@ impl EditService {
             event_input,
             auth_lease,
             cancelled,
+            queue_state: Arc::clone(&queue_state),
             result,
         };
         match self.sender.try_send(item) {
@@ -792,7 +862,11 @@ impl EditService {
                 admission.next_sequence = admission.next_sequence.wrapping_add(1);
                 Ok(EditTicket {
                     result: result_rx,
-                    cancel,
+                    cancel: TicketCancellationGuard {
+                        _sender: cancel,
+                        queue_state: Arc::clone(&queue_state),
+                    },
+                    queue_state,
                 })
             }
             Err(mpsc::error::TrySendError::Full(_)) => Err(BackendError::EditQueueFull),
@@ -833,6 +907,7 @@ impl EditService {
         let generation = lease.generation;
         let (cancel, cancelled) = oneshot::channel();
         let (result, result_rx) = oneshot::channel();
+        let queue_state = Arc::new(AtomicU8::new(TICKET_WAITING));
         let item = QueueItem {
             sequence,
             source,
@@ -845,6 +920,7 @@ impl EditService {
             event_input: None,
             auth_lease,
             cancelled,
+            queue_state: Arc::clone(&queue_state),
             result,
         };
         match self.sender.try_send(item) {
@@ -853,7 +929,11 @@ impl EditService {
                 Ok((
                     EditTicket {
                         result: result_rx,
-                        cancel,
+                        cancel: TicketCancellationGuard {
+                            _sender: cancel,
+                            queue_state: Arc::clone(&queue_state),
+                        },
+                        queue_state,
                     },
                     sequence,
                     generation,
@@ -993,9 +1073,17 @@ impl EditService {
 fn completed_noop_ticket() -> EditTicket {
     let (result_tx, result) = oneshot::channel();
     let (cancel, cancelled) = oneshot::channel();
+    let queue_state = Arc::new(AtomicU8::new(TICKET_WAITING));
     let _ = result_tx.send(Ok(QueuedEditResult::plain(Value::Null)));
     drop(cancelled);
-    EditTicket { result, cancel }
+    EditTicket {
+        result,
+        cancel: TicketCancellationGuard {
+            _sender: cancel,
+            queue_state: Arc::clone(&queue_state),
+        },
+        queue_state,
+    }
 }
 
 async fn wait_for_auth_revocation(lease: Option<McpRequestLease>) {
@@ -1376,6 +1464,19 @@ async fn process_item(
         .is_some_and(|lease| !lease.is_current())
     {
         let _ = item.result.send(Err(BackendError::McpAuthorizationRevoked));
+        return false;
+    }
+    if item
+        .queue_state
+        .compare_exchange(
+            TICKET_WAITING,
+            TICKET_STARTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        let _ = item.result.send(Err(BackendError::EditCancelled));
         return false;
     }
     let action: EditFuture = match item.action {
@@ -3356,6 +3457,92 @@ mod tests {
         sentinel.result().await.expect("sentinel succeeds");
         assert_eq!(*order.lock().unwrap(), ["undo", "sentinel"]);
 
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn mcp_request_deadline_cancels_an_edit_before_the_actor_starts_it() {
+        let authorization = McpAuthorization::default();
+        let (service, _control, handle, mut peer) =
+            test_service_with_peer_and_authorization(4, authorization.clone());
+        let (started, started_rx) = oneshot::channel();
+        let (release, release_rx) = oneshot::channel();
+        let blocker = service
+            .enqueue_from_ui(EditKind::Edit, move |_| async move {
+                let _ = started.send(());
+                let _ = release_rx.await;
+                success(Value::Null)
+            })
+            .expect("先行要求を受け付ける");
+        started_rx.await.expect("先行要求が開始する");
+
+        let mut auth_lease = authorization.current_lease();
+        auth_lease.set_request_deadline(tokio::time::Instant::now() + Duration::from_millis(40));
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let action_ran = Arc::clone(&ran);
+        let result = service
+            .submit_from_mcp_authorized(auth_lease, EditKind::Edit, move |_| async move {
+                action_ran.store(true, Ordering::Release);
+                success(Value::Null)
+            })
+            .await
+            .expect_err("列待ちが全体期限を消費する");
+        assert!(matches!(result, BackendError::Request { ref message }
+            if message.contains("Bridge開始前") && message.contains("取り消しました")));
+
+        release.send(()).expect("先行要求を解放する");
+        blocker.result().await.expect("先行要求が完了する");
+        assert!(!ran.load(Ordering::Acquire));
+        assert!(tokio::time::timeout(Duration::from_millis(100), peer.recv())
+            .await
+            .is_err());
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn started_mcp_edit_waits_for_bridge_result_before_advancing_the_queue() {
+        let authorization = McpAuthorization::default();
+        let (service, _control, handle, _peer) =
+            test_service_with_peer_and_authorization(4, authorization.clone());
+        let mut auth_lease = authorization.current_lease();
+        auth_lease.set_request_deadline(tokio::time::Instant::now() + Duration::from_millis(60));
+        let (started, started_rx) = oneshot::channel();
+        let (release, release_rx) = oneshot::channel();
+        let mut submit = Box::pin(service.submit_from_mcp_authorized(
+            auth_lease,
+            EditKind::Edit,
+            move |_| async move {
+                let _ = started.send(());
+                let _ = release_rx.await;
+                success(serde_json::json!({"accepted":true}))
+            },
+        ));
+        tokio::select! {
+            result = &mut submit => panic!("期限前に操作が終わった: {result:?}"),
+            started = started_rx => started.expect("最初の操作が開始する"),
+        }
+
+        let (next_started, next_started_rx) = oneshot::channel();
+        let next = service
+            .enqueue_from_ui(EditKind::Edit, move |_| async move {
+                let _ = next_started.send(());
+                success(Value::Null)
+            })
+            .expect("次の操作を待ち列に入れる");
+        let timeout_error = tokio::time::timeout(Duration::from_secs(1), &mut submit)
+            .await
+            .expect("要求期限で結果を返す")
+            .expect_err("開始済み操作の期限切れを結果不明として返す");
+        assert!(matches!(timeout_error, BackendError::Request { ref message }
+            if message.contains("結果は不明") && message.contains("自動再送せず")));
+        assert!(matches!(next_started_rx.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+
+        release.send(()).expect("Bridge結果を返す");
+        next.result().await.expect("Bridge結果確認後に次の操作が進む");
+        assert!(next_started_rx.try_recv().is_ok());
+        assert_eq!(service.history_summary().applied_revision, 1);
         service.shutdown().await;
         handle.shutdown().await;
     }
