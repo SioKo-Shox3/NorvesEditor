@@ -52,6 +52,9 @@ use crate::mcp_token::McpToken;
 use axum::extract::connect_info::Connected;
 
 pub(crate) mod authorization;
+// E4で接続するまで、一覧ヘルパーは内部APIとして保持する。
+#[allow(dead_code)]
+pub(crate) mod images;
 pub mod log_buffer;
 pub(crate) mod reads;
 pub mod runtime;

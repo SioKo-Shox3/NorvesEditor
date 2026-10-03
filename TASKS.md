@@ -306,7 +306,7 @@ M2 の共通規則:
 - notes: 先行 MCP-018。imageをPNGのみで導入。復号前の寸法確認と合計128MiB予算を設け、imageの非strictなmax_allocだけを根拠にしない。バッファ所有権の評価・本文必須。
 
 ## MCP-020: 時刻見出し付きの画像一覧ヘルパーを作る
-- status: todo
+- status: done
 - done-when: NE11。最大16枚を入力順・時刻見出しで一覧へ並べ、並びと文字の位置を画像の試験で確認する。最大入力4096各辺/16777216画素、作業128MiB、長辺2048、PNG2MiBを守り、空/枚数超過/不正時刻/overflowを拒否する。テキスト結果に時刻と並びを併記する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
