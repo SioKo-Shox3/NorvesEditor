@@ -315,7 +315,7 @@ M2 の共通規則:
 - notes: 先行 MCP-019。E2の完了境界。E4のcapture要求やファイル経路は作らず、boundedな画像値のヘルパーと試験に閉じる。数字・記号の固定字形でフォント依存を増やさない。
 
 ## MCP-021: 書き込みモードと対象範囲をバックエンドで検査する
-- status: todo
+- status: done
 - done-when: NE13。毎起動時read-onlyでwriteを拒否し、write可/都度確認の各モードを試験する。scene部分木の外、parent先、duplicate先、componentの所属、delete子孫、undo/redoまとまりの全対象を検査する。runtime全体制御は全体の許可を要求する。設定変更・再接続後に旧許可を使えない。未対応能力や未知IDを拒否し理由を返す。範囲解決は2000ノード/200snapshot/合計2MiB/5秒で、不足能力・不明所属・超過はfail-closed。MCPが人の先頭まとまりをundoする場合も全対象を検査する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

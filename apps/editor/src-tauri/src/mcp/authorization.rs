@@ -394,15 +394,18 @@ impl McpSceneScopeIndex {
         let Some(components) = snapshot.components else {
             return Err(ScopeError::ComponentMembershipUnknown);
         };
-        for component in components {
-            if let Some(previous_owner) = self
-                .component_owners
-                .insert(component.object_id, expected_owner.to_owned())
+        let mut snapshot_ids = HashSet::new();
+        for component in &components {
+            if self.nodes.contains_key(&component.object_id)
+                || self.component_owners.contains_key(&component.object_id)
+                || !snapshot_ids.insert(component.object_id.as_str())
             {
-                if previous_owner != expected_owner {
-                    return Err(ScopeError::ComponentMembershipUnknown);
-                }
+                return Err(ScopeError::ComponentMembershipUnknown);
             }
+        }
+        for component in components {
+            self.component_owners
+                .insert(component.object_id, expected_owner.to_owned());
         }
         Ok(())
     }
@@ -428,6 +431,11 @@ impl McpSceneScopeIndex {
                 new_parent_id,
             } => {
                 self.check_object(object_id)?;
+                let old_parent = self
+                    .nodes
+                    .get(object_id)
+                    .and_then(|node| node.parent.as_deref());
+                self.check_parent(old_parent)?;
                 self.check_parent(new_parent_id.as_deref())
             }
             McpWriteOperation::Delete { object_id } => self.check_delete_subtree(object_id),
@@ -481,6 +489,11 @@ impl McpSceneScopeIndex {
 
     fn check_delete_subtree(&self, object_id: &str) -> Result<(), ScopeError> {
         self.check_object(object_id)?;
+        let parent = self
+            .nodes
+            .get(object_id)
+            .and_then(|node| node.parent.as_deref());
+        self.check_parent(parent)?;
         let mut descendants = vec![object_id.to_owned()];
         while let Some(id) = descendants.pop() {
             if !self.allowed.contains(&id) {
@@ -639,7 +652,7 @@ mod tests {
 
     fn tree() -> Value {
         json!({"root":{"id":"scene","children":[
-            {"id":"allowed","children":[{"id":"allowed-child"}]},
+            {"id":"allowed","children":[{"id":"allowed-child","children":[{"id":"allowed-grandchild"}]}]},
             {"id":"outside","children":[{"id":"outside-child"}]}
         ]}})
     }
@@ -666,6 +679,10 @@ mod tests {
         assert_eq!(McpWriteMode::default(), McpWriteMode::ReadOnly);
         assert_eq!(McpWriteMode::Enabled, McpWriteMode::Enabled);
         assert_eq!(McpWriteMode::Confirm, McpWriteMode::Confirm);
+        assert_eq!(
+            McpWriteOperation::from_bridge_method("scene.unknown", &json!({})),
+            Err(ScopeError::UnsupportedWrite)
+        );
     }
 
     #[test]
@@ -692,6 +709,13 @@ mod tests {
             Err(ScopeError::ObjectOutsideScope)
         );
         assert_eq!(
+            scoped.check_operation(&McpWriteOperation::Reparent {
+                object_id: "allowed".to_owned(),
+                new_parent_id: Some("allowed-child".to_owned()),
+            }),
+            Err(ScopeError::ObjectOutsideScope)
+        );
+        assert_eq!(
             scoped.check_operation(&McpWriteOperation::Duplicate {
                 object_id: "missing".to_owned(),
                 new_parent_id: Some("allowed".to_owned()),
@@ -705,10 +729,46 @@ mod tests {
             Err(ScopeError::ComponentMembershipUnknown)
         );
         assert_eq!(
+            scoped.check_operation(&McpWriteOperation::Property {
+                object_id: "allowed-child".to_owned(),
+            }),
+            Ok(())
+        );
+        assert_eq!(
+            scoped.check_operation(&McpWriteOperation::Property {
+                object_id: "outside-child".to_owned(),
+            }),
+            Err(ScopeError::ObjectOutsideScope)
+        );
+        assert_eq!(
+            scoped.check_operation(&McpWriteOperation::ComponentAdd {
+                object_id: "allowed-child".to_owned(),
+            }),
+            Ok(())
+        );
+        assert_eq!(
+            scoped.check_operation(&McpWriteOperation::ComponentAdd {
+                object_id: "outside".to_owned(),
+            }),
+            Err(ScopeError::ObjectOutsideScope)
+        );
+        assert_eq!(
             scoped.check_operation(&McpWriteOperation::Delete {
                 object_id: "outside".to_owned(),
             }),
             Err(ScopeError::ObjectOutsideScope)
+        );
+        assert_eq!(
+            scoped.check_operation(&McpWriteOperation::Delete {
+                object_id: "allowed".to_owned(),
+            }),
+            Err(ScopeError::ObjectOutsideScope)
+        );
+        assert_eq!(
+            scoped.check_operation(&McpWriteOperation::Delete {
+                object_id: "allowed-child".to_owned(),
+            }),
+            Ok(())
         );
         assert_eq!(
             scoped.check_operation(&McpWriteOperation::ComponentRemove {
@@ -758,11 +818,73 @@ mod tests {
             scoped.record_component_snapshot("allowed-child", incomplete_snapshot),
             Err(ScopeError::ComponentMembershipUnknown)
         );
+    }
+
+    #[test]
+    fn ambiguous_component_membership_fails_closed() {
+        let (mut scoped, _) = index(Some("allowed"));
+        let duplicate_in_snapshot = ObjectSnapshot {
+            object_id: "allowed".to_owned(),
+            name: None,
+            kind: None,
+            properties: Vec::new(),
+            components: Some(vec![
+                norves_bridge_editor_client::ComponentRef {
+                    object_id: "component-1".to_owned(),
+                    kind: "Camera".to_owned(),
+                },
+                norves_bridge_editor_client::ComponentRef {
+                    object_id: "component-1".to_owned(),
+                    kind: "Camera".to_owned(),
+                },
+            ]),
+        };
         assert_eq!(
-            scoped.check_operation(&McpWriteOperation::Delete {
-                object_id: "allowed".to_owned(),
-            }),
-            Ok(())
+            scoped.record_component_snapshot("allowed", duplicate_in_snapshot),
+            Err(ScopeError::ComponentMembershipUnknown)
+        );
+
+        let colliding_with_node = ObjectSnapshot {
+            object_id: "allowed".to_owned(),
+            name: None,
+            kind: None,
+            properties: Vec::new(),
+            components: Some(vec![norves_bridge_editor_client::ComponentRef {
+                object_id: "allowed-child".to_owned(),
+                kind: "Camera".to_owned(),
+            }]),
+        };
+        assert_eq!(
+            scoped.record_component_snapshot("allowed", colliding_with_node),
+            Err(ScopeError::ComponentMembershipUnknown)
+        );
+
+        let first_owner = ObjectSnapshot {
+            object_id: "allowed".to_owned(),
+            name: None,
+            kind: None,
+            properties: Vec::new(),
+            components: Some(vec![norves_bridge_editor_client::ComponentRef {
+                object_id: "shared-component".to_owned(),
+                kind: "Camera".to_owned(),
+            }]),
+        };
+        let second_owner = ObjectSnapshot {
+            object_id: "outside".to_owned(),
+            name: None,
+            kind: None,
+            properties: Vec::new(),
+            components: Some(vec![norves_bridge_editor_client::ComponentRef {
+                object_id: "shared-component".to_owned(),
+                kind: "Camera".to_owned(),
+            }]),
+        };
+        scoped
+            .record_component_snapshot("allowed", first_owner)
+            .expect("一意な所属を記録する");
+        assert_eq!(
+            scoped.record_component_snapshot("outside", second_owner),
+            Err(ScopeError::ComponentMembershipUnknown)
         );
     }
 
@@ -810,6 +932,20 @@ mod tests {
                 Err(ScopeError::ObjectOutsideScope)
             );
         }
+        let undo_create_outside_parent = McpHistoryAction {
+            direction: McpHistoryDirection::Undo,
+            head_id: 13,
+            revision: 8,
+            records: vec![HistoryRecord::Create {
+                created_id: "allowed".to_owned(),
+                parent_id: Some("scene".to_owned()),
+                kind: None,
+            }],
+        };
+        assert_eq!(
+            scoped.check_operation(&McpWriteOperation::History(undo_create_outside_parent)),
+            Err(ScopeError::ObjectOutsideScope)
+        );
         let redo_create = McpHistoryAction {
             direction: McpHistoryDirection::Redo,
             head_id: 11,

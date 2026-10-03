@@ -1423,6 +1423,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn confirm_mode_requires_the_future_approval_flow_and_sends_no_bridge_write() {
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let authorization = McpAuthorization::default();
+        authorization
+            .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                mode: crate::mcp::McpWriteMode::Confirm,
+                scene_root_id: None,
+            })
+            .expect("都度確認モードへ変更する");
+        let lease = authorization.current_lease();
+        let context = test_context(
+            75,
+            handle.clone(),
+            &["object.edit", "object.query", "scene.query"],
+            Arc::new(StdMutex::new(LogBuffer::default())),
+        )
+        .with_authorization(authorization);
+
+        assert!(context.get_tool("object_set_property").is_none());
+        let error = context
+            .authorize_hidden_write_attempt(
+                &lease,
+                "object_set_property",
+                &json!({"params":{"objectId":"node","property":"visible","value":true}}),
+            )
+            .await
+            .expect_err("都度確認モードでは承認機能が無い間は拒否する");
+        assert!(error.contains("確認"));
+        assert!(timeout(Duration::from_millis(100), peer.recv())
+            .await
+            .is_err());
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn scoped_write_authorization_checks_engine_tree_and_keeps_tools_hidden() {
         let (transport, mut peer) = loopback_pair(8);
         let handle = Dispatcher::spawn(transport);
