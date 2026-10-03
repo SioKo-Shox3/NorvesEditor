@@ -43,10 +43,10 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-014とMCP-016〜MCP-019が完了。MCP-015はblocked。
+- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-014、MCP-016〜MCP-017、MCP-019の17件は検証・評価PASS。MCP-018は実装済みだが再検証の試験失敗でblocked。Done節の実装記録は、その評価完了を意味しない。
 
 ## Next
-- 次のタスク: MCP-020（時刻見出し付きの画像一覧ヘルパーを作る）。MCP-015はblockedのまま判断待ち。
+- 未完の最優先はMCP-015。MCP-015とMCP-020は親モジュール`src/mcp.rs`を許可パスに補い、todoへ戻した。走行中の反復の後に再試行する。MCP-018は試験失敗の原因確認と評価が残っている。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:

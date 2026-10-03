@@ -259,12 +259,12 @@ M2 の共通規則:
 - notes: 先行 MCP-013。mainのstoreを別窓へ共有しない。トークン入りの実値を証拠・スナップショットへ入れない。UIは日本語。
 
 ## MCP-015: 能力と仕様から道具と入力検証を生成する
-- status: blocked
+- status: todo
 - done-when: NE08。能力なし/未接続/read-onlyのwrite道具は出ず、接続/許可変更で一覧を更新する。現行accepted_subscription_filter/listenを実装してSubscriptionSinkへ通知し、legacyは各peerへ通知する。両版の実HTTP試験とstream失効試験がある。書き込みの外枠params/groupIdと独自道具のschemaを分け、params部分だけは埋め込みspecと意味が一致する。unknown field/不正型/上限違反を事前拒否し、外部schemaを取得しない。絶対$idとfragment参照の解決を試験する。必要能力の組を定義し、不足時は公開しない。現行listen/旧GET SSEの停止・期限・再購読を実HTTPで試験する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
-- paths: apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/Cargo.toml, apps/editor/src-tauri/Cargo.lock, docs/mcp-and-edit-layer-requirements.md
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/Cargo.toml, apps/editor/src-tauri/Cargo.lock, docs/mcp-and-edit-layer-requirements.md
 - notes: 先行 MCP-013。jsonschemaを承認した系列・既定機能無効で導入する。Bridgeのschema自体は編集しない。ページング/ログ/履歴/まとまりは独自schemaを明示する。二つのMCP版それぞれのlist変更経路を試験する。
 
 ## MCP-016: 最近のエンジンログをバックエンドへ保持する
@@ -311,7 +311,7 @@ M2 の共通規則:
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
-- paths: apps/editor/src-tauri/src/mcp/images.rs, apps/editor/src-tauri/src/mcp/images/**, docs/memory-buffer-policy.md
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/images.rs, apps/editor/src-tauri/src/mcp/images/**, docs/memory-buffer-policy.md
 - notes: 先行 MCP-019。E2の完了境界。E4のcapture要求やファイル経路は作らず、boundedな画像値のヘルパーと試験に閉じる。数字・記号の固定字形でフォント依存を増やさない。
 
 ## MCP-021: 書き込みモードと対象範囲をバックエンドで検査する
