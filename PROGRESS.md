@@ -4,7 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
-- MCP-011: `mcp-settings.json` に既定無効・49770を保存し、設定破損は拒否。`mcp/mcp-token.bin` は32バイトOS乱数をWindows利用者スコープDPAPIまたはUnixの0700/0600で保護し、原子的保存・再読込・破損拒否・明示的作り直し・定時間照合を追加。fmt/clippy exit 0、cargo test 227単体+14統合。証拠 `.harness/runs/20261003-035149/verify-MCP-011-1.txt`〜`verify-MCP-011-3.txt`。
+- MCP-011: `mcp-settings.json` に既定無効・49770を保存し、設定破損は拒否。`mcp/mcp-token.bin` は32バイトOS乱数を利用者スコープDPAPI(Windows)またはUnixの0700/0600で保護し、原子的保存・再読込・破損拒否・明示的作り直し・定時間照合を追加。Unix向けdead_code警告を修正し、DPAPI出力は返却長で消去してからLocalFreeする。Windowsのfmt/clippy exit 0、cargo testは単体227件・統合14件成功。証拠 `.harness/runs/20261003-035149/verify-MCP-011-7.txt`〜`verify-MCP-011-9.txt`。
 - MCP-010: 通常時にUndo/Redoの横へ先頭まとまりの名前・出どころ・件数を表示。部分失敗時は再試行/状態確認/破棄を示し、保留中の編集・Ctrl+Z/Y・通常undo/redo・実行制御を無効化。破棄後の残存変更を通知し、他のキー操作とシーンの視認性を保つ。typecheck exit 0、vitest 628/628。証拠 `.harness/runs/20261003-035149/verify-MCP-010-7.txt` / `verify-MCP-010-8.txt`。
 - MCP-009 差し戻し対応: 部分失敗のエラー経路でBridge世代を履歴ロックより先に読み、履歴参照側とロック順を統一してデッドロックを防止。fmt/clippy/cargo test（218単体+14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべて成功。証拠 `.harness/runs/20261003-035149/verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt`。
 - MCP-009: 名前・出どころ・時刻を持つまとまりと逆順undo/順redoを実装。部分失敗では成功位置と未処理部分を保留し、既知拒否だけを再試行して成功分を重複適用しない。結果不明のtimeout/通信断は再送せず、破棄結果に残存変更を返す。新IDのまとまり内置換、世代切り替え、保留中の編集・undo/redo・play/pause/stop拒否を試験。fmt/clippy/cargo test（218単体+14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべて成功。証拠 `.harness/runs/20261003-035149/verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt`。
@@ -48,7 +48,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
-- 2026-10-03 MCP-011: 開始ゲート `scripts/verify.ps1` exit 0。最終 fmt / clippy / cargo test はすべて exit 0、保存した各出力を開いて確認。Windows DPAPI利用者スコープの保護・復号試験を実行済み。Unixの0700/0600試験は追加したが、この環境はWindowsのみのため実行未確認。
+- 2026-10-03 MCP-011差し戻し対応: 開始ゲート `scripts/verify.ps1` exit 0。Windowsの最終 fmt / clippy / cargo test はすべて exit 0、単体227件・統合14件とDPAPIの保護・復号試験を確認。DPAPI復号後の平文出力を返却長で消去し、Unixでのみ未構築になるエラーvariantのclippy警告を抑制した。証拠 `.harness/runs/20261003-035149/verify-MCP-011-7.txt`〜`verify-MCP-011-9.txt`。Unix権限試験は未確認。WSL UbuntuにCargoが無く実行できなかった。
 - 2026-10-03 MCP-010差し戻し対応: 要約イベントから通常時のUndo/Redo先頭まとまりの名前・出どころ・件数を表示し、要約イベント/コマンド呼び出しの試験を追加。保留中はCtrl+Z/Y以外のキーを止めず、背後のシーンを見やすくした。開始ゲート `scripts/verify.ps1` exit 0、最終 typecheck exit 0、vitest 628/628。保存ログ `.harness/runs/20261003-035149/preflight-MCP-010-r19.txt` / `verify-MCP-010-7.txt` / `verify-MCP-010-8.txt` を開いて確認。
 - 2026-10-03 MCP-009差し戻し: 部分失敗処理で世代ロック→履歴ロックの順に統一。指定された最終ゲート5件はexit 0で、保存ログを開いて確認した。
 - 2026-10-03 MCP-009: 開始ゲート `scripts/verify.ps1` exit 0。最終 fmt/clippy/cargo test（218単体・14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべてexit 0。実Bridge要求timeout後の結果不明・保留要約・再送なし・再接続世代変更による解消を新試験で確認し、保存ログを開いて合格を確認。

@@ -101,6 +101,7 @@ pub enum McpTokenError {
     /// 保存内容が壊れているか、想定外の形式。
     InvalidData,
     /// OS の暗号化または復号に失敗した。
+    #[cfg_attr(not(windows), allow(dead_code))]
     Protection,
     /// OS の乱数取得に失敗した。
     Random,
@@ -341,15 +342,15 @@ fn protect(plaintext: &[u8]) -> Result<SecretBytes, McpTokenError> {
             &mut output,
         )
     };
-    let allocation = LocalAllocation(output.pbData);
+    let allocation = LocalAllocation::new(output.pbData, succeeded != 0, output.cbData);
     if succeeded == 0 {
         return Err(McpTokenError::Protection);
     }
-    if allocation.0.is_null() || output.cbData == 0 || output.cbData as u64 > MAX_STORED_SIZE {
+    if allocation.0.is_null() || allocation.1 == 0 || allocation.1 as u64 > MAX_STORED_SIZE {
         return Err(McpTokenError::Protection);
     }
-    // 成功した DPAPI 呼び出しが返した長さのバッファをコピーし、後で LocalFree する。
-    let bytes = unsafe { std::slice::from_raw_parts(allocation.0, output.cbData as usize) };
+    // 成功した DPAPI 呼び出しの返却長でコピーし、解放時に内容を消去する。
+    let bytes = unsafe { std::slice::from_raw_parts(allocation.0, allocation.1) };
     Ok(SecretBytes(bytes.to_vec()))
 }
 
@@ -383,28 +384,43 @@ fn unprotect(stored: &[u8]) -> Result<SecretBytes, McpTokenError> {
             &mut output,
         )
     };
-    let allocation = LocalAllocation(output.pbData);
+    let allocation = LocalAllocation::new(output.pbData, succeeded != 0, output.cbData);
     if succeeded == 0 {
         return Err(McpTokenError::Protection);
     }
-    if allocation.0.is_null() || output.cbData == 0 || output.cbData as u64 > MAX_STORED_SIZE {
+    if allocation.0.is_null() || allocation.1 == 0 || allocation.1 as u64 > MAX_STORED_SIZE {
         return Err(McpTokenError::InvalidData);
     }
-    // 成功した DPAPI 呼び出しが返した長さのバッファをコピーし、後で LocalFree する。
-    let bytes = unsafe { std::slice::from_raw_parts(allocation.0, output.cbData as usize) };
+    // 成功した DPAPI 呼び出しの返却長でコピーし、平文を解放前に消去する。
+    let bytes = unsafe { std::slice::from_raw_parts(allocation.0, allocation.1) };
     Ok(SecretBytes(bytes.to_vec()))
 }
 
 #[cfg(windows)]
-struct LocalAllocation(*mut u8);
+struct LocalAllocation(*mut u8, usize);
+
+#[cfg(windows)]
+impl LocalAllocation {
+    fn new(pointer: *mut u8, succeeded: bool, length: u32) -> Self {
+        let wipe_len = if succeeded && !pointer.is_null() && length > 0 {
+            length as usize
+        } else {
+            0
+        };
+        Self(pointer, wipe_len)
+    }
+}
 
 #[cfg(windows)]
 impl Drop for LocalAllocation {
     fn drop(&mut self) {
         if !self.0.is_null() {
             use windows_sys::Win32::Foundation::{LocalFree, HLOCAL};
-            // DPAPI が LocalAlloc 系で確保した出力領域を、対応する LocalFree で解放する。
+            // DPAPI が成功時に返した長さで出力を消去してから LocalFree する。
             unsafe {
+                if self.1 > 0 {
+                    std::ptr::write_bytes(self.0, 0, self.1);
+                }
                 LocalFree(self.0.cast::<core::ffi::c_void>() as HLOCAL);
             }
         }
