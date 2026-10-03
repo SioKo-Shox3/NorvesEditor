@@ -56,6 +56,8 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "toki
 rmcp = { version = "3.5.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 # 要求取消しとHTTPサーバーの終了通知に使う。
 tokio-util = { version = "0.7", features = ["rt"] }
+# 埋め込みschemaを検証する。既定機能を無効にし、外部schemaの取得機能を有効にしない。
+jsonschema = { version = "=0.58.4", default-features = false }
 
 [dev-dependencies]
 # loopback HTTPの実試験とRMCPのDiscover/Initializeクライアント。

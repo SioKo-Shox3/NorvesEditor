@@ -64,6 +64,9 @@ impl McpRuntime {
         reads: Option<McpReadContext>,
     ) -> Self {
         let _ = authorization.set_write_settings(McpWriteSettings::default());
+        if let Some(reads) = &reads {
+            reads.set_write_permission(crate::mcp::tool_catalog::WritePermission::ReadOnly);
+        }
         let loaded = McpSettings::load(&config_dir);
         let (settings, state, error, initialized) = match loaded {
             Ok(settings) => (settings, McpServerStateDto::Disabled, None, false),
@@ -168,6 +171,14 @@ impl McpRuntime {
             .map_err(|error: ScopeError| BackendError::Request {
                 message: error.message().to_owned(),
             })?;
+        if let Some(reads) = &self.inner.reads {
+            let permission = match mode {
+                McpWriteMode::ReadOnly => crate::mcp::tool_catalog::WritePermission::ReadOnly,
+                McpWriteMode::Enabled => crate::mcp::tool_catalog::WritePermission::Enabled,
+                McpWriteMode::Confirm => crate::mcp::tool_catalog::WritePermission::Confirm,
+            };
+            reads.set_write_permission(permission);
+        }
         Ok(self.payload(&control))
     }
 

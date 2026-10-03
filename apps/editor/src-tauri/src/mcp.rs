@@ -248,7 +248,9 @@ impl McpAuthorization {
         if snapshot.settings.mode == McpWriteMode::ReadOnly {
             return Err(ScopeError::ReadOnly);
         }
-        let _ = operation;
+        if snapshot.settings.mode == McpWriteMode::Confirm || operation.requires_confirmation() {
+            return Err(ScopeError::ConfirmationRequired);
+        }
         Ok(())
     }
 
@@ -459,6 +461,28 @@ impl McpHttpServer {
         policy: StreamPolicy,
         reads: Option<reads::McpReadContext>,
     ) -> Self {
+        let server = reads.map_or(McpServerHandler::Empty, McpServerHandler::ReadTools);
+        Self::build_with_handler(listener, port, auth, policy, server)
+    }
+
+    #[cfg(test)]
+    fn from_listener_with_handler(
+        listener: TcpListener,
+        port: u16,
+        auth: Arc<McpHttpAuth>,
+        policy: StreamPolicy,
+        server: McpServerHandler,
+    ) -> Self {
+        Self::build_with_handler(listener, port, auth, policy, server)
+    }
+
+    fn build_with_handler(
+        listener: TcpListener,
+        port: u16,
+        auth: Arc<McpHttpAuth>,
+        policy: StreamPolicy,
+        server: McpServerHandler,
+    ) -> Self {
         let authority = if port == 80 {
             "127.0.0.1".to_owned()
         } else {
@@ -484,7 +508,6 @@ impl McpHttpServer {
             .with_cancellation_token(cancellation.clone());
         rmcp_config.max_request_body_bytes = MAX_REQUEST_BODY_BYTES;
 
-        let server = reads.map_or(McpServerHandler::Empty, McpServerHandler::ReadTools);
         let service = StreamableHttpService::new(
             move || Ok(server.clone()),
             LocalSessionManager::default().into(),
@@ -1276,6 +1299,8 @@ fn is_sse_response(response: &Response) -> bool {
 enum McpServerHandler {
     Empty,
     ReadTools(reads::McpReadContext),
+    #[cfg(test)]
+    CatalogOnly(tool_catalog::McpToolCatalog),
 }
 
 fn structured_read_result(value: Value) -> CallToolResult {
@@ -1299,12 +1324,17 @@ static TEST_TOOL_RELEASE: std::sync::OnceLock<CancellationToken> = std::sync::On
 
 impl ServerHandler for McpServerHandler {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2026_07_28)
-            .with_server_info(Implementation::new(
-                "NorvesEditor",
-                env!("CARGO_PKG_VERSION"),
-            ))
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
+                .build(),
+        )
+        .with_protocol_version(ProtocolVersion::V_2026_07_28)
+        .with_server_info(Implementation::new(
+            "NorvesEditor",
+            env!("CARGO_PKG_VERSION"),
+        ))
     }
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
@@ -1318,9 +1348,72 @@ impl ServerHandler for McpServerHandler {
         &self,
         requested: &SubscriptionFilter,
     ) -> Option<SubscriptionFilter> {
-        requested
-            .eq(&SubscriptionFilter::default())
-            .then(SubscriptionFilter::default)
+        Some(requested.supported_by(&self.get_info().capabilities))
+    }
+
+    async fn listen(
+        &self,
+        context: rmcp::service::SubscriptionContext,
+    ) -> Result<(), rmcp::ErrorData> {
+        let mut changes = match self {
+            Self::ReadTools(reads) => reads.subscribe_tool_list_changes(),
+            #[cfg(test)]
+            Self::CatalogOnly(catalog) => catalog.subscribe_changes(),
+            Self::Empty => {
+                context.cancelled().await;
+                return Ok(());
+            }
+        };
+        loop {
+            tokio::select! {
+                _ = context.cancelled() => return Ok(()),
+                changed = changes.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
+                    }
+                    if context.sink().notify_tool_list_changed().await.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    async fn on_initialized(
+        &self,
+        context: rmcp::service::NotificationContext<rmcp::service::RoleServer>,
+    ) {
+        let is_legacy = context
+            .peer
+            .peer_info()
+            .is_some_and(|info| info.protocol_version == ProtocolVersion::V_2025_11_25);
+        if !is_legacy {
+            return;
+        }
+        let mut changes = match self {
+            Self::ReadTools(reads) => reads.subscribe_tool_list_changes(),
+            #[cfg(test)]
+            Self::CatalogOnly(catalog) => catalog.subscribe_changes(),
+            Self::Empty => return,
+        };
+        let peer = context.peer;
+        tokio::spawn(async move {
+            let mut closed_check = time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    changed = changes.changed() => {
+                        if changed.is_err() || peer.notify_tool_list_changed().await.is_err() {
+                            break;
+                        }
+                    }
+                    _ = closed_check.tick() => {
+                        if peer.is_transport_closed() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
     }
 
     async fn list_tools(
@@ -1332,6 +1425,10 @@ impl ServerHandler for McpServerHandler {
         if let Self::ReadTools(reads) = self {
             result.tools = reads.list_tools();
         }
+        #[cfg(test)]
+        if let Self::CatalogOnly(catalog) = self {
+            result.tools = catalog.list();
+        }
         Ok(result)
     }
 
@@ -1339,6 +1436,8 @@ impl ServerHandler for McpServerHandler {
         match self {
             Self::Empty => None,
             Self::ReadTools(reads) => reads.get_tool(name),
+            #[cfg(test)]
+            Self::CatalogOnly(catalog) => catalog.get(name),
         }
     }
 
@@ -1401,8 +1500,10 @@ mod tests {
     use axum::http::header::HeaderValue;
     use axum::http::header::ACCEPT;
     use rmcp::{
-        model::{ClientCapabilities, ClientConfig},
-        service::{ClientLifecycleMode, ClientServiceExt},
+        model::{ClientCapabilities, ClientConfig, Implementation, ServerNotification},
+        service::{
+            ClientLifecycleMode, ClientServiceExt, MaybeSendFuture, NotificationContext, RoleClient,
+        },
         transport::{
             streamable_http_client::StreamableHttpClientTransportConfig,
             StreamableHttpClientTransport,
@@ -1494,6 +1595,29 @@ mod tests {
                 .expect("loopback listener を作る");
             let address = listener.local_addr().expect("bind 先を読む");
             let server = McpHttpServer::from_listener(listener, address.port(), auth, policy);
+            Self::start_server(server, address).await
+        }
+
+        async fn start_with_catalog(
+            auth: Arc<McpHttpAuth>,
+            policy: StreamPolicy,
+            catalog: tool_catalog::McpToolCatalog,
+        ) -> Self {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .expect("loopback listener を作る");
+            let address = listener.local_addr().expect("bind 先を読む");
+            let server = McpHttpServer::from_listener_with_handler(
+                listener,
+                address.port(),
+                auth,
+                policy,
+                McpServerHandler::CatalogOnly(catalog),
+            );
+            Self::start_server(server, address).await
+        }
+
+        async fn start_server(server: McpHttpServer, address: SocketAddr) -> Self {
             let state = Arc::clone(&server.state);
             let shutdown = CancellationToken::new();
             let task = tokio::spawn(server.serve(shutdown.clone()));
@@ -1529,6 +1653,49 @@ mod tests {
 
     fn normal_policy() -> StreamPolicy {
         StreamPolicy::default()
+    }
+
+    #[derive(Clone)]
+    struct ListChangedClient {
+        info: ClientConfig,
+        changed: Arc<tokio::sync::Notify>,
+    }
+
+    impl rmcp::ClientHandler for ListChangedClient {
+        fn on_tool_list_changed(
+            &self,
+            _context: NotificationContext<RoleClient>,
+        ) -> impl std::future::Future<Output = ()> + MaybeSendFuture + '_ {
+            self.changed.notify_one();
+            std::future::ready(())
+        }
+
+        fn get_info(&self) -> ClientConfig {
+            self.info.clone()
+        }
+    }
+
+    fn list_changed_client(
+        version: ProtocolVersion,
+    ) -> (ListChangedClient, Arc<tokio::sync::Notify>) {
+        let changed = Arc::new(tokio::sync::Notify::new());
+        let info = ClientConfig::new(
+            ClientCapabilities::default(),
+            Implementation::new("norves-list-changed-test", "1"),
+        )
+        .with_protocol_version(version);
+        (
+            ListChangedClient {
+                info,
+                changed: changed.clone(),
+            },
+            changed,
+        )
+    }
+
+    fn test_capability(name: &str) -> norves_bridge_core::CapabilityDescriptor {
+        serde_json::from_value(serde_json::json!({"name":name}))
+            .expect("試験用の能力descriptorを作る")
     }
 
     fn initialize_body() -> Vec<u8> {
@@ -1913,6 +2080,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_get_sse_releases_capacity_and_can_be_reopened_after_expiration() {
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let policy = StreamPolicy {
+            request: Duration::from_millis(30),
+            idle: Duration::from_secs(5),
+            maximum: Duration::from_millis(250),
+        };
+        let server = RunningServer::start(Arc::new(McpHttpAuth::new(token)), policy).await;
+        let client = reqwest::Client::new();
+        let session = initialize_legacy_session(&client, &server, &token_value).await;
+        let mut first = client
+            .get(server.url())
+            .bearer_auth(&token_value)
+            .header("Mcp-Session-Id", &session)
+            .header(
+                "Mcp-Protocol-Version",
+                ProtocolVersion::V_2025_11_25.as_str(),
+            )
+            .header(ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("最初のlegacy GET SSEを開く");
+        assert_eq!(first.status(), StatusCode::OK);
+        let _ = first.chunk().await.expect("初回SSEデータを受け取る");
+        let ended = time::timeout(Duration::from_secs(2), first.chunk())
+            .await
+            .expect("最大寿命後にlegacy GET SSEが閉じる");
+        assert!(ended.is_err() || ended.is_ok_and(|chunk| chunk.is_none()));
+        time::timeout(Duration::from_secs(2), async {
+            while server.state.limits.streams.available_permits() != MAX_LONG_LIVED_STREAMS {
+                time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("期限後にlegacy stream枠が戻る");
+
+        let mut second = client
+            .get(server.url())
+            .bearer_auth(&token_value)
+            .header("Mcp-Session-Id", session)
+            .header(
+                "Mcp-Protocol-Version",
+                ProtocolVersion::V_2025_11_25.as_str(),
+            )
+            .header(ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("期限後にlegacy GET SSEを再度開く");
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(
+            server.state.limits.streams.available_permits(),
+            MAX_LONG_LIVED_STREAMS - 1
+        );
+        let _ = second.chunk().await.expect("再購読後のSSEデータを読む");
+        drop(second);
+        server.stop().await;
+    }
+
+    #[tokio::test]
     async fn current_subscriptions_listen_opens_a_bounded_http_stream() {
         let directory = TestTokenDirectory::new();
         let token = directory.create();
@@ -1969,6 +2197,256 @@ mod tests {
             .cancel()
             .await
             .expect("Discover クライアントを閉じる");
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn current_http_stream_expires_releases_capacity_and_allows_resubscription() {
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let policy = StreamPolicy {
+            request: Duration::from_millis(100),
+            idle: Duration::from_secs(2),
+            maximum: Duration::from_millis(300),
+        };
+        let server = RunningServer::start(Arc::new(McpHttpAuth::new(token)), policy).await;
+        let transport = StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(server.url()).auth_header(token_value),
+        );
+        let client = ClientConfig::new(
+            ClientCapabilities::default(),
+            Implementation::new("norves-listen-expiration-test", "1"),
+        )
+        .serve_with_lifecycle(
+            transport,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await
+        .expect("現行版Discoverを完了する");
+        let filter = SubscriptionFilter::builder().tools_list_changed().build();
+        let mut first = client
+            .peer()
+            .listen(filter.clone())
+            .await
+            .expect("最初のlistenを開く");
+        assert_eq!(
+            server.state.limits.streams.available_permits(),
+            MAX_LONG_LIVED_STREAMS - 1
+        );
+        let first_end = time::timeout(Duration::from_secs(3), first.next())
+            .await
+            .expect("listen期限後にstreamが閉じる");
+        assert!(first_end.is_ok_and(|notification| notification.is_none()));
+        time::timeout(Duration::from_secs(2), async {
+            while server.state.limits.streams.available_permits() != MAX_LONG_LIVED_STREAMS {
+                time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("失効後にstream枠が戻る");
+
+        let mut second = client
+            .peer()
+            .listen(filter)
+            .await
+            .expect("期限後にlistenを再購読する");
+        assert_eq!(
+            server.state.limits.streams.available_permits(),
+            MAX_LONG_LIVED_STREAMS - 1
+        );
+        second.cancel().await.expect("再購読したstreamを閉じる");
+        client.cancel().await.expect("Discoverクライアントを閉じる");
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn current_http_listen_notifies_after_connection_permission_and_disconnect_changes() {
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let catalog = tool_catalog::McpToolCatalog::default();
+        let server = RunningServer::start_with_catalog(
+            Arc::new(McpHttpAuth::new(token)),
+            normal_policy(),
+            catalog.clone(),
+        )
+        .await;
+        let transport = StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(server.url()).auth_header(token_value),
+        );
+        let client = ClientConfig::new(
+            ClientCapabilities::default(),
+            Implementation::new("norves-list-changed-current-test", "1"),
+        )
+        .serve_with_lifecycle(
+            transport,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await
+        .expect("現行版Discoverを完了する");
+        assert!(client
+            .peer()
+            .list_tools(None)
+            .await
+            .expect("切断状態の道具一覧を読む")
+            .tools
+            .is_empty());
+        let mut subscription = client
+            .peer()
+            .listen(SubscriptionFilter::builder().tools_list_changed().build())
+            .await
+            .expect("tools/list_changedを購読する");
+
+        catalog.set_connection(
+            Some(1),
+            &[
+                test_capability("object.edit"),
+                test_capability("object.query"),
+                test_capability("scene.query"),
+            ],
+        );
+        let notification = time::timeout(Duration::from_secs(2), subscription.next())
+            .await
+            .expect("接続後の通知を待つ")
+            .expect("通知を受信する")
+            .expect("購読が継続している");
+        assert!(matches!(
+            notification,
+            ServerNotification::ToolListChangedNotification(_)
+        ));
+        let tools = client
+            .peer()
+            .list_tools(None)
+            .await
+            .expect("接続後の道具一覧を読み直す");
+        assert!(tools
+            .tools
+            .iter()
+            .any(|tool| tool.name == "object_get_snapshot"));
+        assert!(!tools
+            .tools
+            .iter()
+            .any(|tool| tool.name == "object_set_property"));
+
+        catalog.set_write_permission(tool_catalog::WritePermission::Enabled);
+        let notification = time::timeout(Duration::from_secs(2), subscription.next())
+            .await
+            .expect("許可変更後の通知を待つ")
+            .expect("通知を受信する")
+            .expect("購読が継続している");
+        assert!(matches!(
+            notification,
+            ServerNotification::ToolListChangedNotification(_)
+        ));
+        assert!(!client
+            .peer()
+            .list_tools(None)
+            .await
+            .expect("許可変更後の道具一覧を読む")
+            .tools
+            .iter()
+            .any(|tool| tool.name == "object_set_property"));
+
+        catalog.set_connection(None, &[]);
+        let notification = time::timeout(Duration::from_secs(2), subscription.next())
+            .await
+            .expect("切断後の通知を待つ")
+            .expect("通知を受信する")
+            .expect("購読が継続している");
+        assert!(matches!(
+            notification,
+            ServerNotification::ToolListChangedNotification(_)
+        ));
+        assert!(client
+            .peer()
+            .list_tools(None)
+            .await
+            .expect("切断後の道具一覧を読む")
+            .tools
+            .is_empty());
+
+        drop(subscription);
+        client.cancel().await.expect("現行版クライアントを閉じる");
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn legacy_http_list_changes_are_sent_to_each_peer() {
+        let directory = TestTokenDirectory::new();
+        let token = directory.create();
+        let token_value = token.expose();
+        let catalog = tool_catalog::McpToolCatalog::default();
+        let server = RunningServer::start_with_catalog(
+            Arc::new(McpHttpAuth::new(token)),
+            normal_policy(),
+            catalog.clone(),
+        )
+        .await;
+
+        let (first_handler, first_changed) = list_changed_client(ProtocolVersion::V_2025_11_25);
+        let first_transport = StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(server.url())
+                .auth_header(token_value.clone()),
+        );
+        let first = first_handler
+            .serve_with_lifecycle(first_transport, ClientLifecycleMode::Initialize)
+            .await
+            .expect("最初の旧版Initializeを完了する");
+        let (second_handler, second_changed) = list_changed_client(ProtocolVersion::V_2025_11_25);
+        let second_transport = StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(server.url()).auth_header(token_value),
+        );
+        let second = second_handler
+            .serve_with_lifecycle(second_transport, ClientLifecycleMode::Initialize)
+            .await
+            .expect("次の旧版Initializeを完了する");
+
+        assert!(first
+            .peer()
+            .list_tools(None)
+            .await
+            .expect("最初の旧版道具一覧を読む")
+            .tools
+            .is_empty());
+        assert!(second
+            .peer()
+            .list_tools(None)
+            .await
+            .expect("次の旧版道具一覧を読む")
+            .tools
+            .is_empty());
+        catalog.set_connection(Some(1), &[test_capability("scene.query")]);
+
+        time::timeout(Duration::from_secs(3), first_changed.notified())
+            .await
+            .expect("最初のpeerへ通知する");
+        time::timeout(Duration::from_secs(3), second_changed.notified())
+            .await
+            .expect("次のpeerへ通知する");
+        assert!(first
+            .peer()
+            .list_tools(None)
+            .await
+            .expect("最初のpeerで一覧を再取得する")
+            .tools
+            .iter()
+            .any(|tool| tool.name == "scene_get_tree"));
+        assert!(second
+            .peer()
+            .list_tools(None)
+            .await
+            .expect("次のpeerで一覧を再取得する")
+            .tools
+            .iter()
+            .any(|tool| tool.name == "scene_get_tree"));
+
+        first.cancel().await.expect("最初の旧版peerを閉じる");
+        second.cancel().await.expect("次の旧版peerを閉じる");
         server.stop().await;
     }
 

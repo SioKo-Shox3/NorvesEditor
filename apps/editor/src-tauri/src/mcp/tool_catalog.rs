@@ -27,6 +27,7 @@ struct CatalogState {
     generation: Option<u64>,
     capabilities: HashSet<String>,
     permission: WritePermission,
+    write_handlers_ready: bool,
 }
 
 #[allow(dead_code)]
@@ -66,8 +67,8 @@ struct ToolSpec {
 const TREE_PAGE_SCHEMA: &str = r#"{
     "type":"object",
     "properties":{
-        "rootId":{"type":"string","minLength":1},
-        "maxDepth":{"type":"integer","minimum":0},
+        "rootId":{"type":"string","minLength":1,"maxLength":256},
+        "maxDepth":{"type":"integer","minimum":0,"maximum":512},
         "pageSize":{"type":"integer","minimum":1,"maximum":200},
         "cursor":{"type":"string","minLength":1,"maxLength":256}
     },
@@ -99,7 +100,7 @@ const EMPTY_INPUT_SCHEMA: &str = r#"{
 const ASSET_MANIFEST_PAGE_SCHEMA: &str = r#"{
     "type":"object",
     "properties":{
-        "filter":{"type":"string"},
+        "filter":{"type":"string","maxLength":512},
         "pageSize":{"type":"integer","minimum":1,"maximum":200},
         "cursor":{"type":"string","minLength":1,"maxLength":256}
     },
@@ -108,8 +109,8 @@ const ASSET_MANIFEST_PAGE_SCHEMA: &str = r#"{
 const LOGS_PAGE_SCHEMA: &str = r#"{
     "type":"object",
     "properties":{
-        "generation":{"type":"integer","minimum":0},
-        "afterSequence":{"type":"integer","minimum":0},
+        "generation":{"type":"integer","minimum":0,"maximum":18446744073709551615},
+        "afterSequence":{"type":"integer","minimum":0,"maximum":18446744073709551615},
         "limit":{"type":"integer","minimum":1,"maximum":1000},
         "pageSize":{"type":"integer","minimum":1,"maximum":200},
         "cursor":{"type":"string","minLength":1,"maxLength":256}
@@ -334,6 +335,7 @@ impl Default for McpToolCatalog {
                     generation: None,
                     capabilities: HashSet::new(),
                     permission: WritePermission::ReadOnly,
+                    write_handlers_ready: false,
                 }),
                 revision_tx,
             }),
@@ -355,6 +357,7 @@ impl McpToolCatalog {
                 .map(|capability| capability.name.as_str().to_owned())
                 .collect(),
             permission: state.permission,
+            write_handlers_ready: state.write_handlers_ready,
         };
         if *state == next {
             return;
@@ -364,7 +367,6 @@ impl McpToolCatalog {
         self.notify_changed();
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_write_permission(&self, permission: WritePermission) {
         let mut state = self.lock_state();
         if state.permission == permission {
@@ -373,6 +375,22 @@ impl McpToolCatalog {
         state.permission = permission;
         drop(state);
         self.notify_changed();
+    }
+
+    /// 未実装の書き込み処理を一覧に出さないための準備状態。
+    #[allow(dead_code)]
+    pub(crate) fn set_write_handlers_ready(&self, ready: bool) {
+        let mut state = self.lock_state();
+        if state.write_handlers_ready == ready {
+            return;
+        }
+        state.write_handlers_ready = ready;
+        drop(state);
+        self.notify_changed();
+    }
+
+    pub(crate) fn subscribe_changes(&self) -> watch::Receiver<u64> {
+        self.inner.revision_tx.subscribe()
     }
 
     pub(crate) fn current_generation(&self) -> Option<u64> {
@@ -420,7 +438,7 @@ impl McpToolCatalog {
             .find(|spec| spec.name == name && is_exposed(spec, &state))
             .ok_or(ToolInputError::Unavailable)?;
         let schema = input_schema(spec).map_err(|_| ToolInputError::Schema)?;
-        if !schema_is_valid(&schema, arguments, &schema) {
+        if !schema_is_valid(&schema, arguments) {
             return Err(ToolInputError::Invalid);
         }
 
@@ -455,7 +473,7 @@ impl McpToolCatalog {
             .find(|spec| spec.name == name && spec.bridge_write)
             .ok_or(ToolInputError::Unavailable)?;
         let schema = input_schema(spec).map_err(|_| ToolInputError::Schema)?;
-        if !schema_is_valid(&schema, arguments, &schema) {
+        if !schema_is_valid(&schema, arguments) {
             return Err(ToolInputError::Invalid);
         }
         let object = arguments.as_object().ok_or(ToolInputError::Invalid)?;
@@ -612,7 +630,7 @@ fn method_schema(method: &str) -> &'static str {
         "runtime.stop" => include_str!(
             "../../../../../bridge/spec/schema/methods/runtime.stop.params.schema.json"
         ),
-        _ => unreachable!("Bridge tool method has a registered embedded schema"),
+        _ => unreachable!("Bridge道具には埋め込みschemaを登録します"),
     }
 }
 
@@ -620,7 +638,8 @@ fn is_exposed(spec: &ToolSpec, state: &CatalogState) -> bool {
     spec.capabilities
         .iter()
         .all(|required| state.capabilities.contains(*required))
-        && (spec.access == ToolAccess::Read || state.permission != WritePermission::ReadOnly)
+        && (spec.access == ToolAccess::Read
+            || (state.permission != WritePermission::ReadOnly && state.write_handlers_ready))
 }
 
 fn build_tool(spec: &ToolSpec) -> Result<Tool, String> {
@@ -628,7 +647,7 @@ fn build_tool(spec: &ToolSpec) -> Result<Tool, String> {
     let schema = schema
         .as_object()
         .cloned()
-        .ok_or_else(|| "MCP input schema root is not an object".to_owned())?;
+        .ok_or_else(|| "MCP入力schemaのrootはobjectではありません。".to_owned())?;
     let annotation = ToolAnnotations::from_raw(
         Some(spec.title.to_owned()),
         Some(spec.access == ToolAccess::Read),
@@ -727,149 +746,11 @@ fn rewrite_embedded_references(value: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-fn schema_is_valid(schema: &Value, value: &Value, root: &Value) -> bool {
-    let root = if schema.get("$id").is_some() {
-        schema
-    } else {
-        root
-    };
-    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-        let Some(target) = reference
-            .strip_prefix('#')
-            .and_then(|pointer| root.pointer(pointer))
-        else {
-            return false;
-        };
-        return schema_is_valid(target, value, root);
-    }
-
-    if let Some(required_type) = schema.get("type") {
-        let matches_type = match required_type {
-            Value::String(kind) => value_matches_type(value, kind),
-            Value::Array(kinds) => kinds
-                .iter()
-                .filter_map(Value::as_str)
-                .any(|kind| value_matches_type(value, kind)),
-            _ => false,
-        };
-        if !matches_type {
-            return false;
-        }
-    }
-
-    if let Some(options) = schema.get("enum").and_then(Value::as_array) {
-        if !options.contains(value) {
-            return false;
-        }
-    }
-
-    if let Some(object) = value.as_object() {
-        let properties = schema.get("properties").and_then(Value::as_object);
-        if let Some(required) = schema.get("required").and_then(Value::as_array) {
-            if required
-                .iter()
-                .filter_map(Value::as_str)
-                .any(|key| !object.contains_key(key))
-            {
-                return false;
-            }
-        }
-        if schema.get("additionalProperties") == Some(&Value::Bool(false))
-            && properties
-                .is_some_and(|properties| object.keys().any(|key| !properties.contains_key(key)))
-        {
-            return false;
-        }
-        if let Some(properties) = properties {
-            for (key, property_schema) in properties {
-                if let Some(property) = object.get(key) {
-                    if !schema_is_valid(property_schema, property, root) {
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-
-    if let Some(items) = value.as_array() {
-        if schema
-            .get("minItems")
-            .and_then(Value::as_u64)
-            .is_some_and(|minimum| items.len() < minimum as usize)
-            || schema
-                .get("maxItems")
-                .and_then(Value::as_u64)
-                .is_some_and(|maximum| items.len() > maximum as usize)
-        {
-            return false;
-        }
-        if let Some(item_schema) = schema.get("items") {
-            if items
-                .iter()
-                .any(|item| !schema_is_valid(item_schema, item, root))
-            {
-                return false;
-            }
-        }
-    }
-
-    if let Some(text) = value.as_str() {
-        let length = text.chars().count() as u64;
-        if schema
-            .get("minLength")
-            .and_then(Value::as_u64)
-            .is_some_and(|minimum| length < minimum)
-            || schema
-                .get("maxLength")
-                .and_then(Value::as_u64)
-                .is_some_and(|maximum| length > maximum)
-        {
-            return false;
-        }
-    }
-
-    if let Some(number) = value.as_f64() {
-        if schema
-            .get("minimum")
-            .and_then(Value::as_f64)
-            .is_some_and(|minimum| number < minimum)
-            || schema
-                .get("maximum")
-                .and_then(Value::as_f64)
-                .is_some_and(|maximum| number > maximum)
-        {
-            return false;
-        }
-    }
-
-    for (keyword, expected) in [("allOf", 1usize), ("anyOf", 2usize), ("oneOf", 3usize)] {
-        if let Some(schemas) = schema.get(keyword).and_then(Value::as_array) {
-            let valid = schemas
-                .iter()
-                .filter(|subschema| schema_is_valid(subschema, value, root))
-                .count();
-            if (expected == 1 && valid != schemas.len())
-                || (expected == 2 && valid == 0)
-                || (expected == 3 && valid != 1)
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn value_matches_type(value: &Value, kind: &str) -> bool {
-    match kind {
-        "object" => value.is_object(),
-        "array" => value.is_array(),
-        "string" => value.is_string(),
-        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-        "number" => value.is_number(),
-        "boolean" => value.is_boolean(),
-        "null" => value.is_null(),
-        _ => false,
-    }
+fn schema_is_valid(schema: &Value, value: &Value) -> bool {
+    jsonschema::draft202012::options()
+        .offline()
+        .build(schema)
+        .is_ok_and(|validator| validator.is_valid(value))
 }
 
 #[cfg(test)]
@@ -904,6 +785,7 @@ mod tests {
         );
         assert!(catalog.get("object_set_property").is_none());
         catalog.set_write_permission(WritePermission::Enabled);
+        catalog.set_write_handlers_ready(true);
         assert!(catalog.get("object_set_property").is_some());
         catalog.set_connection(None, &[]);
         assert!(catalog.get("object_set_property").is_none());
@@ -927,6 +809,7 @@ mod tests {
                 scene_root_id: None,
             })
             .expect("書き込み可モードを設定する");
+        catalog.set_write_permission(WritePermission::Enabled);
 
         assert!(catalog.get("object_set_property").is_none());
         assert!(catalog.get("scene_delete_object").is_none());
@@ -951,6 +834,7 @@ mod tests {
     fn bridge_tool_schema_resolves_absolute_ids_and_fragment_references_offline() {
         let catalog = connected_catalog(&["object.query", "object.edit", "scene.query"]);
         catalog.set_write_permission(WritePermission::Enabled);
+        catalog.set_write_handlers_ready(true);
         let tool = catalog
             .get("object_set_property")
             .expect("必要能力がそろった道具を得る");
@@ -972,8 +856,13 @@ mod tests {
             &schema,
             &json!({
                 "params":{"objectId":"node-1","property":"visible","value":true}
-            }),
-            &schema
+            })
+        ));
+        assert!(!schema_is_valid(
+            &schema,
+            &json!({
+                "params":{"objectId":"node-1","property":3,"value":true}
+            })
         ));
 
         let unresolved = json!({
@@ -987,6 +876,7 @@ mod tests {
     fn write_wrapper_validates_params_and_group_id_separately() {
         let catalog = connected_catalog(&["object.edit", "object.query", "scene.query"]);
         catalog.set_write_permission(WritePermission::Enabled);
+        catalog.set_write_handlers_ready(true);
         let valid = json!({
             "params":{"objectId":"node-1","property":"visible","value":true},
             "groupId":"opaque-group"
@@ -1023,6 +913,7 @@ mod tests {
             "component.edit",
         ]);
         catalog.set_write_permission(WritePermission::Enabled);
+        catalog.set_write_handlers_ready(true);
         let page_schema = Value::Object(
             catalog
                 .get("scene_get_tree_page")
@@ -1031,16 +922,15 @@ mod tests {
                 .as_ref()
                 .clone(),
         );
-        assert!(schema_is_valid(
-            &page_schema,
-            &json!({"pageSize":200}),
-            &page_schema
-        ));
+        assert!(schema_is_valid(&page_schema, &json!({"pageSize":200})));
+        assert!(!schema_is_valid(&page_schema, &json!({"pageSize":201})));
+        assert!(!schema_is_valid(&page_schema, &json!({"pageSize":"200"})));
+        assert!(!schema_is_valid(&page_schema, &json!({"unknown":true})));
         assert!(!schema_is_valid(
             &page_schema,
-            &json!({"pageSize":201}),
-            &page_schema
+            &json!({"rootId":"x".repeat(257)})
         ));
+        assert!(!schema_is_valid(&page_schema, &json!({"maxDepth":513})));
         let manifest_schema = Value::Object(
             catalog
                 .get("asset_get_manifest")
@@ -1051,18 +941,13 @@ mod tests {
         );
         assert!(schema_is_valid(
             &manifest_schema,
-            &json!({"filter":"texture","pageSize":200}),
-            &manifest_schema
+            &json!({"filter":"texture","pageSize":200})
         ));
+        assert!(!schema_is_valid(&manifest_schema, &json!({"pageSize":201})));
+        assert!(!schema_is_valid(&manifest_schema, &json!({"page":0})));
         assert!(!schema_is_valid(
             &manifest_schema,
-            &json!({"pageSize":201}),
-            &manifest_schema
-        ));
-        assert!(!schema_is_valid(
-            &manifest_schema,
-            &json!({"page":0}),
-            &manifest_schema
+            &json!({"filter":"x".repeat(513)})
         ));
         assert_eq!(
             catalog.validate_call("asset_get_manifest", &json!({"page":0})),
@@ -1071,12 +956,33 @@ mod tests {
         assert!(catalog.get("edit_begin_group").is_some());
         assert!(catalog.get("edit_end_group").is_some());
         assert!(catalog
+            .validate_call("edit_begin_group", &json!({"name":"x".repeat(128)}))
+            .is_ok());
+        assert_eq!(
+            catalog.validate_call("edit_begin_group", &json!({"name":"x".repeat(129)})),
+            Err(ToolInputError::Invalid)
+        );
+        assert!(catalog
             .validate_call("edit_begin_group", &json!({"name":"scene setup"}))
             .is_ok());
         assert_eq!(
             catalog.validate_call("edit_begin_group", &json!({"params":{}})),
             Err(ToolInputError::Invalid)
         );
+        let log_schema = Value::Object(
+            catalog
+                .get("logs_get_recent")
+                .expect("logs_get_recentを得る")
+                .input_schema
+                .as_ref()
+                .clone(),
+        );
+        assert!(schema_is_valid(
+            &log_schema,
+            &json!({"generation":18446744073709551615u64,"limit":1000})
+        ));
+        assert!(!schema_is_valid(&log_schema, &json!({"generation":1e30})));
+        assert!(!schema_is_valid(&log_schema, &json!({"limit":1001})));
     }
 
     #[test]
@@ -1084,13 +990,26 @@ mod tests {
         let spec = serde_json::from_str::<Value>(method_schema("object.setProperty"))
             .expect("Bridge params schemaを読む");
         let resolved = resolve_embedded_references(spec.clone()).expect("参照を解決する");
+        let exported = input_schema(
+            tool_specs()
+                .iter()
+                .find(|tool| tool.name == "object_set_property")
+                .expect("property道具の定義を得る"),
+        )
+        .expect("MCP道具schemaを組み立てる");
+        let exported_params = exported
+            .pointer("/properties/params")
+            .expect("params schemaがある");
+        assert_eq!(exported_params, &resolved);
         for sample in [
             json!({"objectId":"node-1","property":"visible","value":true}),
             json!({"objectId":"node-1","property":"visible","value":true,"extra":1}),
             json!({"objectId":"","property":"visible","value":true}),
             json!({"objectId":"node-1","property":"visible","value":null}),
         ] {
-            let resolved_valid = schema_is_valid(&resolved, &sample, &resolved);
+            let resolved_valid = schema_is_valid(&resolved, &sample);
+            let exported_valid = schema_is_valid(exported_params, &sample);
+            assert_eq!(resolved_valid, exported_valid);
             assert_eq!(
                 resolved_valid,
                 matches!(sample["objectId"].as_str(), Some(id) if !id.is_empty())
@@ -1105,6 +1024,27 @@ mod tests {
                 "schema参照解決後の判定が期待と異なります: {sample}"
             );
         }
+    }
+
+    #[test]
+    fn absolute_schema_id_and_fragment_reference_are_resolved_without_fetching() {
+        let schema = json!({
+            "$schema":"https://json-schema.org/draft/2020-12/schema",
+            "$id":"https://example.invalid/schemas/tool.json",
+            "$defs":{"shortName":{"type":"string","maxLength":4}},
+            "type":"object",
+            "properties":{"name":{"$ref":"#/$defs/shortName"}},
+            "required":["name"],
+            "additionalProperties":false
+        });
+        assert!(schema_is_valid(&schema, &json!({"name":"tree"})));
+        assert!(!schema_is_valid(&schema, &json!({"name":"scene-root"})));
+
+        let external = json!({
+            "$schema":"https://json-schema.org/draft/2020-12/schema",
+            "$ref":"https://example.invalid/unregistered.json"
+        });
+        assert!(!schema_is_valid(&external, &json!({"name":"tree"})));
     }
 
     #[test]

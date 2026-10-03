@@ -28,7 +28,7 @@ use crate::{
 use super::{
     log_buffer::{LogBuffer, LogQuery},
     thumbnail::{McpThumbnailImage, McpThumbnailService, RequestOrigin},
-    tool_catalog::{McpToolCatalog, ToolInputError, ValidatedToolInput},
+    tool_catalog::{McpToolCatalog, ToolInputError, ValidatedToolInput, WritePermission},
 };
 
 /// 1回のMCP道具応答に含める項目数。
@@ -344,6 +344,14 @@ impl McpReadContext {
 
     pub(crate) fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
         self.catalog.get(name)
+    }
+
+    pub(crate) fn set_write_permission(&self, permission: WritePermission) {
+        self.catalog.set_write_permission(permission);
+    }
+
+    pub(crate) fn subscribe_tool_list_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.catalog.subscribe_changes()
     }
 
     pub(crate) fn is_hidden_write_tool(&self, name: &str) -> bool {

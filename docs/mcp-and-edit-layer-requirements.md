@@ -199,6 +199,8 @@ E0〜E3 はこの記録に依存せず、E4 の着手時に検証し直す。
 - **内容**：
   - 道具は、接続中のエンジンの実効の能力にある機能だけを出す。接続・切断・再接続で一覧を作り直し、`notifications/tools/list_changed` を送る（サーバーの能力で `tools.listChanged` を宣言）。
   - 道具の入力の定義（JSON Schema）は、`bridge/spec/schema/methods/*.params.schema.json` をそのまま使う。MCP の入力の定義も JSON Schema なので、二重に書かない。
+  - Bridge 書き込み道具では MCP 固有の外枠として `params` と任意の `groupId` を定義し、Bridge の `params` schema は埋め込みspecと同じ意味を保つ。ページング・ログ・履歴・名前付きまとまりなどMCP固有の入力は、それぞれ独自schemaを明示する。
+  - schema検証は埋め込み済みの仕様だけで行い、外部のHTTP/file schemaを取得しない。未対応の参照は道具の公開と入力検証の両方で拒否する。
   - 道具の名前と説明に、エンジンに固有の名前を入れない。
 - **完了条件の案**：能力の無い機能の道具が出ない試験。道具の入力の定義が、仕様の params の定義と一致する試験。切断で一覧が変わり、通知が出る試験。
 - **規模**：S〜M。
