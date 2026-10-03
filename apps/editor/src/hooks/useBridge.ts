@@ -145,6 +145,8 @@ export function useBridgeSubscriptions(): void {
   const connectionEpochRef = useRef(0);
   const observedGenerationRef = useRef(state.editServiceGeneration);
   const observedRevisionRef = useRef(state.editAppliedRevision);
+  const observedHistoryRevisionRef = useRef(state.editHistorySummary?.historyRevision);
+  const observedSequenceRef = useRef(state.editSequence);
 
   useEffect(() => {
     let aborted = false;
@@ -153,11 +155,27 @@ export function useBridgeSubscriptions(): void {
     let subscribeServiceEvents: () => Promise<void> = async () => {};
     let desiredConnected = stateRef.current.connection.status === 'connected';
     let desiredSessionId = stateRef.current.connection.sessionId;
+    let serviceEventsReady = false;
+    let serviceEventsPendingSync = false;
     let serviceSubscriptionPending = false;
     let serviceSubscriptionToken = 0;
     let serviceUnlistenFns: UnlistenFn[] = [];
 
-    const receiveHistory = (summary: EditHistorySummary): void => {
+    const resetObservedEditPosition = (): void => {
+      observedGenerationRef.current = undefined;
+      observedRevisionRef.current = undefined;
+      observedHistoryRevisionRef.current = undefined;
+      observedSequenceRef.current = undefined;
+    };
+
+    const receiveHistory = (summary: EditHistorySummary, fromQuery = false): void => {
+      if (aborted || !desiredConnected) {
+        return;
+      }
+      if (!serviceEventsReady && !fromQuery) {
+        serviceEventsPendingSync = true;
+        return;
+      }
       const incomingGeneration = summary.generation ?? undefined;
       const generation = observedGenerationRef.current;
       if (
@@ -166,20 +184,35 @@ export function useBridgeSubscriptions(): void {
       ) {
         return;
       }
+      const sameGeneration = generation === incomingGeneration;
       if (
-        generation === incomingGeneration &&
+        sameGeneration &&
         observedRevisionRef.current !== undefined &&
         summary.appliedRevision < observedRevisionRef.current
       ) {
         return;
       }
+      if (
+        sameGeneration &&
+        observedHistoryRevisionRef.current !== undefined &&
+        summary.historyRevision < observedHistoryRevisionRef.current
+      ) {
+        return;
+      }
       const gap =
-        generation === incomingGeneration &&
+        sameGeneration &&
         summary.appliedRevision > (observedRevisionRef.current ?? 0) + 1;
+      const needsAnotherSync = gap || (fromQuery && serviceEventsPendingSync);
+      if (!sameGeneration) {
+        observedSequenceRef.current = undefined;
+      }
       observedGenerationRef.current = incomingGeneration;
       observedRevisionRef.current = summary.appliedRevision;
+      observedHistoryRevisionRef.current = summary.historyRevision;
+      serviceEventsReady = true;
+      serviceEventsPendingSync = false;
       dispatch({ type: 'editHistorySummaryReceived', summary });
-      if (gap) {
+      if (needsAnotherSync) {
         void refreshHistory();
       }
     };
@@ -201,7 +234,7 @@ export function useBridgeSubscriptions(): void {
         ) {
           return;
         }
-        receiveHistory(summary);
+        receiveHistory(summary, true);
       } catch {
         // 履歴要約の取得失敗は、接続状態や既存表示を壊さず次の同期機会を待つ。
       }
@@ -211,9 +244,19 @@ export function useBridgeSubscriptions(): void {
       if (aborted) {
         return;
       }
+      const nextSessionId = payload.connected ? payload.sessionId : undefined;
+      if (
+        !payload.connected ||
+        desiredConnected !== payload.connected ||
+        desiredSessionId !== nextSessionId
+      ) {
+        resetObservedEditPosition();
+        serviceEventsReady = false;
+        serviceEventsPendingSync = false;
+      }
       connectionEpochRef.current += 1;
       desiredConnected = payload.connected;
-      desiredSessionId = payload.sessionId;
+      desiredSessionId = nextSessionId;
       dispatch({ type: 'connectionStateChanged', payload });
       if (payload.connected) {
         if (serviceUnlistenFns.length > 0) {
@@ -232,7 +275,11 @@ export function useBridgeSubscriptions(): void {
     };
 
     const receiveApplied = (payload: EditAppliedPayload): void => {
-      if (aborted) {
+      if (aborted || !desiredConnected) {
+        return;
+      }
+      if (!serviceEventsReady) {
+        serviceEventsPendingSync = true;
         return;
       }
       const generation = observedGenerationRef.current;
@@ -240,20 +287,41 @@ export function useBridgeSubscriptions(): void {
         return;
       }
       const generationChanged = generation !== undefined && payload.generation !== generation;
-      const previousRevision = generationChanged ? undefined : observedRevisionRef.current;
+      const sameGeneration = generation === payload.generation;
+      const previousRevision = sameGeneration ? observedRevisionRef.current : undefined;
       if (
-        !generationChanged &&
+        sameGeneration &&
         previousRevision !== undefined &&
         payload.appliedRevision <= previousRevision
       ) {
         return;
       }
+      if (
+        sameGeneration &&
+        observedSequenceRef.current !== undefined &&
+        payload.sequence <= observedSequenceRef.current
+      ) {
+        return;
+      }
+      if (
+        sameGeneration &&
+        observedHistoryRevisionRef.current !== undefined &&
+        payload.historyRevision < observedHistoryRevisionRef.current
+      ) {
+        void refreshHistory();
+        return;
+      }
       const gap =
         generationChanged ||
-        (previousRevision !== undefined && payload.appliedRevision > previousRevision + 1) ||
-        (previousRevision === undefined && payload.appliedRevision > 1);
+        (sameGeneration && previousRevision !== undefined && payload.appliedRevision > previousRevision + 1) ||
+        (!sameGeneration && generation === undefined && payload.appliedRevision > 1);
+      if (!sameGeneration) {
+        observedHistoryRevisionRef.current = undefined;
+      }
       observedGenerationRef.current = payload.generation;
       observedRevisionRef.current = payload.appliedRevision;
+      observedHistoryRevisionRef.current = payload.historyRevision;
+      observedSequenceRef.current = payload.sequence;
       dispatch({ type: 'editApplied', payload });
       if (gap || generationChanged) {
         void refreshHistory();

@@ -2090,3 +2090,60 @@ describe('undo/redo history does not depend on a possibly-updated tree (live int
     expect((recorded.undoStack[0] as { oldParentId?: string }).oldParentId).toBe('n-2');
   });
 });
+
+describe('editApplied generation changes', () => {
+  it('keeps old snapshots out of a new service generation until they are fetched again', () => {
+    const state: BridgeState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected', generation: 1, sessionId: 'session-1' },
+      selectedObjectId: 'n-1',
+      sceneTree: { id: 'root', children: [{ id: 'n-1', name: 'Old' }] },
+      sceneTreeAppliedGeneration: 4,
+      sceneTreeAppliedRevision: 9,
+      objectSnapshot: {
+        objectId: 'n-1',
+        name: 'Old',
+        properties: [{ name: 'Name', value: 'Old' }],
+      },
+      objectSnapshotAppliedGeneration: 4,
+      objectSnapshotAppliedRevision: 9,
+      editServiceGeneration: 4,
+      editAppliedRevision: 9,
+      undoStack: [{ kind: 'serviceProjection' }],
+      redoStack: [{ kind: 'serviceProjection' }],
+    };
+
+    const next = applyAction(
+      {
+        type: 'editApplied',
+        payload: {
+          operation: 'setProperty',
+          objectId: 'n-1',
+          property: 'Name',
+          value: 'New',
+          newId: null,
+          source: 'mcp',
+          groupId: 'mcp-5-1',
+          generation: 5,
+          sequence: 1,
+          historyRevision: 1,
+          appliedRevision: 1,
+        },
+      },
+      state,
+    );
+
+    expect(next.editServiceGeneration).toBe(5);
+    expect(next.editAppliedRevision).toBe(1);
+    expect(next.sceneTree).toBeUndefined();
+    expect(next.sceneTreeAppliedGeneration).toBeUndefined();
+    expect(next.sceneTreeAppliedRevision).toBeUndefined();
+    expect(next.objectSnapshot).toBeUndefined();
+    expect(next.objectSnapshotAppliedGeneration).toBeUndefined();
+    expect(next.objectSnapshotAppliedRevision).toBeUndefined();
+    expect(next.sceneRefreshRequired).toBe(true);
+    expect(next.objectSnapshotRefreshVersion).toBeGreaterThan(state.objectSnapshotRefreshVersion);
+    expect(next.undoStack).toEqual([]);
+    expect(next.redoStack).toEqual([]);
+  });
+});

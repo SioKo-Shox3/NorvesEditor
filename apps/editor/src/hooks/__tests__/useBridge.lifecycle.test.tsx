@@ -267,6 +267,138 @@ describe('useBridgeSubscriptions — 編集サービスイベント', () => {
       expect(unlisten).toHaveBeenCalledOnce();
     }
   });
+
+  it('再接続後は新しい接続の世代と改訂で履歴要約を受け入れる', async () => {
+    const unlistenFns = setupListenMock();
+    const firstSummary: EditHistorySummary = {
+      generation: 7,
+      historyRevision: 4,
+      appliedRevision: 4,
+      canUndo: true,
+      canRedo: false,
+      undoHeadId: 4,
+      undoRevision: 4,
+      undoGroup: null,
+      redoHeadId: null,
+      redoRevision: 0,
+      redoGroup: null,
+      pending: false,
+    };
+    const nextSummary: EditHistorySummary = {
+      ...firstSummary,
+      generation: 2,
+      historyRevision: 0,
+      appliedRevision: 0,
+      canUndo: false,
+      undoHeadId: null,
+      undoRevision: 0,
+    };
+    const synchronizedSummary: EditHistorySummary = {
+      ...nextSummary,
+      historyRevision: 1,
+      appliedRevision: 1,
+      canUndo: true,
+      undoHeadId: 1,
+      undoRevision: 1,
+    };
+    const nextSummaryFetch = createDeferred<EditHistorySummary>();
+    const synchronizedSummaryFetch = createDeferred<EditHistorySummary>();
+    let historyCallCount = 0;
+    (tauriCore.invoke as Mock).mockImplementation((command: string) => {
+      if (command === BRIDGE_COMMANDS.editGetHistory) {
+        historyCallCount += 1;
+        if (historyCallCount === 1) return Promise.resolve(firstSummary);
+        return historyCallCount === 2 ? nextSummaryFetch.promise : synchronizedSummaryFetch.promise;
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    function useTestHook() {
+      useBridgeSubscriptions();
+      const dispatch = useBridgeDispatch();
+      const state = useBridgeState();
+      return { dispatch, state };
+    }
+
+    const { result, unmount } = renderHook(() => useTestHook(), { wrapper });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => {
+      emitBridgeEvent(BRIDGE_EVENTS.connectionState, {
+        connected: true,
+        sessionId: 'session-1',
+      } satisfies ConnectionStatePayload);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.state.editHistorySummary?.generation).toBe(7);
+
+    await act(async () => {
+      emitBridgeEvent(BRIDGE_EVENTS.connectionState, {
+        connected: false,
+        reason: 'closed',
+      } satisfies ConnectionStatePayload);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      emitBridgeEvent(BRIDGE_EVENTS.connectionState, {
+        connected: true,
+        sessionId: 'session-2',
+      } satisfies ConnectionStatePayload);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      emitBridgeEvent(BRIDGE_EVENTS.editApplied, {
+        operation: 'setProperty',
+        objectId: 'n-1',
+        property: 'Name',
+        value: 'ancienne session',
+        newId: null,
+        source: 'mcp',
+        groupId: 'mcp-7-5',
+        generation: 7,
+        sequence: 5,
+        historyRevision: 5,
+        appliedRevision: 5,
+      } satisfies EditAppliedPayload);
+    });
+    expect(result.current.state.editServiceGeneration).toBeUndefined();
+    expect(result.current.state.editAppliedRevision).toBeUndefined();
+    await act(async () => {
+      emitBridgeEvent(BRIDGE_EVENTS.editApplied, {
+        operation: 'setProperty',
+        objectId: 'n-1',
+        property: 'Name',
+        value: '新しい接続の変更',
+        newId: null,
+        source: 'mcp',
+        groupId: 'mcp-2-1',
+        generation: 2,
+        sequence: 1,
+        historyRevision: 1,
+        appliedRevision: 1,
+      } satisfies EditAppliedPayload);
+    });
+
+    await act(async () => {
+      nextSummaryFetch.resolve(nextSummary);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(historyCallCount).toBe(3);
+    await act(async () => {
+      synchronizedSummaryFetch.resolve(synchronizedSummary);
+      await Promise.resolve();
+    });
+    expect(result.current.state.editHistorySummary?.generation).toBe(2);
+    expect(result.current.state.editHistorySummary?.appliedRevision).toBe(1);
+    unmount();
+    for (const unlisten of unlistenFns) {
+      expect(unlisten).toHaveBeenCalledOnce();
+    }
+  });
 });
 
 // -------------------------------------------------------------------------
@@ -2356,6 +2488,23 @@ describe('useBridgeActions — snapshot取得の世代管理', () => {
         payload: { connected: true, sessionId: 'session-1' },
       });
       result.current.dispatch({ type: 'objectSelected', id: 'n-1' });
+      result.current.dispatch({
+        type: 'editHistorySummaryReceived',
+        summary: {
+          generation: 1,
+          historyRevision: 0,
+          appliedRevision: 0,
+          canUndo: false,
+          canRedo: false,
+          undoHeadId: null,
+          undoRevision: 0,
+          undoGroup: null,
+          redoHeadId: null,
+          redoRevision: 0,
+          redoGroup: null,
+          pending: false,
+        },
+      });
     });
 
     let oldTree!: Promise<void>;

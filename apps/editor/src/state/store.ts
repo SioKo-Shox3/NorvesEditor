@@ -206,9 +206,18 @@ function applyServiceEdit(state: BridgeState, payload: EditAppliedPayload): Brid
   let sceneTree = generationChanged ? undefined : state.sceneTree;
   let objectSnapshot = generationChanged ? undefined : state.objectSnapshot;
   let componentSnapshot = generationChanged ? undefined : state.componentSnapshot;
-  let needsSceneRefresh = gap;
-  let needsObjectRefresh = gap && state.selectedObjectId !== undefined;
-  let needsComponentRefresh = gap && state.selectedComponentId !== undefined;
+  const sceneTreeFromAnotherGeneration =
+    sceneTree !== undefined && state.sceneTreeAppliedGeneration !== payload.generation;
+  const objectSnapshotFromAnotherGeneration =
+    objectSnapshot !== undefined && state.objectSnapshotAppliedGeneration !== payload.generation;
+  const componentSnapshotFromAnotherGeneration =
+    componentSnapshot !== undefined &&
+    state.componentSnapshotAppliedGeneration !== payload.generation;
+  let needsSceneRefresh = gap || sceneTreeFromAnotherGeneration;
+  let needsObjectRefresh =
+    state.selectedObjectId !== undefined && (gap || objectSnapshotFromAnotherGeneration);
+  let needsComponentRefresh =
+    state.selectedComponentId !== undefined && (gap || componentSnapshotFromAnotherGeneration);
   const propertyChange =
     payload.property !== null &&
     (payload.operation === 'setProperty' ||
@@ -238,11 +247,21 @@ function applyServiceEdit(state: BridgeState, payload: EditAppliedPayload): Brid
         ? { ...snapshot, name: value, properties }
         : { ...snapshot, properties };
     };
-    objectSnapshot = updateSnapshot(objectSnapshot);
-    componentSnapshot = updateSnapshot(componentSnapshot);
+    if (
+      objectSnapshot?.objectId === payload.objectId &&
+      !objectSnapshotFromAnotherGeneration
+    ) {
+      objectSnapshot = updateSnapshot(objectSnapshot);
+    }
+    if (
+      componentSnapshot?.objectId === payload.objectId &&
+      !componentSnapshotFromAnotherGeneration
+    ) {
+      componentSnapshot = updateSnapshot(componentSnapshot);
+    }
 
     if (isObjectNameProperty(property) && typeof value === 'string') {
-      if (sceneTree !== undefined) {
+      if (sceneTree !== undefined && !sceneTreeFromAnotherGeneration) {
         const renamed = renameTreeNode(sceneTree, payload.objectId, value);
         sceneTree = renamed.root;
         needsSceneRefresh = !renamed.found;
@@ -297,42 +316,49 @@ function applyServiceEdit(state: BridgeState, payload: EditAppliedPayload): Brid
   return {
     ...state,
     ...projected,
+    ...(generationChanged ? { undoStack: [], redoStack: [] } : {}),
     ...treeRefresh,
     ...objectRefresh,
     ...componentRefresh,
     sceneTree,
-    sceneTreeAppliedRevision: needsSceneRefresh
-      ? state.sceneTreeAppliedRevision
-      : sceneTree === undefined
+    sceneTreeAppliedRevision:
+      generationChanged || sceneTree === undefined
         ? undefined
-        : payload.appliedRevision,
-    sceneTreeAppliedGeneration: needsSceneRefresh
-      ? state.sceneTreeAppliedGeneration
-      : sceneTree === undefined
+        : needsSceneRefresh
+          ? state.sceneTreeAppliedRevision
+          : payload.appliedRevision,
+    sceneTreeAppliedGeneration:
+      generationChanged || sceneTree === undefined
         ? undefined
-        : payload.generation,
+        : needsSceneRefresh
+          ? state.sceneTreeAppliedGeneration
+          : payload.generation,
     objectSnapshot,
-    objectSnapshotAppliedRevision: needsObjectRefresh
-      ? state.objectSnapshotAppliedRevision
-      : objectSnapshot === undefined
+    objectSnapshotAppliedRevision:
+      generationChanged || objectSnapshot === undefined
         ? undefined
-        : payload.appliedRevision,
-    objectSnapshotAppliedGeneration: needsObjectRefresh
-      ? state.objectSnapshotAppliedGeneration
-      : objectSnapshot === undefined
+        : needsObjectRefresh
+          ? state.objectSnapshotAppliedRevision
+          : payload.appliedRevision,
+    objectSnapshotAppliedGeneration:
+      generationChanged || objectSnapshot === undefined
         ? undefined
-        : payload.generation,
+        : needsObjectRefresh
+          ? state.objectSnapshotAppliedGeneration
+          : payload.generation,
     componentSnapshot,
-    componentSnapshotAppliedRevision: needsComponentRefresh
-      ? state.componentSnapshotAppliedRevision
-      : componentSnapshot === undefined
+    componentSnapshotAppliedRevision:
+      generationChanged || componentSnapshot === undefined
         ? undefined
-        : payload.appliedRevision,
-    componentSnapshotAppliedGeneration: needsComponentRefresh
-      ? state.componentSnapshotAppliedGeneration
-      : componentSnapshot === undefined
+        : needsComponentRefresh
+          ? state.componentSnapshotAppliedRevision
+          : payload.appliedRevision,
+    componentSnapshotAppliedGeneration:
+      generationChanged || componentSnapshot === undefined
         ? undefined
-        : payload.generation,
+        : needsComponentRefresh
+          ? state.componentSnapshotAppliedGeneration
+          : payload.generation,
     selectedObjectId:
       payload.operation === 'deleteObject' && payload.objectId === state.selectedObjectId
         ? undefined

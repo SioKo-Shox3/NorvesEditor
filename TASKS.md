@@ -186,7 +186,7 @@ M2 の共通規則:
 - notes: 先行 MCP-005。UIの移行完了までは旧アクションと同じ単発結果を維持し、捕捉DTOの省略をMCP起源として扱わない。プロトコルとTauri IPCを区別する。JS権限を広げない。
 
 ## MCP-007: サービスイベントから画面の表示を更新する
-- status: todo
+- status: done
 - done-when: NE05。UIの外から来た値設定がInspectorとOutlinerに出るvitestがあり、renameと構造編集も更新される。engineのscene.treeChanged/object.changedを発行しない模型で通る。世代・改訂が古いイベントを捨て、購読開始と欠落時に要約・必要なスナップショットを再取得する。イベント購読を解除しStrictModeの古い取得応答で上書きしない。表示snapshot/treeに適用改訂を保持し、古い取得応答で改訂を巻き戻さない。
 - verify: `pnpm -C apps/editor typecheck`
 - verify: `pnpm -C apps/editor test`
