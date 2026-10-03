@@ -4,7 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
-- (反復ごとに1行: タスク id、コミット、検証の要点)
+- MCP-010: 部分失敗した先頭まとまりの名前・出どころ・件数・進捗と復旧操作を表示し、結果不明では再試行を出さず状態確認・破棄へ案内。保留中は編集領域・Ctrl+Z/Y・通常undo/redo・実行制御を無効化し、破棄後に残る変更を通知。typecheck exit 0、vitest 627/627。証拠 `.harness/runs/20261003-035149/verify-MCP-010-5.txt` / `verify-MCP-010-6.txt`。
 - MCP-009 差し戻し対応: 部分失敗のエラー経路でBridge世代を履歴ロックより先に読み、履歴参照側とロック順を統一してデッドロックを防止。fmt/clippy/cargo test（218単体+14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべて成功。証拠 `.harness/runs/20261003-035149/verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt`。
 - MCP-009: 名前・出どころ・時刻を持つまとまりと逆順undo/順redoを実装。部分失敗では成功位置と未処理部分を保留し、既知拒否だけを再試行して成功分を重複適用しない。結果不明のtimeout/通信断は再送せず、破棄結果に残存変更を返す。新IDのまとまり内置換、世代切り替え、保留中の編集・undo/redo・play/pause/stop拒否を試験。fmt/clippy/cargo test（218単体+14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべて成功。証拠 `.harness/runs/20261003-035149/verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt`。
 - MCP-008: 画面storeから編集履歴の正本と逆操作を外し、編集・undo/redo・実行制御を共通サービスのTauri入口へ接続。旧値/親と適用改訂の捕捉、要約イベントによる表示、捕捉不足時の再取得と再操作案内を画面側試験で確認し、連打中の二重送信と自動キー反復も抑止。typecheck exit 0、vitest 621/621、IPC名35 commands/13 events一致。証拠 `.harness/runs/20261003-035149/verify-MCP-008-7.txt`〜`verify-MCP-008-9.txt`。
@@ -33,10 +33,10 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-009完了、次はMCP-010。
+- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-010完了、次はMCP-011。
 
 ## Next
-- 次のタスク: MCP-010（まとまりの要約と失敗時の選択を画面へ出す）。
+- 次のタスク: MCP-011（MCP の設定と保護したトークンを保存する）。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -47,6 +47,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-03 MCP-010: 要約イベントを画面へ反映し、再試行/状態確認/破棄をTauri共通経路へ接続。結果不明の再試行なし、破棄後の残存変更を表示。最終 typecheck と vitest の出力を開いて確認。
 - 2026-10-03 MCP-009差し戻し: 部分失敗処理で世代ロック→履歴ロックの順に統一。指定された最終ゲート5件はexit 0で、保存ログを開いて確認した。
 - 2026-10-03 MCP-009: 開始ゲート `scripts/verify.ps1` exit 0。最終 fmt/clippy/cargo test（218単体・14統合）/IPC名照合（37 commands・13 events）/pnpm typecheck はすべてexit 0。実Bridge要求timeout後の結果不明・保留要約・再送なし・再接続世代変更による解消を新試験で確認し、保存ログを開いて合格を確認。
 - 2026-10-03 MCP-008: 開始ゲート `./scripts/verify.ps1` と最終 `pnpm -C apps/editor typecheck` / `pnpm -C apps/editor test` / `node scripts/check-protocol-names.mjs` はすべて exit 0。保存ログを開いて確認し、フロントエンドvitest 621/621、IPC名35 commands/13 events一致。store・hookに画面履歴の記録/逆操作が残らないことも検索で確認した。

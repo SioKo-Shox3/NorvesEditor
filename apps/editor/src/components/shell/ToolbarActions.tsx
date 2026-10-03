@@ -23,6 +23,7 @@
 import type React from 'react';
 import { useBridgeState } from '../../state/BridgeContext.js';
 import { useBridgeActions } from '../../hooks/useBridge.js';
+import { HistoryProblemNotice } from '../HistoryProblemNotice.js';
 import { StatusBadge } from './StatusBadge.js';
 
 // -------------------------------------------------------------------------
@@ -129,6 +130,7 @@ export function ToolbarActions({
         status={connectionStatus}
         label={STATUS_LABELS[connectionStatus]}
       />
+      <HistoryProblemNotice />
 
       <Sep />
 

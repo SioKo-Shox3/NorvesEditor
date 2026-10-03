@@ -88,6 +88,10 @@ function makeActions(overrides: Partial<BridgeActions> = {}): BridgeActions {
     selectObject:      vi.fn(),
     undo:              vi.fn().mockResolvedValue(undefined),
     redo:              vi.fn().mockResolvedValue(undefined),
+    retryPendingEdit:   vi.fn().mockResolvedValue(undefined),
+    discardPendingEdit: vi.fn().mockResolvedValue(undefined),
+    refreshEditHistory: vi.fn().mockResolvedValue(undefined),
+    dismissEditDiscardResult: vi.fn(),
     ...overrides,
   };
 }
@@ -437,6 +441,56 @@ describe('ToolbarActions Undo/Redo', () => {
     );
     setState(pending);
     expect(undoBtn().disabled).toBe(true);
+  });
+
+  it('shows pending group details and offers retry and discard', () => {
+    setup('connected', {}, {}, {
+      editHistorySummary: makeHistory({
+        pending: true,
+        pendingGroup: {
+          id: 'edit-3-12',
+          name: '3つの値を変更',
+          direction: 'undo',
+          source: 'ui',
+          createdAt: 12,
+          totalCount: 3,
+          completedCount: 1,
+          outcomeUnknown: false,
+          retryAllowed: true,
+        },
+      }),
+    });
+
+    expect(screen.getByRole('alertdialog').textContent).toContain('3つの値を変更');
+    expect(screen.getByText('出どころ: 画面操作')).toBeTruthy();
+    expect(screen.getByText('1 / 3 件を処理済み')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '再試行' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '破棄' })).toBeTruthy();
+    expect(document.querySelector('.history-problem-shield')).not.toBeNull();
+  });
+
+  it('does not offer retry when the pending result is unknown', () => {
+    setup('connected', {}, {}, {
+      editHistorySummary: makeHistory({
+        pending: true,
+        pendingGroup: {
+          id: 'edit-3-13',
+          name: '不明な結果のまとまり',
+          direction: 'redo',
+          source: 'mcp',
+          createdAt: 13,
+          totalCount: 2,
+          completedCount: 1,
+          outcomeUnknown: true,
+          retryAllowed: false,
+        },
+      }),
+    });
+
+    expect(screen.queryByRole('button', { name: '再試行' })).toBeNull();
+    expect(screen.getByRole('button', { name: '状態を確認' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '破棄' })).toBeTruthy();
+    expect(screen.getByText(/結果は不明です/)).toBeTruthy();
   });
 });
 

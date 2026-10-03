@@ -27,6 +27,7 @@ import type {
   AssetManifestPayload,
   ConnectionStatePayload,
   EditAppliedPayload,
+  EditDiscardResult,
   EditHistorySummary,
   UiParentCapture,
   UiPropertyCapture,
@@ -78,13 +79,42 @@ function isEditHistorySummary(value: unknown): value is EditHistorySummary {
     return false;
   }
   const summary = value as Partial<EditHistorySummary>;
+  const pendingGroup = summary.pendingGroup;
+  const validPendingGroup =
+    pendingGroup === undefined ||
+    pendingGroup === null ||
+    (typeof pendingGroup === 'object' &&
+      typeof pendingGroup.id === 'string' &&
+      typeof pendingGroup.name === 'string' &&
+      (pendingGroup.direction === 'undo' || pendingGroup.direction === 'redo') &&
+      (pendingGroup.source === 'ui' || pendingGroup.source === 'mcp') &&
+      typeof pendingGroup.createdAt === 'number' &&
+      typeof pendingGroup.totalCount === 'number' &&
+      typeof pendingGroup.completedCount === 'number' &&
+      typeof pendingGroup.outcomeUnknown === 'boolean' &&
+      typeof pendingGroup.retryAllowed === 'boolean');
   return (
     (summary.generation === null || typeof summary.generation === 'number') &&
     typeof summary.historyRevision === 'number' &&
     typeof summary.appliedRevision === 'number' &&
     typeof summary.canUndo === 'boolean' &&
     typeof summary.canRedo === 'boolean' &&
-    typeof summary.pending === 'boolean'
+    typeof summary.pending === 'boolean' &&
+    validPendingGroup
+  );
+}
+
+function isEditDiscardResult(value: unknown): value is EditDiscardResult {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const result = value as Partial<EditDiscardResult>;
+  return (
+    typeof result.groupId === 'string' &&
+    typeof result.completedCount === 'number' &&
+    typeof result.totalCount === 'number' &&
+    typeof result.outcomeUnknown === 'boolean' &&
+    typeof result.changesRemain === 'boolean'
   );
 }
 
@@ -625,6 +655,14 @@ export interface BridgeActions {
   undo: () => Promise<void>;
   /** 履歴要約の先頭ID・改訂を指定して、編集サービスへやり直しを依頼する。 */
   redo: () => Promise<void>;
+  /** 保留中のまとまりの未処理部分だけを再試行する。 */
+  retryPendingEdit?: () => Promise<void>;
+  /** 保留中のまとまりを破棄し、その結果を画面へ残す。 */
+  discardPendingEdit?: () => Promise<void>;
+  /** 編集サービスから最新の履歴要約を取得する。 */
+  refreshEditHistory?: () => Promise<void>;
+  /** 破棄結果の通知を閉じる。 */
+  dismissEditDiscardResult?: () => void;
 }
 
 /**
@@ -650,6 +688,7 @@ export function useBridgeActions(): BridgeActions {
   // undo/redo実行中の二重送信を防ぐ。
   const undoInFlightRef = useRef(false);
   const redoInFlightRef = useRef(false);
+  const pendingActionInFlightRef = useRef(false);
 
   const openWorkspace = useCallback(async (rootPath: string): Promise<void> => {
     try {
@@ -874,6 +913,76 @@ export function useBridgeActions(): BridgeActions {
     }
   }, [dispatch]);
 
+  const retryPendingEdit = useCallback(async (): Promise<void> => {
+    const current = stateRef.current;
+    const pendingGroup = current.editHistorySummary?.pendingGroup;
+    if (
+      pendingActionInFlightRef.current ||
+      current.connection.status !== 'connected' ||
+      current.editHistorySummary?.pending !== true ||
+      pendingGroup === undefined ||
+      pendingGroup === null ||
+      pendingGroup.outcomeUnknown ||
+      !pendingGroup.retryAllowed
+    ) {
+      return;
+    }
+    pendingActionInFlightRef.current = true;
+    try {
+      await invokeCommand(BRIDGE_COMMANDS.editRetry);
+    } catch (err: unknown) {
+      const { kind, message } = extractBackendError(err);
+      dispatch({
+        type: 'errorReported',
+        payload: { error: { code: kind ?? 'EDIT_RETRY_FAILED', message } },
+      });
+    } finally {
+      await refreshEditHistory();
+      pendingActionInFlightRef.current = false;
+    }
+  }, [dispatch, refreshEditHistory]);
+
+  const discardPendingEdit = useCallback(async (): Promise<void> => {
+    const current = stateRef.current;
+    if (
+      pendingActionInFlightRef.current ||
+      current.connection.status !== 'connected' ||
+      current.editHistorySummary?.pending !== true
+    ) {
+      return;
+    }
+    pendingActionInFlightRef.current = true;
+    try {
+      const result = await invokeCommand<EditDiscardResult>(BRIDGE_COMMANDS.editDiscard);
+      if (isEditDiscardResult(result)) {
+        dispatch({ type: 'editDiscardResultReceived', result });
+      } else {
+        dispatch({
+          type: 'errorReported',
+          payload: {
+            error: {
+              code: 'EDIT_DISCARD_INVALID_RESULT',
+              message: '破棄結果を読み取れませんでした。履歴の状態を確認してください。',
+            },
+          },
+        });
+      }
+    } catch (err: unknown) {
+      const { kind, message } = extractBackendError(err);
+      dispatch({
+        type: 'errorReported',
+        payload: { error: { code: kind ?? 'EDIT_DISCARD_FAILED', message } },
+      });
+    } finally {
+      await refreshEditHistory();
+      pendingActionInFlightRef.current = false;
+    }
+  }, [dispatch, refreshEditHistory]);
+
+  const dismissEditDiscardResult = useCallback((): void => {
+    dispatch({ type: 'editDiscardResultDismissed' });
+  }, [dispatch]);
+
   const getSceneTree = useCallback(async (): Promise<void> => {
     const requestId = nextSnapshotRequestId();
     const requestState = stateRef.current;
@@ -913,6 +1022,9 @@ export function useBridgeActions(): BridgeActions {
 
   const createObject = useCallback(
     async (parentId?: string, kind?: string): Promise<SceneCreateObjectResult> => {
+      if (stateRef.current.editHistorySummary?.pending === true) {
+        return { accepted: false };
+      }
       try {
         const args: { parentId?: string; kind?: string } = {};
         if (parentId !== undefined) {
@@ -952,6 +1064,9 @@ export function useBridgeActions(): BridgeActions {
 
   const deleteObject = useCallback(
     async (objectId: string): Promise<SceneDeleteObjectResult> => {
+      if (stateRef.current.editHistorySummary?.pending === true) {
+        return { accepted: false };
+      }
       try {
         const result = await invokeCommand<SceneDeleteObjectResult>(
           BRIDGE_COMMANDS.sceneDeleteObject,
@@ -982,6 +1097,9 @@ export function useBridgeActions(): BridgeActions {
 
   const reparentObject = useCallback(
     async (objectId: string, newParentId?: string): Promise<SceneReparentObjectResult> => {
+      if (stateRef.current.editHistorySummary?.pending === true) {
+        return { accepted: false };
+      }
       // 親IDと、そのツリーが反映している世代・改訂を呼び出し前に捕捉する。
       const captureState = stateRef.current;
       const freshTree = captureState.sceneTree;
@@ -1045,6 +1163,9 @@ export function useBridgeActions(): BridgeActions {
 
   const duplicateObject = useCallback(
     async (objectId: string, newParentId?: string): Promise<SceneDuplicateObjectResult> => {
+      if (stateRef.current.editHistorySummary?.pending === true) {
+        return { accepted: false };
+      }
       try {
         const args: { objectId: string; newParentId?: string } = { objectId };
         if (newParentId !== undefined) {
@@ -1167,6 +1288,7 @@ export function useBridgeActions(): BridgeActions {
       const currentState = stateRef.current;
       const startSessionId = currentState.connection.sessionId;
       if (
+        currentState.editHistorySummary?.pending === true ||
         currentState.connection.status !== 'connected' ||
         startSessionId === undefined ||
         currentState.connection.capabilityNames?.has('component.edit') !== true
@@ -1256,6 +1378,9 @@ export function useBridgeActions(): BridgeActions {
       property: string,
       value: unknown,
     ): Promise<SetObjectPropertyResult> => {
+      if (stateRef.current.editHistorySummary?.pending === true) {
+        return { accepted: false };
+      }
       // 旧値とsnapshotの世代・改訂をTauri呼び出し前に捕捉する。
       const captureState = stateRef.current;
       const priorSnapshot =
@@ -1566,5 +1691,9 @@ export function useBridgeActions(): BridgeActions {
     selectObject,
     undo,
     redo,
+    retryPendingEdit,
+    discardPendingEdit,
+    refreshEditHistory,
+    dismissEditDiscardResult,
   };
 }

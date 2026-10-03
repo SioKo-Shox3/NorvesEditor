@@ -35,6 +35,7 @@ import type {
   AssetResolveResult,
   ConnectionStatePayload,
   EditAppliedPayload,
+  EditDiscardResult,
   EditHistorySummary,
   WorkspacePayload,
 } from '@norves/bridge-ui';
@@ -545,6 +546,8 @@ export interface BridgeState {
   viewportThumbnailUnsupported?: boolean;
   /** 編集サービスが保持する履歴要約。 */
   editHistorySummary?: EditHistorySummary;
+  /** 部分失敗の破棄結果。残った変更を知らせるため一時表示する。 */
+  editDiscardResult?: EditDiscardResult;
   /** 編集サービスが発行した世代。Bridge UI の世代とは別。 */
   editServiceGeneration?: number;
   /** 画面に観測済みの最新の適用改訂。 */
@@ -610,6 +613,8 @@ export type BridgeAction =
   | { type: 'viewportStateChanged'; payload: ViewportStateChangedEvent }
   | { type: 'editApplied'; payload: EditAppliedPayload }
   | { type: 'editHistorySummaryReceived'; summary: EditHistorySummary }
+  | { type: 'editDiscardResultReceived'; result: EditDiscardResult }
+  | { type: 'editDiscardResultDismissed' }
   /**
    * A scene.treeChanged live event arrived (protocol 0.2, engine-emitted).
    * Best-effort: when fullRefreshRequired is set the store records a refetch
@@ -1025,6 +1030,7 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         viewportThumbnailUnsupported: p.connected ? false : state.viewportThumbnailUnsupported,
         editHistorySummary:
           p.connected && !connectionChanged ? state.editHistorySummary : undefined,
+        editDiscardResult: connectionChanged ? undefined : state.editDiscardResult,
         editServiceGeneration:
           p.connected && !connectionChanged ? state.editServiceGeneration : undefined,
         editAppliedRevision:
@@ -1189,6 +1195,14 @@ export function bridgeReducer(state: BridgeState, action: BridgeAction): BridgeS
         editAppliedRevision: incoming.appliedRevision,
         editSequence: generationChanged ? undefined : state.editSequence,
       };
+    }
+
+    case 'editDiscardResultReceived': {
+      return { ...state, editDiscardResult: action.result };
+    }
+
+    case 'editDiscardResultDismissed': {
+      return { ...state, editDiscardResult: undefined };
     }
 
     case 'sceneTreeChangedLive': {
