@@ -35,12 +35,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # crates by explicit relative path (no workspace inheritance available here).
 norves-bridge-editor-client = { path = "../../../bridge/crates/norves-bridge-editor-client" }
 norves-bridge-core = { path = "../../../bridge/crates/norves-bridge-core" }
-# rt-multi-thread + macros: parity with the runtime Tauri spins up. sync: the
-# Mutex/Notify guarding the connection state. time: Duration-bounded request
-# awaits. net/io-util are pulled transitively by the editor-client WS transport.
-# process: tokio::process::Command for spawning/awaiting the engine child
-# process (Workstream J).
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
+# Tauriと同じ実行環境を使い、同期機構・期限・子プロセス・loopback HTTP接続を扱う。
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "net", "io-util"] }
 tracing = "0.1"
 # バックエンドの警告(Job への割り当て失敗など)を stderr とログファイルへ出す(`src/backend_log.rs`)。bridge ワークスペースと同じ 0.3 系。
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
@@ -53,6 +49,19 @@ base64 = "0.23"
 getrandom = "0.4"
 subtle = "2.6"
 url = "2"
+
+# loopback MCP のHTTP入口と公式Streamable HTTPサーバー。
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+rmcp = { version = "3.5.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+# 要求取消しとHTTPサーバーの終了通知に使う。
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[dev-dependencies]
+# loopback HTTPの実試験とRMCPのDiscover/Initializeクライアント。
+reqwest = { version = "0.13", default-features = false }
+rmcp = { version = "3.5.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+# Router境界の単体試験で使うServiceExt。
+tower = { version = "0.5", default-features = false, features = ["util"] }
 
 # エディタが強制終了してもエンジンが残らないよう、起動した子を Job Object に入れる
 # (`src/job_object.rs`)。依存木に既にある 0.61 系に揃える。

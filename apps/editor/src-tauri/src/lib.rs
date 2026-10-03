@@ -14,6 +14,8 @@ mod edit_service;
 mod engine_settings;
 mod error;
 mod events_map;
+pub mod mcp;
+pub mod mcp_token;
 // Windows 限定: 起動したエンジンをエディタの寿命に縛る Job Object。
 #[cfg(windows)]
 mod job_object;
