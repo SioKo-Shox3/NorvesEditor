@@ -438,7 +438,16 @@ M2 の共通規則:
 - status: done
 - done-when: NE01の管理用文書同期。MyWorkflowの正本architecture/tauri-securityが編集サービス・loopback MCP・秘密保護を記録し、deploy後の管理外コピーが一致する。NorvesEditor製品文書と矛盾しない。
 - verify: `git -C ../MyWorkflow diff main --check`
-- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "if ((Get-FileHash 'docs/agent-guide/architecture.md').Hash -ne (Get-FileHash '../MyWorkflow/projects/NorvesEditor/agent-guide/architecture.md').Hash) { exit 1 }; if ((Get-FileHash 'docs/agent-guide/tauri-security.md').Hash -ne (Get-FileHash '../MyWorkflow/projects/NorvesEditor/agent-guide/tauri-security.md').Hash) { exit 1 }"`
+- verify: `node -e "const fs=require('fs'),crypto=require('crypto');for(const name of ['architecture.md','tauri-security.md']){const hash=p=>crypto.createHash('sha256').update(fs.readFileSync(p+name)).digest('hex');const a=hash('docs/agent-guide/'),b=hash('../MyWorkflow/projects/NorvesEditor/agent-guide/');if(a!==b)throw new Error('GUIDE_SHA256_MISMATCH: '+name);console.log('GUIDE_SHA256_OK',name,a)}"`
 - verify: `node -e "const fs=require('fs');const a=fs.readFileSync('../MyWorkflow/projects/NorvesEditor/agent-guide/architecture.md','utf8');const t=fs.readFileSync('../MyWorkflow/projects/NorvesEditor/agent-guide/tauri-security.md','utf8');if(!a.includes('edit_service')||!a.includes('127.0.0.1')||!t.includes('mcp-token.bin')||!t.includes('127.0.0.1'))process.exit(1)"`
 - paths: ../MyWorkflow/projects/NorvesEditor/agent-guide/architecture.md, ../MyWorkflow/projects/NorvesEditor/agent-guide/tauri-security.md
 - notes: 先行 MCP-001。別repo文書2本だけの変更をM1承認へ含める。MyWorkflowの合意を読み専用ブランチで編集・コミット・deployする。展開コピーの直接編集/mainコミット/push禁止。不可ならblockedにして他タスクを止めない。MyWorkflowのコミットも進捗へ記録する。
+
+## MCP-030: 列へ入らなかったまとまり制御の拒否を確定表示する
+- status: todo
+- done-when: NE14。edit_begin_group/edit_end_groupの入力検証・ReadOnly・未接続・許可失効などにより制御の列へ入る前に拒否された要求は、記録の結果・適用状態・actorFinishedが確定済みとして整合し、画面で結果確認中のまま残らない。制御ticketを発行した要求と発行していない要求を型または明示的な状態で識別し、道具名だけで未確定を判断しない。制御列に入った要求の取消・終了・後続のactor確定、通常の編集・履歴・結果不明・自動再送禁止は保持する。秘密groupId/確認ID/トークンを記録しない。両版の公開道具経路で列前の拒否と記録の終端を検証し、queued制御の取消と確定の試験を通す。要件文書と試験対応表へ修正証拠を残す。
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets --features mcp-e2e -- -D warnings`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
+- paths: apps/editor/src-tauri/src/mcp/writes.rs, apps/editor/src-tauri/src/mcp/operations.rs, apps/editor/src-tauri/src/mcp/operations/**, apps/editor/src-tauri/src/edit_service/mcp.rs, apps/editor/src-tauri/src/edit_service/mcp_tests.rs, apps/editor/src-tauri/src/edit_service/writes_tests.rs, docs/mcp-and-edit-layer-requirements.md, docs/mcp-undo-test-mapping.md
+- notes: 先行MCP-028/029。MCP-028評価PASSのnon-blocking 1をNE14の既存契約内で修復する。根拠は.harness/mcp-review-follow-up-028.md。列前拒否を認可・入力検査を飛ばして成功扱いにせず、記録の終端だけを正しくする。進行中の制御ticketを早まって確定させない。試験を削除・SKIP・弱化しない。新規依存/Bridge仕様/SDK/mock/NorvesLib/GUI実機操作は不要。Rustのasync寿命と許可境界の評価はランナーが行い、コミット本文を付ける。元のMCP-028の完了条件・検証・PASSは保持する。

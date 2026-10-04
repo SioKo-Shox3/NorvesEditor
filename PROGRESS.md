@@ -4,6 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
+- MCP-029差し戻し対応: ランナー経由で失敗したGet-FileHashのSHA256照合をNode.js標準cryptoへ置換した。正本と展開コピーの2本を同じアルゴリズムで比較し、読取り失敗・不一致を拒否する。指定3検査をランナーと同じcmd.exe経由で実行し、verify-MCP-029-7〜-9.txtを開いて全exit 0と2本の一致を確認。deploy --checkも-10.txtで追加差分なし、exit 0。MyWorkflowの951e3cdと展開済み2本は維持し、製品文書との整合を再確認した。旧検証失敗と再現失敗-6.txtは保持。MCP-030の具体計画をそのままtodoへ追加した。
 - MCP-029: MyWorkflow正本のarchitecture/tauri-securityにedit_serviceの共通列・履歴・世代・停止、127.0.0.1限定MCP、Bearer/Host/Origin、mcp-token.binのDPAPI/Unix権限・失効、確認・秘密非記録を同期した。製品ADR/要件11・13章と照合し、既存の要求ID衝突と確認capability未分離も記載。専用ブランチdocs/norveseditor-mcp-guideのコミット951e3cdをNorvesEditorへ展開し、write=2 / uptodate=45 / drift-skip=0、展開検証OK。指定3検査はexit 0、保存出力20261004-170201/verify-MCP-029-1〜-5.txtを開き、正本と管理外コピー2本のSHA256一致を確認した。
 - MCP-028: NE07〜NE14の全受入を現行差分で検証した。実mockと本番McpServices/actorを使い、Discover/Initialize、両版の通知、認証・Host/Origin、読み取り/ログ/画像、許可/範囲/確認、共通列/履歴/名前付きまとまり、部分失敗、再接続、トークン再生成、終了を確認。取消後の現行unknown応答と表示ID、旧版の結果なしSSE終了、両版の同じ操作記録の適用/拒否への確定をassertし、スクリプトの必須証拠へ追加した。集約-Cpp・fmt・通常clippy・feature付きclippy・verify-mcp-e2eがexit 0。Rust405件・両版受入1件・実mockログ1件（SKIP/ignoredなし）、C++8/8、画面699件、IPC46/15一致。保存出力20261004-170201/verify-MCP-028-1/-4/-5/-6/-7.txtを開いた。対応表と制限を更新し、評価はランナーがb32115d以後全体に対して行う。
 - MCP-028-B: redoの先行Create/Duplicateだけを認可用ツリーへ順に投影し、後続の値設定・親変更・子作成・再複製を解決する。逆順/未知/既存ID衝突、component所属、範囲外の親・複製元・現在の移動元・移動先の拒否を維持。承認後と列内で同じ処理を通し、存在しないIDの現在値を捏造せず、既存値変化の再確認と部分失敗/再試行を検証した。指定fmt / feature付きclippy / verify-mcp-e2e.ps1はexit 0、Rust単体405件・両版の実HTTP受入1件・実mockログ購読1件成功。保存出力 `.harness/runs/20261004-170201/verify-MCP-028-B-5.txt`〜`-7.txt` を開いて確認。親作成→その親への複製→新IDの値設定→end→MCP undo/redo→UI undoで親IDと値対象IDの再採番を両版で確認。評価は反復後にランナーが行う。
@@ -63,11 +64,11 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP-029は指定検証と正本コミット・展開を完了し、ランナー評価待ち。評価対象はMyWorkflowの951e3cd（親73b2b1a）とNorvesEditorの管理外コピー、保存出力verify-MCP-029-1〜-5.txt。
-- MCP / 編集層の M2: MCP-001〜028と022-A/B・028-A/Bは検証・評価PASS。MCP-028のeval-2.out.txtを開き、b32115d以後の全差分が評価対象と確認した。MCP-029までTASKSはdone。018の過去3失敗/評価差戻し1回、022の過去2回の40分超過、028の40分超過1回と停止時点の未評価を保持する。
+- MCP-029は検証コマンドの修復と再検証を完了し、ランナー評価待ち。評価対象はMyWorkflowの951e3cd（親73b2b1a）、NorvesEditorの展開コピー2本とTASKSのSHA256照合、verify-MCP-029-7〜-10.txt。初回展開の証拠-1〜-5.txtと失敗-6.txtも保持する。
+- MCP / 編集層の M2: MCP-001〜028と022-A/B・028-A/Bは検証・評価PASS。MCP-028のeval-2.out.txtを開き、b32115d以後の全差分が評価対象と確認した。MCP-029までTASKSはdone、追加のMCP-030はtodo。018の過去3失敗/評価差戻し1回、022の過去2回の40分超過、028の40分超過1回と停止時点の未評価を保持する。
 
 ## Next
-- MCP-029のランナー評価後、残る指摘とGUI実機未確認を対話メインへ引き継ぐ。未完タスクはない。MyWorkflowの文書コミットはdocs/norveseditor-mcp-guide上の951e3cdで未マージ・未push。MCP-028の証拠は20261004-170201/verify-MCP-028-1/-4/-5/-6/-7.txt、受入対応はdocs/mcp-undo-test-mapping.md、残る挙動は要件文書13節。GUI実機の配置・狭幅・Tauri窓間操作は未確認。
+- MCP-029のランナー評価後はMCP-030を1反復で実装・検証し、列前に拒否されたbegin/endの記録と表示を確定させる。計画は.harness/mcp-030-plan.mdからTASKSへそのまま追加済み。全体は未完。MyWorkflowの文書コミットはdocs/norveseditor-mcp-guide上の951e3cdで未マージ・未push。MCP-028の証拠は20261004-170201/verify-MCP-028-1/-4/-5/-6/-7.txtと.harness/mcp-review-follow-up-028.md。受入対応はdocs/mcp-undo-test-mapping.md、残る挙動は要件文書13節。GUI実機の配置・狭幅・Tauri窓間操作は未確認。
 - 本番/実mockの入口はMcpServices、受入窓口はHeadlessEditor。操作記録は現在の起動の最新500件、過去起動分はJSONLのみ。resultは結果分類で、取消後のactor確定でも更新される。outcomeは実適用状態。displayGroupIdが共通履歴の先頭と一致するときだけUI undoを許可する。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
@@ -79,6 +80,8 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-04 MCP-029再検証完了: SHA256照合の検査対象・一致条件は変更せず、PowerShellモジュール解決に依存しないNode.jsコマンドを採用した。変更はTASKSの当該verify・MCP-030追加とPROGRESSのみ。正本2本は既存コミット951e3cdで同期済みのため追加編集・コミット・再展開は不要だった。開始ゲート、指定3検査、deploy差分確認の保存出力を開いた。過去の失敗・停止・未評価記録は維持し、4777013と175a8ab/ae90c34の文面整理は全タスク評価完了と停止後の対話メインへ残す。
+- 2026-10-04 MCP-029再検証開始: 完了条件は正本2文書の所有権・loopback・秘密保護と製品文書との整合、展開コピーのSHA256一致を維持する。開始verify.ps1はexit 0（画面699件、IPC46/15一致）。ランナーと同じnode→cmd.exe→powershellでGet-FileHash未解決を再現し、PowerShell 7/5.1のモジュール検索パス混在を確認した（verify-MCP-029-6.txt、exit 1）。SHA256照合をNode.js標準cryptoへ置換し、ファイル不在・読取り失敗・不一致は失敗にする。指定3検査を同じcmd.exe経由で保存・閲読してからdoneとし、管理ガイドの追加変更や再展開が必要な場合も許可2文書以外に差分があれば停止する。MCP-030は提示された計画を将来タスクとしてそのまま追加し、この反復で製品コードを変更しない。
 - 2026-10-04 MCP-029完了時: MyWorkflowの合意どおり正本2本を専用ブランチでコミットしてからdeployした。展開前の--checkでSAFEの2本のみ、削除・ドリフト・配線変更なしを確認し、削除行もdiffで読んだ。稼働中ランナーのため--apply --force NorvesEditorを使い、出力で文書2本だけの更新と展開後検証OKを確認。正本・展開コピーの直接編集の混在はなく、両repoのmainへのコミット・pushはない。通常/ignore-cr-at-eolのnumstatも一致。製品コード・製品文書は変更していない。MCP-028評価の非阻害指摘として、begin/endの列前拒否でactorFinished=falseが残る表示、旧途中保存コミットの文面、GUI未確認を対話メインへ残す（eval-2.out.txt、今回は修正範囲外）。
 - 2026-10-04 MCP-029開始時: 完了条件はMyWorkflow正本のarchitecture/tauri-securityへedit_serviceの所有権・127.0.0.1限定MCP・秘密保護を同期し、製品ADR/要件と整合させ、deploy後の2本のハッシュが一致すること。指定のdiff main --check・ハッシュ照合・内容検査を保存して開く。開始verify.ps1はexit 0（画面699件、IPC46/15一致、C++は対象外）。専用ブランチdocs/norveseditor-mcp-guideで2本だけを変更・コミットし、展開予定と削除行を確認してから展開する。稼働中ランナーのため必要な--forceは文書2本以外の内容差分が無い場合だけ使用し、範囲外の変更・ドリフト・削除・製品判断が必要なら停止する。
 - 2026-10-04 MCP-028完了時: 018/022-B/022/024/025/026/027/028-Aの引き継ぎと028-B評価PASSを照合した。追加の.harness/mcp-review-follow-up-028-B.mdも開き、ノードIDと未照会component IDの保証を区別した。過去コミットの整理はランナー停止後の対話メインへ残し、この反復では履歴を書き換えない。現行版のID衝突/遅延取消、本文30秒と受信後125秒、Enabledでの再確認、単発undo拒否の保留/破棄、未送信/拒否/unknown、部分木parentId/nullと旧世代cursor失効、同値で無操作期限を延長しない挙動を要件文書へ保持。028-Bのcomponent衝突検査範囲と衝突文言、取消後はresultも更新され原因を独立保持しないことを追記。旧組み立て入口、同期保存/500件通知、期限文言依存、確認capability分離とGUI未確認も残す。取消応答の新assertでresultをcancelledと期待した初回失敗-2（exit 101）は、result_kindがunknownを優先する既存契約を照合して修正し、-4で両版4ケースと全受入が成功。新規依存・NorvesLib実行・画面操作はない。
