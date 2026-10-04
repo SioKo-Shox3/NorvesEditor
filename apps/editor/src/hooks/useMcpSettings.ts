@@ -12,7 +12,9 @@ import {
   getMcpToken,
   regenerateMcpToken,
   setMcpSettings,
+  setMcpWriteAccess,
   type McpSettingsPayload,
+  type McpWriteMode,
 } from '@norves/bridge-ui';
 import { extractBackendError } from './useBridge.js';
 
@@ -27,10 +29,15 @@ export interface McpSettingsState {
   busy: boolean;
   enabledDraft: boolean;
   portDraft: string;
+  writeModeDraft: McpWriteMode;
+  sceneRootDraft: string;
   token: string | undefined;
   tokenBusy: boolean;
   setEnabledDraft: (enabled: boolean) => void;
   setPortDraft: (port: string) => void;
+  setWriteModeDraft: (mode: McpWriteMode) => void;
+  setSceneRootDraft: (root: string) => void;
+  saveWriteAccess: () => void;
   saveSettings: () => void;
   showToken: () => void;
   hideToken: () => void;
@@ -49,7 +56,10 @@ function isMcpSettingsPayload(value: unknown): value is McpSettingsPayload {
     (v['state'] === 'disabled' || v['state'] === 'running' ||
       v['state'] === 'bindFailed' || v['state'] === 'storageFailed') &&
     (v['endpoint'] === undefined || typeof v['endpoint'] === 'string') &&
-    (v['error'] === undefined || typeof v['error'] === 'string')
+    (v['error'] === undefined || typeof v['error'] === 'string') &&
+    (v['writeMode'] === undefined || v['writeMode'] === 'readOnly' ||
+      v['writeMode'] === 'enabled' || v['writeMode'] === 'confirm') &&
+    (v['sceneRootId'] === undefined || typeof v['sceneRootId'] === 'string')
   );
 }
 
@@ -76,6 +86,8 @@ export function useMcpSettings(): McpSettingsState {
   const [busy, setBusy] = useState(true);
   const [enabledDraft, setEnabledDraft] = useState(false);
   const [portDraft, setPortDraft] = useState('49770');
+  const [writeModeDraft, setWriteModeDraft] = useState<McpWriteMode>('readOnly');
+  const [sceneRootDraft, setSceneRootDraft] = useState('');
   const [token, setToken] = useState<string | undefined>(undefined);
   const [tokenBusy, setTokenBusy] = useState(false);
   const busyRef = useRef(true);
@@ -88,6 +100,8 @@ export function useMcpSettings(): McpSettingsState {
     setSettings(next);
     setEnabledDraft(next.enabled);
     setPortDraft(String(next.port));
+    setWriteModeDraft(next.writeMode ?? 'readOnly');
+    setSceneRootDraft(next.sceneRootId ?? '');
   }, []);
 
   const run = useCallback(
@@ -147,6 +161,12 @@ export function useMcpSettings(): McpSettingsState {
     setToken(undefined);
   }, []);
 
+  const saveWriteAccess = useCallback((): void => {
+    if (busyRef.current || tokenBusyRef.current) return;
+    const root = sceneRootDraft.trim();
+    run(() => setMcpWriteAccess(writeModeDraft, root || undefined));
+  }, [writeModeDraft, sceneRootDraft, run]);
+
   const showToken = useCallback((): void => {
     if (busyRef.current || tokenBusyRef.current) return;
     const request = ++tokenRequestRef.current;
@@ -191,10 +211,15 @@ export function useMcpSettings(): McpSettingsState {
     busy,
     enabledDraft,
     portDraft,
+    writeModeDraft,
+    sceneRootDraft,
     token,
     tokenBusy,
     setEnabledDraft,
     setPortDraft,
+    setWriteModeDraft,
+    setSceneRootDraft,
+    saveWriteAccess,
     saveSettings,
     showToken,
     hideToken,

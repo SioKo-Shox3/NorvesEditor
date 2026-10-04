@@ -328,6 +328,48 @@ export function SettingsPanel(_props: IDockviewPanelProps): React.JSX.Element {
                 </div>
               )}
               <div className="col settings-mcp__token-section">
+                <label className="label" htmlFor="mcp-write-mode">書き込みの許可</label>
+                <select
+                  id="mcp-write-mode"
+                  className="input"
+                  value={mcp.writeModeDraft}
+                  disabled={mcp.busy || mcp.tokenBusy}
+                  onChange={(event) => {
+                    const mode = event.target.value;
+                    if (mode === 'readOnly' || mode === 'enabled' || mode === 'confirm') {
+                      mcp.setWriteModeDraft(mode);
+                    }
+                  }}
+                >
+                  <option value="readOnly">読み取りのみ</option>
+                  <option value="enabled">書き込み可</option>
+                  <option value="confirm">書き込みごとに確認</option>
+                </select>
+                <label className="label" htmlFor="mcp-scene-root">許可する部分木のルートID</label>
+                <input
+                  id="mcp-scene-root"
+                  className="input"
+                  value={mcp.sceneRootDraft}
+                  disabled={mcp.busy || mcp.tokenBusy}
+                  onChange={(event) => mcp.setSceneRootDraft(event.target.value)}
+                  placeholder="空欄でシーン全体"
+                  spellCheck={false}
+                />
+                <p className="settings-mcp__note">
+                  アプリ起動時は読み取りのみです。部分木を指定すると、その配下だけを書き込み対象にします。
+                  削除とコンポーネントの取り外しは、書き込み可でも毎回確認します。
+                  許可を変更すると現在の確認待ちは取り下げられます。
+                </p>
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={mcp.busy || mcp.tokenBusy}
+                  onClick={mcp.saveWriteAccess}
+                >
+                  書き込み許可を適用
+                </button>
+              </div>
+              <div className="col settings-mcp__token-section">
                 <span className="label">認証トークン</span>
                 <p className="settings-mcp__note">
                   トークンは通常の設定取得では読み込みません。必要なときに表示し、クライアントの認証情報として設定してください。

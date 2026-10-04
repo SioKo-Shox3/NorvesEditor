@@ -447,6 +447,61 @@ html, body, #root {
   position: relative;
 }
 
+/* 確認パネルを閉じても待ち件数と通知を残す。 */
+.editor-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+
+.editor-layout__dock {
+  flex: 1;
+  min-height: 0;
+}
+
+.mcp-approval-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border);
+  overflow-wrap: anywhere;
+}
+
+.mcp-approvals {
+  height: 100%;
+}
+
+.mcp-approvals__request {
+  border: 1px solid var(--color-border);
+  padding: 8px;
+  overflow-wrap: anywhere;
+}
+
+.mcp-approvals__details {
+  margin: 8px 0;
+}
+
+.mcp-approvals__details dt {
+  color: var(--color-text-muted);
+  margin-top: 8px;
+}
+
+.mcp-approvals pre {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.mcp-approvals__warning {
+  color: var(--color-warning);
+  margin: 8px 0;
+}
+
 /*
  * Secondary windows (Connection / Settings) host a single panel directly,
  * without dockview. The body becomes a padded flex column so the panel fills

@@ -11,6 +11,7 @@ vi.mock('@norves/bridge-ui', () => ({
   getMcpToken: vi.fn(),
   regenerateMcpToken: vi.fn(),
   setMcpSettings: vi.fn(),
+  setMcpWriteAccess: vi.fn(),
 }));
 
 const commands = await import('@norves/bridge-ui');
@@ -54,6 +55,32 @@ afterEach(() => {
 });
 
 describe('useMcpSettings', () => {
+  it('許可変更の連打を抑止し、保存応答のモードと部分木を反映する', async () => {
+    const pending = deferred<McpSettingsPayload>();
+    vi.mocked(commands.setMcpWriteAccess).mockReturnValue(pending.promise);
+    const { result } = renderHook(() => useMcpSettings());
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    act(() => {
+      result.current.setWriteModeDraft('confirm');
+      result.current.setSceneRootDraft(' root-1 ');
+    });
+    act(() => { result.current.saveWriteAccess(); result.current.saveWriteAccess(); });
+    expect(commands.setMcpWriteAccess).toHaveBeenCalledOnce();
+    expect(commands.setMcpWriteAccess).toHaveBeenCalledWith('confirm', 'root-1');
+    await act(async () => { pending.resolve({ ...RUNNING, writeMode: 'confirm', sceneRootId: 'root-1' }); });
+    expect(result.current.settings?.writeMode).toBe('confirm');
+    expect(result.current.sceneRootDraft).toBe('root-1');
+  });
+
+  it('不正な許可モードの応答は入力欄へ反映しない', async () => {
+    vi.mocked(commands.getMcpSettings).mockResolvedValue({ ...DISABLED, writeMode: 'invalid' } as unknown as McpSettingsPayload);
+    const { result } = renderHook(() => useMcpSettings());
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(result.current.settings).toBeUndefined();
+    expect(result.current.writeModeDraft).toBe('readOnly');
+    expect(result.current.error?.message).toContain('不正');
+  });
+
   it('マウント時にバックエンドの設定を読み、保存値を入力欄へ反映する', async () => {
     const { result } = renderHook(() => useMcpSettings());
 

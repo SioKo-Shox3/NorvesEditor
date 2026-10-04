@@ -88,6 +88,39 @@ function renderPanel(options: { strict?: boolean } = {}): void {
 }
 
 describe('SettingsPanel layout reset (P6)', () => {
+  it('許可モードと部分木を取得し、専用コマンドへまとめて適用する', async () => {
+    mockEngineCommands({
+      get_mcp_settings: () => Promise.resolve({ ...DEFAULT_MCP, writeMode: 'confirm', sceneRootId: 'root-old' }),
+      set_mcp_write_access: () => Promise.resolve({ ...DEFAULT_MCP, writeMode: 'enabled', sceneRootId: 'root-new' }),
+    });
+    renderPanel();
+    await screen.findByTestId('mcp-state');
+    const mode = screen.getByLabelText('書き込みの許可') as HTMLSelectElement;
+    const root = screen.getByLabelText('許可する部分木のルートID') as HTMLInputElement;
+    expect(mode.value).toBe('confirm');
+    expect(root.value).toBe('root-old');
+    fireEvent.change(mode, { target: { value: 'enabled' } });
+    fireEvent.change(root, { target: { value: ' root-new ' } });
+    fireEvent.click(button('書き込み許可を適用'));
+    await waitFor(() => expect(root.value).toBe('root-new'));
+    expect(tauriCore.invoke).toHaveBeenCalledWith('set_mcp_write_access', {
+      mode: 'enabled', sceneRootId: 'root-new',
+    });
+    expect(screen.queryByRole('button', { name: '今回だけ承認' })).toBeNull();
+    expect(tauriCore.invoke).not.toHaveBeenCalledWith('get_mcp_confirmations');
+  });
+
+  it('既定は読み取りのみで、空欄の部分木は全体許可として渡す', async () => {
+    mockEngineCommands({ set_mcp_write_access: () => Promise.resolve(DEFAULT_MCP) });
+    renderPanel();
+    await screen.findByTestId('mcp-state');
+    expect((screen.getByLabelText('書き込みの許可') as HTMLSelectElement).value).toBe('readOnly');
+    fireEvent.click(button('書き込み許可を適用'));
+    await waitFor(() => expect(tauriCore.invoke).toHaveBeenCalledWith('set_mcp_write_access', {
+      mode: 'readOnly', sceneRootId: undefined,
+    }));
+  });
+
   it('emits a layout-reset request when the reset button is clicked', () => {
     renderPanel();
     fireEvent.click(screen.getByRole('button', { name: 'レイアウトをリセット' }));

@@ -360,7 +360,7 @@ M2 の共通規則:
 - notes: 先行MCP-022-A/MCP-022-B。元のdone-whenをすべて保持する最終統合。permitを所有権ごと列へ渡し、Bridge I/O前に許可/世代/対象の状態指紋/旧値/履歴改訂/undo先頭を再検証する。変更は型付きの再確認要求で列外へ戻し、確認待ちを列内へ持ち込まない。未開始の取消は送信ゼロ、開始済みはHTTP切断/期限/認証失効でもBridge futureを破棄せず、Bridge自身の期限内に適用済み/拒否/結果不明を区別して履歴へ反映し、多段操作の次の段へ進まない。終了時だけ従来の2秒猶予で中止する。既存のactor_cancels_an_in_flight_mcp_request_when_its_lease_is_revokedはNE13の開始済み結果保全と衝突するため、この契約に沿った試験へ置き換えることを許可し、理由と結果を記録する。Bridge I/O中はロックを持たない。確認IDは秘密として通常ログへ出さない。UI表示はMCP-023。危険地帯の評価・本文必須。
 
 ## MCP-023: 許可モードと確認待ちを画面へ出す
-- status: todo
+- status: done
 - done-when: NE13。モード/部分木指定と確認パネルに対象/前後/出どころ/取り消し可否/delete全履歴破棄が出る。閉じたパネルにも通知と待ち件数が出てクリックで開ける。承認/拒否/120秒期限/取り下げ/初期取得/購読解除をvitestで試験する。確認待ち中もUI編集が動き、read-onlyに承認ボタンを出さない。
 - verify: `pnpm -C apps/editor typecheck`
 - verify: `pnpm -C apps/editor test`
