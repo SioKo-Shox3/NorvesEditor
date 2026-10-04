@@ -416,7 +416,7 @@ M2 の共通規則:
 - notes: 先行MCP-027。MCP-028で計画済みの製品入口切り出しを独立させたもので、新しい機能/依存は追加しない。manifest変更は既存依存のdev-only機能と試験用featureに限定する。Wryを除くサービス入口を本番アダプタからも使い、同じものを実mockへ接続する。最小の実経路の証明と所有権/寿命を閉じ、元のMCP-028の全done-when/verifyは後続で保持する。危険地帯の評価とコミット本文必須。
 
 ## MCP-028-B: MCP redoの認可でまとまり内の依存IDを解決する
-- status: doing
+- status: done
 - done-when: MCP-028の実HTTP受入で見つかった、undoにより消えた作成/複製IDを後続の値設定/親変更/子作成が参照するとMCP redoの認可で拒否される不具合を修正する。再作成順の依存IDを識別し、同じまとまり内の先行Create/Duplicateが生成するIDだけを扱う。既存ID/未知ID/逆順の依存/範囲外の親・移動元・移動先は引き続き検査する。既存のcomponent所属/範囲/現在値の検査を丸ごと省略しない。承認後の列内再検証でも同じ解決規則を使い、通常undo、部分失敗/再試行、旧値変化の再確認を保つ。実HTTPでcreate→その親へのduplicate→新IDの値設定→end→MCP undo/redo→UI undoを両版で成功させ、親IDと値設定対象IDが再採番後のIDになることを確認する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets --features mcp-e2e -- -D warnings`

@@ -74,11 +74,15 @@ impl McpHistoryAction {
     /// この操作より前に再作成される旧IDだけを解決する。範囲はcheck_historyで検証する。
     pub(crate) fn recreates_before(&self, position: usize, object_id: &str) -> bool {
         self.direction == McpHistoryDirection::Redo
-            && self.records.iter().take(position).any(|record| match record {
-                HistoryRecord::Create { created_id, .. }
-                | HistoryRecord::Duplicate { created_id, .. } => created_id == object_id,
-                _ => false,
-            })
+            && self
+                .records
+                .iter()
+                .take(position)
+                .any(|record| match record {
+                    HistoryRecord::Create { created_id, .. }
+                    | HistoryRecord::Duplicate { created_id, .. } => created_id == object_id,
+                    _ => false,
+                })
     }
 }
 
@@ -583,7 +587,7 @@ impl McpSceneScopeIndex {
                         projected
                             .nodes
                             .get_mut(object_id)
-                            .expect("対象を検査済み")
+                            .ok_or(ScopeError::ObjectUnknown)?
                             .parent = new_parent_id
                             .clone()
                             .or_else(|| Some(projected.scene_root_id.clone()));
@@ -1121,6 +1125,12 @@ mod tests {
             },
             create("child", "copy"),
             property("child"),
+            HistoryRecord::Duplicate {
+                source_object_id: "child".to_owned(),
+                created_id: "child-copy".to_owned(),
+                parent_id: None,
+            },
+            property("child-copy"),
         ];
         assert_eq!(scoped.check_history(&redo(records.clone())), Ok(()));
         assert!(
@@ -1130,6 +1140,14 @@ mod tests {
         for records in [
             vec![property("parent"), create("parent", "allowed")],
             vec![create("child", "parent"), create("parent", "allowed")],
+            vec![
+                HistoryRecord::Reparent {
+                    object_id: "parent".to_owned(),
+                    old_parent_id: Some("allowed".to_owned()),
+                    new_parent_id: Some("allowed-child".to_owned()),
+                },
+                create("parent", "allowed"),
+            ],
             vec![create("parent", "allowed"), property("unrelated")],
             vec![
                 HistoryRecord::Duplicate {
@@ -1180,6 +1198,17 @@ mod tests {
                 source_object_id: "outside".to_owned(),
                 created_id: "copy".to_owned(),
                 parent_id: Some("new".to_owned()),
+            },
+            // 親省略の複製先と実際の移動元も、保存した親とは別に検査する。
+            HistoryRecord::Duplicate {
+                source_object_id: "allowed".to_owned(),
+                created_id: "copy".to_owned(),
+                parent_id: None,
+            },
+            HistoryRecord::Reparent {
+                object_id: "allowed".to_owned(),
+                old_parent_id: Some("new".to_owned()),
+                new_parent_id: Some("allowed-child".to_owned()),
             },
             HistoryRecord::Reparent {
                 object_id: "new".to_owned(),

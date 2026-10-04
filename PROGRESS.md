@@ -4,6 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
+- MCP-028-B: redoの先行Create/Duplicateだけを認可用ツリーへ順に投影し、後続の値設定・親変更・子作成・再複製を解決する。逆順/未知/既存ID衝突、component所属、範囲外の親・複製元・現在の移動元・移動先の拒否を維持。承認後と列内で同じ処理を通し、存在しないIDの現在値を捏造せず、既存値変化の再確認と部分失敗/再試行を検証した。指定fmt / feature付きclippy / verify-mcp-e2e.ps1はexit 0、Rust単体405件・両版の実HTTP受入1件・実mockログ購読1件成功。保存出力 `.harness/runs/20261004-170201/verify-MCP-028-B-5.txt`〜`-7.txt` を開いて確認。親作成→その親への複製→新IDの値設定→end→MCP undo/redo→UI undoで親IDと値対象IDの再採番を両版で確認。評価は反復後にランナーが行う。
 - MCP-028の受入追加分: 実HTTPの認証/Host/Origin、現行listen通知、実mockのツリー/部分木/ページ/snapshot/schema/資産/ログ/PNG、ReadOnly拒否理由と未適用、Confirm承認/別窓拒否、Enabledの編集とUI undo、範囲拒否、作成/複製/新IDの値設定とMCP undoまで実行。列前の通常書き込み拒否を確定記録にし、Enabledの列待ち再確認と同値で無操作期限を延長しない試験を追加した。集約-Cpp（C++8/8、画面699件）、fmt、通常clippy、feature付きclippyは成功。受入はRust単体401件成功後にMCP redoで失敗したため、MCP-028全体は未完。コマンド/exit入りのverify-MCP-028-1/-4/-5/-6/-7/-8.txtを開いて確認。026/027/028-Aの評価PASS引き継ぎも読んだ。
 - MCP-028-A: McpServicesで本番と受入のhandler・許可/確認・共通編集列・操作記録を構成し、cfg(test)の書き込み分岐を除去。Bridgeの接続・relayも通知先を注入する共通入口へ切り出した。試験featureの薄いアダプタから本番actorを起動し、実mockとDiscover/Initializeの実HTTPで状態取得、read-only拒否、Enabled編集、Confirm承認、UI入口からのundo、操作記録の照合とトークン/確認用秘密IDの非記録、終了処理を確認。指定fmt/clippy/cargo test/verify-mcp-e2eはexit 0。Rust単体399件、環境指定mcp_reads1件、最小受入1件（両版）の保存出力 `.harness/runs/20261004-144511/verify-MCP-028-A-4.txt` / `-5.txt` / `-6.txt` / `-11.txt` を開いて確認した。試験feature付きclippyも-9で成功。不正パス/起動不能は-3/-10でexit 1。全受入はMCP-028に残し、評価は反復後にランナーが行う。
 - MCP-027: dockviewに「AI の操作」を登録し、時刻・道具・対象指紋・要約・要求終了理由と適用結果・要求ID・まとまりID・確認待ちを表示した。共通履歴の先頭だけIDと改訂付きでundoし、順番待ち・履歴破棄・切断・保留・未確定を理由付きで無効化する。初期取得/通知の改訂と起動の照合、拒否/部分失敗/保存失敗、StrictModeと購読解除、連打/古いリンク/履歴再取得失敗の再送抑止を試験した。確認許可の再取得成功で旧エラーを消し、新着確認通知とエラーを併記して許可未確認時の承認抑止を維持。bridge-uiの公開入口へ移行した。指定typecheckはexit 0、vitestは33ファイル699件成功。保存出力 `.harness/runs/20261004-144511/verify-MCP-027-7.txt` / `verify-MCP-027-8.txt` を開いて確認した。評価は反復後にランナーが行う。
@@ -60,11 +61,12 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP-028は受入でredoの依存ID不具合を検出した。修正をMCP-028-Bへ分け、現在は両タスクdoing。修正後の両版実HTTP/実mock受入成功出力verify-MCP-028-B-2.txtは保存済みだが、その後の修正と途中保存175a8ab/ae90c34を含む現在のHEADは指定検証・評価を未完として再開する。公開redoの試験と認可条件は維持する。
-- MCP / 編集層の M2: 実行単位33件のうち30件は検証・評価PASS（MCP-001〜027、022-A/B、028-A）。残りはMCP-028-B/028/029。028-Bの途中保存は未評価、028全体も未完。018の過去3失敗/評価差戻し1回、022の過去2回の40分超過、028の40分超過1回と途中保存の未評価を保持する。
+- MCP-028-Bは途中保存175a8ab/ae90c34を含むredo修正を再検証し、指定3ゲートに成功した。ランナーの評価はb32115dからHEADまでの許可paths全体を対象とし、再開反復だけの差分では判定しない。MCP-028の全受入と文書の完了は別タスクのまま残す。
+- MCP / 編集層の M2: 実行単位33件のうち30件は検証・評価PASS（MCP-001〜027、022-A/B、028-A）。MCP-028-Bは検証完了・評価待ち、MCP-028/029は未完。018の過去3失敗/評価差戻し1回、022の過去2回の40分超過、028の40分超過1回と途中保存の未評価を保持する。
 
 ## Next
-- MCP-028-Bでredo認可の依存IDを修復し、評価後にMCP-028を再開する。公開MCP redoをUI redoへ置き換えない。実HTTP/実mockの共通入口はmcp::service::McpServices、受入からの操作窓口はmcp-e2e featureのHeadlessEditor。verify-mcp-e2e.ps1はRust単体を含む全受入へ拡張済み。redo不具合の失敗と修正後の成功出力を保持し、現在のHEADで指定検証と評価を行う。MCP-027の画面はgetMcpOperationsとmcpOperationsChangedをパネルの存続中に購読し、確認待ちはmainで共有する。記録は現在の起動の最新500件で、過去起動分はJSONLだけに残す。resultは要求終了理由、outcomeは実適用状態。displayGroupIdが共通履歴の先頭と一致する場合だけundoできる。実機の狭幅レイアウト・Tauri窓間操作は未確認で、MCP-028と最終報告へ残す。
+- MCP-028-Bのランナー評価後にMCP-028を再開し、元の全done-when/verifyを実行する。今回の証拠は20261004-170201/verify-MCP-028-B-5.txt〜-7.txt。受入追加分の評価範囲もb32115d以後を維持し、GUI実機未確認と既存の制限を引き継ぐ。
+- MCP-028-Bのredo認可修正は検証済み。公開MCP redoをUI redoへ置き換えない。実HTTP/実mockの共通入口はmcp::service::McpServices、受入からの操作窓口はmcp-e2e featureのHeadlessEditor。verify-mcp-e2e.ps1はRust単体を含む全受入へ拡張済み。redo不具合の失敗と今回の再検証出力を保持し、ランナーの評価結果を確認する。MCP-027の画面はgetMcpOperationsとmcpOperationsChangedをパネルの存続中に購読し、確認待ちはmainで共有する。記録は現在の起動の最新500件で、過去起動分はJSONLだけに残す。resultは要求終了理由、outcomeは実適用状態。displayGroupIdが共通履歴の先頭と一致する場合だけundoできる。実機の狭幅レイアウト・Tauri窓間操作は未確認で、MCP-028と最終報告へ残す。
 - MCP-028の計画済みの共通入口切り出しをMCP-028-Aへ独立させ、製品mcp/edit_service/bridge_state/libとmanifestの最小許可パスを補った。Aで本番と実mockの同じ入口を最小試験で証明し、元のMCP-028で全受入シナリオと文書を閉じる。新しい機能やcrate/系列を足さず、cfg(test)専用の別実装で合格にしない。評価残課題はNEXT_FINDINGSと各.harness/mcp-review-follow-upで追跡する。既存タスクの全done-when/verifyを維持し、redo修正・全受入・ガイド同期の残り3実行単位を完成させる。GUI実機のレイアウトとTauri窓間操作は未確認として残す。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
@@ -76,6 +78,8 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-04 MCP-028-B完了時: 既存修正のrecreates_beforeを所属解決・現在値照会・previewで共用し、check_historyの投影は元のツリーを変更しない。親省略の再複製、逆順の親変更、履歴の親とは異なる実際の移動元の範囲拒否を回帰試験へ追加した。投影ノード取得はpanicではなくScopeErrorを返す。初回fmt失敗-1と成功-2〜-4を保持し、最後のコード差分後に-5〜-7で指定ゲートを再実行した。新規依存・Bridge/SDK/mock変更・画面操作はない。
+- 2026-10-04 MCP-028-B再開時: 先行Create/Duplicateだけを順序付きで解決し、既存対象の所属・範囲・現在値、承認後再検証、通常undoと部分失敗再試行を維持することを完了条件とする。指定fmt / feature付きclippy / verify-mcp-e2e.ps1をこの状態で実行して保存出力を読み、両版の親/値対象の再採番とUI undoを確認する。許可paths外・破壊的操作・製品判断が必要なら停止する。開始verify.ps1 -SkipFrontendはexit 0。初回fmtはauthorization.rsの整形1か所でexit 1（verify-MCP-028-B-1.txt）。
 - 2026-10-04 17:00前後: MCP-028反復は40分超過で中断し、所有PID78616の終了処理がETIMEDOUTになった。旧子36568と次の反復が併存したため公式--stopでランナーを停止した。停止と旧子・付属プロセスの終了を確認。旧子は所有確認の再検査時に既に終了しており、手動のStop-Processは実行されていない。停止状態を.harness/mcp-stopped-run-20261004-144511.jsonへ保持し、失敗回数と未評価を隠さず再開する。開始集約ゲート-SkipFrontendはexit 0（C++/画面はこの開始確認では対象外）。証拠は.harness/mcp-resume-20261004-1651-preflight.log。
 - 2026-10-04 MCP-028: 最初の試験追加はcurrent ping非対応と資産未発見の期待値差で失敗し、コード照合と非メインAI相談で修正。新規mockノードは空プロパティでMCP値設定の旧値取得が拒否されるため、親作成→既存ノード複製→複製IDのfieldOfView変更で依存IDを試験した。実測のredo拒否はacceptance-MCP-028-4とverify-MCP-028-7。指定受入exit 1、他指定/featureゲートexit 0。相談advisor-MCP-028は完了exit 0、評価は起動していない。PS1の既存UTF-8 BOMを維持し、Console.OutputEncodingとOutputEncodingをUTF-8へ統一した。PS5.1の保存出力は-8を開いて確認した（同じredo拒否でexit 1、文字化けなし）。現行ID衝突、旧世代cursor失効、本文30秒と本文後125秒、記録500件/同期保存/全snapshot通知、期限の文言依存、GUI制限・未確認、旧組み立て入口を要件/試験対応表へ残した。
 - 2026-10-04 MCP-028-A判断: EditServiceの受付とjoin handle、BridgeStateの接続/世代/取消状態をArcで共有し、UIとMCPから同じ列を参照する。AppHandleはイベント通知先へ限定し、受入は本番と同じtauri async runtimeのactorを使う。HTTP→actor→Bridgeの停止をawaitし、HTTPクライアントとmockプロセスもjoinする。WindowsではWebView2 DLL未ロードを試験した。指定検証は-4/-5/-6/-11、追加feature clippyは-9、負の起動検証は-3/-10。初回スクリプト引数渡しの失敗-1と文字コード修正前の負の検証-8は保持する。開始verify.ps1 -SkipFrontendはexit 0。NorvesLib固有opt-inとGUI実機は未確認で、MCP-028の全done-when/verifyを維持する。

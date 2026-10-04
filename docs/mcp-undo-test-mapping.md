@@ -74,3 +74,15 @@ Rust単体404件、実HTTP/実mockの両版シナリオ1件、独立した実moc
 初回の `acceptance-MCP-028-4.txt` と `verify-MCP-028-7.txt` / `-8.txt` は、MCP redoが未再作成の旧IDの所属検査で拒否された失敗証拠として保持する。
 修正後も同じ公開MCP redoを使い、再作成順だけを認可へ投影して成功させた。元の完了条件と検証は変更していない。
 PowerShell 5.1でも日本語の道具応答・エラー文をUTF-8で保存する。
+
+### MCP redoの依存ID認可（MCP-028-B）
+
+保存証拠は `.harness/runs/20261004-170201/verify-MCP-028-B-5.txt`（fmt）、
+`verify-MCP-028-B-6.txt`（mcp-e2e付きclippy）、`verify-MCP-028-B-7.txt`（実HTTP/実mock受入）。
+指定3コマンドはすべてexit 0。Rust単体405件、両版を含む実HTTP受入1件、実mockログ購読1件が成功し、SKIPと無視された試験はない。
+
+- `redo_allows_only_ordered_recreated_dependencies_inside_scope`: 先行作成・複製の依存、子作成、作成した子からの親省略の再複製を許可し、値設定・子作成・親変更・複製元の逆順参照を拒否する。
+- `redo_dependencies_do_not_bypass_existing_targets_or_component_membership`: 既存ID・component所属・上限・範囲を検査し、親省略の複製先と履歴の親とは異なる現在の移動元も範囲外なら拒否する。
+- `redo_dependency_review_rechecks_scope_and_existing_values`: 既存対象の現在値と範囲の変化を列内で検出する。未再作成IDの現在値は保存値で代用しない。
+- `confirmed_mcp_redo_retries_dependencies_with_remapped_ids`: 確認承認後と列内で依存関係を検査し、先行作成成功後の値設定拒否から新IDを維持して再試行する。親変更・子作成・次のundoも新IDを使う。
+- `real_http_and_mock_share_production_services`: Discover / Initializeの各版で親作成→その親への複製→新IDの値設定→end→MCP undo/redo→UI undoを実行し、親ID・値設定対象IDの再採番を検査する。
