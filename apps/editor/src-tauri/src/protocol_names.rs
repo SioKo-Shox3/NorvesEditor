@@ -31,6 +31,11 @@ pub mod commands {
     pub const SCHEMA_GET_SNAPSHOT: &str = "schema_get_snapshot";
     pub const COMPONENT_ADD: &str = "component_add";
     pub const COMPONENT_REMOVE: &str = "component_remove";
+    pub const EDIT_UNDO: &str = "edit_undo";
+    pub const EDIT_REDO: &str = "edit_redo";
+    pub const EDIT_GET_HISTORY: &str = "edit_get_history";
+    pub const EDIT_RETRY: &str = "edit_retry";
+    pub const EDIT_DISCARD: &str = "edit_discard";
     pub const VIEWPORT_GET_THUMBNAIL: &str = "viewport_get_thumbnail";
     pub const RUNTIME_PLAY: &str = "runtime_play";
     pub const RUNTIME_PAUSE: &str = "runtime_pause";
@@ -38,6 +43,19 @@ pub mod commands {
     pub const FOCUS_VIEWPORT: &str = "focus_viewport";
     pub const LAUNCH_ENGINE: &str = "launch_engine";
     pub const STOP_ENGINE: &str = "stop_engine";
+    pub const GET_ENGINE_SETTINGS: &str = "get_engine_settings";
+    pub const PICK_ENGINE_PATH: &str = "pick_engine_path";
+    pub const CLEAR_ENGINE_PATH: &str = "clear_engine_path";
+    pub const SET_ENGINE_ARGS: &str = "set_engine_args";
+    pub const GET_MCP_SETTINGS: &str = "get_mcp_settings";
+    pub const SET_MCP_SETTINGS: &str = "set_mcp_settings";
+    pub const SET_MCP_WRITE_ACCESS: &str = "set_mcp_write_access";
+    pub const GET_MCP_OPERATIONS: &str = "get_mcp_operations";
+    pub const GET_MCP_CONFIRMATIONS: &str = "get_mcp_confirmations";
+    pub const APPROVE_MCP_CONFIRMATION: &str = "approve_mcp_confirmation";
+    pub const REJECT_MCP_CONFIRMATION: &str = "reject_mcp_confirmation";
+    pub const GET_MCP_TOKEN: &str = "get_mcp_token";
+    pub const REGENERATE_MCP_TOKEN: &str = "regenerate_mcp_token";
     pub const WORKSPACE_OPEN: &str = "workspace_open";
     pub const WORKSPACE_GET: &str = "workspace_get";
     pub const WORKSPACE_CLOSE: &str = "workspace_close";
@@ -63,6 +81,10 @@ pub mod events {
     pub const BRIDGE_DISCONNECTED: &str = "bridge:bridge-disconnected";
     pub const SCENE_TREE_CHANGED: &str = "bridge:scene-tree-changed";
     pub const OBJECT_CHANGED: &str = "bridge:object-changed";
+    pub const EDIT_APPLIED: &str = "bridge:edit-applied";
+    pub const EDIT_HISTORY_CHANGED: &str = "bridge:edit-history-changed";
+    pub const MCP_OPERATIONS_CHANGED: &str = "bridge:mcp-operations-changed";
+    pub const MCP_CONFIRMATIONS_CHANGED: &str = "bridge:mcp-confirmations-changed";
 }
 
 #[cfg(test)]
@@ -101,6 +123,15 @@ mod tests {
     #[test]
     fn command_scene_create_object() {
         assert_eq!(commands::SCENE_CREATE_OBJECT, "scene_create_object");
+    }
+
+    #[test]
+    fn command_edit_history() {
+        assert_eq!(commands::EDIT_UNDO, "edit_undo");
+        assert_eq!(commands::EDIT_REDO, "edit_redo");
+        assert_eq!(commands::EDIT_GET_HISTORY, "edit_get_history");
+        assert_eq!(commands::EDIT_RETRY, "edit_retry");
+        assert_eq!(commands::EDIT_DISCARD, "edit_discard");
     }
 
     #[test]
@@ -166,6 +197,15 @@ mod tests {
     #[test]
     fn command_stop_engine() {
         assert_eq!(commands::STOP_ENGINE, "stop_engine");
+    }
+
+    #[test]
+    fn command_mcp_settings_and_token() {
+        assert_eq!(commands::GET_MCP_SETTINGS, "get_mcp_settings");
+        assert_eq!(commands::SET_MCP_SETTINGS, "set_mcp_settings");
+        assert_eq!(commands::SET_MCP_WRITE_ACCESS, "set_mcp_write_access");
+        assert_eq!(commands::GET_MCP_TOKEN, "get_mcp_token");
+        assert_eq!(commands::REGENERATE_MCP_TOKEN, "regenerate_mcp_token");
     }
 
     #[test]
@@ -271,6 +311,12 @@ mod tests {
         assert_eq!(events::OBJECT_CHANGED, "bridge:object-changed");
     }
 
+    #[test]
+    fn events_edit_service() {
+        assert_eq!(events::EDIT_APPLIED, "bridge:edit-applied");
+        assert_eq!(events::EDIT_HISTORY_CHANGED, "bridge:edit-history-changed");
+    }
+
     // -----------------------------------------------------------------------
     // No-duplicate guards within each set
     // -----------------------------------------------------------------------
@@ -292,6 +338,11 @@ mod tests {
             commands::SCHEMA_GET_SNAPSHOT,
             commands::COMPONENT_ADD,
             commands::COMPONENT_REMOVE,
+            commands::EDIT_UNDO,
+            commands::EDIT_REDO,
+            commands::EDIT_GET_HISTORY,
+            commands::EDIT_RETRY,
+            commands::EDIT_DISCARD,
             commands::VIEWPORT_GET_THUMBNAIL,
             commands::RUNTIME_PLAY,
             commands::RUNTIME_PAUSE,
@@ -299,6 +350,10 @@ mod tests {
             commands::FOCUS_VIEWPORT,
             commands::LAUNCH_ENGINE,
             commands::STOP_ENGINE,
+            commands::GET_ENGINE_SETTINGS,
+            commands::PICK_ENGINE_PATH,
+            commands::CLEAR_ENGINE_PATH,
+            commands::SET_ENGINE_ARGS,
             commands::WORKSPACE_OPEN,
             commands::WORKSPACE_GET,
             commands::WORKSPACE_CLOSE,
@@ -327,6 +382,8 @@ mod tests {
             events::BRIDGE_DISCONNECTED,
             events::SCENE_TREE_CHANGED,
             events::OBJECT_CHANGED,
+            events::EDIT_APPLIED,
+            events::EDIT_HISTORY_CHANGED,
         ];
         let mut sorted = all;
         sorted.sort_unstable();

@@ -21,8 +21,10 @@
  */
 
 import type React from 'react';
+import type { EditGroupSummary } from '@norves/bridge-ui';
 import { useBridgeState } from '../../state/BridgeContext.js';
 import { useBridgeActions } from '../../hooks/useBridge.js';
+import { HistoryProblemNotice } from '../HistoryProblemNotice.js';
 import { StatusBadge } from './StatusBadge.js';
 
 // -------------------------------------------------------------------------
@@ -59,6 +61,12 @@ function Sep(): React.JSX.Element {
   return <span className="toolbar__sep" aria-hidden="true" />;
 }
 
+function historyGroupLabel(group: EditGroupSummary, direction: 'undo' | 'redo'): string {
+  const operation = direction === 'undo' ? '取り消し' : 'やり直し';
+  const source = group.source === 'mcp' ? 'MCP' : '画面操作';
+  return `${operation}: ${group.name}（${source}・${group.count}件）`;
+}
+
 // -------------------------------------------------------------------------
 // Component
 // -------------------------------------------------------------------------
@@ -75,11 +83,14 @@ export function ToolbarActions({
   const connectionStatus = state.connection.status;
   const connected        = connectionStatus === 'connected';
 
-  // Scene-edit undo/redo (Phase U1). Read stack lengths from the store; the
-  // hook guards double-click / in-flight internally (a no-op while issuing).
+  // 編集可否は編集サービスが配信する履歴要約から読む。
   const sceneEditUnsupported = state.sceneEditUnsupported === true;
-  const canUndo = connected && !sceneEditUnsupported && state.undoStack.length > 0;
-  const canRedo = connected && !sceneEditUnsupported && state.redoStack.length > 0;
+  const history = state.editHistorySummary;
+  const historyPending = history?.pending === true;
+  const canUndo =
+    connected && !sceneEditUnsupported && history?.canUndo === true && !historyPending;
+  const canRedo =
+    connected && !sceneEditUnsupported && history?.canRedo === true && !historyPending;
 
   // -----------------------------------------------------------------------
   // Disabled conditions — copied verbatim from GameViewPanel (the "正")
@@ -102,8 +113,8 @@ export function ToolbarActions({
     connectionStatus === 'disconnected' ||
     connectionStatus === undefined;
 
-  /** Runtime actions: disabled while not connected. */
-  const runtimeDisabled = !connected;
+  /** 通常の実行制御は未接続または履歴保留中に無効。 */
+  const runtimeDisabled = !connected || historyPending;
 
   // -----------------------------------------------------------------------
   // Action handlers (same pattern as GameViewPanel)
@@ -126,6 +137,7 @@ export function ToolbarActions({
         status={connectionStatus}
         label={STATUS_LABELS[connectionStatus]}
       />
+      <HistoryProblemNotice />
 
       <Sep />
 
@@ -197,7 +209,7 @@ export function ToolbarActions({
       <button
         className="btn toolbar__btn"
         type="button"
-        disabled={runtimeDisabled}
+        disabled={!connected}
         onClick={handleFocusViewport}
         title="Bring the engine viewport to the foreground"
         aria-label="Focus Viewport"
@@ -207,7 +219,7 @@ export function ToolbarActions({
 
       <Sep />
 
-      {/* Scene-edit undo / redo (Phase U1) */}
+      {/* シーン編集の取り消し・やり直し */}
       <button
         className="btn toolbar__btn"
         type="button"
@@ -218,6 +230,17 @@ export function ToolbarActions({
       >
         Undo
       </button>
+      {history?.undoGroup != null && (
+        <span
+          className="toolbar__history-summary"
+          title={historyGroupLabel(history.undoGroup, 'undo')}
+        >
+          <span className="toolbar__history-summary-name">{history.undoGroup.name}</span>
+          <span className="toolbar__history-summary-count">
+            （{history.undoGroup.source === 'mcp' ? 'MCP' : '画面操作'}・{history.undoGroup.count}件）
+          </span>
+        </span>
+      )}
       <button
         className="btn toolbar__btn"
         type="button"
@@ -228,6 +251,17 @@ export function ToolbarActions({
       >
         Redo
       </button>
+      {history?.redoGroup != null && (
+        <span
+          className="toolbar__history-summary"
+          title={historyGroupLabel(history.redoGroup, 'redo')}
+        >
+          <span className="toolbar__history-summary-name">{history.redoGroup.name}</span>
+          <span className="toolbar__history-summary-count">
+            （{history.redoGroup.source === 'mcp' ? 'MCP' : '画面操作'}・{history.redoGroup.count}件）
+          </span>
+        </span>
+      )}
 
       <Sep />
 

@@ -46,7 +46,7 @@ export async function subscribeEvent<TPayload>(
 // Re-export bridge-types for consumer convenience.
 export type * from '@norves/bridge-types';
 
-// Re-export IPC name constants and derived types (P3).
+// IPC名と型付きcommandを公開する。
 export {
   BRIDGE_COMMANDS,
   workspaceOpen,
@@ -56,10 +56,32 @@ export {
   sceneDeleteObject,
   sceneReparentObject,
   sceneDuplicateObject,
+  objectSetProperty,
+  componentAdd,
+  componentRemove,
+  runtimePlay,
+  runtimePause,
+  runtimeStop,
+  editUndo,
+  editRedo,
+  editGetHistory,
   assetReadManifest,
   assetResolve,
   assetGetManifest,
   assetReloadManifest,
+  getEngineSettings,
+  pickEnginePath,
+  clearEnginePath,
+  setEngineArgs,
+  getMcpSettings,
+  setMcpSettings,
+  setMcpWriteAccess,
+  getMcpOperations,
+  getMcpConfirmations,
+  approveMcpConfirmation,
+  rejectMcpConfirmation,
+  getMcpToken,
+  regenerateMcpToken,
   type BridgeCommandName,
 } from './commands.js';
 export {
@@ -67,7 +89,7 @@ export {
   type BridgeEventName,
 } from './events.js';
 
-// Re-export IPC contract types (P6).
+// バックエンドと共通のIPC契約型を公開する。
 export type {
   AssetEntry,
   AssetManifestResult,
@@ -76,5 +98,22 @@ export type {
   AssetResolveSource,
   AssetResolveStatus,
   ConnectionStatePayload,
+  EnginePathSource,
+  EngineSettingsPayload,
+  McpSettingsPayload,
+  McpTokenPayload,
+  McpWriteMode,
+  McpConfirmationRequest,
+  McpOperation,
+  McpOperationsPayload,
   WorkspacePayload,
+  UiPropertyCapture,
+  UiParentCapture,
+  EditSource,
+  EditGroupSummary,
+  EditPendingGroup,
+  EditDiscardResult,
+  EditHistorySummary,
+  EditAppliedOperation,
+  EditAppliedPayload,
 } from './ipc-types.js';

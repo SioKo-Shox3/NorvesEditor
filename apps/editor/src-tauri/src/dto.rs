@@ -6,7 +6,9 @@
 //! camelCase to match the TS convention.
 
 use norves_bridge_core::CapabilityDescriptor;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+use crate::process::EnginePathSource;
 
 /// Payload of the `bridge:connection-state` event AND the value returned by
 /// `bridge_connect` / `bridge_reconnect`.
@@ -35,6 +37,77 @@ pub struct ConnectionStatePayload {
     /// Human-readable reason for a disconnect (disconnected only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// エンジン設定のコマンド(`get_engine_settings` / `pick_engine_path` / `clear_engine_path`)が返す値。
+// bridge-ui/src/ipc-types.ts の EngineSettingsPayload と形を揃える。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineSettingsPayload {
+    /// `launch_engine` が次に使うパス(環境変数 > 設定 > 既定値 で解決したもの)。
+    pub effective_path: String,
+    /// `effective_path` の出所。
+    pub source: EnginePathSource,
+    /// 保存済みのパス。未設定なら `None`。
+    pub saved_path: Option<String>,
+    /// 保存済みの起動引数。未設定なら空。
+    pub saved_args: Vec<String>,
+}
+
+/// `get_mcp_settings` と設定変更コマンドが返す、秘密を含まない MCP 状態。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSettingsPayload {
+    pub enabled: bool,
+    pub port: u16,
+    pub write_mode: crate::mcp::McpWriteMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scene_root_id: Option<String>,
+    pub state: McpServerStateDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// loopback MCP サーバーの公開状態。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum McpServerStateDto {
+    Disabled,
+    Running,
+    BindFailed,
+    StorageFailed,
+}
+
+/// 明示的な秘密表示コマンドだけが返す MCP トークン。
+#[derive(Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTokenPayload {
+    pub token: String,
+}
+
+/// main画面で一度だけ承認できるMCP書き込み確認。
+#[derive(Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConfirmationRequestDto {
+    pub id: String,
+    pub tool_name: String,
+    pub method: String,
+    pub target_ids: Vec<String>,
+    pub target_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<EditSourceDto>,
+    pub undo_available: bool,
+    pub clears_history: bool,
+    pub history_generation: Option<u64>,
+    pub history_revision: u64,
+    pub undo_head_id: Option<u64>,
+    pub expires_at: u64,
 }
 
 /// Payload returned by workspace management commands.
@@ -80,6 +153,106 @@ pub struct AssetManifestPayload {
     pub version: u32,
     pub manifest_path: String,
     pub assets: Vec<AssetEntryDto>,
+}
+
+/// 画面から値編集へ渡す、表示スナップショット由来の捕捉値。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiPropertyCaptureDto {
+    pub generation: u64,
+    pub revision: u64,
+    pub value: serde_json::Value,
+}
+
+/// 画面から親変更へ渡す、表示ツリー由来の捕捉値。`None` はシーン直下。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiParentCaptureDto {
+    pub generation: u64,
+    pub revision: u64,
+    pub parent_id: Option<String>,
+}
+
+/// 編集・履歴の出どころ。Bridge wire protocolの値ではない。
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EditSourceDto {
+    Ui,
+    Mcp,
+}
+
+/// 取り消し・やり直しの先頭まとまりを表示する要約。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditGroupSummaryDto {
+    pub id: String,
+    pub name: String,
+    pub source: EditSourceDto,
+    pub count: usize,
+    /// グループ開始時刻。Unix epochからのミリ秒。
+    pub created_at: u64,
+}
+
+/// 再試行または破棄が必要な、部分適用状態のまとまり。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditPendingGroupDto {
+    pub id: String,
+    pub name: String,
+    pub direction: String,
+    pub source: EditSourceDto,
+    pub created_at: u64,
+    pub total_count: usize,
+    pub completed_count: usize,
+    pub outcome_unknown: bool,
+    pub retry_allowed: bool,
+}
+
+/// 破棄後に残る適用状態。自動で巻き戻さない。
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditDiscardResultDto {
+    pub group_id: String,
+    pub completed_count: usize,
+    pub total_count: usize,
+    pub outcome_unknown: bool,
+    pub changes_remain: bool,
+}
+
+/// 画面初期取得と履歴変更イベントで共有するサービス要約。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditHistorySummaryDto {
+    pub generation: Option<u64>,
+    pub history_revision: u64,
+    pub applied_revision: u64,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub undo_head_id: Option<u64>,
+    pub undo_revision: u64,
+    pub undo_group: Option<EditGroupSummaryDto>,
+    pub redo_head_id: Option<u64>,
+    pub redo_revision: u64,
+    pub redo_group: Option<EditGroupSummaryDto>,
+    pub pending: bool,
+    pub pending_group: Option<EditPendingGroupDto>,
+}
+
+/// 共通サービスが適用した編集を画面へ伝えるイベント。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditAppliedDto {
+    pub operation: String,
+    pub object_id: Option<String>,
+    pub property: Option<String>,
+    pub value: Option<serde_json::Value>,
+    pub new_id: Option<String>,
+    pub source: EditSourceDto,
+    pub group_id: String,
+    pub generation: u64,
+    pub sequence: u64,
+    pub history_revision: u64,
+    pub applied_revision: u64,
 }
 
 impl ConnectionStatePayload {
@@ -224,4 +397,97 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn ui_capture_keeps_json_null_and_root_parent_distinct_from_missing_capture() {
+        let property: UiPropertyCaptureDto = serde_json::from_value(serde_json::json!({
+            "generation": 7,
+            "revision": 12,
+            "value": null
+        }))
+        .expect("JSON nullを捕捉値として読み取れる");
+        assert_eq!(property.generation, 7);
+        assert_eq!(property.revision, 12);
+        assert_eq!(property.value, serde_json::Value::Null);
+
+        let parent: UiParentCaptureDto = serde_json::from_value(serde_json::json!({
+            "generation": 7,
+            "revision": 12,
+            "parentId": null
+        }))
+        .expect("nullをシーン直下の捕捉値として読み取れる");
+        assert_eq!(parent.parent_id, None);
+        assert_eq!(
+            serde_json::to_value(EditSourceDto::Ui).expect("UIの出どころを直列化できる"),
+            serde_json::json!("ui")
+        );
+        assert_eq!(
+            serde_json::to_value(EditSourceDto::Mcp).expect("MCPの出どころを直列化できる"),
+            serde_json::json!("mcp")
+        );
+    }
+
+    #[test]
+    fn edit_applied_dto_serializes_all_required_revision_fields() {
+        let payload = EditAppliedDto {
+            operation: "setProperty".to_owned(),
+            object_id: Some("object-1".to_owned()),
+            property: Some("color".to_owned()),
+            value: Some(serde_json::Value::Null),
+            new_id: None,
+            source: EditSourceDto::Ui,
+            group_id: "edit-7-9".to_owned(),
+            generation: 7,
+            sequence: 9,
+            history_revision: 13,
+            applied_revision: 11,
+        };
+        assert_eq!(
+            serde_json::to_value(payload).expect("適用イベントを直列化できる"),
+            serde_json::json!({
+                "operation": "setProperty",
+                "objectId": "object-1",
+                "property": "color",
+                "value": null,
+                "newId": null,
+                "source": "ui",
+                "groupId": "edit-7-9",
+                "generation": 7,
+                "sequence": 9,
+                "historyRevision": 13,
+                "appliedRevision": 11
+            })
+        );
+    }
+}
+
+/// 操作の安全な要約。任意の引数・応答本文・所有者IDを保持しない。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOperationDto {
+    pub request_id: String,
+    pub session_id: String,
+    pub timestamp: u64,
+    pub tool: String,
+    /// 対象の種類と起動内で比較できる指紋。生の対象IDではない。
+    pub target: String,
+    pub summary: String,
+    pub result: String,
+    pub outcome: String,
+    pub display_group_id: Option<String>,
+    pub completed_count: usize,
+    pub pending: bool,
+    pub retry_allowed: bool,
+    pub automatic_retry_allowed: bool,
+    pub actor_finished: bool,
+}
+
+/// 初期取得と更新通知は同じ有界snapshot。古い改訂の到着はUI側で無視できる。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOperationsDto {
+    pub session_id: String,
+    pub revision: u64,
+    pub records: Vec<McpOperationDto>,
+    pub storage_error: Option<String>,
 }

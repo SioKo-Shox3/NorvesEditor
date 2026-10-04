@@ -12,31 +12,58 @@ The alpha Game View is not an embedded native GPU viewport. The engine owns an e
 
 ## Layer Boundaries
 
-| Layer | Owns | Must Not Own |
+E0〜E3 の承認済み設計は ADR 0010 / 0011 と `mcp-and-edit-layer-requirements.md` に記録する。編集サービスと MCP サーバーは Rust バックエンド内の層であり、次の所有権と境界を持つ。
+
+| 層 | 所有するもの | 境界 |
 | --- | --- | --- |
-| `apps/editor` TypeScript UI | panels, presentation state, command/event wrappers | raw WebSocket transport, engine process spawning, engine live memory |
-| `apps/editor/src-tauri` Rust backend | engine process lifecycle, Bridge client connection, reconnect/session state, frontend event fan-out | C++ SDK public API, NorvesLib internals, direct UI rendering logic |
-| `bridge/spec` | wire protocol, JSON Schema, fixtures, protocol docs | product UI state, process management |
-| `bridge/crates` | Rust protocol model, codec, editor-side Bridge runtime, tools | Tauri-specific UI components, C++ engine adapter implementation |
-| `bridge/ts` | TypeScript DTOs, Tauri command wrappers, frontend event helpers | raw transport sockets, process lifecycle |
-| `bridge/cpp/engine-sdk` | standalone C++ engine-side SDK boundary | Tauri, React, TypeScript, NorvesLib-specific types |
-| NorvesLib adapter | NorvesLib-specific mapping to Bridge DTOs | generic Bridge SDK behavior |
+| Rust の編集サービス | UI と MCP からの編集・取り消し・やり直し・実行制御の有界な共通列、履歴、接続世代に結び付いた適用状態、適用結果と履歴要約のイベント | Bridge の I/O 中に状態ロックを保持しない。Bridge 接続そのものはバックエンドが所有する |
+| Rust の MCP サーバー | loopback の Streamable HTTP、Bearer トークン認証、Origin/Host 検証、能力に基づく道具一覧、入力・結果検証、許可・確認、操作記録 | 読み取りは既存の Bridge 照会を使い、書き込み・undo/redo・実行制御は編集サービスを使う。プロセス操作・エンジン設定を公開しない |
+
+```text
+画面の編集・実行制御 → Tauri コマンド → 編集サービス ──────┐
+MCP → loopback サーバー → 全要求の Bearer/Host 検証・Origin は存在時に照合
+  ├→ 読み取り道具 → 既存の Bridge 照会 ──────────────────┤
+  └→ 書き込み・undo/redo・実行制御の道具 → 許可（必要な操作は確認） → 編集サービス ─┤
+                                                          └→ Bridge クライアント → エンジン
+編集サービス → 適用結果・履歴要約 → Tauri イベント → 画面
+```
+
+MCP は既定で無効、127.0.0.1 のみ、既定ポート49770。書き込みは読み取りのみから始める。
+適用結果の通知は編集サービスが所有し、エンジンの best-effort イベントに依存しない。
+秘密はアプリ設定ディレクトリ、操作記録はアプリログディレクトリに置く。
+
+| 層 | 所有するもの | 所有しないもの・境界 |
+| --- | --- | --- |
+| `apps/editor/src` TypeScript UI | パネル、表示状態、編集履歴の要約表示 | 生の WebSocket、エンジンプロセス、正本の編集履歴、エンジンのライブメモリ |
+| `apps/editor/src-tauri` Rust バックエンド | エンジンプロセス、Bridge 接続と再接続、接続世代、Tauri コマンド登録、画面へのイベント配信 | C++ SDK の公開 API、NorvesLib 内部、UI 描画 |
+| Rust 編集サービス | UI と MCP の編集・undo/redo・実行制御の受付順、有界列、正本の履歴、部分失敗の保留、適用結果と履歴要約のイベント | MCP 固有の HTTP・認証・許可。Bridge I/O の await 中の状態ロック |
+| Rust MCP サーバー | loopback MCP 通信、認証、Origin/Host 検証、道具とスキーマ、許可・確認、操作記録 | エンジンプロセスの起動・終了、エンジン設定、編集サービスを迂回する書き込み |
+| `bridge/spec` | 通信プロトコル、JSON Schema、fixture、プロトコル文書 | 製品 UI の状態、プロセス管理 |
+| `bridge/crates` | Rust のプロトコル型と codec、エディタ側 Bridge runtime、ツール | Tauri UI、C++ エンジンアダプタ |
+| `bridge/ts` | TypeScript DTO、Tauri コマンドラッパー、画面向けイベント補助 | 生の通信 socket、プロセス管理 |
+| `bridge/cpp/engine-sdk` | 独立した C++ エンジン側 SDK の境界 | Tauri、React、TypeScript、NorvesLib 固有型 |
+| NorvesLib adapter | NorvesLib 固有の Bridge DTO 変換 | 汎用 Bridge SDK の振る舞い |
 
 ## Connection Flow
 
 ```text
-TypeScript UI
-  -> typed Tauri command wrappers
-Tauri Rust backend
-  -> engine process lifecycle service
-  -> Rust Bridge editor client runtime
-  -> WebSocket + JSON
-C++ engine process
-  -> standalone Bridge engine SDK
-  -> engine adapter
+TypeScript 画面
+  -> 型付き Tauri コマンドラッパー -> Rust バックエンド
+     ├-> 編集・undo/redo・実行制御 -> Rust 編集サービス
+     └-> エンジンプロセスの起動・停止、Bridge 接続・再接続、状態照会
+MCP クライアント
+  -> loopback MCP サーバー -> 全要求の Bearer/Host 検証・Origin は存在時に照合
+     ├-> 読み取り道具 -> 既存の Bridge 照会
+     └-> 書き込み・undo/redo・実行制御 -> 許可（必要な操作は確認） -> Rust 編集サービス
+Rust 編集サービス ──────────┐
+既存の Bridge 照会 ─────────┴-> Rust Bridge エディタクライアント runtime
+  -> WebSocket + JSON -> C++ エンジンプロセス
+C++ エンジンプロセス
+  -> 独立した Bridge エンジン SDK
+  -> エンジンアダプタ
 ```
 
-The Rust backend is the owner of process state and Bridge connection state. The UI observes state through commands/events and never owns raw WebSocket state.
+Tauri Rust バックエンドがエンジンプロセスと Bridge 接続の状態を所有する。画面はコマンドとイベントで状態を観測し、生の WebSocket 状態を持たない。MCP は全要求で Bearer と Host を検証し、Origin は存在する場合に照合する。読み取りは既存の Bridge 照会を使い、書き込みは許可を通し、確認が必要な操作では確認を経て画面と同じ編集サービスを使う。
 
 ## Bridge Subsystem
 

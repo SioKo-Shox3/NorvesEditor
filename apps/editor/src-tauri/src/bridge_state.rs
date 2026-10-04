@@ -33,8 +33,9 @@
 //! The connect/reconnect double-relay behavior is exercised end-to-end against
 //! the mock engine in P6; here it is structural plus the pure mapping tests.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use norves_bridge_core::{
@@ -47,13 +48,21 @@ use norves_bridge_editor_client::{
 };
 use serde_json::Value;
 use tauri::async_runtime::JoinHandle;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
+use tokio_util::sync::CancellationToken;
 
-use crate::dto::ConnectionStatePayload;
+use crate::dto::{
+    ConnectionStatePayload, EditHistorySummaryDto, UiParentCaptureDto, UiPropertyCaptureDto,
+};
+use crate::edit_service::{
+    EditEventInput, EditKind, EditService, HistoryCapture, HistoryRequest, PriorCapture,
+    QueuedEditResult,
+};
 use crate::error::BackendError;
 use crate::events_map::ui_channel_for_event;
+use crate::mcp::log_buffer::{LogBuffer, LogSubscription, RelayLogRecord};
 use crate::protocol_names::events;
 
 /// Wire protocol version this editor stamps on every envelope it sends.
@@ -76,6 +85,8 @@ const OFFERED_PROTOCOL_VERSIONS: [&str; 2] = ["0.2", "0.1"];
 const CLIENT_NAME: &str = "NorvesEditor";
 /// Default per-request timeout for engine method calls.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const DISPATCHER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const LOG_UNSUBSCRIBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Builds the loopback WebSocket URL for a local engine `port`.
 ///
@@ -101,6 +112,165 @@ struct LiveConnection {
     session_id: String,
     server_name: String,
     capabilities: Vec<CapabilityDescriptor>,
+    log_subscription_id: Option<String>,
+}
+
+/// 編集actorへ渡す、接続世代に固定されたBridgeの入口。
+#[derive(Clone)]
+pub(crate) struct BridgeLease {
+    pub(crate) generation: u64,
+    #[allow(dead_code)]
+    pub(crate) handle: DispatchHandle,
+    pub(crate) capabilities: Vec<CapabilityDescriptor>,
+}
+
+/// 編集側が接続のロックを持ち越さず、世代付きhandleを得るための内部窓口。
+#[derive(Clone)]
+pub(crate) struct BridgeFacade {
+    current_generation: Arc<StdMutex<Option<u64>>>,
+    session: watch::Receiver<Option<BridgeLease>>,
+    next_request_id: Arc<AtomicU64>,
+}
+
+impl BridgeFacade {
+    /// 現在の世代とセッションを同じ世代の組として複製する。
+    #[allow(dead_code)]
+    pub(crate) fn pin(&self) -> Result<BridgeLease, BackendError> {
+        let current = *self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.session
+            .borrow()
+            .clone()
+            .filter(|lease| Some(lease.generation) == current)
+            .ok_or(BackendError::NotConnected)
+    }
+
+    /// 捕捉済みhandleへ世代を保ったままBridge要求を送る。
+    pub(crate) async fn send_with_lease(
+        &self,
+        lease: &BridgeLease,
+        method: &str,
+        params: Option<serde_json::Map<String, Value>>,
+    ) -> Result<Value, BackendError> {
+        self.send_tracked_mcp(lease, method, params, None).await
+    }
+
+    /// 書き込みを送る直前から応答検証までを、結果不明として追跡する。
+    pub(crate) async fn send_tracked_mcp(
+        &self,
+        lease: &BridgeLease,
+        method: &str,
+        params: Option<serde_json::Map<String, Value>>,
+        execution: Option<&crate::edit_service::mcp::McpExecution>,
+    ) -> Result<Value, BackendError> {
+        let request = build_request(allocate_request_id(&self.next_request_id), method, params)
+            .inspect_err(|_| {
+                if let Some(execution) = execution {
+                    execution.not_sent();
+                }
+            })?;
+        if let Some(execution) = execution {
+            execution.started();
+        }
+        match lease.handle.request(request, REQUEST_TIMEOUT).await {
+            Ok(ResponsePayload::Result(value)) => Ok(value),
+            Ok(ResponsePayload::Error(error)) => {
+                if let Some(execution) = execution {
+                    execution.rejected();
+                }
+                Err(error.into())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// I/O完了時にも、捕捉した世代が現行かを確かめる。
+    pub(crate) fn is_current(&self, generation: u64) -> bool {
+        *self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            == Some(generation)
+    }
+
+    /// 履歴の読み出し時に現在の世代を照合する。
+    pub(crate) fn current_generation(&self) -> Option<u64> {
+        *self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// 世代を固定したまま、I/O後の短い状態記録を行う。
+    pub(crate) fn with_current_generation<T>(&self, action: impl FnOnce(Option<u64>) -> T) -> T {
+        let current = self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        action(*current)
+    }
+
+    /// 接続変更をactorへ通知する受信口を複製する。
+    pub(crate) fn subscribe(&self) -> watch::Receiver<Option<BridgeLease>> {
+        self.session.clone()
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct BridgeSessionTestControl {
+    current_generation: Arc<StdMutex<Option<u64>>>,
+    session_tx: watch::Sender<Option<BridgeLease>>,
+}
+
+#[cfg(test)]
+impl BridgeSessionTestControl {
+    pub(crate) fn set_generation(&self, generation: u64, handle: DispatchHandle) {
+        let mut current = self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = Some(generation);
+        self.session_tx.send_replace(Some(BridgeLease {
+            generation,
+            handle,
+            capabilities: Vec::new(),
+        }));
+    }
+
+    pub(crate) fn disconnect(&self) {
+        *self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.session_tx.send_replace(None);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_edit_facade(
+    generation: u64,
+    handle: DispatchHandle,
+) -> (BridgeFacade, BridgeSessionTestControl) {
+    let (session_tx, session_rx) = watch::channel(Some(BridgeLease {
+        generation,
+        handle,
+        capabilities: Vec::new(),
+    }));
+    let current_generation = Arc::new(StdMutex::new(Some(generation)));
+    (
+        BridgeFacade {
+            current_generation: Arc::clone(&current_generation),
+            session: session_rx,
+            next_request_id: Arc::new(AtomicU64::new(0)),
+        },
+        BridgeSessionTestControl {
+            current_generation,
+            session_tx,
+        },
+    )
 }
 
 /// Connection phase. `Connecting(token)` rejects overlap and prevents stale
@@ -111,40 +281,150 @@ enum Phase {
     Connected(LiveConnection),
 }
 
-/// Tauri-managed backend state. Guarded by a `tokio::sync::Mutex`; the guard is
-/// never held across an I/O `.await` (see module docs).
+/// 接続状態を共有するバックエンド。複製しても同じ接続・世代を参照する。
+/// 状態のロックはI/Oのawaitへ持ち越さない。
+#[derive(Clone)]
 pub struct BridgeState {
-    inner: Mutex<Phase>,
-    /// Monotonic source of unique request correlation ids. Shared so every
-    /// in-flight request across all commands gets a distinct id.
-    next_request_id: AtomicU64,
-    /// Monotonic source of unique connect-attempt tokens. Bumped when an attempt
-    /// starts so setup, relay self-heal, and commit share one identity.
-    next_generation: AtomicU64,
+    inner: Arc<Mutex<Phase>>,
+    /// 全コマンドが共有する、要求相関IDの単調カウンタ。
+    next_request_id: Arc<AtomicU64>,
+    /// 接続試行ごとの世代。setup、relayの切断処理、接続確定で共有する。
+    next_generation: Arc<AtomicU64>,
+    session_tx: watch::Sender<Option<BridgeLease>>,
+    current_generation: Arc<StdMutex<Option<u64>>>,
+    /// 世代切り替えでlog.subscribe要求を取り消す。
+    attempt_cancellation: Arc<StdMutex<Option<(u64, CancellationToken)>>>,
+    /// relayが受信したログをUI通知前に有界保持する。
+    log_buffer: Arc<StdMutex<LogBuffer>>,
+    mcp_tool_catalog: crate::mcp::tool_catalog::McpToolCatalog,
+    /// Game View と MCP で共有するthumbnail取得・処理状態。
+    thumbnail_service: crate::mcp::thumbnail::McpThumbnailService,
 }
 
 impl Default for BridgeState {
     fn default() -> Self {
-        BridgeState {
-            inner: Mutex::new(Phase::Disconnected),
-            next_request_id: AtomicU64::new(0),
-            next_generation: AtomicU64::new(0),
-        }
+        let (session_tx, _) = watch::channel(None);
+        let state = BridgeState {
+            inner: Arc::new(Mutex::new(Phase::Disconnected)),
+            next_request_id: Arc::new(AtomicU64::new(0)),
+            next_generation: Arc::new(AtomicU64::new(0)),
+            session_tx,
+            current_generation: Arc::new(StdMutex::new(None)),
+            attempt_cancellation: Arc::new(StdMutex::new(None)),
+            log_buffer: Arc::new(StdMutex::new(LogBuffer::default())),
+            mcp_tool_catalog: crate::mcp::tool_catalog::McpToolCatalog::default(),
+            thumbnail_service: crate::mcp::thumbnail::McpThumbnailService::default(),
+        };
+        crate::mcp::reads::McpReadContext::install_default(state.mcp_read_context());
+        state
     }
 }
 
 impl BridgeState {
     /// Allocates a unique correlation id for an in-flight request.
     fn alloc_request_id(&self) -> CorrelationId {
-        let n = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        // CorrelationId only rejects empty strings; "req-{n}" is always
-        // non-empty, so this is infallible.
-        CorrelationId::try_from(format!("req-{n}")).expect("generated id is valid")
+        allocate_request_id(&self.next_request_id)
     }
 
     /// Allocates a unique token for a new connect attempt.
     fn alloc_generation(&self) -> u64 {
         self.next_generation.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// 現在の接続を、actor向けの短命な読み取り窓口へ公開する。
+    fn publish_session(&self, lease: Option<BridgeLease>) {
+        let mut current = self
+            .current_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = lease.as_ref().map(|session| session.generation);
+        self.mcp_tool_catalog.set_connection(
+            lease.as_ref().map(|session| session.generation),
+            lease
+                .as_ref()
+                .map(|session| session.capabilities.as_slice())
+                .unwrap_or_default(),
+        );
+        self.session_tx.send_replace(lease);
+    }
+
+    /// 編集サービスが接続handleを世代付きで捕捉する窓口を作る。
+    pub(crate) fn edit_facade(&self) -> BridgeFacade {
+        BridgeFacade {
+            current_generation: Arc::clone(&self.current_generation),
+            session: self.session_tx.subscribe(),
+            next_request_id: Arc::clone(&self.next_request_id),
+        }
+    }
+
+    /// MCP読み取りへ接続世代と保持済みログの共有窓口を渡す。
+    pub(crate) fn mcp_read_context(&self) -> crate::mcp::reads::McpReadContext {
+        crate::mcp::reads::McpReadContext::new(
+            self.edit_facade(),
+            self.mcp_tool_catalog.clone(),
+            Arc::clone(&self.log_buffer),
+            self.thumbnail_service.clone(),
+        )
+    }
+
+    fn begin_attempt(&self, generation: u64) -> CancellationToken {
+        let cancellation = CancellationToken::new();
+        *self
+            .attempt_cancellation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((generation, cancellation.clone()));
+        self.log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .begin_generation(generation);
+        cancellation
+    }
+
+    fn cancel_attempt(&self, generation: u64) {
+        let mut attempt = self
+            .attempt_cancellation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(attempt.as_ref(), Some((current, _)) if *current == generation) {
+            if let Some((_, cancellation)) = attempt.take() {
+                cancellation.cancel();
+            }
+        }
+    }
+
+    fn finish_attempt(&self, generation: u64) {
+        let mut attempt = self
+            .attempt_cancellation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(attempt.as_ref(), Some((current, _)) if *current == generation) {
+            attempt.take();
+        }
+    }
+
+    fn end_log_generation(&self, generation: u64) {
+        self.log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .end_generation(generation);
+    }
+
+    fn retire_log_generation(&self, generation: u64) {
+        self.cancel_attempt(generation);
+        self.end_log_generation(generation);
+    }
+}
+
+/// Connected状態から編集actor向けの世代付きhandleを作る。
+fn edit_lease(phase: &Phase) -> Option<BridgeLease> {
+    match phase {
+        Phase::Connected(conn) => Some(BridgeLease {
+            generation: conn.generation,
+            handle: conn.handle.clone(),
+            capabilities: conn.capabilities.clone(),
+        }),
+        Phase::Disconnected | Phase::Connecting(_) => None,
     }
 }
 
@@ -170,6 +450,12 @@ fn build_request(
         session_id: None,
         seq: None,
     })
+}
+
+fn allocate_request_id(next_request_id: &AtomicU64) -> CorrelationId {
+    let n = next_request_id.fetch_add(1, Ordering::Relaxed);
+    // CorrelationIdは空文字だけを拒否するため、"req-{n}" は必ず有効。
+    CorrelationId::try_from(format!("req-{n}")).expect("生成したIDは有効")
 }
 
 /// Builds the mandatory same-session capability discovery request.
@@ -248,8 +534,13 @@ where
 /// session that owns the relay's generation. A different generation means a
 /// newer attempt already replaced this one, so the relay must leave it alone.
 fn relay_should_reset_phase(phase: &Phase, relay_generation: u64) -> bool {
-    matches!(phase, Phase::Connecting(token) if *token == relay_generation)
-        || matches!(phase, Phase::Connected(conn) if conn.generation == relay_generation)
+    phase_has_generation(phase, relay_generation)
+}
+
+/// 接続準備中または接続済みの世代がrelayと一致するか返す。
+fn phase_has_generation(phase: &Phase, generation: u64) -> bool {
+    matches!(phase, Phase::Connecting(token) if *token == generation)
+        || matches!(phase, Phase::Connected(conn) if conn.generation == generation)
 }
 
 /// Transitions an owned attempt/session to disconnected and runs the synchronous
@@ -269,22 +560,64 @@ where
     }
 }
 
-/// Spawns the backend->UI relay task and returns its join handle.
+/// 状態ロックを解放したまま、現行世代のログ購読を一度要求する。
+async fn subscribe_log_stream(
+    state: &BridgeState,
+    handle: &DispatchHandle,
+    capabilities: &[CapabilityDescriptor],
+    generation: u64,
+    cancellation: &CancellationToken,
+) -> Option<LogSubscription> {
+    let phase = state.inner.lock().await;
+    if !phase_has_generation(&phase, generation) {
+        return None;
+    }
+    drop(phase);
+    let request = build_request(
+        state.alloc_request_id(),
+        "log.subscribe",
+        Some(serde_json::Map::new()),
+    )
+    .ok()?;
+    crate::mcp::log_buffer::subscribe_log_stream(
+        &state.log_buffer,
+        handle,
+        request,
+        capabilities,
+        generation,
+        cancellation,
+    )
+    .await
+}
+
+/// subscriptionIdがある接続だけ、同じdispatcherへ購読解除を送る。
+async fn unsubscribe_log_stream(conn: &LiveConnection) {
+    let Some(subscription_id) = conn.log_subscription_id.as_deref() else {
+        return;
+    };
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "subscriptionId".to_owned(),
+        Value::String(subscription_id.to_owned()),
+    );
+    let request_id = CorrelationId::try_from(format!("log-unsub-{}", conn.generation))
+        .expect("世代番号から作った要求IDは有効");
+    let Ok(request) = build_request(request_id, "log.unsubscribe", Some(params)) else {
+        return;
+    };
+    if let Err(error) = conn.handle.request(request, LOG_UNSUBSCRIBE_TIMEOUT).await {
+        tracing::debug!(generation = conn.generation, %error, "ログ購読解除は完了しませんでした");
+    }
+}
+
+/// バックエンドからUIへのrelayを開始し、join handleを返す。
 ///
-/// The task loops `events.recv().await`, maps each Bridge event NAME to a Tauri
-/// channel, and emits the event `params` as a raw [`Value`] (already wire-shaped
-/// — never re-modeled). On `Closed`, it publishes disconnected state only when
-/// it still owns the current generation; it logs-and-continues on `Lagged` and
-/// on unknown event names.
-///
-/// `generation` is this relay's attempt/session id. On an unsolicited `Closed`,
-/// the relay self-heals and publishes `Disconnected` only if the current phase
-/// still carries that generation, so it cannot clobber or misreport a newer
-/// attempt/session. It reaches `BridgeState` via
-/// the Tauri managed state (`app.state::<BridgeState>()`); no extra `Arc` is
-/// threaded through because the state is already managed by this `AppHandle`.
+/// BridgeイベントをTauri channelへ対応付け、元のwire形式のparamsをそのままemitする。
+/// `log.message`はUI通知より先に現行世代の保管庫へ記録する。`Lagged`では欠落した通知数を
+/// 世代状態に記録し、`Closed`ではrelayが所有する世代だけを切断状態へ戻す。
 fn spawn_relay(
-    app: AppHandle,
+    state: BridgeState,
+    sink: BridgeEventSink,
     generation: u64,
     mut events: tokio::sync::broadcast::Receiver<Arc<ValidatedEnvelope>>,
 ) -> JoinHandle<()> {
@@ -294,52 +627,95 @@ fn spawn_relay(
                 Ok(envelope) => {
                     if let ValidatedEnvelope::Event { event, params, .. } = &*envelope {
                         let name = event.as_str();
+                        if name == "log.message" {
+                            let phase = state.inner.lock().await;
+                            if let Some(params) = params {
+                                let mut log_buffer = state
+                                    .log_buffer
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                let record = if phase_has_generation(&phase, generation) {
+                                    crate::mcp::log_buffer::record_relay_log(
+                                        &mut log_buffer,
+                                        generation,
+                                        params,
+                                    )
+                                } else {
+                                    Ok(RelayLogRecord::Stale)
+                                };
+                                match record {
+                                    Ok(RelayLogRecord::Retained(outcome)) if outcome.truncated => {
+                                        tracing::warn!(
+                                            generation,
+                                            sequence = outcome.sequence,
+                                            "容量を超えたエンジンログの文字列を切り詰めました"
+                                        );
+                                    }
+                                    Ok(RelayLogRecord::Retained(_)) => {}
+                                    Ok(RelayLogRecord::Stale) => {
+                                        tracing::debug!(
+                                            generation,
+                                            "古い世代のログrelayを破棄しました"
+                                        );
+                                        continue;
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(generation, error = %error, "不正なエンジンログを保持できませんでした");
+                                    }
+                                }
+                            } else if !phase_has_generation(&phase, generation) {
+                                tracing::debug!(generation, "古い世代のログrelayを破棄しました");
+                                continue;
+                            }
+                            drop(phase);
+                        }
                         match ui_channel_for_event(name) {
                             Some(channel) => {
-                                // Forward params as raw wire JSON; an absent
-                                // params object emits `null`.
+                                // wire形式のparamsをそのまま渡し、paramsが無ければnullをemitする。
                                 let payload = params
                                     .as_ref()
                                     .map(|map| Value::Object(map.clone()))
                                     .unwrap_or(Value::Null);
-                                if let Err(err) = app.emit(channel, payload) {
-                                    tracing::warn!(
-                                        channel,
-                                        error = %err,
-                                        "relay: failed to emit event to UI"
-                                    );
-                                }
+                                sink(channel, payload);
                             }
                             None => {
-                                tracing::debug!(event = name, "relay: unknown event, skipping");
+                                tracing::debug!(
+                                    event = name,
+                                    "未対応のBridgeイベントを無視しました"
+                                );
                             }
                         }
                     } else {
-                        // The dispatcher only broadcasts Event variants; anything
-                        // else is unexpected but non-fatal.
-                        tracing::debug!("relay: non-event envelope on broadcast, skipping");
+                        // dispatcherはEventだけを配信する。その他の通知は無視する。
+                        tracing::debug!("イベント以外のBridge通知を無視しました");
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
-                    tracing::warn!(skipped = n, "relay: broadcast lagged, continuing");
+                    let phase = state.inner.lock().await;
+                    if phase_has_generation(&phase, generation) {
+                        state
+                            .log_buffer
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .note_missed_events(generation, n);
+                    }
+                    tracing::warn!(skipped = n, "Bridge通知の欠落を記録して購読を継続します");
                 }
                 Err(RecvError::Closed) => {
-                    tracing::debug!("relay: broadcast closed, checking generation and exiting");
-                    let state = app.state::<BridgeState>();
+                    tracing::debug!("Bridge通知が終了したため、所有世代の接続を閉じます");
                     let mut guard = state.inner.lock().await;
                     reset_owned_phase_and_then(&mut guard, generation, |_| {
-                        // `emit` is synchronous in Tauri 2. Keep transition and
-                        // publication in this one mutex interval so a connect
-                        // commit cannot interleave between them.
+                        state.publish_session(None);
+                        state.cancel_attempt(generation);
+                        state.end_log_generation(generation);
+                        // 切断状態と通知を同じロック区間で公開する。
                         let payload = ConnectionStatePayload::disconnected(Some(
                             "connection closed".to_owned(),
                         ));
-                        if let Err(err) = app.emit(events::CONNECTION_STATE, payload) {
-                            tracing::warn!(
-                                error = %err,
-                                "relay: failed to emit disconnect state"
-                            );
-                        }
+                        sink(
+                            events::CONNECTION_STATE,
+                            serde_json::to_value(payload).expect("接続状態の直列化"),
+                        );
                     });
                     drop(guard);
                     return;
@@ -349,43 +725,71 @@ fn spawn_relay(
     })
 }
 
-/// Reliably stops an old [`LiveConnection`]'s relay and dispatcher.
-///
-/// Order (see module docs): abort the relay task, shut down the dispatcher
-/// handle (closes the broadcast), then await the relay's join handle so the task
-/// has demonstrably ended. Idempotent: a JoinError from the abort is expected
-/// and ignored.
+/// 古い接続のrelayとdispatcherを終了させる。
 async fn tear_down(conn: LiveConnection) {
     conn.relay.abort();
-    conn.handle.shutdown().await;
-    // Await the aborted task so it cannot outlive this call and double-emit.
+    unsubscribe_log_stream(&conn).await;
+    if !wait_for_dispatcher_shutdown(conn.handle.shutdown()).await {
+        tracing::warn!("Bridge dispatcherの停止応答が2秒以内に返りませんでした");
+    }
+    // 中止したrelayをjoinし、切断通知が二重に出ないようにする。
     let _ = conn.relay.await;
 }
 
-/// The shared connect flow used by `bridge_connect` (and, after teardown, by
-/// `bridge_reconnect`).
-///
-/// Runs WITHOUT the state lock held: dial with retry, subscribe BEFORE hello,
-/// spawn the relay, perform the handshake, then strictly discover capabilities
-/// on the same dispatcher. On any failure it tears down whatever it built so
-/// nothing leaks, and returns a [`BackendError`].
+async fn wait_for_dispatcher_shutdown(shutdown: impl Future<Output = ()>) -> bool {
+    tokio::time::timeout(DISPATCHER_SHUTDOWN_GRACE, shutdown)
+        .await
+        .is_ok()
+}
+
+/// 通知先によらず同じ接続・購読・hello・能力検査を行う。
+/// 状態ロックを持たずにI/Oを行い、失敗時は作成済みdispatcherとrelayを終了する。
 async fn run_connect_flow(
-    app: AppHandle,
+    sink: BridgeEventSink,
     state: &BridgeState,
     endpoint: String,
     generation: u64,
+    cancellation: CancellationToken,
 ) -> Result<LiveConnection, BackendError> {
-    // 1. Dial with retry -> DispatchHandle.
-    let handle = connect_with_retry(&endpoint, &RetryConfig::default()).await?;
+    // 再試行付きで接続してdispatcherを得る。
+    if cancellation.is_cancelled() {
+        return Err(BackendError::NotConnected);
+    }
+    let retry_config = RetryConfig::default();
+    let handle = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(BackendError::NotConnected),
+        result = connect_with_retry(&endpoint, &retry_config) => result?,
+    };
 
-    // 2. Subscribe to events BEFORE hello so no early event is missed.
+    // helloより先に購読し、初期イベントを取りこぼさない。
     let events = handle.subscribe_events();
 
-    // 3. Spawn the relay BEFORE hello with the attempt token allocated by the
-    //    caller, so setup, relay self-heal, and commit use one generation.
-    let relay = spawn_relay(app, generation, events);
+    // 接続試行と同じ世代のrelayをhelloより先に起動する。
+    let relay = spawn_relay(state.clone(), sink, generation, events);
 
     let setup = complete_connection_setup(handle, relay, state).await?;
+    if cancellation.is_cancelled() {
+        tear_down_partial(setup.handle, setup.relay).await;
+        return Err(BackendError::NotConnected);
+    }
+    let Some(log_subscription) = subscribe_log_stream(
+        state,
+        &setup.handle,
+        &setup.capabilities,
+        generation,
+        &cancellation,
+    )
+    .await
+    else {
+        tear_down_partial(setup.handle, setup.relay).await;
+        return Err(BackendError::NotConnected);
+    };
+    tracing::debug!(
+        generation,
+        status = ?log_subscription.status,
+        "ログ購読状態を更新しました"
+    );
 
     Ok(LiveConnection {
         generation,
@@ -395,6 +799,7 @@ async fn run_connect_flow(
         session_id: setup.hello.session_id,
         server_name: setup.hello.server_name,
         capabilities: setup.capabilities,
+        log_subscription_id: log_subscription.subscription_id,
     })
 }
 
@@ -504,63 +909,80 @@ async fn send_method(
 // Tauri commands. Fn names MUST equal the P3 `protocol_names::commands` consts.
 // ===========================================================================
 
-/// Shared connect entrypoint used by BOTH `bridge_connect` and the process
-/// runtime's `launch_engine` (plan J3).
-///
-/// This is exactly `bridge_connect`'s body, factored out so the process module
-/// can establish a connection WITHOUT duplicating the phase-transition guard or
-/// the `Phase` type (which stays private to this module). It:
-///
-/// 1. briefly locks to transition `Disconnected -> Connecting` (rejecting an
-///    overlapping connect/launch with [`BackendError::AlreadyConnected`]), drops
-///    the guard, then
-/// 2. runs the full connect flow WITHOUT the lock held, then
-/// 3. on success briefly locks to store the `Connected` phase and emits
-///    `CONNECTION_STATE`; on failure resets the phase to `Disconnected`.
-///
-/// No lock is ever held across the connect `.await` (see module docs).
+/// 画面接続とエンジン起動から使うTauriアダプタ。
+/// 接続の世代検査と停止は共通入口へ渡し、AppHandleは通知先にだけ使う。
 pub(crate) async fn connect_on_port(
     app: AppHandle,
     state: &BridgeState,
     port: u16,
 ) -> Result<ConnectionStatePayload, BackendError> {
-    // Brief lock: transition Disconnected -> Connecting, reject overlap.
+    connect_service(tauri_bridge_sink(app), state, port).await
+}
+
+/// 接続とイベント処理を画面の通知先から分離した共通入口。
+pub(crate) type BridgeEventSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
+
+fn tauri_bridge_sink(app: AppHandle) -> BridgeEventSink {
+    Arc::new(move |channel, payload| {
+        if let Err(error) = app.emit(channel, payload) {
+            tracing::warn!(error = %error, "Bridgeイベントを画面へ送信できませんでした");
+        }
+    })
+}
+
+pub(crate) async fn connect_service(
+    sink: BridgeEventSink,
+    state: &BridgeState,
+    port: u16,
+) -> Result<ConnectionStatePayload, BackendError> {
+    // 接続試行を短いロックで登録し、重複接続を拒否する。
     let token = state.alloc_generation();
-    {
+    let cancellation = {
         let mut guard = state.inner.lock().await;
         match &*guard {
-            Phase::Disconnected => *guard = Phase::Connecting(token),
+            Phase::Disconnected => {
+                *guard = Phase::Connecting(token);
+                state.publish_session(None);
+                state.begin_attempt(token)
+            }
             Phase::Connecting(_) | Phase::Connected(_) => {
                 return Err(BackendError::AlreadyConnected);
             }
         }
-    } // guard dropped: connect I/O runs WITHOUT the lock.
+    }; // 接続I/Oへロックを持ち越さない。
 
     let endpoint = ws_url_for_port(port);
-    let result = run_connect_flow(app.clone(), state, endpoint, token).await;
+    let result = run_connect_flow(sink.clone(), state, endpoint, token, cancellation).await;
+    state.finish_attempt(token);
 
     match result {
         Ok(conn) => {
             let payload = connection_state_payload(&conn);
             let commit = {
                 let mut guard = state.inner.lock().await;
-                try_commit_connection(&mut guard, token, conn, |_| {
-                    // Synchronous emit under the same lock interval as commit.
-                    let _ = app.emit(events::CONNECTION_STATE, payload.clone());
+                try_commit_connection(&mut guard, token, conn, |phase| {
+                    state.publish_session(edit_lease(phase));
+                    // 接続確定と同じロック区間で通知する。
+                    sink(
+                        events::CONNECTION_STATE,
+                        serde_json::to_value(&payload).expect("接続状態の直列化"),
+                    );
                 })
             };
             if let Some(conn) = commit {
-                // Disconnect or a newer attempt invalidated this token while
-                // setup was in flight. Tear down without publishing ready.
+                // 切断または新しい試行で失効した接続を、公開せず終了する。
                 tear_down(conn).await;
                 return Err(BackendError::NotConnected);
             }
             Ok(payload)
         }
         Err(err) => {
-            // Reset only this failed attempt; never clobber a newer token.
+            // 失敗した試行だけを戻し、新しい試行を上書きしない。
             let mut guard = state.inner.lock().await;
-            reset_connecting_if_matches(&mut guard, token);
+            if reset_connecting_if_matches(&mut guard, token) {
+                state.publish_session(None);
+                state.end_log_generation(token);
+            }
             Err(err)
         }
     }
@@ -591,16 +1013,52 @@ pub async fn bridge_connect(
 /// emitting the disconnected `CONNECTION_STATE` (`stop_engine` does so, as its
 /// single source).
 pub(crate) async fn disconnect_quietly(state: &BridgeState) {
-    let taken = {
+    let (taken, generation) = {
         let mut guard = state.inner.lock().await;
-        match std::mem::replace(&mut *guard, Phase::Disconnected) {
-            Phase::Connected(conn) => Some(conn),
-            _ => None,
-        }
+        let (taken, generation) = match std::mem::replace(&mut *guard, Phase::Disconnected) {
+            Phase::Connected(conn) => {
+                let generation = conn.generation;
+                (Some(conn), Some(generation))
+            }
+            Phase::Connecting(generation) => (None, Some(generation)),
+            Phase::Disconnected => (None, None),
+        };
+        state.publish_session(None);
+        (taken, generation)
     };
+    if let Some(generation) = generation {
+        state.cancel_attempt(generation);
+        state.end_log_generation(generation);
+    }
     if let Some(conn) = taken {
         tear_down(conn).await;
     }
+    state.thumbnail_service.invalidate().await;
+}
+
+/// アプリ終了時に接続を無効化し、relayとdispatcherを非同期に終了する。
+pub(crate) async fn shutdown_on_exit(state: &BridgeState) {
+    let (taken, generation) = {
+        let mut guard = state.inner.lock().await;
+        let (taken, generation) = match std::mem::replace(&mut *guard, Phase::Disconnected) {
+            Phase::Connected(conn) => {
+                let generation = conn.generation;
+                (Some(conn), Some(generation))
+            }
+            Phase::Connecting(generation) => (None, Some(generation)),
+            Phase::Disconnected => (None, None),
+        };
+        state.publish_session(None);
+        (taken, generation)
+    };
+    if let Some(generation) = generation {
+        state.cancel_attempt(generation);
+        state.end_log_generation(generation);
+    }
+    if let Some(conn) = taken {
+        tear_down(conn).await;
+    }
+    state.thumbnail_service.shutdown().await;
 }
 
 /// `bridge_disconnect`: stop the relay, shut down the handle, clear state, emit
@@ -612,17 +1070,27 @@ pub async fn bridge_disconnect(
     app: AppHandle,
 ) -> Result<ConnectionStatePayload, BackendError> {
     // Take the live connection out under the lock, then tear down WITHOUT it.
-    let taken = {
+    let (taken, generation) = {
         let mut guard = state.inner.lock().await;
-        match std::mem::replace(&mut *guard, Phase::Disconnected) {
-            Phase::Connected(conn) => Some(conn),
-            // Connecting or Disconnected: nothing live to tear down.
-            _ => None,
-        }
+        let (taken, generation) = match std::mem::replace(&mut *guard, Phase::Disconnected) {
+            Phase::Connected(conn) => {
+                let generation = conn.generation;
+                (Some(conn), Some(generation))
+            }
+            Phase::Connecting(generation) => (None, Some(generation)),
+            Phase::Disconnected => (None, None),
+        };
+        state.publish_session(None);
+        (taken, generation)
     };
+    if let Some(generation) = generation {
+        state.cancel_attempt(generation);
+        state.end_log_generation(generation);
+    }
     if let Some(conn) = taken {
         tear_down(conn).await;
     }
+    state.thumbnail_service.invalidate().await;
     let payload = ConnectionStatePayload::disconnected(Some("disconnected by editor".to_owned()));
     let _ = app.emit(events::CONNECTION_STATE, payload.clone());
     Ok(payload)
@@ -638,12 +1106,15 @@ pub async fn bridge_reconnect(
     // Take the old connection (and remember its endpoint) under the lock, then
     // move to Connecting so an overlapping connect/reconnect is rejected.
     let token = state.alloc_generation();
-    let (old, endpoint) = {
+    let (old, endpoint, cancellation) = {
         let mut guard = state.inner.lock().await;
         match std::mem::replace(&mut *guard, Phase::Connecting(token)) {
             Phase::Connected(conn) => {
                 let endpoint = conn.endpoint.clone();
-                (conn, endpoint)
+                state.retire_log_generation(conn.generation);
+                state.publish_session(None);
+                let cancellation = state.begin_attempt(token);
+                (conn, endpoint, cancellation)
             }
             Phase::Connecting(current) => {
                 // A connect/reconnect is already in progress: do not disturb it.
@@ -660,14 +1131,23 @@ pub async fn bridge_reconnect(
     // Tear down the OLD relay + handle WITHOUT the lock held.
     tear_down(old).await;
 
-    // Re-run the full connect flow (subscribe -> spawn relay -> hello).
-    let result = run_connect_flow(app.clone(), state.inner(), endpoint, token).await;
+    // 共通の接続処理で購読・relay起動・helloをやり直す。
+    let result = run_connect_flow(
+        tauri_bridge_sink(app.clone()),
+        state.inner(),
+        endpoint,
+        token,
+        cancellation,
+    )
+    .await;
+    state.inner().finish_attempt(token);
     match result {
         Ok(conn) => {
             let payload = connection_state_payload(&conn);
             let commit = {
                 let mut guard = state.inner.lock().await;
-                try_commit_connection(&mut guard, token, conn, |_| {
+                try_commit_connection(&mut guard, token, conn, |phase| {
+                    state.publish_session(edit_lease(phase));
                     let _ = app.emit(events::CONNECTION_STATE, payload.clone());
                 })
             };
@@ -679,7 +1159,10 @@ pub async fn bridge_reconnect(
         }
         Err(err) => {
             let mut guard = state.inner.lock().await;
-            reset_connecting_if_matches(&mut guard, token);
+            if reset_connecting_if_matches(&mut guard, token) {
+                state.publish_session(None);
+                state.inner().end_log_generation(token);
+            }
             Err(err)
         }
     }
@@ -724,15 +1207,18 @@ pub async fn scene_get_tree(state: State<'_, BridgeState>) -> Result<Value, Back
     Ok(value)
 }
 
-/// `scene_create_object`: `scene.createObject` with optional `parentId` / `kind`.
-/// Returns the raw wire-shaped `result` Value (UI types it as
-/// `SceneCreateObjectResult`).
+/// `scene.createObject`を編集サービスの列で実行し、エンジン応答をそのまま返す。
 #[tauri::command]
 pub async fn scene_create_object(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     parent_id: Option<String>,
     kind: Option<String>,
 ) -> Result<Value, BackendError> {
+    let request = HistoryRequest::CreateObject {
+        parent_id: parent_id.clone(),
+        kind: kind.clone(),
+    };
     let mut params = serde_json::Map::new();
     if let Some(parent_id) = parent_id {
         params.insert("parentId".to_owned(), Value::String(parent_id));
@@ -741,79 +1227,137 @@ pub async fn scene_create_object(
         params.insert("kind".to_owned(), Value::String(kind));
     }
 
-    let value = send_method(state.inner(), "scene.createObject", Some(params)).await?;
-    norves_bridge_editor_client::parse_create_object_result(&value).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed scene.createObject result: {err}"),
-        }
-    })?;
-    Ok(value)
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_recorded_from_ui(EditKind::Edit, request, move |lease| async move {
+            let value = facade
+                .send_with_lease(&lease, "scene.createObject", Some(params))
+                .await?;
+            norves_bridge_editor_client::parse_create_object_result(&value).map_err(|err| {
+                BackendError::Request {
+                    message: format!("scene.createObjectの応答形式が不正です: {err}"),
+                }
+            })?;
+            Ok(QueuedEditResult::plain(value))
+        })?
+        .result()
+        .await
 }
 
-/// `scene_delete_object`: `scene.deleteObject` for `object_id`.
+/// `scene.deleteObject`を編集サービスの列で実行する。
 #[tauri::command]
 pub async fn scene_delete_object(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
 ) -> Result<Value, BackendError> {
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
 
-    let value = send_method(state.inner(), "scene.deleteObject", Some(params)).await?;
-    norves_bridge_editor_client::parse_delete_object_result(&value).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed scene.deleteObject result: {err}"),
-        }
-    })?;
-    Ok(value)
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_recorded_from_ui(
+            EditKind::Edit,
+            HistoryRequest::DeleteObject { object_id },
+            move |lease| async move {
+                let value = facade
+                    .send_with_lease(&lease, "scene.deleteObject", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_delete_object_result(&value).map_err(|err| {
+                    BackendError::Request {
+                        message: format!("scene.deleteObjectの応答形式が不正です: {err}"),
+                    }
+                })?;
+                Ok(QueuedEditResult::plain(value))
+            },
+        )?
+        .result()
+        .await
 }
 
-/// `scene_reparent_object`: `scene.reparentObject` for `object_id` and optional
-/// `new_parent_id`. Omitting `new_parent_id` moves the object to the scene root.
+/// 親変更時の画面捕捉値をBridge引数から分け、編集サービスの列で実行する。
 #[tauri::command]
 pub async fn scene_reparent_object(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
     new_parent_id: Option<String>,
+    capture: Option<UiParentCaptureDto>,
 ) -> Result<Value, BackendError> {
+    let capture = ui_parent_capture(&edit_service, capture);
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
-    if let Some(new_parent_id) = new_parent_id {
-        params.insert("newParentId".to_owned(), Value::String(new_parent_id));
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+    if let Some(new_parent_id) = &new_parent_id {
+        params.insert(
+            "newParentId".to_owned(),
+            Value::String(new_parent_id.clone()),
+        );
     }
 
-    let value = send_method(state.inner(), "scene.reparentObject", Some(params)).await?;
-    norves_bridge_editor_client::parse_reparent_object_result(&value).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed scene.reparentObject result: {err}"),
-        }
-    })?;
-    Ok(value)
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_recorded_from_ui(
+            EditKind::Edit,
+            HistoryRequest::ReparentObject {
+                object_id,
+                new_parent_id,
+                old_parent: PriorCapture::Ui(capture),
+            },
+            move |lease| async move {
+                let value = facade
+                    .send_with_lease(&lease, "scene.reparentObject", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_reparent_object_result(&value).map_err(
+                    |err| BackendError::Request {
+                        message: format!("scene.reparentObjectの応答形式が不正です: {err}"),
+                    },
+                )?;
+                Ok(QueuedEditResult::plain(value))
+            },
+        )?
+        .result()
+        .await
 }
 
-/// `scene_duplicate_object`: `scene.duplicateObject` for `object_id` and optional
-/// `new_parent_id`. Omitting `new_parent_id` places the copy alongside the
-/// original. Returns the raw wire-shaped `result` Value (UI types it as
-/// `SceneDuplicateObjectResult`).
+/// `scene.duplicateObject`を編集サービスの列で実行する。
 #[tauri::command]
 pub async fn scene_duplicate_object(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
     new_parent_id: Option<String>,
 ) -> Result<Value, BackendError> {
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
-    if let Some(new_parent_id) = new_parent_id {
-        params.insert("newParentId".to_owned(), Value::String(new_parent_id));
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+    if let Some(new_parent_id) = &new_parent_id {
+        params.insert(
+            "newParentId".to_owned(),
+            Value::String(new_parent_id.clone()),
+        );
     }
 
-    let value = send_method(state.inner(), "scene.duplicateObject", Some(params)).await?;
-    norves_bridge_editor_client::parse_duplicate_object_result(&value).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed scene.duplicateObject result: {err}"),
-        }
-    })?;
-    Ok(value)
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_recorded_from_ui(
+            EditKind::Edit,
+            HistoryRequest::DuplicateObject {
+                source_object_id: object_id,
+                parent_id: new_parent_id,
+            },
+            move |lease| async move {
+                let value = facade
+                    .send_with_lease(&lease, "scene.duplicateObject", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_duplicate_object_result(&value).map_err(
+                    |err| BackendError::Request {
+                        message: format!("scene.duplicateObjectの応答形式が不正です: {err}"),
+                    },
+                )?;
+                Ok(QueuedEditResult::plain(value))
+            },
+        )?
+        .result()
+        .await
 }
 
 /// `object_get_snapshot`: `object.getSnapshot` for `object_id`. Returns the raw
@@ -843,92 +1387,117 @@ pub async fn object_get_snapshot(
     Ok(value)
 }
 
-/// `object_set_property`: `object.setProperty` for `object_id` / `property` /
-/// `value`. Returns the raw wire-shaped `result` Value (UI types it as
-/// `SetObjectPropertyResult`).
-///
-/// Sends `params = { objectId, property, value }` (all required by the schema;
-/// `value` is forwarded verbatim as arbitrary JSON — string/number/boolean/null/
-/// array/object — so a structured edit reaches the engine unchanged). Validated
-/// with `parse_set_property_result` so a malformed ack surfaces as a clean
-/// backend error rather than being forwarded; the ORIGINAL wire Value (carrying
-/// the engine's `appliedValue`) is still returned (same validate-then-forward
-/// pattern as the read commands). An engine that does not implement object edit
-/// answers with a protocol error, which `send_method` maps to
-/// [`BackendError::Engine`] (e.g. `METHOD_NOT_SUPPORTED`) for the UI to degrade
-/// on.
-///
-/// This is the only WRITE path among the commands; it carries no extra state
-/// (no lock held across the request `.await` — `send_method` clones the handle
-/// out of state and drops the guard before awaiting, see module docs).
+/// UI捕捉DTOをBridge paramsへ混ぜず、任意JSON値の編集を共通サービスへ渡す。
 #[tauri::command]
 pub async fn object_set_property(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
     property: String,
     value: Value,
+    capture: Option<UiPropertyCaptureDto>,
 ) -> Result<Value, BackendError> {
+    let capture = ui_property_capture(&edit_service, capture);
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
-    params.insert("property".to_owned(), Value::String(property));
-    // `value` is forwarded verbatim: a snapshot copy of the edited value, never a
-    // live engine pointer. The engine echoes (or normalizes) it back as
-    // `appliedValue`.
-    params.insert("value".to_owned(), value);
-    let result = send_method(state.inner(), "object.setProperty", Some(params)).await?;
-    // Validate shape (drift guard) but forward the original wire Value so the UI
-    // sees the engine's actual appliedValue.
-    norves_bridge_editor_client::parse_set_property_result(&result).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed object.setProperty result: {err}"),
-        }
-    })?;
-    Ok(result)
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+    params.insert("property".to_owned(), Value::String(property.clone()));
+    params.insert("value".to_owned(), value.clone());
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_recorded_from_ui(
+            EditKind::Edit,
+            HistoryRequest::SetProperty {
+                object_id,
+                property,
+                requested_value: value,
+                old_value: PriorCapture::Ui(capture),
+            },
+            move |lease| async move {
+                let result = facade
+                    .send_with_lease(&lease, "object.setProperty", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_set_property_result(&result).map_err(|err| {
+                    BackendError::Request {
+                        message: format!("object.setPropertyの応答形式が不正です: {err}"),
+                    }
+                })?;
+                Ok(QueuedEditResult::plain(result))
+            },
+        )?
+        .result()
+        .await
 }
 
-/// `component_add`: `component.add` for one object and one advertised type.
-///
-/// The type must be one the engine reported as `instantiable` in
-/// `schema.getSnapshot`; this command does not re-check that, because the
-/// engine is the authority and answers `accepted:false` for anything it cannot
-/// build. The result shape is validated as a drift guard, and the ORIGINAL wire
-/// value is forwarded so the UI sees the engine's own `componentId`.
+/// コンポーネント追加を編集サービスの列で実行し、画面更新イベントの情報も渡す。
 #[tauri::command]
 pub async fn component_add(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
     kind: String,
 ) -> Result<Value, BackendError> {
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
-    params.insert("kind".to_owned(), Value::String(kind));
-    let result = send_method(state.inner(), "component.add", Some(params)).await?;
-    norves_bridge_editor_client::parse_component_add_result(&result).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed component.add result: {err}"),
-        }
-    })?;
-    Ok(result)
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+    params.insert("kind".to_owned(), Value::String(kind.clone()));
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_with_event_from_ui(
+            EditKind::Edit,
+            EditEventInput {
+                operation: "componentAdd",
+                object_id: Some(object_id),
+                property: Some("componentKind".to_owned()),
+                value: Some(Value::String(kind)),
+            },
+            move |lease| async move {
+                let result = facade
+                    .send_with_lease(&lease, "component.add", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_component_add_result(&result).map_err(
+                    |err| BackendError::Request {
+                        message: format!("component.addの応答形式が不正です: {err}"),
+                    },
+                )?;
+                Ok(result)
+            },
+        )?
+        .result()
+        .await
 }
 
-/// `component_remove`: `component.remove` for one component id.
-///
-/// The id is the opaque handle `object.getSnapshot` advertised; it is forwarded
-/// verbatim and never parsed here.
+/// コンポーネント削除を編集サービスの列で実行する。
 #[tauri::command]
 pub async fn component_remove(
     state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
     object_id: String,
 ) -> Result<Value, BackendError> {
     let mut params = serde_json::Map::new();
-    params.insert("objectId".to_owned(), Value::String(object_id));
-    let result = send_method(state.inner(), "component.remove", Some(params)).await?;
-    norves_bridge_editor_client::parse_component_remove_result(&result).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed component.remove result: {err}"),
-        }
-    })?;
-    Ok(result)
+    params.insert("objectId".to_owned(), Value::String(object_id.clone()));
+    let facade = state.edit_facade();
+    edit_service
+        .enqueue_with_event_from_ui(
+            EditKind::Edit,
+            EditEventInput {
+                operation: "componentRemove",
+                object_id: Some(object_id),
+                property: None,
+                value: None,
+            },
+            move |lease| async move {
+                let result = facade
+                    .send_with_lease(&lease, "component.remove", Some(params))
+                    .await?;
+                norves_bridge_editor_client::parse_component_remove_result(&result).map_err(
+                    |err| BackendError::Request {
+                        message: format!("component.removeの応答形式が不正です: {err}"),
+                    },
+                )?;
+                Ok(result)
+            },
+        )?
+        .result()
+        .await
 }
 
 /// `schema_get_snapshot`: `schema.getSnapshot` with an empty params object.
@@ -957,46 +1526,32 @@ pub async fn schema_get_snapshot(state: State<'_, BridgeState>) -> Result<Value,
     Ok(value)
 }
 
-/// `viewport_get_thumbnail`: `viewport.getThumbnail` with optional `maxWidth` /
-/// `maxHeight`. Returns the raw wire-shaped `result` Value (UI types it as
-/// `ViewportThumbnail`).
+/// `viewport_get_thumbnail`は`viewport.getThumbnail`を呼び、UI向けのwire形式を返す。
+/// `maxWidth`と`maxHeight`は省略でき、省略時はBridge上限の640×360を使う。
 ///
-/// Sends `params = { maxWidth?, maxHeight? }` (both optional; omitted keys let the
-/// engine pick). Validated with `parse_thumbnail_result` so a malformed result
-/// surfaces as a clean backend error rather than being forwarded; the ORIGINAL
-/// wire Value (carrying the engine's base64 image) is still returned (same
-/// validate-then-forward pattern as the read commands). The image is a snapshot
-/// copy carried inline as base64, never a live engine pointer (see
-/// docs/memory-buffer-policy.md large-payload strategy: PNG, max 640x360, 256 KiB
-/// hard cap, pull-style, <= 1 fps). An engine that does not provide thumbnails
-/// answers with a protocol error, which `send_method` maps to
-/// [`BackendError::Engine`] (e.g. `METHOD_NOT_SUPPORTED`) for the UI to degrade
-/// on (it falls back to the external-window notice).
+/// 取得結果は`parse_thumbnail_result`で検査する。Game ViewとMCPは同じ取得器を通るため、
+/// 進行中の要求と接続世代ごとの1秒snapshotを共有する。画像はframebufferのsnapshotを
+/// base64化した値で、エンジンのlive memoryへの参照は渡さない。MCP向けのPNG復号・縮小は
+/// `docs/memory-buffer-policy.md`に定める上限付きworkerで別途行う。
 ///
-/// No lock is held across the request `.await` — `send_method` clones the handle
-/// out of state and drops the guard before awaiting (see module docs).
+/// 要求中に接続状態のlockは保持しない。Bridge handleを複製してから非同期要求を行う。
 #[tauri::command]
 pub async fn viewport_get_thumbnail(
     state: State<'_, BridgeState>,
     max_width: Option<u32>,
     max_height: Option<u32>,
 ) -> Result<Value, BackendError> {
-    let mut params = serde_json::Map::new();
-    if let Some(w) = max_width {
-        params.insert("maxWidth".to_owned(), Value::from(w));
-    }
-    if let Some(h) = max_height {
-        params.insert("maxHeight".to_owned(), Value::from(h));
-    }
-    let value = send_method(state.inner(), "viewport.getThumbnail", Some(params)).await?;
-    // Validate shape (drift guard) but forward the original wire Value so the UI
-    // sees exactly the engine's base64 image and mimeType.
-    norves_bridge_editor_client::parse_thumbnail_result(&value).map_err(|err| {
-        BackendError::Request {
-            message: format!("malformed viewport.getThumbnail result: {err}"),
-        }
-    })?;
-    Ok(value)
+    let bridge = state.edit_facade();
+    state
+        .thumbnail_service
+        .get_raw(
+            &bridge,
+            max_width,
+            max_height,
+            crate::mcp::thumbnail::RequestOrigin::Ui,
+        )
+        .await
+        .map(|snapshot| snapshot.value().clone())
 }
 
 /// `asset_resolve`: `asset.resolve` for `logical_path` plus optional
@@ -1095,23 +1650,126 @@ pub async fn asset_reload_manifest(state: State<'_, BridgeState>) -> Result<Valu
     validate_asset_reload_manifest_result(value)
 }
 
-/// `runtime_play`: `runtime.play` with an empty params object. Returns the raw
-/// result Value.
+/// 再生要求を編集サービスの共通列で実行する。
 #[tauri::command]
-pub async fn runtime_play(state: State<'_, BridgeState>) -> Result<Value, BackendError> {
-    send_method(state.inner(), "runtime.play", Some(serde_json::Map::new())).await
+pub async fn runtime_play(
+    state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
+) -> Result<Value, BackendError> {
+    let facade = state.edit_facade();
+    edit_service
+        .submit_from_ui(EditKind::RuntimeControl, move |lease| async move {
+            facade
+                .send_with_lease(&lease, "runtime.play", Some(serde_json::Map::new()))
+                .await
+        })
+        .await
 }
 
-/// `runtime_pause`: `runtime.pause` with an empty params object.
+/// 一時停止要求を編集サービスの共通列で実行する。
 #[tauri::command]
-pub async fn runtime_pause(state: State<'_, BridgeState>) -> Result<Value, BackendError> {
-    send_method(state.inner(), "runtime.pause", Some(serde_json::Map::new())).await
+pub async fn runtime_pause(
+    state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
+) -> Result<Value, BackendError> {
+    let facade = state.edit_facade();
+    edit_service
+        .submit_from_ui(EditKind::RuntimeControl, move |lease| async move {
+            facade
+                .send_with_lease(&lease, "runtime.pause", Some(serde_json::Map::new()))
+                .await
+        })
+        .await
 }
 
-/// `runtime_stop`: `runtime.stop` with an empty params object.
+/// 停止要求を編集サービスの共通列で実行する。
 #[tauri::command]
-pub async fn runtime_stop(state: State<'_, BridgeState>) -> Result<Value, BackendError> {
-    send_method(state.inner(), "runtime.stop", Some(serde_json::Map::new())).await
+pub async fn runtime_stop(
+    state: State<'_, BridgeState>,
+    edit_service: State<'_, EditService>,
+) -> Result<Value, BackendError> {
+    let facade = state.edit_facade();
+    edit_service
+        .submit_from_ui(EditKind::RuntimeControl, move |lease| async move {
+            facade
+                .send_with_lease(&lease, "runtime.stop", Some(serde_json::Map::new()))
+                .await
+        })
+        .await
+}
+
+/// UIの履歴先頭IDと改訂が現行の場合だけ、取り消しを編集サービスへ渡す。
+#[tauri::command]
+pub async fn edit_undo(
+    edit_service: State<'_, EditService>,
+    expected_head_id: Option<u64>,
+    expected_revision: u64,
+) -> Result<Value, BackendError> {
+    edit_service
+        .enqueue_undo_from_ui(expected_head_id, expected_revision)?
+        .result()
+        .await
+}
+
+/// UIの履歴先頭IDと改訂が現行の場合だけ、やり直しを編集サービスへ渡す。
+#[tauri::command]
+pub async fn edit_redo(
+    edit_service: State<'_, EditService>,
+    expected_head_id: Option<u64>,
+    expected_revision: u64,
+) -> Result<Value, BackendError> {
+    edit_service
+        .enqueue_redo_from_ui(expected_head_id, expected_revision)?
+        .result()
+        .await
+}
+
+/// 画面初期化時に、サービスが所有する履歴要約を取得する。
+#[tauri::command]
+pub fn edit_get_history(edit_service: State<'_, EditService>) -> EditHistorySummaryDto {
+    edit_service.history_summary()
+}
+
+fn ui_property_capture(
+    edit_service: &EditService,
+    capture: Option<UiPropertyCaptureDto>,
+) -> HistoryCapture<Value> {
+    match capture {
+        Some(capture) => HistoryCapture {
+            generation: capture.generation,
+            revision: capture.revision,
+            value: Some(capture.value),
+        },
+        None => {
+            let (generation, revision) = edit_service.applied_history_revision();
+            HistoryCapture {
+                generation: generation.unwrap_or_default(),
+                revision,
+                value: None,
+            }
+        }
+    }
+}
+
+fn ui_parent_capture(
+    edit_service: &EditService,
+    capture: Option<UiParentCaptureDto>,
+) -> HistoryCapture<Option<String>> {
+    match capture {
+        Some(capture) => HistoryCapture {
+            generation: capture.generation,
+            revision: capture.revision,
+            value: Some(capture.parent_id),
+        },
+        None => {
+            let (generation, revision) = edit_service.applied_history_revision();
+            HistoryCapture {
+                generation: generation.unwrap_or_default(),
+                revision,
+                value: None,
+            }
+        }
+    }
 }
 
 /// `focus_viewport`: `runtime.focusViewport` with an empty params object.
@@ -1132,6 +1790,7 @@ pub async fn focus_viewport(state: State<'_, BridgeState>) -> Result<Value, Back
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::log_buffer::LogSubscriptionStatus;
     use norves_bridge_core::{decode_typed, encode_envelope, BridgeError, Envelope, ErrorCode};
     use norves_bridge_editor_client::{loopback_pair, Dispatcher, LoopbackTransport, Transport};
     use tokio::sync::oneshot;
@@ -1189,6 +1848,133 @@ mod tests {
             } => (id, method.as_str().to_owned(), params),
             other => panic!("expected setup request, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn bridge_io_does_not_hold_locks_and_disconnect_invalidates_edits() {
+        let state = BridgeState::default();
+        let (transport, mut engine) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let (relay, relay_dropped) = connection_setup_relay_probe();
+        {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connected(LiveConnection {
+                generation: 1,
+                handle: handle.clone(),
+                relay,
+                endpoint: ws_url_for_port(49770),
+                session_id: "edit-service-test".to_owned(),
+                server_name: "loopback".to_owned(),
+                capabilities: Vec::new(),
+                log_subscription_id: None,
+            });
+            state.publish_session(edit_lease(&phase));
+        }
+        let service = crate::edit_service::EditService::new(state.edit_facade());
+        let request = build_request(
+            state.alloc_request_id(),
+            "bridge.test",
+            Some(serde_json::Map::new()),
+        )
+        .expect("test request is valid");
+        let ticket = service
+            .enqueue_from_ui(
+                crate::edit_service::EditKind::Edit,
+                move |lease| async move {
+                    match lease.handle.request(request, Duration::from_secs(5)).await {
+                        Ok(ResponsePayload::Result(value)) => Ok(value),
+                        Ok(ResponsePayload::Error(error)) => Err(error.into()),
+                        Err(error) => Err(error.into()),
+                    }
+                },
+            )
+            .expect("edit request is accepted");
+        let (id, method, _) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "bridge.test");
+        assert!(state.inner.try_lock().is_ok());
+        assert!(service.history_lock_available());
+
+        engine
+            .send(connection_setup_response_frame(
+                id,
+                ResponsePayload::Result(serde_json::json!({ "accepted": true })),
+            ))
+            .await
+            .expect("response sends");
+        assert_eq!(
+            ticket.result().await.expect("edit succeeds")["accepted"],
+            true
+        );
+        let (generation, revision_before_disconnect, entries) = service.history_snapshot();
+        assert_eq!(generation, Some(1));
+        assert_eq!(entries.len(), 1);
+
+        let pending_request = build_request(
+            state.alloc_request_id(),
+            "bridge.pending",
+            Some(serde_json::Map::new()),
+        )
+        .expect("pending test request is valid");
+        let pending_edit = service
+            .enqueue_from_mcp(
+                crate::edit_service::EditKind::Edit,
+                move |lease| async move {
+                    match lease
+                        .handle
+                        .request(pending_request, Duration::from_secs(5))
+                        .await
+                    {
+                        Ok(ResponsePayload::Result(value)) => Ok(value),
+                        Ok(ResponsePayload::Error(error)) => Err(error.into()),
+                        Err(error) => Err(error.into()),
+                    }
+                },
+            )
+            .expect("second edit request is accepted");
+        let (_, method, _) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "bridge.pending");
+
+        let queued_action_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let queued_action_probe = std::sync::Arc::clone(&queued_action_ran);
+        let queued_edit = service
+            .enqueue_from_ui(crate::edit_service::EditKind::Edit, move |_| async move {
+                queued_action_probe.store(true, std::sync::atomic::Ordering::Release);
+                Ok(Value::Null)
+            })
+            .expect("third edit request is queued");
+
+        disconnect_quietly(&state).await;
+        assert!(matches!(
+            pending_edit.result().await,
+            Err(BackendError::NotConnected)
+        ));
+        assert!(matches!(
+            queued_edit.result().await,
+            Err(BackendError::NotConnected)
+        ));
+        assert!(!queued_action_ran.load(std::sync::atomic::Ordering::Acquire));
+        let (generation, revision, entries) = service.history_snapshot();
+        assert_eq!(generation, None);
+        assert!(revision > revision_before_disconnect);
+        assert!(entries.is_empty());
+
+        service.shutdown().await;
+        relay_dropped.await.expect("切断後にrelayの終了を確認する");
+    }
+
+    #[tokio::test]
+    async fn dispatcher_shutdown_wait_is_limited_to_two_seconds() {
+        let began = tokio::time::Instant::now();
+        assert!(!wait_for_dispatcher_shutdown(std::future::pending()).await);
+        let elapsed = began.elapsed();
+        assert!(
+            elapsed >= DISPATCHER_SHUTDOWN_GRACE,
+            "shutdown returned after {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "shutdown took {elapsed:?}"
+        );
     }
 
     async fn connection_setup_serve_hello(engine: &mut LoopbackTransport) {
@@ -1461,6 +2247,359 @@ mod tests {
         assert!(!relay_should_reset_phase(&Phase::Connecting(1), 0));
     }
 
+    #[test]
+    fn old_relay_logs_are_rejected_and_current_logs_keep_their_generation() {
+        let mut buffer = LogBuffer::default();
+        buffer.begin_generation(22);
+        let old_params = serde_json::json!({ "level": "error", "message": "old" });
+        let current_params = serde_json::json!({ "level": "info", "message": "current" });
+
+        assert!(matches!(
+            crate::mcp::log_buffer::record_relay_log(
+                &mut buffer,
+                21,
+                old_params.as_object().expect("object")
+            ),
+            Ok(RelayLogRecord::Stale)
+        ));
+        assert!(matches!(
+            crate::mcp::log_buffer::record_relay_log(
+                &mut buffer,
+                22,
+                current_params.as_object().expect("object")
+            ),
+            Ok(RelayLogRecord::Retained(
+                crate::mcp::log_buffer::LogRecordOutcome {
+                    sequence: 1,
+                    truncated: false
+                }
+            ))
+        ));
+
+        buffer.end_generation(22);
+        buffer.begin_generation(23);
+        let next_params = serde_json::json!({ "level": "warn", "message": "next" });
+        assert!(matches!(
+            crate::mcp::log_buffer::record_relay_log(
+                &mut buffer,
+                22,
+                &next_params.as_object().expect("object").clone()
+            ),
+            Ok(RelayLogRecord::Stale)
+        ));
+        assert!(matches!(
+            crate::mcp::log_buffer::record_relay_log(
+                &mut buffer,
+                23,
+                next_params.as_object().expect("object")
+            ),
+            Ok(RelayLogRecord::Retained(
+                crate::mcp::log_buffer::LogRecordOutcome {
+                    sequence: 1,
+                    truncated: false
+                }
+            ))
+        ));
+
+        let snapshot = buffer.read(&crate::mcp::log_buffer::LogQuery {
+            generation: Some(23),
+            ..crate::mcp::log_buffer::LogQuery::default()
+        });
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.entries[0].message, "next");
+        assert_eq!(snapshot.entries[0].generation, 23);
+    }
+
+    #[test]
+    fn reconnect_retires_subscribed_generation_before_starting_the_replacement() {
+        let state = BridgeState::default();
+        state.begin_attempt(70);
+        state
+            .log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_subscription_status(70, LogSubscriptionStatus::Subscribed);
+
+        state.retire_log_generation(70);
+        state.begin_attempt(71);
+
+        let snapshot = state
+            .log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read(&crate::mcp::log_buffer::LogQuery {
+                generation: Some(70),
+                ..crate::mcp::log_buffer::LogQuery::default()
+            });
+        assert_eq!(
+            snapshot.retention[0].subscription,
+            LogSubscriptionStatus::Cancelled
+        );
+        let mut buffer = state
+            .log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let late_log = serde_json::json!({"level":"error", "message":"old relay"});
+        assert!(matches!(
+            crate::mcp::log_buffer::record_relay_log(
+                &mut buffer,
+                70,
+                late_log.as_object().expect("object")
+            ),
+            Ok(RelayLogRecord::Stale)
+        ));
+        drop(buffer);
+        state.retire_log_generation(71);
+    }
+
+    #[tokio::test]
+    async fn cancelled_subscription_discards_its_late_ack_after_a_generation_change() {
+        let state = Arc::new(BridgeState::default());
+        let cancellation = {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connecting(41);
+            state.begin_attempt(41)
+        };
+
+        let (transport, mut engine) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let task_state = Arc::clone(&state);
+        let task_handle = handle.clone();
+        let task_cancellation = cancellation.clone();
+        let capabilities = vec![
+            serde_json::from_value(serde_json::json!({"name":"log.stream"}))
+                .expect("log.stream能力を作る"),
+        ];
+        let task = tokio::spawn(async move {
+            subscribe_log_stream(
+                &task_state,
+                &task_handle,
+                &capabilities,
+                41,
+                &task_cancellation,
+            )
+            .await
+        });
+        let (id, method, params) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "log.subscribe");
+        assert!(matches!(params, Some(params) if params.is_empty()));
+
+        {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Disconnected;
+        }
+        state.cancel_attempt(41);
+        state.end_log_generation(41);
+        {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connecting(42);
+            state.begin_attempt(42);
+        }
+        assert!(tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, task)
+            .await
+            .expect("取消後に購読taskが終わる")
+            .expect("購読taskがjoinする")
+            .is_none());
+
+        engine
+            .send(connection_setup_response_frame(
+                id,
+                ResponsePayload::Result(serde_json::json!({
+                    "subscriptionId": "stale-subscription"
+                })),
+            ))
+            .await
+            .expect("遅れて到着したackを送る");
+        tokio::task::yield_now().await;
+
+        {
+            let logs = state
+                .log_buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let old_status = logs.read(&crate::mcp::log_buffer::LogQuery {
+                generation: Some(41),
+                ..crate::mcp::log_buffer::LogQuery::default()
+            });
+            assert_eq!(
+                old_status.retention[0].subscription,
+                LogSubscriptionStatus::Cancelled
+            );
+            let new_status = logs.read(&crate::mcp::log_buffer::LogQuery {
+                generation: Some(42),
+                ..crate::mcp::log_buffer::LogQuery::default()
+            });
+            assert_eq!(
+                new_status.retention[0].subscription,
+                LogSubscriptionStatus::NotAttempted
+            );
+        }
+
+        state.cancel_attempt(42);
+        state.end_log_generation(42);
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn subscription_ack_without_cancellation_is_discarded_after_generation_change() {
+        let state = Arc::new(BridgeState::default());
+        let cancellation = {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connecting(44);
+            state.begin_attempt(44)
+        };
+        let (transport, mut engine) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let task_state = Arc::clone(&state);
+        let task_handle = handle.clone();
+        let capabilities = vec![
+            serde_json::from_value(serde_json::json!({"name":"log.stream"}))
+                .expect("log.stream能力を作る"),
+        ];
+        let task = tokio::spawn(async move {
+            subscribe_log_stream(&task_state, &task_handle, &capabilities, 44, &cancellation).await
+        });
+        let (id, method, _) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "log.subscribe");
+
+        {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connecting(45);
+            state.end_log_generation(44);
+            state.begin_attempt(45);
+        }
+        engine
+            .send(connection_setup_response_frame(
+                id,
+                ResponsePayload::Result(serde_json::json!({
+                    "subscriptionId": "late-subscription"
+                })),
+            ))
+            .await
+            .expect("現行でない世代のackを送る");
+        assert!(tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, task)
+            .await
+            .expect("古い世代の購読taskが終わる")
+            .expect("購読taskがjoinする")
+            .is_none());
+
+        {
+            let logs = state
+                .log_buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let snapshot = logs.read(&crate::mcp::log_buffer::LogQuery {
+                generation: Some(45),
+                ..crate::mcp::log_buffer::LogQuery::default()
+            });
+            assert_eq!(
+                snapshot.retention[0].subscription,
+                LogSubscriptionStatus::NotAttempted
+            );
+        }
+
+        state.cancel_attempt(45);
+        state.end_log_generation(45);
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn failed_log_subscription_is_visible_in_generation_status() {
+        let state = Arc::new(BridgeState::default());
+        let cancellation = {
+            let mut phase = state.inner.lock().await;
+            *phase = Phase::Connecting(43);
+            state.begin_attempt(43)
+        };
+        let (transport, mut engine) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let task_state = Arc::clone(&state);
+        let task_handle = handle.clone();
+        let capabilities = vec![
+            serde_json::from_value(serde_json::json!({"name":"log.stream"}))
+                .expect("log.stream能力を作る"),
+        ];
+        let task = tokio::spawn(async move {
+            subscribe_log_stream(&task_state, &task_handle, &capabilities, 43, &cancellation).await
+        });
+        let (_, method, _) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "log.subscribe");
+        drop(engine);
+
+        assert!(matches!(
+            tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, task)
+                .await
+                .expect("購読失敗が返る")
+                .expect("購読taskがjoinする"),
+            Some(LogSubscription {
+                status: LogSubscriptionStatus::Failed,
+                subscription_id: None
+            })
+        ));
+        let snapshot = state
+            .log_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read(&crate::mcp::log_buffer::LogQuery {
+                generation: Some(43),
+                ..crate::mcp::log_buffer::LogQuery::default()
+            });
+        assert_eq!(
+            snapshot.retention[0].subscription,
+            LogSubscriptionStatus::Failed
+        );
+
+        state.cancel_attempt(43);
+        state.end_log_generation(43);
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_uses_the_received_id_and_skips_an_incompatible_ack() {
+        let (transport, mut engine) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let relay = tauri::async_runtime::spawn(async {});
+        let mut conn = LiveConnection {
+            generation: 55,
+            handle: handle.clone(),
+            relay,
+            endpoint: "ws://127.0.0.1:0".to_owned(),
+            session_id: "session".to_owned(),
+            server_name: "server".to_owned(),
+            capabilities: Vec::new(),
+            log_subscription_id: None,
+        };
+
+        unsubscribe_log_stream(&conn).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), engine.recv())
+                .await
+                .is_err()
+        );
+
+        conn.log_subscription_id = Some("engine-subscription-5".to_owned());
+        let task = tokio::spawn(async move { unsubscribe_log_stream(&conn).await });
+        let (id, method, params) = connection_setup_request(&mut engine).await;
+        assert_eq!(method, "log.unsubscribe");
+        assert_eq!(
+            params.and_then(|params| params.get("subscriptionId").cloned()),
+            Some(Value::String("engine-subscription-5".to_owned()))
+        );
+        engine
+            .send(connection_setup_response_frame(
+                id,
+                ResponsePayload::Result(serde_json::json!({"ok":true})),
+            ))
+            .await
+            .expect("unsubscribe応答を送る");
+        tokio::time::timeout(CONNECTION_SETUP_TIMEOUT, task)
+            .await
+            .expect("unsubscribeの応答が返る")
+            .expect("unsubscribe taskがjoinする");
+
+        handle.shutdown().await;
+    }
+
     /// Builds a real `LiveConnection` (via a loopback-backed dispatcher and a
     /// trivial relay task) carrying `generation`. Needs a runtime, hence the
     /// `#[tokio::test]` caller.
@@ -1481,6 +2620,7 @@ mod tests {
                 "version": "0.2"
             }))
             .expect("valid capability descriptor")],
+            log_subscription_id: None,
         }
     }
 

@@ -236,6 +236,157 @@ html, body, #root {
   margin: 8px 0;
 }
 
+/* ---- Settings のエンジン欄 ---- */
+/* 狭い幅ではラベルと値を折り返し、長いパスは任意の位置で改行して横にはみ出さない。 */
+.settings-engine {
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-engine__details {
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-engine__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  min-width: 0;
+}
+
+.settings-engine__value {
+  font-size: 12px;
+  min-width: 0;
+}
+
+.settings-engine__path {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.settings-engine__note {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* 起動引数は 1 行 1 引数なので折り返さず、長い行は入力欄の中で横に送る。 */
+.settings-engine__args {
+  gap: 4px;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.settings-engine__args-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  white-space: pre;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.settings-engine__args-actions {
+  gap: 4px 8px;
+}
+
+.settings-engine__saved {
+  font-size: 11px;
+  color: var(--color-success);
+}
+
+/* ---- Settings の MCP 接続欄 ---- */
+.settings-mcp {
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-mcp__note,
+.settings-mcp__impact {
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.settings-mcp__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.settings-mcp__port {
+  gap: 4px;
+  max-width: 180px;
+}
+
+.settings-mcp__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  min-width: 0;
+}
+
+.settings-mcp__value {
+  min-width: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-mcp__actions {
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.settings-mcp__token-section,
+.settings-mcp__instructions {
+  gap: 5px;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.settings-mcp__token {
+  display: block;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.settings-mcp__impact {
+  padding-left: 8px;
+  border-left: 2px solid var(--color-warning, var(--color-border));
+}
+
+.settings-mcp__steps {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.settings-mcp__command {
+  display: block;
+  padding: 6px;
+  background: var(--color-surface-raised, var(--color-bg-secondary));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 /* ---- error banner ---- */
 .error-banner {
   display: flex;
@@ -294,6 +445,90 @@ html, body, #root {
   flex: 1;
   min-height: 0;
   position: relative;
+}
+
+/* 確認パネルを閉じても待ち件数と通知を残す。 */
+.editor-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+
+.editor-layout__dock {
+  flex: 1;
+  min-height: 0;
+}
+
+.mcp-approval-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border);
+  overflow-wrap: anywhere;
+}
+
+.mcp-approvals {
+  height: 100%;
+}
+
+.mcp-approvals__request {
+  border: 1px solid var(--color-border);
+  padding: 8px;
+  overflow-wrap: anywhere;
+}
+
+.mcp-approvals__details {
+  margin: 8px 0;
+}
+
+.mcp-approvals__details dt {
+  color: var(--color-text-muted);
+  margin-top: 8px;
+}
+
+.mcp-approvals pre {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.mcp-approvals__warning {
+  color: var(--color-warning);
+  margin: 8px 0;
+}
+
+.mcp-operations {
+  height: 100%;
+}
+
+.mcp-operations .mcp-approvals {
+  height: auto;
+  flex: none;
+}
+
+.mcp-operations__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.mcp-operations__record {
+  border-top: 1px solid var(--color-border);
+  padding: 8px 0;
+  overflow-wrap: anywhere;
+}
+
+.mcp-operations__record dd {
+  margin-left: 12px;
+}
+
+.mcp-operations__undo {
+  text-decoration: underline;
 }
 
 /*
@@ -418,6 +653,29 @@ html, body, #root {
   font-size: 11px;
 }
 
+/* 履歴の先頭まとまりを操作ボタンの横に表示する。 */
+.toolbar__history-summary {
+  display: inline-flex;
+  flex: 0 1 240px;
+  min-width: 0;
+  max-width: 240px;
+  gap: 2px;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.toolbar__history-summary-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toolbar__history-summary-count {
+  flex: 0 0 auto;
+}
+
 /*
  * .toolbar__sep: thin vertical rule that visually groups button sets.
  * Uses var(--color-border) so it stays consistent with the rest of the shell.
@@ -520,6 +778,95 @@ html, body, #root {
 .log-entry--info  .log-entry__level { color: var(--color-info-text); }
 .log-entry--warn  .log-entry__level { color: var(--color-warning); }
 .log-entry--error .log-entry__level { color: var(--color-danger); }
+
+/* 編集まとまりの部分失敗中は通常の編集領域を操作できないようにする。 */
+.history-problem-shield {
+  position: fixed;
+  inset: calc(var(--header-h) * 2) 0 0;
+  z-index: 10000;
+  background: color-mix(in srgb, var(--color-bg) 30%, transparent);
+}
+
+.history-problem-notice {
+  position: fixed;
+  top: calc(var(--header-h) * 2 + 16px);
+  left: 50%;
+  z-index: 10001;
+  box-sizing: border-box;
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - var(--header-h) * 2 - 32px);
+  overflow-y: auto;
+  transform: translateX(-50%);
+  padding: 20px;
+  border: 1px solid var(--color-danger);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: 0 12px 40px color-mix(in srgb, #000 48%, transparent);
+}
+
+.history-problem-notice h2 {
+  margin: 0 0 12px;
+  color: var(--color-danger-text);
+  font-size: 16px;
+}
+
+.history-problem-notice p {
+  margin: 8px 0;
+  line-height: 1.5;
+}
+
+.history-problem-notice__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--color-text-muted);
+}
+
+.history-problem-notice__summary strong {
+  flex-basis: 100%;
+  color: var(--color-text);
+}
+
+.history-problem-notice__warning {
+  padding: 8px 10px;
+  border-left: 3px solid var(--color-warning);
+  background: var(--color-surface-alt);
+}
+
+.history-problem-notice__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.history-problem-result {
+  position: fixed;
+  top: calc(var(--header-h) * 2 + 12px);
+  right: 16px;
+  z-index: 10001;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  box-sizing: border-box;
+  width: min(480px, calc(100vw - 32px));
+  padding: 14px 16px;
+  border: 1px solid var(--color-warning);
+  border-radius: 6px;
+  background: var(--color-surface);
+  box-shadow: 0 8px 28px color-mix(in srgb, #000 40%, transparent);
+}
+
+.history-problem-result p {
+  margin: 6px 0 0;
+  color: var(--color-text-muted);
+  line-height: 1.45;
+}
+
+.history-problem-result > button {
+  flex-shrink: 0;
+}
 .log-entry--debug .log-entry__level { color: var(--color-text-muted); }
 
 /* ---- scene outliner tree ---- */

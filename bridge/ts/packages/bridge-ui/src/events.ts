@@ -24,6 +24,10 @@ export const BRIDGE_EVENTS = {
   bridgeDisconnected: 'bridge:bridge-disconnected',
   sceneTreeChanged: 'bridge:scene-tree-changed',
   objectChanged: 'bridge:object-changed',
+  editApplied: 'bridge:edit-applied',
+  editHistoryChanged: 'bridge:edit-history-changed',
+  mcpConfirmationsChanged: 'bridge:mcp-confirmations-changed',
+  mcpOperationsChanged: 'bridge:mcp-operations-changed',
 } as const;
 
 /** Union of all valid Tauri event name strings. */

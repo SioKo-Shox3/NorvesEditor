@@ -89,19 +89,14 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
     wasConnectedRef.current = isConnected;
   }, [isConnected, actions]);
 
-  // -----------------------------------------------------------------------
-  // Fetch the selected object's snapshot whenever the selection changes.
-  // Keyed on selectedObjectId so only the latest selection triggers a fetch;
-  // the store already drops the prior snapshot on selection change, and the
-  // render guard below discards any late response whose objectId no longer
-  // matches the current selection.
-  // -----------------------------------------------------------------------
+  // 選択変更と編集サービスからの再取得要求でsnapshotを取得する。
   const getObjectSnapshot = actions.getObjectSnapshot;
+  const objectSnapshotRefreshVersion = state.objectSnapshotRefreshVersion;
   useEffect(() => {
     if (isConnected && selectedObjectId !== undefined) {
       void getObjectSnapshot(selectedObjectId);
     }
-  }, [isConnected, selectedObjectId, getObjectSnapshot]);
+  }, [isConnected, selectedObjectId, objectSnapshotRefreshVersion, getObjectSnapshot]);
 
   // The stored snapshot is only valid for the current selection. A late
   // response for a previous object (whose objectId differs) is discarded here.
@@ -110,21 +105,15 @@ export function PropertyInspectorPanel(_props: IDockviewPanelProps): React.JSX.E
       ? objectSnapshot
       : undefined;
 
-  // -----------------------------------------------------------------------
-  // Component drill-down. The entity snapshot carries the component list; a
-  // selected component's own properties come from a second object.getSnapshot
-  // on its opaque id. Same race guard as above: the stored component snapshot
-  // is only rendered while its objectId matches the current component
-  // selection, so a late response for a previously selected component is
-  // discarded at render time.
-  // -----------------------------------------------------------------------
+  // コンポーネントを選ぶと、その不透明IDで個別snapshotを取得する。
   const selectedComponentId = state.selectedComponentId;
   const getComponentSnapshot = actions.getComponentSnapshot;
+  const componentSnapshotRefreshVersion = state.componentSnapshotRefreshVersion;
   useEffect(() => {
     if (isConnected && selectedComponentId !== undefined) {
       void getComponentSnapshot(selectedComponentId);
     }
-  }, [isConnected, selectedComponentId, getComponentSnapshot]);
+  }, [isConnected, selectedComponentId, componentSnapshotRefreshVersion, getComponentSnapshot]);
 
   // Structure edits are per-connection: only an engine that advertises
   // component.edit gets the controls. The set of types it can build is a

@@ -15,8 +15,9 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import type { BridgeState } from '../../state/store.js';
-import { INITIAL_STATE } from '../../state/store.js';
+import { bridgeReducer, INITIAL_STATE } from '../../state/store.js';
 import type { SceneNode } from '@norves/bridge-ui';
+import type React from 'react';
 
 // -------------------------------------------------------------------------
 // Mock dockview-react
@@ -605,6 +606,112 @@ describe('SceneOutlinerPanel — collapsing and remembered view state', () => {
   });
 });
 
+describe('SceneOutlinerPanel — 折りたたみの記憶は 1 つの接続のもの', () => {
+  function connectedState(sessionId: string, generation = 1): BridgeState {
+    return {
+      ...INITIAL_STATE,
+      connection: { status: 'connected', sessionId, generation },
+      sceneTree: DEMO_TREE,
+    };
+  }
+
+  function panel(): React.JSX.Element {
+    return <SceneOutlinerPanel {...makeDockviewProps()} />;
+  }
+
+  it('マウント中に切断されたら折りたたみを捨てる', () => {
+    mockState = connectedState('s-1');
+    const { rerender } = render(panel());
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    expect(screen.queryByText('NodeB')).toBeNull();
+
+    // 切断して、同じ sessionId で繋ぎ直す。connected から外れた時点で世代が変わる。
+    mockState = { ...INITIAL_STATE, connection: { status: 'disconnected' } };
+    rerender(panel());
+    mockState = connectedState('s-1', 2);
+    rerender(panel());
+    expect(screen.getByText('NodeB')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'GroupNode を折りたたむ' })).toBeTruthy();
+  });
+
+  it('マウント中にセッションが変わったら折りたたみを捨てる', () => {
+    mockState = connectedState('s-1');
+    const { rerender } = render(panel());
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+
+    mockState = connectedState('s-2', 2);
+    rerender(panel());
+    expect(screen.getByText('NodeB')).toBeTruthy();
+  });
+
+  it('パネル不在の間に別のセッションへ繋ぎ直されたら折りたたみを捨てる', () => {
+    mockState = connectedState('s-1');
+    render(panel());
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'Node' } });
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    cleanup();
+
+    // タブを離れている間に切断・再接続された。パネルはその間の変化を見ていない。
+    mockState = connectedState('s-2', 2);
+    render(panel());
+    // 絞り込みは接続に依らないので残る。
+    expect((screen.getByLabelText('シーンを絞り込む') as HTMLInputElement).value).toBe('Node');
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: '' } });
+    expect(screen.getByText('NodeB')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'GroupNode を折りたたむ' })).toBeTruthy();
+  });
+
+  it('パネル不在の間に同じセッションへ繋ぎ直されても折りたたみを捨てる', () => {
+    mockState = connectedState('s-1', 1);
+    render(panel());
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    cleanup();
+
+    // 切断 → 同じ sessionId で再接続。パネルは遷移を見ていないが、store の世代番号は進んでいる。
+    mockState = connectedState('s-1', 2);
+    render(panel());
+    expect(screen.getByText('NodeB')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'GroupNode を折りたたむ' })).toBeTruthy();
+  });
+
+  it('新しい接続の中でタブを往復しても古い折りたたみは蘇らない', () => {
+    mockState = connectedState('s-1');
+    render(panel());
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    cleanup();
+
+    mockState = connectedState('s-2', 2);
+    render(panel());
+    cleanup();
+    // 古い接続の記憶が、新しい接続の中でタブを往復して蘇ってはいけない。
+    render(panel());
+    expect(screen.getByText('NodeB')).toBeTruthy();
+  });
+
+  it('同じ接続の中でタブを往復したら折りたたみが残る', () => {
+    mockState = connectedState('s-1');
+    render(panel());
+    fireEvent.click(screen.getByRole('button', { name: 'GroupNode を折りたたむ' }));
+    cleanup();
+
+    mockState = connectedState('s-1');
+    render(panel());
+    expect(screen.queryByText('NodeB')).toBeNull();
+    expect(screen.getByRole('button', { name: 'GroupNode を展開' })).toBeTruthy();
+  });
+
+  it('切断をまたいでも絞り込みは残る', () => {
+    mockState = connectedState('s-1');
+    const { rerender } = render(panel());
+    fireEvent.change(screen.getByLabelText('シーンを絞り込む'), { target: { value: 'Node' } });
+    mockState = { ...INITIAL_STATE, connection: { status: 'disconnected' } };
+    rerender(panel());
+    mockState = connectedState('s-2', 2);
+    rerender(panel());
+    expect((screen.getByLabelText('シーンを絞り込む') as HTMLInputElement).value).toBe('Node');
+  });
+});
+
 // -------------------------------------------------------------------------
 // キーボード操作
 // -------------------------------------------------------------------------
@@ -934,5 +1041,84 @@ describe('SceneOutlinerPanel — drag to reparent', () => {
     expect(row('NodeA').className).not.toContain('scene-node__row--drop');
     fireEvent.dragEnd(row('NodeA'));
     expect(row('GroupNode').className).not.toContain('scene-node__row--drop');
+  });
+});
+
+describe('SceneOutlinerPanel — 編集サービスイベント', () => {
+  it('Nameの値設定でノード名を更新する', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      editServiceGeneration: 7,
+      editAppliedRevision: 0,
+      sceneTreeAppliedGeneration: 7,
+      sceneTreeAppliedRevision: 0,
+    };
+    const { rerender } = render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    mockState = bridgeReducer(mockState, {
+      type: 'editApplied',
+      payload: {
+        operation: 'setProperty',
+        objectId: 'n-1',
+        property: 'Name',
+        value: '外部で改名',
+        newId: null,
+        source: 'mcp',
+        groupId: 'mcp-7-1',
+        generation: 7,
+        sequence: 1,
+        historyRevision: 1,
+        appliedRevision: 1,
+      },
+    });
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    expect(screen.getByText('外部で改名')).toBeTruthy();
+    expect(screen.queryByText('NodeA')).toBeNull();
+  });
+
+  it('構造編集後にツリーを取り直して追加ノードを表示する', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      sceneTree: DEMO_TREE,
+      editServiceGeneration: 7,
+      editAppliedRevision: 0,
+      sceneTreeAppliedGeneration: 7,
+      sceneTreeAppliedRevision: 0,
+    };
+    const { rerender } = render(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    getSceneTree.mockClear();
+
+    mockState = bridgeReducer(mockState, {
+      type: 'editApplied',
+      payload: {
+        operation: 'createObject',
+        objectId: null,
+        property: null,
+        value: null,
+        newId: 'n-new',
+        source: 'mcp',
+        groupId: 'mcp-7-2',
+        generation: 7,
+        sequence: 2,
+        historyRevision: 1,
+        appliedRevision: 1,
+      },
+    });
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+    expect(getSceneTree).toHaveBeenCalledTimes(1);
+
+    mockState = bridgeReducer(mockState, {
+      type: 'sceneTreeLoaded',
+      root: { ...DEMO_TREE, children: [...(DEMO_TREE.children ?? []), { id: 'n-new', name: 'NewNode' }] },
+      editServiceGeneration: 7,
+      appliedRevision: 1,
+    });
+    rerender(<SceneOutlinerPanel {...makeDockviewProps()} />);
+
+    expect(screen.getByText('NewNode')).toBeTruthy();
   });
 });

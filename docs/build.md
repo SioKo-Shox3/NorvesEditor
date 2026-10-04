@@ -142,9 +142,9 @@ window. The Tauri window connects to that Vite server at startup.
 > configuration). Verify this command on the actual target machine before
 > relying on it.
 
-To point the editor at an engine executable, set `NORVES_ENGINE_PATH` before
-launching (see [env-gated e2e](#env-gated-e2e) for format). The engine path
-Settings UI is not implemented in alpha.
+エディタが起動するエンジンは、Settings ウィンドウの「エンジン」欄で選ぶか、起動前に
+`NORVES_ENGINE_PATH` を設定して指定する(書式は [env-gated e2e](#env-gated-e2e))。
+優先順位は 環境変数 > Settings で保存したパス > 既定値。
 
 ---
 
@@ -230,8 +230,8 @@ environments without an engine binary.
 
 ### Engine does not send READY / launch times out
 
-- Check that `NORVES_ENGINE_PATH` points to the correct executable and that it
-  is executable.
+- Settings の「エンジン」欄に表示される有効なパスが正しい実行ファイルを指しているか確かめる
+  (`NORVES_ENGINE_PATH` が設定されていれば、そちらが優先される)。
 - The engine must write `READY <port>` to **stdout** within 10 seconds of
   startup. If the engine writes other lines to stdout before `READY`, the
   backend parser may miss it — the engine's bridge mode must keep stdout clean.

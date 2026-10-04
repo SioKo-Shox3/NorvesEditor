@@ -64,6 +64,9 @@ import { SceneOutlinerPanel }     from './SceneOutlinerPanel.js';
 import { PropertyInspectorPanel } from './PropertyInspectorPanel.js';
 import { AssetBrowserPanel }      from './AssetBrowserPanel.js';
 import { AssetInspectorPanel }    from './AssetInspectorPanel.js';
+import { McpApprovalPanel } from './McpApprovalPanel.js';
+import { McpOperationsPanel } from './McpOperationsPanel.js';
+import { McpApprovalsContext, useMcpApprovals } from '../hooks/useMcpApprovals.js';
 import { LAYOUT_STORAGE_KEY, LEGACY_LAYOUT_STORAGE_KEYS } from './shell/layoutKey.js';
 import { useBridgeState } from '../state/BridgeContext.js';
 
@@ -71,13 +74,15 @@ import { useBridgeState } from '../state/BridgeContext.js';
 // Constants
 // -------------------------------------------------------------------------
 
-/** Panel ids — shared between the default builder and dynamic reconciliation. */
+/** 既定レイアウトの構築と動的なパネル調整で共有するID。 */
 const PANEL_GAME_VIEW      = 'gameView';
 const PANEL_SCENE_OUTLINER = 'sceneOutliner';
 const PANEL_INSPECTOR      = 'propertyInspector';
 const PANEL_ASSET_BROWSER  = 'assetBrowser';
 const PANEL_ASSET_INSPECTOR = 'assetInspector';
 const PANEL_LOG            = 'log';
+const PANEL_MCP_APPROVALS  = 'mcpApprovals';
+const PANEL_MCP_OPERATIONS = 'mcpOperations';
 
 /** Bottom EdgeGroup (Log drawer) position and options. */
 const LOG_EDGE_POSITION: EdgeGroupPosition = 'bottom';
@@ -91,9 +96,8 @@ const LOG_EDGE_COLLAPSED_SIZE = 28;
 // Panel component map
 // -------------------------------------------------------------------------
 
-// Connection / Settings are deliberately absent: P6 moves them to their own
-// Tauri windows (SecondaryWindowRoot imports those panels directly), so the
-// main-window dockview no longer hosts them.
+// Connection / Settings は SecondaryWindowRoot が別窓に表示する。
+// 確認パネルは承認を行うmain画面だけに登録する。
 const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
   [PANEL_GAME_VIEW]:      GameViewPanel,
   [PANEL_LOG]:            LogPanel,
@@ -101,6 +105,8 @@ const PANEL_COMPONENTS: Record<string, React.FunctionComponent<IDockviewPanelPro
   [PANEL_INSPECTOR]:      PropertyInspectorPanel,
   [PANEL_ASSET_BROWSER]:  AssetBrowserPanel,
   [PANEL_ASSET_INSPECTOR]: AssetInspectorPanel,
+  [PANEL_MCP_APPROVALS]: McpApprovalPanel,
+  [PANEL_MCP_OPERATIONS]: McpOperationsPanel,
 };
 
 // -------------------------------------------------------------------------
@@ -391,8 +397,47 @@ export interface AppLayoutProps {
 }
 
 export function AppLayout({ onLogToggleReady }: AppLayoutProps = {}): React.JSX.Element {
-  // Keep a ref to the DockviewApi so handlers can access it after onReady.
+  const approvals = useMcpApprovals();
+  // onReadyの後も操作ハンドラから配置APIを参照する。
   const apiRef = useRef<DockviewApi | null>(null);
+
+  const openOperations = useCallback((): void => {
+    const api = apiRef.current;
+    if (!api) return;
+    const existing = api.getPanel(PANEL_MCP_OPERATIONS);
+    if (existing) {
+      existing.api.setActive();
+      return;
+    }
+    api.addPanel({
+      id: PANEL_MCP_OPERATIONS,
+      component: PANEL_MCP_OPERATIONS,
+      title: 'AI の操作',
+      ...(api.getPanel(PANEL_GAME_VIEW)
+        ? { position: { direction: 'below', referencePanel: PANEL_GAME_VIEW } }
+        : {}),
+      initialHeight: 360,
+    });
+  }, []);
+
+  const openApprovals = useCallback((): void => {
+    const api = apiRef.current;
+    if (!api) return;
+    const existing = api.getPanel(PANEL_MCP_APPROVALS);
+    if (existing) {
+      existing.api.setActive();
+      return;
+    }
+    api.addPanel({
+      id: PANEL_MCP_APPROVALS,
+      component: PANEL_MCP_APPROVALS,
+      title: 'MCP 確認待ち',
+      ...(api.getPanel(PANEL_SCENE_OUTLINER)
+        ? { position: { direction: 'below', referencePanel: PANEL_SCENE_OUTLINER } }
+        : {}),
+      initialHeight: 360,
+    });
+  }, []);
 
   // Track the latest selection in a ref so the layout-change listener (set up
   // once in onReady) always sees the current value without re-subscribing.
@@ -462,11 +507,27 @@ export function AppLayout({ onLogToggleReady }: AppLayoutProps = {}): React.JSX.
   }, [selectedObjectId]);
 
   return (
-    <DockviewReact
-      components={PANEL_COMPONENTS}
-      onReady={handleReady}
-      className="dockview-theme-dark"
-      disableFloatingGroups={true}
-    />
+    <McpApprovalsContext.Provider value={approvals}>
+      <div className="editor-layout">
+        <div className="mcp-approval-notice">
+          <button className="btn" type="button" onClick={openOperations}>AI の操作</button>
+          <button className="btn" type="button" onClick={openApprovals}>
+            MCP 確認待ち（{approvals.requests.length}件）
+          </button>
+          <span role="status" aria-live="polite">
+            {approvals.notice}
+          </span>
+          {approvals.error && <span role="alert">{approvals.error}</span>}
+        </div>
+        <div className="editor-layout__dock">
+          <DockviewReact
+            components={PANEL_COMPONENTS}
+            onReady={handleReady}
+            className="dockview-theme-dark"
+            disableFloatingGroups={true}
+          />
+        </div>
+      </div>
+    </McpApprovalsContext.Provider>
   );
 }

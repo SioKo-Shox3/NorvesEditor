@@ -9,11 +9,22 @@ import type {
   SceneDeleteObjectResult,
   SceneDuplicateObjectResult,
   SceneReparentObjectResult,
+  SetObjectPropertyResult,
 } from '@norves/bridge-types';
 import type {
   AssetManifestPayload,
   AssetManifestResult,
   AssetResolveResult,
+  EditHistorySummary,
+  EditDiscardResult,
+  EngineSettingsPayload,
+  McpSettingsPayload,
+  McpOperationsPayload,
+  McpConfirmationRequest,
+  McpTokenPayload,
+  McpWriteMode,
+  UiParentCapture,
+  UiPropertyCapture,
   WorkspacePayload,
 } from './ipc-types.js';
 
@@ -42,6 +53,11 @@ export const BRIDGE_COMMANDS = {
   schemaGetSnapshot: 'schema_get_snapshot',
   componentAdd: 'component_add',
   componentRemove: 'component_remove',
+  editUndo: 'edit_undo',
+  editRedo: 'edit_redo',
+  editGetHistory: 'edit_get_history',
+  editRetry: 'edit_retry',
+  editDiscard: 'edit_discard',
   viewportGetThumbnail: 'viewport_get_thumbnail',
   runtimePlay: 'runtime_play',
   runtimePause: 'runtime_pause',
@@ -49,6 +65,19 @@ export const BRIDGE_COMMANDS = {
   focusViewport: 'focus_viewport',
   launchEngine: 'launch_engine',
   stopEngine: 'stop_engine',
+  getEngineSettings: 'get_engine_settings',
+  pickEnginePath: 'pick_engine_path',
+  clearEnginePath: 'clear_engine_path',
+  setEngineArgs: 'set_engine_args',
+  getMcpSettings: 'get_mcp_settings',
+  setMcpSettings: 'set_mcp_settings',
+  setMcpWriteAccess: 'set_mcp_write_access',
+  getMcpConfirmations: 'get_mcp_confirmations',
+  getMcpOperations: 'get_mcp_operations',
+  approveMcpConfirmation: 'approve_mcp_confirmation',
+  rejectMcpConfirmation: 'reject_mcp_confirmation',
+  getMcpToken: 'get_mcp_token',
+  regenerateMcpToken: 'regenerate_mcp_token',
   workspaceOpen: 'workspace_open',
   workspaceGet: 'workspace_get',
   workspaceClose: 'workspace_close',
@@ -60,6 +89,26 @@ export const BRIDGE_COMMANDS = {
 
 /** Union of all valid Tauri command name strings. */
 export type BridgeCommandName = (typeof BRIDGE_COMMANDS)[keyof typeof BRIDGE_COMMANDS];
+
+/** 操作記録と保存エラーを取得する。更新通知より古いrevisionは無視する。 */
+export function getMcpOperations(): Promise<McpOperationsPayload> {
+  return invoke(BRIDGE_COMMANDS.getMcpOperations);
+}
+
+/** 承認待ち確認をmain画面で取得する。 */
+export function getMcpConfirmations(): Promise<McpConfirmationRequest[]> {
+  return invoke(BRIDGE_COMMANDS.getMcpConfirmations);
+}
+
+/** 一度だけ使える確認IDを承認する。 */
+export function approveMcpConfirmation(confirmationId: string): Promise<void> {
+  return invoke(BRIDGE_COMMANDS.approveMcpConfirmation, { confirmationId });
+}
+
+/** 一度だけ使える確認IDを拒否する。 */
+export function rejectMcpConfirmation(confirmationId: string): Promise<void> {
+  return invoke(BRIDGE_COMMANDS.rejectMcpConfirmation, { confirmationId });
+}
 
 export async function sceneCreateObject(
   parentId?: string,
@@ -82,10 +131,14 @@ export async function sceneDeleteObject(objectId: string): Promise<SceneDeleteOb
 export async function sceneReparentObject(
   objectId: string,
   newParentId?: string,
+  capture?: UiParentCapture,
 ): Promise<SceneReparentObjectResult> {
-  const args: { objectId: string; newParentId?: string } = { objectId };
+  const args: { objectId: string; newParentId?: string; capture?: UiParentCapture } = { objectId };
   if (newParentId !== undefined) {
     args.newParentId = newParentId;
+  }
+  if (capture !== undefined) {
+    args.capture = capture;
   }
   return invoke<SceneReparentObjectResult>(BRIDGE_COMMANDS.sceneReparentObject, args);
 }
@@ -100,6 +153,123 @@ export async function sceneDuplicateObject(
   }
   return invoke<SceneDuplicateObjectResult>(BRIDGE_COMMANDS.sceneDuplicateObject, args);
 }
+
+export async function objectSetProperty(
+  objectId: string,
+  property: string,
+  value: unknown,
+  capture?: UiPropertyCapture,
+): Promise<SetObjectPropertyResult> {
+  const args: {
+    objectId: string;
+    property: string;
+    value: unknown;
+    capture?: UiPropertyCapture;
+  } = { objectId, property, value };
+  if (capture !== undefined) {
+    args.capture = capture;
+  }
+  return invoke<SetObjectPropertyResult>(BRIDGE_COMMANDS.objectSetProperty, args);
+}
+
+export async function editUndo(
+  expectedHeadId: number | null,
+  expectedRevision: number,
+): Promise<unknown> {
+  return invoke(BRIDGE_COMMANDS.editUndo, { expectedHeadId, expectedRevision });
+}
+
+export async function editRedo(
+  expectedHeadId: number | null,
+  expectedRevision: number,
+): Promise<unknown> {
+  return invoke(BRIDGE_COMMANDS.editRedo, { expectedHeadId, expectedRevision });
+}
+
+export async function editGetHistory(): Promise<EditHistorySummary> {
+  return invoke<EditHistorySummary>(BRIDGE_COMMANDS.editGetHistory);
+}
+
+export async function editRetry(): Promise<unknown> {
+  return invoke(BRIDGE_COMMANDS.editRetry);
+}
+
+export async function editDiscard(): Promise<EditDiscardResult> {
+  return invoke<EditDiscardResult>(BRIDGE_COMMANDS.editDiscard);
+}
+
+export async function componentAdd(objectId: string, kind: string): Promise<unknown> {
+  return invoke<unknown>(BRIDGE_COMMANDS.componentAdd, { objectId, kind });
+}
+
+export async function componentRemove(objectId: string): Promise<unknown> {
+  return invoke<unknown>(BRIDGE_COMMANDS.componentRemove, { objectId });
+}
+
+export async function runtimePlay(): Promise<unknown> {
+  return invoke<unknown>(BRIDGE_COMMANDS.runtimePlay);
+}
+
+export async function runtimePause(): Promise<unknown> {
+  return invoke<unknown>(BRIDGE_COMMANDS.runtimePause);
+}
+
+export async function runtimeStop(): Promise<unknown> {
+  return invoke<unknown>(BRIDGE_COMMANDS.runtimeStop);
+}
+// エンジンのパスは Rust 側のファイル選択ダイアログでだけ変わる。パス文字列を渡すコマンドは無い。
+export async function getEngineSettings(): Promise<EngineSettingsPayload> {
+  return invoke<EngineSettingsPayload>(BRIDGE_COMMANDS.getEngineSettings);
+}
+
+/** ダイアログを開いて選ばせる。キャンセルなら何も変えず、その時点の設定を返す。 */
+export async function pickEnginePath(): Promise<EngineSettingsPayload> {
+  return invoke<EngineSettingsPayload>(BRIDGE_COMMANDS.pickEnginePath);
+}
+
+export async function clearEnginePath(): Promise<EngineSettingsPayload> {
+  return invoke<EngineSettingsPayload>(BRIDGE_COMMANDS.clearEnginePath);
+}
+
+/** 起動引数(1 要素 = 1 引数)を保存する。バックエンドが確かめ、空行を捨てた後の設定を返す。 */
+export async function setEngineArgs(args: string[]): Promise<EngineSettingsPayload> {
+  return invoke<EngineSettingsPayload>(BRIDGE_COMMANDS.setEngineArgs, { args });
+}
+
+/** MCPの有効状態、待受ポート、listener状態を取得する。秘密は返さない。 */
+export async function getMcpSettings(): Promise<McpSettingsPayload> {
+  return invoke<McpSettingsPayload>(BRIDGE_COMMANDS.getMcpSettings);
+}
+
+/** MCPの有効状態とloopbackポートを保存する。 */
+export async function setMcpSettings(
+  enabled: boolean,
+  port: number,
+): Promise<McpSettingsPayload> {
+  return invoke<McpSettingsPayload>(BRIDGE_COMMANDS.setMcpSettings, { enabled, port });
+}
+
+/** MCP書き込み許可モードとシーン部分木を設定する。 */
+export async function setMcpWriteAccess(
+  mode: McpWriteMode,
+  sceneRootId?: string,
+): Promise<McpSettingsPayload> {
+  return invoke<McpSettingsPayload>(BRIDGE_COMMANDS.setMcpWriteAccess, {
+    mode,
+    sceneRootId,
+  });
+}
+
+/** MCPトークンを明示的に表示するときだけ呼び出す。 */
+export async function getMcpToken(): Promise<McpTokenPayload> {
+  return invoke<McpTokenPayload>(BRIDGE_COMMANDS.getMcpToken);
+}
+
+/** MCPトークンを作り直し、以前の認証と接続を失効させる。 */
+export async function regenerateMcpToken(): Promise<McpSettingsPayload> {
+  return invoke<McpSettingsPayload>(BRIDGE_COMMANDS.regenerateMcpToken);
+}
+
 export async function workspaceOpen(rootPath: string): Promise<WorkspacePayload> {
   return invoke<WorkspacePayload>(BRIDGE_COMMANDS.workspaceOpen, { rootPath });
 }

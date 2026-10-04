@@ -12,12 +12,12 @@ For the launch handshake that follows once the executable is resolved, see
 
 ## Engine Path Resolution (Alpha)
 
-`apps/editor/src-tauri/src/process_runtime.rs` reads a single environment
-variable and passes it through the pure resolver in `process.rs`:
+`apps/editor/src-tauri/src/process_runtime.rs` は環境変数と保存済みの設定を読み、
+`process.rs` の純粋なリゾルバへ渡す:
 
 ```
 NORVES_ENGINE_PATH (env)
-  -> config (alpha: not implemented, always None)
+  -> settings: Settings の「エンジン」欄で保存したパス(engine-settings.json)
     -> default: "norves_mock_engine" (bare name, resolved against cwd)
 ```
 
@@ -26,9 +26,9 @@ Rules applied by `resolve_engine_path`:
 - A value that is present but blank or whitespace-only is treated as **absent**
   and the resolver falls through to the next source.
 - The first non-blank source wins.
-- The default is the bare string `norves_mock_engine`, resolved against the
-  process working directory. For alpha use, always set `NORVES_ENGINE_PATH` to
-  an absolute path.
+- 既定値は `norves_mock_engine` という名前だけの文字列で、プロセスの作業ディレクトリを
+  基準に解決される。実際に使うときは、Settings で実行ファイルを選ぶか
+  `NORVES_ENGINE_PATH` に絶対パスを設定する。
 
 The resolver itself is pure (no filesystem access). After resolution,
 `validate_engine_path` checks that the resolved path exists and is a regular
@@ -154,33 +154,36 @@ Full details are in
 
 ---
 
-## Settings UI (Alpha: Not Implemented)
+## Settings の「エンジン」欄
 
-Alpha does not include a Settings UI for the engine path. The only supported
-override mechanism is the `NORVES_ENGINE_PATH` environment variable, set
-before launching the editor.
+Settings ウィンドウの「エンジン」欄で、エンジンのパスと起動引数を保存できる。
 
-The `config` slot in `resolve_engine_path` is present in the source but wired
-to `None` for the entire alpha. A Settings panel that persists and supplies this
-value is a post-alpha task.
+- 「参照…」でダイアログから実行ファイルを選ぶと、確かめたうえでアプリの設定ディレクトリの
+  `engine-settings.json` に保存する。「既定に戻す」で保存したパスを消す。
+  フロントエンドからパスの文字列は渡せない(選べるのはダイアログ経由だけ)。
+- 欄には、次に使われる有効なパスとその出所(環境変数・設定・既定値)を表示する。
+  `NORVES_ENGINE_PATH` が設定されているときは、保存したパスより環境変数が優先されている旨を出す。
+- 起動引数は 1 行 1 引数で保存し、`--bridge-port <port>` より前にシェルを介さず渡す。
+  `--bridge-port` の指定、NUL・改行を含む引数、件数(32)・長さ(512 バイト)の上限超えは拒否する。
+- `.bat` / `.cmd` はエンジンとして保存も起動もしない。
 
 ---
 
 ## Known Limitations (Alpha)
 
-- **No Settings UI for engine path.** `NORVES_ENGINE_PATH` is the only
-  override. The Settings UI and persistent config are post-alpha. (See
-  [docs/viewport-strategy.md](viewport-strategy.md) for the broader alpha
-  scope context.)
+- **エンジンのパスの優先順位。** `NORVES_ENGINE_PATH` > Settings で保存したパス > 既定値。
+  環境変数を設定したままだと、Settings で選んだパスは使われない。
 - **localhost only.** The backend always connects to `ws://127.0.0.1:<port>`.
   Remote engine connections are not supported.
 - **NorvesLib requires Windows + Vulkan SDK.** The mock engine does not require
   Vulkan.
 - **C++ configure requires network on first run.** `libwebsockets` (v4.3.3) is
   fetched via CMake FetchContent on the first configure.
-- **Orphan risk on editor force-quit.** If the editor is killed abruptly, the
-  engine process may not be cleaned up. Windows Job Object mitigation is
-  post-alpha.
+- **強制終了時のエンジンの後始末は Windows だけ。** Windows では起動したエンジンを
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 付きの Job に入れる。Job への割り当てに成功した
+  あとなら、エディタが強制終了してもエンジンは終わる。Job の作成か割り当てに失敗したとき
+  (警告をバックエンドのログに残し、起動は続ける)、起動から割り当てまでの間にエディタが
+  終了したとき、その間にエンジンが起動した子孫、Windows 以外の OS は対象外。
 
 ---
 
@@ -196,8 +199,8 @@ pnpm tauri dev
 
 `tauri.conf.json` sets `beforeDevCommand` to `pnpm --filter @norves/editor dev`,
 which starts the Vite dev server on `localhost:1420` before Tauri opens the
-WebView. The `NORVES_ENGINE_PATH` variable must be set in the same shell session
-before running `pnpm tauri dev`.
+WebView. 環境変数でエンジンを指定する場合は、`pnpm tauri dev` と同じシェルで
+`NORVES_ENGINE_PATH` を設定しておく(Settings で保存したパスを使うなら不要)。
 
 > Note: the exact invocation above should be verified on your target machine,
 > as platform-specific environment and toolchain differences may require

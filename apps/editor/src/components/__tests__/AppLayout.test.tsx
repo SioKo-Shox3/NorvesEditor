@@ -29,6 +29,15 @@ import React from 'react';
 import { BridgeProvider, useBridgeDispatch } from '../../state/BridgeContext.js';
 import { LAYOUT_STORAGE_KEY, LEGACY_LAYOUT_STORAGE_KEYS } from '../shell/layoutKey.js';
 
+// 既存レイアウトの試験では確認購読を固定し、IPCの寿命は専用試験で扱う。
+vi.mock('../../hooks/useMcpApprovals.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../hooks/useMcpApprovals.js')>(),
+  useMcpApprovals: () => ({
+    requests: [], mode: 'readOnly', loading: false, busyIds: new Set(),
+    notice: '', error: undefined, decide: vi.fn(),
+  }),
+}));
+
 // -------------------------------------------------------------------------
 // localStorage polyfill — this jsdom configuration does not provide a Storage
 // object (the production code wraps every access in try/catch and degrades

@@ -55,13 +55,17 @@ export function useUndoRedoKeybindings(): void {
       }
       const key = event.key.toLowerCase();
       if (key === 'z' && !event.shiftKey) {
-        // Ctrl/Cmd+Z → undo
+        // Ctrl/Cmd+Z は取り消し。
         event.preventDefault();
-        void actions.undo();
+        if (!event.repeat) {
+          void actions.undo();
+        }
       } else if (key === 'y' || (key === 'z' && event.shiftKey)) {
-        // Ctrl/Cmd+Y or Ctrl/Cmd+Shift+Z → redo
+        // Ctrl/Cmd+Y または Ctrl/Cmd+Shift+Z はやり直し。
         event.preventDefault();
-        void actions.redo();
+        if (!event.repeat) {
+          void actions.redo();
+        }
       }
     };
 

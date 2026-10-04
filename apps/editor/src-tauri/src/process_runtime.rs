@@ -42,12 +42,21 @@
 //! handle, drops it, then performs spawn / READY-wait / connect awaits with no
 //! guard held. See the per-function comments marking each lock scope.
 //!
-//! ## Residual orphan risk
+//! ## 孤児プロセスの残りうる経路(Residual orphan risk)
 //!
-//! `kill_on_drop(true)` is a safety net, not a guarantee: on an abrupt abort
-//! (SIGKILL of the editor, power loss) neither the explicit app-exit hook nor the
-//! drop runs, so the engine child can be orphaned. Hardening this with a Windows
-//! Job Object / POSIX process group is deferred post-alpha.
+//! 通常の終了では app-exit フックが明示的に kill し、`kill_on_drop(true)` がその安全網になる。
+//! ただしエディタが強制終了されると(タスクマネージャ・SIGKILL・クラッシュ)どちらも走らない。
+//!
+//! * **Windows**: 起動した子を `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 付きの Job Object
+//!   ([`crate::job_object::KillOnCloseJob`])に割り当てる。Job はエディタ 1 プロセスに 1 つで、
+//!   初回の起動で作って [`ProcessState`] がエディタの寿命いっぱい保持する。エディタが強制終了しても
+//!   OS がハンドルを閉じるので、エンジン(とそれが起動した子孫)は終了する。残る経路は次のとおり:
+//!   - Job の生成や割り当てに失敗したとき(警告ログを出して起動は続ける)。
+//!   - spawn から割り当てまでの短い間にエディタが落ちたとき、またはその間にエンジンが起動した子孫。
+//!   - 電源断など OS ごと止まる場合(このときはエンジンも止まる)。
+//! * **Windows 以外**: 対策は無く、強制終了でエンジンが残りうる(プロセスグループ等は未実装)。
+//!
+//! アタッチ接続(エディタが起動していないエンジン)は対象外で、エディタの終了に巻き込まない。
 
 use std::path::Path;
 use std::process::Stdio;
@@ -66,21 +75,19 @@ use crate::error::BackendError;
 use crate::process;
 use crate::protocol_names::events;
 
-/// Default engine executable, used when `NORVES_ENGINE_PATH` is unset/blank.
+/// 環境変数 `NORVES_ENGINE_PATH` も保存済みの設定も無いときに使うエンジンの実行ファイル。
 ///
-/// The supported override is the `NORVES_ENGINE_PATH` environment variable (read
-/// in [`launch_engine`]); the built mock-engine location varies per build tree,
-/// so this default is a bare relative name resolved against the process working
-/// directory. Operators are expected to set `NORVES_ENGINE_PATH` to the absolute
-/// path of the engine binary for the alpha.
-const DEFAULT_ENGINE_PATH: &str = "norves_mock_engine";
+/// mock エンジンの置き場所はビルドツリーごとに違うので、プロセスの作業ディレクトリから解決する
+/// 相対名にしてある。実際のパスは設定欄のファイル選択(`crate::engine_settings`)か環境変数で指定する。
+pub(crate) const DEFAULT_ENGINE_PATH: &str = "norves_mock_engine";
 
-/// Environment variable that overrides the engine executable path.
-const ENGINE_PATH_ENV: &str = "NORVES_ENGINE_PATH";
+/// エンジンの実行ファイルのパスを上書きする環境変数。保存済みの設定より優先する。
+pub(crate) const ENGINE_PATH_ENV: &str = "NORVES_ENGINE_PATH";
 
 /// How long to wait for the engine's `READY <port>` stdout line before giving up
 /// and killing the child.
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
+const EXIT_JOIN_GRACE: Duration = Duration::from_secs(2);
 
 /// The live half of a running engine process. The `Child` is intentionally NOT
 /// stored here — the monitor task owns it so it alone may `wait()`.
@@ -92,9 +99,7 @@ struct ProcessHandle {
     /// Asks the monitor to `start_kill` + `wait` the child. A send error means
     /// the monitor already finished, which is fine.
     kill_tx: oneshot::Sender<()>,
-    /// Join handle for the monitor task (kept so the handle is self-describing;
-    /// the monitor is detached and clears the holder itself on exit).
-    #[allow(dead_code)] // Retained for lifetime clarity; monitor self-clears.
+    /// 子プロセスの終了監視タスク。終了時はkill要求後にjoinする。
     monitor: JoinHandle<()>,
 }
 
@@ -105,6 +110,10 @@ pub struct ProcessState {
     inner: Mutex<Option<ProcessHandle>>,
     /// Monotonic source of PROCESS generation ids, bumped per successful launch.
     next_process_gen: AtomicU64,
+    /// 起動したエンジンを入れる Job。初回の起動で 1 度だけ作り、以後エディタが終わるまで持ち続ける
+    /// (閉じると中のエンジンが終了する)。作れなかったときは `None` を記憶し、作り直さない。
+    #[cfg(windows)]
+    job: std::sync::OnceLock<Option<crate::job_object::KillOnCloseJob>>,
 }
 
 impl Default for ProcessState {
@@ -112,6 +121,8 @@ impl Default for ProcessState {
         ProcessState {
             inner: Mutex::new(None),
             next_process_gen: AtomicU64::new(0),
+            #[cfg(windows)]
+            job: std::sync::OnceLock::new(),
         }
     }
 }
@@ -120,6 +131,47 @@ impl ProcessState {
     /// Allocates a unique generation id for a newly launched process.
     fn alloc_process_gen(&self) -> u64 {
         self.next_process_gen.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// 起動した子をエディタの Job に割り当てる。失敗しても起動は止めず、警告ログだけ出す —
+    /// 割り当てが無くても通常の停止・終了の経路は従来どおり働く。
+    #[cfg(windows)]
+    fn assign_to_job(&self, child: &Child) {
+        let job = self.job.get_or_init(|| {
+            crate::job_object::KillOnCloseJob::new()
+                .inspect_err(|e| {
+                    tracing::warn!(error = %e, "{JOB_CREATE_FAILED_WARNING}");
+                })
+                .ok()
+        });
+        let Some(job) = job else {
+            return;
+        };
+        let Some(process) = child.raw_handle() else {
+            // 既に回収済み(= 終了済み)なので割り当てるものが無い。
+            return;
+        };
+        assign_or_warn(job, process);
+    }
+}
+
+/// Job を作れなかったときの警告。
+#[cfg(windows)]
+const JOB_CREATE_FAILED_WARNING: &str =
+    "エンジン用の Job を作れない。エディタが強制終了するとエンジンが残ることがある";
+/// 起動した子を Job に割り当てられなかったときの警告。
+#[cfg(windows)]
+const JOB_ASSIGN_FAILED_WARNING: &str =
+    "エンジンのプロセスを Job に割り当てられない。エディタが強制終了するとエンジンが残ることがある";
+
+/// `process` を `job` に割り当て、失敗したら警告ログを出す(起動は止めない)。
+#[cfg(windows)]
+fn assign_or_warn(
+    job: &crate::job_object::KillOnCloseJob,
+    process: std::os::windows::io::RawHandle,
+) {
+    if let Err(e) = job.assign(process) {
+        tracing::warn!(error = %e, "{JOB_ASSIGN_FAILED_WARNING}");
     }
 }
 
@@ -174,23 +226,29 @@ pub async fn launch_engine(
         }
     } // guard dropped: all spawn / READY / connect I/O runs WITHOUT the lock.
 
-    // 2. Resolve + validate the engine path entirely backend-side. The env read
-    //    is the impure J3 side of the pure J1 resolver; config is None for alpha.
+    // 2. パスはバックエンドだけで解決して確かめる(環境変数 > 保存済みの設定 > 既定値)。
+    //    設定ファイルが無い・壊れているときは設定なしとして扱う。
     let env_value = std::env::var(ENGINE_PATH_ENV).ok();
-    let path =
-        process::resolve_engine_path(env_value.as_deref(), None, Path::new(DEFAULT_ENGINE_PATH));
+    let saved = crate::engine_settings::saved_engine_settings(&app);
+    let path = process::resolve_engine_path(
+        env_value.as_deref(),
+        saved.engine_path.as_deref(),
+        Path::new(DEFAULT_ENGINE_PATH),
+    );
     process::validate_engine_path(&path)?;
+    // 保存済みの起動引数。設定ファイルは手で書き換えられるので、保存時と同じ検査をここでもかける。
+    let user_args = process::normalize_engine_args(&saved.engine_args)?;
 
     // 3. Pick a free loopback port for the engine to bind.
     let port = process::pick_free_port().map_err(|e| BackendError::Process {
         message: format!("failed to allocate a free port: {e}"),
     })?;
 
-    // 4. Spawn the child with stdout piped for the READY handshake. kill_on_drop
-    //    is the safety net; the explicit kill paths are preferred.
+    // 4. READY の受け取りのため stdout をパイプにして子を起動する。kill_on_drop は保険で、
+    //    明示的に止める経路を優先する。引数は保存済みの起動引数、最後に `--bridge-port <port>`。
+    //    シェルは介さない。
     let mut child = Command::new(&path)
-        .arg("--bridge-port")
-        .arg(port.to_string())
+        .args(process::build_engine_args(&user_args, port))
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
@@ -198,6 +256,10 @@ pub async fn launch_engine(
         .map_err(|e| BackendError::Process {
             message: format!("failed to spawn engine process: {e}"),
         })?;
+
+    // 4b. Windows: エディタが強制終了してもエンジンが残らないよう、すぐに Job へ入れる。
+    #[cfg(windows)]
+    process_state.assign_to_job(&child);
 
     let stdout = match child.stdout.take() {
         Some(stdout) => stdout,
@@ -426,18 +488,40 @@ pub async fn stop_engine(
     Ok(())
 }
 
-/// Best-effort kill of a running engine on app exit, invoked from the Tauri
-/// `RunEvent` hook (plan J3). Synchronous: takes the handle out under a blocking
-/// lock and signals the monitor to kill. `kill_on_drop(true)` is the safety net,
-/// but this explicit hook is preferred because drop is not guaranteed on abort
-/// (see module docs on residual orphan risk).
-pub fn kill_engine_on_exit(app: &AppHandle) {
+/// アプリ終了時に子プロセスを停止し、監視タスクを2秒以内にjoinする。
+pub(crate) async fn shutdown_on_exit(app: &AppHandle) {
     let state = app.state::<ProcessState>();
-    // The RunEvent callback is synchronous; use blocking_lock. No await is held.
     let handle = {
-        let mut guard = state.inner.blocking_lock();
+        let mut guard = state.inner.lock().await;
         guard.take()
     };
+    let Some(handle) = handle else {
+        return;
+    };
+
+    let ProcessHandle {
+        kill_tx,
+        mut monitor,
+        ..
+    } = handle;
+    let _ = kill_tx.send(());
+    if tokio::time::timeout(EXIT_JOIN_GRACE, &mut monitor)
+        .await
+        .is_err()
+    {
+        monitor.abort();
+        let _ = monitor.await;
+    }
+}
+
+/// 同期終了イベントでの保険。ロック待ちは行わず、取得できた場合だけkillを送る。
+pub fn kill_engine_on_exit(app: &AppHandle) {
+    let state = app.state::<ProcessState>();
+    let handle = state
+        .inner
+        .try_lock()
+        .ok()
+        .and_then(|mut guard| guard.take());
     if let Some(handle) = handle {
         let _ = handle.kill_tx.send(());
     }
@@ -446,6 +530,22 @@ pub fn kill_engine_on_exit(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn job_assignment_failure_warning_reaches_the_log_file() {
+        // 配布版(コンソール無し)でも残るよう、割り当て失敗の警告はログファイルへ届く。
+        let dir =
+            std::env::temp_dir().join(format!("norves-job-warning-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let job = crate::job_object::KillOnCloseJob::new().expect("Job を作れない");
+        let log = crate::backend_log::capture_warnings(&dir, || {
+            assign_or_warn(&job, std::ptr::null_mut());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(log.contains("WARN"), "{log}");
+        assert!(log.contains(JOB_ASSIGN_FAILED_WARNING), "{log}");
+    }
 
     #[test]
     fn default_engine_path_is_a_bare_relative_name() {

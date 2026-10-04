@@ -41,6 +41,24 @@ pub enum BackendError {
     /// or the READY-handshake) before or around launching the engine.
     #[serde(rename_all = "camelCase")]
     Process { message: String },
+    /// エンジン設定の保存やファイル選択ダイアログの失敗。
+    #[serde(rename_all = "camelCase")]
+    Settings { message: String },
+    /// 編集列が満杯で要求を受け付けられなかった。
+    #[allow(dead_code)]
+    EditQueueFull,
+    /// 編集サービスが停止中で要求を受け付けられなかった。
+    EditServiceStopping,
+    /// Bridge呼び出しの開始前に要求が取り消された。
+    EditCancelled,
+    /// MCP の設定を安全に読み書きできなかった。
+    #[allow(dead_code)]
+    McpSettingsStorage,
+    /// MCP トークンの保護・保存・読み出しに失敗した。
+    #[allow(dead_code)]
+    McpTokenStorage,
+    /// MCP要求の認証改訂が失効した。
+    McpAuthorizationRevoked,
 }
 
 impl std::fmt::Display for BackendError {
@@ -57,6 +75,19 @@ impl std::fmt::Display for BackendError {
             }
             BackendError::Handshake { message } => write!(f, "handshake failed: {message}"),
             BackendError::Process { message } => write!(f, "{message}"),
+            BackendError::Settings { message } => write!(f, "{message}"),
+            BackendError::EditQueueFull => write!(f, "編集要求の待ち列が満杯です"),
+            BackendError::EditServiceStopping => write!(f, "編集サービスは停止中です"),
+            BackendError::EditCancelled => write!(f, "編集要求は取り消されました"),
+            BackendError::McpSettingsStorage => {
+                write!(f, "MCP の設定を安全に読み書きできませんでした")
+            }
+            BackendError::McpTokenStorage => {
+                write!(f, "MCP トークンを安全に保護または保存できませんでした")
+            }
+            BackendError::McpAuthorizationRevoked => {
+                write!(f, "MCP 要求の認証が更新または停止されました")
+            }
         }
     }
 }
@@ -137,6 +168,22 @@ mod tests {
                 "code": "METHOD_NOT_SUPPORTED",
                 "message": "no such method"
             })
+        );
+    }
+
+    #[test]
+    fn mcp_storage_errors_do_not_accept_secret_text() {
+        let settings = BackendError::McpSettingsStorage;
+        let token = BackendError::McpTokenStorage;
+        let rendered = format!("{settings} {token}");
+        assert!(!rendered.contains("token-value"));
+        assert_eq!(
+            serde_json::to_value(settings).expect("serializes"),
+            serde_json::json!({ "kind": "mcpSettingsStorage" })
+        );
+        assert_eq!(
+            serde_json::to_value(token).expect("serializes"),
+            serde_json::json!({ "kind": "mcpTokenStorage" })
         );
     }
 }

@@ -30,10 +30,34 @@ use crate::error::BackendError;
 /// pure: J3 reads the environment / config and passes the values in; this code
 /// never reads `std::env` itself.
 pub fn resolve_engine_path(env: Option<&str>, config: Option<&str>, default: &Path) -> PathBuf {
-    if let Some(value) = first_non_blank([env, config]) {
-        return PathBuf::from(value);
+    resolve_engine_path_with_source(env, config, default).0
+}
+
+/// 解決したエンジンのパスがどこから来たか。設定欄に出所として見せる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EnginePathSource {
+    /// 環境変数 `NORVES_ENGINE_PATH`。
+    Env,
+    /// 保存済みのエンジン設定。
+    Settings,
+    /// 組み込みの既定値。
+    Default,
+}
+
+/// [`resolve_engine_path`] と同じ優先順位で解決し、採用した出所も返す。
+pub fn resolve_engine_path_with_source(
+    env: Option<&str>,
+    config: Option<&str>,
+    default: &Path,
+) -> (PathBuf, EnginePathSource) {
+    if let Some(value) = first_non_blank([env]) {
+        return (PathBuf::from(value), EnginePathSource::Env);
     }
-    default.to_path_buf()
+    if let Some(value) = first_non_blank([config]) {
+        return (PathBuf::from(value), EnginePathSource::Settings);
+    }
+    (default.to_path_buf(), EnginePathSource::Default)
 }
 
 /// Returns the first candidate that is `Some` and not blank (i.e. contains at
@@ -57,6 +81,18 @@ fn first_non_blank<const N: usize>(candidates: [Option<&str>; N]) -> Option<&str
 /// misconfigured / missing engine binary before J3 attempts to spawn it. The
 /// error message intentionally leaks nothing beyond the path itself.
 pub fn validate_engine_path(path: &Path) -> Result<(), BackendError> {
+    // Windows の Rust std は `.bat` / `.cmd` を cmd.exe 経由で起動する。起動引数をシェルに
+    // 通さない前提を守るため、先に拒否する。std はパスの文字列の末尾で判定する(`.cmd` のような
+    // 拡張子の無い名前も含む)ので、`Path::extension` ではなく同じく末尾を見る。Win32 はパスの
+    // 末尾の `.` と空白を落とすので、それも落としてから比べる。
+    if is_batch_file_path(path) {
+        return Err(BackendError::Process {
+            message: format!(
+                "バッチファイルはエンジンとして起動できません: {}",
+                path.display()
+            ),
+        });
+    }
     if path.is_file() {
         Ok(())
     } else {
@@ -64,6 +100,82 @@ pub fn validate_engine_path(path: &Path) -> Result<(), BackendError> {
             message: format!("engine executable not found: {}", path.display()),
         })
     }
+}
+
+/// パスの文字列が `.bat` / `.cmd`(大文字小文字を問わない)で終わるなら true。
+fn is_batch_file_path(path: &Path) -> bool {
+    let text = path.as_os_str().to_string_lossy().to_ascii_lowercase();
+    let text = text.trim_end_matches(['.', ' ']);
+    text.ends_with(".bat") || text.ends_with(".cmd")
+}
+
+/// エディタが自分で渡す、ユーザーの起動引数では使えない引数。
+pub const BRIDGE_PORT_ARG: &str = "--bridge-port";
+/// 保存できる起動引数の件数の上限。
+///
+/// 件数と長さの上限の積(16 KiB)に引用符やパスを足しても、Windows のコマンドラインの
+/// 上限(32767 文字)に収まるように選ぶ。
+pub const MAX_ENGINE_ARGS: usize = 32;
+/// 起動引数 1 件の長さ(UTF-8 のバイト数)の上限。
+pub const MAX_ENGINE_ARG_LEN: usize = 512;
+
+/// ユーザーが入力した起動引数(1 要素 = 1 引数)を確かめ、保存する形にする。
+///
+/// 空白だけの要素は空行として捨てる。それ以外の要素は手を加えずに残す(引数はシェルを介さずに
+/// そのまま渡すので、引用符や空白に特別な意味は無い)。次のどれかに当たると、何も捨てずにエラーを返す:
+/// エディタが渡す `--bridge-port` とぶつかる引数、NUL か改行を含む引数、上限を超える件数・長さ。
+pub fn normalize_engine_args(args: &[String]) -> Result<Vec<String>, BackendError> {
+    let args: Vec<String> = args
+        .iter()
+        .filter(|arg| !arg.trim().is_empty())
+        .cloned()
+        .collect();
+    if args.len() > MAX_ENGINE_ARGS {
+        return Err(invalid_args(format!(
+            "起動引数が多すぎます({} 件。上限は {MAX_ENGINE_ARGS} 件)",
+            args.len()
+        )));
+    }
+    for (index, arg) in args.iter().enumerate() {
+        let line = index + 1;
+        // 前後の空白を無視して比べる。空白を落としてから解釈するエンジンにも効かせるため。
+        let trimmed = arg.trim();
+        if trimmed == BRIDGE_PORT_ARG || trimmed.starts_with(&format!("{BRIDGE_PORT_ARG}=")) {
+            return Err(invalid_args(format!(
+                "{line} 件目: {BRIDGE_PORT_ARG} はエディタが渡すので指定できません"
+            )));
+        }
+        if arg.contains('\0') {
+            return Err(invalid_args(format!(
+                "{line} 件目: NUL 文字を含む引数は使えません"
+            )));
+        }
+        if arg.contains(['\n', '\r']) {
+            return Err(invalid_args(format!(
+                "{line} 件目: 改行を含む引数は使えません"
+            )));
+        }
+        if arg.len() > MAX_ENGINE_ARG_LEN {
+            return Err(invalid_args(format!(
+                "{line} 件目: 引数が長すぎます({} バイト。上限は {MAX_ENGINE_ARG_LEN} バイト)",
+                arg.len()
+            )));
+        }
+    }
+    Ok(args)
+}
+
+fn invalid_args(message: String) -> BackendError {
+    BackendError::Settings { message }
+}
+
+/// エンジンに渡す引数の並びを組み立てる。ユーザーの引数を先に、`--bridge-port <port>` を最後に置く。
+/// 引数はこの並びのまま `Command::args` に渡し、シェルは介さない。
+pub fn build_engine_args(user_args: &[String], port: u16) -> Vec<String> {
+    let mut argv = user_args.to_vec();
+    argv.push(BRIDGE_PORT_ARG.to_owned());
+    argv.push(port.to_string());
+    argv
 }
 
 /// Why a stdout handshake line failed to yield the expected READY port.
@@ -202,6 +314,89 @@ pub fn build_process_exited_params(
 mod tests {
     use super::*;
 
+    // --- 起動引数 -------------------------------------------------------------
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn settings_error(result: Result<Vec<String>, BackendError>) -> String {
+        match result {
+            Err(BackendError::Settings { message }) => message,
+            other => panic!("Settings エラーになるはず: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn engine_args_drop_blank_lines_and_keep_others_verbatim() {
+        let args = strings(&["", "--scene", "  ", "a b \"c\"", "\t", " --x=1 ", "$(rm)"]);
+        assert_eq!(
+            normalize_engine_args(&args).unwrap(),
+            strings(&["--scene", "a b \"c\"", " --x=1 ", "$(rm)"])
+        );
+        assert_eq!(normalize_engine_args(&[]).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn engine_args_reject_bridge_port() {
+        for bad in [
+            "--bridge-port",
+            "--bridge-port=9000",
+            "--bridge-port=",
+            " --bridge-port",
+            "\t--bridge-port=1 ",
+        ] {
+            let message = settings_error(normalize_engine_args(&strings(&["--ok", bad])));
+            assert!(message.contains("2 件目"), "{bad:?}: {message}");
+        }
+        // 似ているだけの引数は通す。
+        assert!(normalize_engine_args(&strings(&[
+            "--bridge-portx",
+            "-bridge-port",
+            "x=--bridge-port"
+        ]))
+        .is_ok());
+    }
+
+    #[test]
+    fn engine_args_reject_nul_and_line_breaks() {
+        for bad in ["a\0b", "\0", "a\nb", "a\rb"] {
+            settings_error(normalize_engine_args(&strings(&[bad])));
+        }
+    }
+
+    #[test]
+    fn engine_args_enforce_count_and_length_limits() {
+        let at_limit = vec!["x".to_owned(); MAX_ENGINE_ARGS];
+        assert_eq!(
+            normalize_engine_args(&at_limit).unwrap().len(),
+            MAX_ENGINE_ARGS
+        );
+        let over = vec!["x".to_owned(); MAX_ENGINE_ARGS + 1];
+        settings_error(normalize_engine_args(&over));
+
+        // 空行は件数に数えない。
+        let mut with_blanks = at_limit.clone();
+        with_blanks.extend(vec![String::new(); 10]);
+        assert!(normalize_engine_args(&with_blanks).is_ok());
+
+        let longest = "a".repeat(MAX_ENGINE_ARG_LEN);
+        assert!(normalize_engine_args(&[longest]).is_ok());
+        // 長さは文字数ではなくバイト数で数える。
+        let multibyte = "あ".repeat(MAX_ENGINE_ARG_LEN / 3 + 1);
+        settings_error(normalize_engine_args(&[multibyte]));
+        settings_error(normalize_engine_args(&["a".repeat(MAX_ENGINE_ARG_LEN + 1)]));
+    }
+
+    #[test]
+    fn engine_args_put_user_args_before_bridge_port() {
+        assert_eq!(
+            build_engine_args(&strings(&["--scene", "main.scene"]), 5123),
+            strings(&["--scene", "main.scene", "--bridge-port", "5123"])
+        );
+        assert_eq!(build_engine_args(&[], 1), strings(&["--bridge-port", "1"]));
+    }
+
     // --- resolve_engine_path -----------------------------------------------
 
     #[test]
@@ -249,6 +444,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resolve_with_source_reports_env_settings_and_default() {
+        let default = Path::new("default.exe");
+        assert_eq!(
+            resolve_engine_path_with_source(Some("env.exe"), Some("config.exe"), default),
+            (PathBuf::from("env.exe"), EnginePathSource::Env)
+        );
+        assert_eq!(
+            resolve_engine_path_with_source(Some("  "), Some("config.exe"), default),
+            (PathBuf::from("config.exe"), EnginePathSource::Settings)
+        );
+        assert_eq!(
+            resolve_engine_path_with_source(None, Some(" "), default),
+            (PathBuf::from("default.exe"), EnginePathSource::Default)
+        );
+    }
+
+    #[test]
+    fn resolve_with_source_agrees_with_resolve() {
+        // launch_engine と get_engine_settings が同じパスを指すこと。
+        let default = Path::new("default.exe");
+        let cases = [
+            (Some("env.exe"), Some("config.exe")),
+            (None, Some("config.exe")),
+            (Some(""), None),
+            (None, None),
+        ];
+        for (env, config) in cases {
+            assert_eq!(
+                resolve_engine_path(env, config, default),
+                resolve_engine_path_with_source(env, config, default).0
+            );
+        }
+    }
+
     // --- validate_engine_path ----------------------------------------------
 
     #[test]
@@ -276,6 +506,55 @@ mod tests {
         // A directory exists but is not a regular file -> rejected.
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         assert!(validate_engine_path(dir).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_existing_batch_files_case_insensitively() {
+        // 実在する通常ファイルでも、拡張子が .bat / .cmd なら拒否する。
+        let dir =
+            std::env::temp_dir().join(format!("norves-editor-batch-reject-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        for name in [
+            "engine.bat",
+            "engine.BAT",
+            "engine.cmd",
+            "engine.Cmd",
+            ".cmd",
+            ".BAT",
+        ] {
+            let path = dir.join(name);
+            std::fs::write(
+                &path,
+                "@echo off
+",
+            )
+            .expect("write batch file");
+            assert!(path.is_file());
+            match validate_engine_path(&path) {
+                Err(BackendError::Process { message }) => {
+                    assert!(message.contains(name), "{message}");
+                }
+                other => panic!("{name} must be rejected, got {other:?}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_detection_matches_std_suffix_rule() {
+        // std と同じく文字列の末尾で判定し、Win32 が落とす末尾の `.` と空白も無視する。
+        for text in [
+            "C:/e/.cmd",
+            "C:/e/x.CMD",
+            "C:/e/x.bat.",
+            "C:/e/x.bat ",
+            "C:/e/x.cmd. .",
+        ] {
+            assert!(is_batch_file_path(Path::new(text)), "{text}");
+        }
+        for text in ["C:/e/x.exe", "C:/e/x.bat.exe", "C:/e/xbat", "C:/e/cmd"] {
+            assert!(!is_batch_file_path(Path::new(text)), "{text}");
+        }
     }
 
     // --- parse_ready_line ---------------------------------------------------

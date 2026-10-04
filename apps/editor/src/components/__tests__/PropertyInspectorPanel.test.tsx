@@ -21,7 +21,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import type { BridgeState } from '../../state/store.js';
-import { INITIAL_STATE } from '../../state/store.js';
+import { bridgeReducer, INITIAL_STATE } from '../../state/store.js';
 import type { ObjectSnapshot, PropertyValue, SetObjectPropertyResult } from '@norves/bridge-ui';
 
 // -------------------------------------------------------------------------
@@ -1187,5 +1187,41 @@ describe('PropertyInspectorPanel — property filter', () => {
     renderSelected(DEMO_SNAPSHOT);
     expect((screen.getByLabelText('プロパティを絞り込む') as HTMLInputElement).value).toBe('label');
     expect(screen.queryByText('fieldOfView')).toBeNull();
+  });
+});
+
+describe('PropertyInspectorPanel — 編集サービスイベント', () => {
+  it('外部の値設定を選択中snapshotへ反映する', () => {
+    mockState = {
+      ...INITIAL_STATE,
+      connection: { status: 'connected' },
+      selectedObjectId: DEMO_SNAPSHOT.objectId,
+      objectSnapshot: DEMO_SNAPSHOT,
+      editServiceGeneration: 7,
+      editAppliedRevision: 0,
+      objectSnapshotAppliedGeneration: 7,
+      objectSnapshotAppliedRevision: 0,
+    };
+    const { rerender } = render(<PropertyInspectorPanel {...makeDockviewProps()} />);
+
+    mockState = bridgeReducer(mockState, {
+      type: 'editApplied',
+      payload: {
+        operation: 'setProperty',
+        objectId: DEMO_SNAPSHOT.objectId,
+        property: 'label',
+        value: '外部から変更',
+        newId: null,
+        source: 'mcp',
+        groupId: 'mcp-7-1',
+        generation: 7,
+        sequence: 1,
+        historyRevision: 1,
+        appliedRevision: 1,
+      },
+    });
+    rerender(<PropertyInspectorPanel {...makeDockviewProps()} />);
+
+    expect(screen.getByDisplayValue('外部から変更')).toBeTruthy();
   });
 });

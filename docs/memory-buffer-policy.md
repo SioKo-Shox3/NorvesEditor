@@ -32,12 +32,9 @@ Alpha does not optimize for zero-copy transport. It does optimize for safe, revi
 
 ## Large-payload strategy: viewport thumbnails
 
-The `viewport.getThumbnail` method (protocol 0.2) returns a still image of the
-engine's external viewport as a base64-encoded string inside the method result.
-This is the first large-payload path in the Bridge, so its attachment strategy is
-documented here **before** the path exists, as the policy above requires
-("Attachment or streaming strategy must be documented before adding large payload
-paths.").
+`viewport.getThumbnail`（protocol 0.2）は、エンジンの外部viewportの静止画を
+method result内のbase64文字列として返すBridgeメソッドです。Bridgeの添付方式に加え、
+MCPは同じsnapshotをエディタbackend経由で取得し、検査・上限処理済みのPNG画像を返します。
 
 ```text
 - Transport mode:  pull (request/response), never push.
@@ -84,3 +81,47 @@ governs how many small event messages may queue.
 Continuous frame streaming, shared GPU textures, and native window embedding are
 explicitly out of scope (see `docs/viewport-strategy.md`, "Post-Alpha Research").
 The thumbnail path is a low-frequency still image only.
+
+## MCP画像処理の上限と所有権
+
+MCPは既存の`viewport.getThumbnail` Bridge要求を使います。エディタbackendはGame Viewと
+MCPで、進行中の要求と接続世代ごとの1秒snapshot cacheを共有します。共通サービスから
+Bridgeへ送る頻度は毎秒1回以下です。MCP要求の失敗はGame Viewの取得状態や再試行間隔に
+反映しません。
+
+MCPはPNG形式だけを受け付けます。復号前にbase64形式、Bridgeの256 KiB転送データ上限、PNG署名と
+IHDR寸法を検査します。宣言された幅・高さはIHDRと一致させます。寸法は0より大きく、
+640 x 360以内であることを確認し、画像復号器が画像領域を確保する前に寸法爆弾を拒否します。
+Bridgeの上限は640 x 360 / 256 KiBのままです。MCPは長辺を512 pixel以下へ縮小し、再符号化
+したPNGを512 KiB以下にします。MCPの`image/png` contentにはbase64 dataと`mimeType`を載せます。
+
+PNGの復号・縮小・符号化は同期処理workerで行い、同時処理を最大2件に制限します。workerが
+両方使用中なら新しい処理を受け付けません。各workerは復号前に6 MiBを予約し、合計128 MiBの
+共有処理予算内で動きます。寸法・データ量の検査が割当て量の主要な上限です。画像ライブラリの
+`max_alloc`は追加の防御として設定し、それだけを根拠にしません。停止時は受付を閉じ、実行中の
+処理が終了するまで待ちます。
+
+Bridge resultは所有権を持つJSON snapshotです。復号は所有pixel bufferを作り、縮小と符号化は
+MCP用の所有byte列を作り、base64化で応答用の所有文字列を作ります。これらのbufferはエンジンの
+live memoryを参照せず、cacheの期限切れまたは応答送信後に解放されます。画像はBridgeのevent
+broadcast ringへ流しません。
+
+## MCP時刻付き画像一覧の上限と所有権
+
+画像一覧ヘルパーは、呼び出し元が所有するPNG byte列を借りて処理し、一覧PNGと説明用テキストを
+新たな所有値として返します。撮影要求、ファイル読み込み、Bridge通信は行いません。入力は1〜16枚、
+各PNGは2 MiB以下、各辺4096 pixel以下、合計16777216 pixel以下です。時刻は
+HH:MM:SS.mmm（分・秒は00〜59）に限定します。
+
+一覧は入力順の4列配置で、各枠に1始まりの番号と時刻を描画します。文字は数字・コロン・小数点の
+固定5×7 pixel字形を使い、フォントやOSの描画差を持ち込みません。返すテキストにも同じ順番と
+時刻を記載します。出力の長辺は2048 pixel以下、PNGは2 MiB以下です。
+
+画像の展開は1枚ずつ行い、PNGの寸法・色形式を復号前に検査します。縮小には`thumbnail_exact`を使い、
+元画像の幅を保つ浮動小数点中間画像を作りません。縮小画像とRGBA変換の一時領域は合計2 MiB以内です。
+作業量の見積りには、全入力PNG(最大32 MiB)、最大のRGBA展開画像(最大64 MiB)、一覧canvas(最大16 MiB)、
+縮小画像(2 MiB)、出力PNG用bufferの予約(4 MiB)、decoder作業領域(8 MiB)を含めます。合計は最大126 MiBで、
+128 MiBを超える見積りは処理前に拒否します。PNG符号化は各画像の展開・縮小bufferを解放してから行います。
+符号化時は一覧canvas(最大16 MiB)を基にした一時領域(約17 MiB)と入力PNG・canvas・出力上限2 MiBを合わせても
+約67 MiBです。入力bufferは呼び出し元が所有し、出力PNGの内容は2 MiBで打ち切ります。
+PNGは8 bit以下の形式を受け付け、16 bit形式はこの作業量上限の対象外として拒否します。

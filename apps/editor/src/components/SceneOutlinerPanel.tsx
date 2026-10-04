@@ -37,15 +37,39 @@ import { useBridgeActions } from '../hooks/useBridge.js';
  * セッション内だけの記憶で、永続化はしない。
  */
 let rememberedFilter = '';
-let rememberedCollapsed: ReadonlySet<string> = new Set<string>();
 
 /** 絞り込み中に渡す空集合（毎描画で新しい Set を作らない）。 */
 const EMPTY_COLLAPSED: ReadonlySet<string> = new Set<string>();
 
+/**
+ * 折りたたみの記憶と、それを作った接続の鍵。ノードの id は接続ごとのエンジンが振るので、
+ * 別の接続へ持ち越すと無関係なノードが畳まれる。描画時に今の接続の鍵と照合し、違えば捨てる —
+ * パネルがアンマウントされている間の切断・再接続は effect では拾えないため。
+ */
+interface CollapsedMemory {
+  owner: string | null;
+  ids: ReadonlySet<string>;
+}
+
+let rememberedCollapsed: CollapsedMemory = { owner: null, ids: EMPTY_COLLAPSED };
+
+/**
+ * 接続の世代を表す鍵。connected の間だけ sessionId と store の世代番号から作り、それ以外は null。
+ * 世代番号は store がパネルの有無に関わらず数えるので、アンマウント中に同じ sessionId で
+ * 繋ぎ直されても鍵が変わる。
+ */
+function connectionKeyOf(
+  status: string,
+  sessionId: string | undefined,
+  generation: number | undefined,
+): string | null {
+  return status === 'connected' ? `session:${sessionId ?? ''}#${generation ?? 0}` : null;
+}
+
 /** テスト用: パネルをまたいで残る表示状態を初期化する。 */
 export function __resetOutlinerMemory(): void {
   rememberedFilter = '';
-  rememberedCollapsed = new Set<string>();
+  rememberedCollapsed = { owner: null, ids: EMPTY_COLLAPSED };
 }
 
 // IDockviewPanelProps is accepted but not currently used for data.
@@ -61,12 +85,8 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
   const selectedObjectId = state.selectedObjectId;
   const sceneRefreshRequired = state.sceneRefreshRequired === true;
 
-  // -----------------------------------------------------------------------
-  // Fetch the tree once each time we (re)enter the connected state. A ref
-  // tracks the previous connection status so we only fetch on the
-  // disconnected/connecting -> connected edge, not on every re-render. The
-  // store clears sceneTree on disconnect, so this re-probes a fresh engine.
-  // -----------------------------------------------------------------------
+  // 接続状態へ入ったときにツリーを取得する。前回の接続状態を記録し、
+  // 再描画ごとの取得を避ける。
   const wasConnectedRef = useRef(false);
   useEffect(() => {
     if (isConnected && !wasConnectedRef.current) {
@@ -75,24 +95,22 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
     wasConnectedRef.current = isConnected;
   }, [isConnected, actions]);
 
-  // -----------------------------------------------------------------------
-  // Consume a live-refresh request. A scene.treeChanged event with
-  // fullRefreshRequired:true sets store.sceneRefreshRequired; here we issue one
-  // getSceneTree() while connected. The resulting sceneTreeLoaded/
-  // sceneTreeUnsupported reducer clears the flag (-> false), so a single fetch is
-  // issued per set flag and the effect cannot loop. A ref guards against firing a
-  // second fetch in the render(s) between dispatch and the flag clearing.
-  // -----------------------------------------------------------------------
-  const refreshInFlightRef = useRef(false);
+  // 完全再取得の要求は版番号で消費する。同じ要求の再描画では重複せず、
+  // 取得中に新しい編集が届いた場合は次の版を取得する。
+  const sceneRefreshVersion = state.sceneRefreshVersion;
+  const lastRefreshVersionRef = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (isConnected && sceneRefreshRequired && !refreshInFlightRef.current) {
-      refreshInFlightRef.current = true;
+    if (
+      isConnected &&
+      sceneRefreshRequired &&
+      lastRefreshVersionRef.current !== sceneRefreshVersion
+    ) {
+      lastRefreshVersionRef.current = sceneRefreshVersion;
       void actions.getSceneTree();
     } else if (!sceneRefreshRequired) {
-      // Flag was consumed (or never set): re-arm for the next live request.
-      refreshInFlightRef.current = false;
+      lastRefreshVersionRef.current = undefined;
     }
-  }, [isConnected, sceneRefreshRequired, actions]);
+  }, [isConnected, sceneRefreshRequired, sceneRefreshVersion, actions]);
 
   const handleRefresh = (): void => {
     void actions.getSceneTree();
@@ -145,14 +163,28 @@ export function SceneOutlinerPanel(_props: IDockviewPanelProps): React.JSX.Eleme
 
   // 折りたたんだノードの id。既定は展開。絞り込み中は無視して全部見せる — 絞り込みの結果が
   // 畳まれた親の下に隠れると、探しているものが見つからない。
-  const [collapsed, setCollapsedState] = useState<ReadonlySet<string>>(rememberedCollapsed);
+  // 記憶は接続ごと。別の接続の記憶は描画の時点で無いものとして扱い、effect で捨てる。
+  const connectionKey = connectionKeyOf(
+    state.connection.status,
+    state.connection.sessionId,
+    state.connection.generation,
+  );
+  const [collapsedMemory, setCollapsedMemory] = useState<CollapsedMemory>(rememberedCollapsed);
+  const collapsed =
+    collapsedMemory.owner === connectionKey ? collapsedMemory.ids : EMPTY_COLLAPSED;
+  useEffect(() => {
+    if (rememberedCollapsed.owner !== connectionKey) {
+      rememberedCollapsed = { owner: connectionKey, ids: EMPTY_COLLAPSED };
+      setCollapsedMemory(rememberedCollapsed);
+    }
+  }, [connectionKey]);
   function toggleCollapsed(id: string): void {
     const next = new Set(collapsed);
     if (!next.delete(id)) {
       next.add(id);
     }
-    rememberedCollapsed = next;
-    setCollapsedState(next);
+    rememberedCollapsed = { owner: connectionKey, ids: next };
+    setCollapsedMemory(rememberedCollapsed);
   }
 
   const hasTree = sceneTree !== undefined;

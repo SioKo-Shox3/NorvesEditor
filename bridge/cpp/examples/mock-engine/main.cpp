@@ -193,12 +193,51 @@ namespace
         return nullptr;
     }
 
+    std::optional<MockAdapter::Profile> SelectMockProfile()
+    {
+        std::string profile;
+#if defined(_WIN32)
+        char* rawProfile = nullptr;
+        std::size_t rawProfileLength = 0;
+        if (_dupenv_s(&rawProfile, &rawProfileLength, "NORVES_MOCK_PROFILE") != 0)
+        {
+            return std::nullopt;
+        }
+        if (rawProfile != nullptr)
+        {
+            profile = rawProfile;
+            std::free(rawProfile);
+        }
+#else
+        const char* const rawProfile = std::getenv("NORVES_MOCK_PROFILE");
+        if (rawProfile != nullptr)
+        {
+            profile = rawProfile;
+        }
+#endif
+        if (profile.empty() || profile == "default")
+        {
+            return MockAdapter::Profile::Default;
+        }
+        if (profile == "mcp-edit")
+        {
+            return MockAdapter::Profile::McpEdit;
+        }
+        std::cerr << "NORVES_MOCK_PROFILE は default または mcp-edit を指定してください。\n";
+        return std::nullopt;
+    }
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
     const std::optional<std::uint16_t> port = ParsePort(argc, argv);
     if (!port.has_value())
+    {
+        return 2;
+    }
+    const auto profile = SelectMockProfile();
+    if (!profile.has_value())
     {
         return 2;
     }
@@ -231,7 +270,7 @@ int main(int argc, char** argv)
             transportPtr->close();  // 常駐 recv() ループのブロックを解除する。
         });
 
-    MockAdapter adapter;
+    MockAdapter adapter(profile.value());
     BridgeEngineServer server(adapter, &sink);
 
     // log.message イベントフレームを事前に 1 回ビルドする。log.subscribe の ack 後に

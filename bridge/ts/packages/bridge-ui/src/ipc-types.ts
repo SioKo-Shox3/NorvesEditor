@@ -18,6 +18,60 @@ export interface ConnectionStatePayload {
   reason?: string;
 }
 
+/** エンジンのパスの出所。環境変数 > 保存済みの設定 > 既定値 の順に採用される。 */
+export type EnginePathSource = 'env' | 'settings' | 'default';
+
+/**
+ * get_engine_settings / pick_engine_path / clear_engine_path / set_engine_args が返す値。
+ *
+ * // apps/editor/src-tauri/src/dto.rs の EngineSettingsPayload と同じ形
+ */
+export interface EngineSettingsPayload {
+  /** launch_engine が次に使うパス。 */
+  effectivePath: string;
+  source: EnginePathSource;
+  /** 保存済みのパス。未設定なら null。 */
+  savedPath: string | null;
+  /** 保存済みの起動引数(1 要素 = 1 引数)。launch_engine は --bridge-port より前に渡す。 */
+  savedArgs: string[];
+}
+
+/** MCPの状態取得と設定変更が返す公開状態。トークンは含まれない。 */
+export interface McpSettingsPayload {
+  enabled: boolean;
+  port: number;
+  writeMode?: McpWriteMode;
+  sceneRootId?: string;
+  state: 'disabled' | 'running' | 'bindFailed' | 'storageFailed';
+  endpoint?: string;
+  error?: string;
+}
+
+export type McpWriteMode = 'readOnly' | 'enabled' | 'confirm';
+
+/** 明示的な秘密表示要求だけが返すトークン。 */
+export interface McpTokenPayload {
+  token: string;
+}
+
+/** main画面に送る、一度だけ承認できるMCP書き込み確認。 */
+export interface McpConfirmationRequest {
+  id: string;
+  toolName: string;
+  method: string;
+  targetIds: string[];
+  targetCount: number;
+  before?: unknown;
+  after?: unknown;
+  source?: EditSource;
+  undoAvailable: boolean;
+  clearsHistory: boolean;
+  historyGeneration: number | null;
+  historyRevision: number;
+  undoHeadId: number | null;
+  expiresAt: number;
+}
+
 /**
  * Payload returned by workspace_open / workspace_get.
  *
@@ -27,6 +81,93 @@ export interface WorkspacePayload {
   rootPath: string;
   assetsRoot: string;
   name: string;
+}
+
+/** 画面の値スナップショットに適用改訂を添えて編集コマンドへ渡す。 */
+export interface UiPropertyCapture {
+  generation: number;
+  revision: number;
+  value: unknown;
+}
+
+/** 画面のツリーに適用改訂を添えて親変更コマンドへ渡す。nullはシーン直下。 */
+export interface UiParentCapture {
+  generation: number;
+  revision: number;
+  parentId: string | null;
+}
+
+export type EditSource = 'ui' | 'mcp';
+
+export interface EditGroupSummary {
+  id: string;
+  name: string;
+  source: EditSource;
+  count: number;
+  createdAt: number;
+}
+
+export interface EditPendingGroup {
+  id: string;
+  name: string;
+  direction: 'undo' | 'redo';
+  source: EditSource;
+  createdAt: number;
+  totalCount: number;
+  completedCount: number;
+  outcomeUnknown: boolean;
+  retryAllowed: boolean;
+}
+
+export interface EditDiscardResult {
+  groupId: string;
+  completedCount: number;
+  totalCount: number;
+  outcomeUnknown: boolean;
+  changesRemain: boolean;
+}
+
+/** 編集サービスが初期取得と変更イベントで共有する履歴要約。 */
+export interface EditHistorySummary {
+  generation: number | null;
+  historyRevision: number;
+  appliedRevision: number;
+  canUndo: boolean;
+  canRedo: boolean;
+  undoHeadId: number | null;
+  undoRevision: number;
+  undoGroup: EditGroupSummary | null;
+  redoHeadId: number | null;
+  redoRevision: number;
+  redoGroup: EditGroupSummary | null;
+  pending: boolean;
+  pendingGroup?: EditPendingGroup | null;
+}
+
+export type EditAppliedOperation =
+  | 'createObject'
+  | 'deleteObject'
+  | 'duplicateObject'
+  | 'reparentObject'
+  | 'setProperty'
+  | 'componentAdd'
+  | 'componentRemove'
+  | 'undo'
+  | 'redo';
+
+/** 編集サービスが適用した変更を画面へ伝える。 */
+export interface EditAppliedPayload {
+  operation: EditAppliedOperation;
+  objectId: string | null;
+  property: string | null;
+  value: unknown | null;
+  newId: string | null;
+  source: EditSource;
+  groupId: string;
+  generation: number;
+  sequence: number;
+  historyRevision: number;
+  appliedRevision: number;
 }
 
 /**
@@ -101,4 +242,32 @@ export interface AssetManifestResult {
   totalCount: number;
   page?: number;
   pageSize?: number;
+}
+
+/** 本文や秘密IDを含まない操作記録。requestIdはsessionIdを含み、再起動を区別する。 */
+export interface McpOperation {
+  requestId: string;
+  sessionId: string;
+  timestamp: number;
+  tool: string;
+  /** 対象の種類と、同一起動内で比較できる指紋。 */
+  target: string;
+  summary: string;
+  /** 要求の終了理由。期限後に適用を確認した場合はtimedOutとoutcome=appliedを併記する。 */
+  result: 'success' | 'rejected' | 'failed' | 'partial' | 'timedOut' | 'cancelled' | 'unknown';
+  outcome: 'applied' | 'noChange' | 'notApplied' | 'rejected' | 'partial' | 'unknown' | 'readCompleted' | 'readFailed';
+  displayGroupId: string | null;
+  completedCount: number;
+  pending: boolean;
+  retryAllowed: boolean;
+  automaticRetryAllowed: false;
+  actorFinished: boolean;
+}
+
+/** 初期取得とmcpOperationsChangedの共通snapshot。記録は最大500件。 */
+export interface McpOperationsPayload {
+  sessionId: string;
+  revision: number;
+  records: McpOperation[];
+  storageError: string | null;
 }

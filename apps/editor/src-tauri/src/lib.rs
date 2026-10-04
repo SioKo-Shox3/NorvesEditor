@@ -1,36 +1,78 @@
-// NorvesEditor Tauri entry point. P5 wires the real editor-client backend: the
-// Rust side OWNS the Bridge connection + lifecycle and exposes it to the UI as
-// Tauri commands, relaying engine events to the frontend. No frontend UI wiring
-// (P6) and no app panels (P4) here.
+// NorvesEditorのTauriエントリーポイント。Bridge接続とエンジンプロセスの寿命をRustが管理し、
+// UIにはTauri command/eventを通して公開する。
 
-// P3: IPC name constants. Now referenced by the command fns + event relay.
+// BridgeのIPC名を一か所で管理する。
 mod protocol_names;
 
 mod asset_manifest;
+// バックエンドの警告を stderr とアプリのログディレクトリのファイルへ出す。
+mod backend_log;
 mod bridge_state;
 mod dto;
+mod edit_service;
+// エンジン設定(実行ファイルのパス)の保存と、Rust 側で開くファイル選択ダイアログ。
+mod engine_settings;
 mod error;
 mod events_map;
+pub mod mcp;
+mod mcp_settings;
+pub mod mcp_token;
+// Windows 限定: 起動したエンジンをエディタの寿命に縛る Job Object。
+#[cfg(windows)]
+mod job_object;
 mod process;
 // J3: the LOAD-BEARING process runtime (spawn / READY / monitor / kill).
 mod process_runtime;
 mod workspace;
 
 use bridge_state::BridgeState;
+use edit_service::EditService;
+use engine_settings::EngineSettingsState;
+use mcp::runtime::McpRuntime;
 use process_runtime::ProcessState;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tauri::{Emitter, Manager};
 use workspace::WorkspaceState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 接続・エンジンプロセス・ワークスペース・設定をアプリの状態として共有する。
     let app = tauri::Builder::default()
-        // The backend owns the connection state for the whole app lifetime.
         .manage(BridgeState::default())
-        // J3: the (at most one) running engine process, separate from the
-        // connection state.
         .manage(ProcessState::default())
-        // Phase A: workspace root state is a pure editor concern, independent
-        // from the Bridge connection and engine process lifecycle.
         .manage(WorkspaceState::default())
+        .manage(EngineSettingsState::default())
+        .setup(|app| {
+            // 配布版にもWARN以上を残せるよう、AppHandle生成後にログ出力先を決める。
+            backend_log::init(app.path().app_log_dir().ok());
+            let config_dir = app.path().app_config_dir().map_err(std::io::Error::other)?;
+            let operations = mcp::operations::OperationStore::new(app.path().app_log_dir().ok());
+            let operation_app = app.handle().clone();
+            operations.set_sink(Arc::new(move |payload| {
+                let _ = operation_app.emit_to(
+                    tauri::EventTarget::webview_window("main"),
+                    protocol_names::events::MCP_OPERATIONS_CHANGED,
+                    payload,
+                );
+            }));
+            app.manage(operations.clone());
+            let bridge = app.state::<BridgeState>();
+            let services = mcp::service::McpServices::new(
+                &bridge,
+                config_dir,
+                operations,
+                Some(edit_service::tauri_event_sink(app.handle().clone())),
+            );
+            app.manage(services.edits);
+            let mut mcp_runtime = services.runtime;
+            mcp_runtime.attach_app(app.handle().clone());
+            app.manage(mcp_runtime.clone());
+            tauri::async_runtime::spawn(async move {
+                mcp_runtime.initialize().await;
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             bridge_state::bridge_connect,
             bridge_state::bridge_disconnect,
@@ -53,9 +95,27 @@ pub fn run() {
             bridge_state::runtime_play,
             bridge_state::runtime_pause,
             bridge_state::runtime_stop,
+            bridge_state::edit_undo,
+            bridge_state::edit_redo,
+            bridge_state::edit_get_history,
+            edit_service::edit_retry,
+            edit_service::edit_discard,
             bridge_state::focus_viewport,
             process_runtime::launch_engine,
             process_runtime::stop_engine,
+            engine_settings::get_engine_settings,
+            engine_settings::pick_engine_path,
+            engine_settings::clear_engine_path,
+            engine_settings::set_engine_args,
+            mcp::runtime::get_mcp_settings,
+            mcp::runtime::set_mcp_settings,
+            mcp::runtime::set_mcp_write_access,
+            mcp::runtime::get_mcp_confirmations,
+            mcp::runtime::get_mcp_operations,
+            mcp::runtime::approve_mcp_confirmation,
+            mcp::runtime::reject_mcp_confirmation,
+            mcp::runtime::get_mcp_token,
+            mcp::runtime::regenerate_mcp_token,
             workspace::workspace_open,
             workspace::workspace_get,
             workspace::workspace_close,
@@ -65,14 +125,29 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    // J3: on app exit, best-effort kill a running engine so it is not orphaned.
-    // `kill_on_drop(true)` is only a safety net (not guaranteed on abort), so the
-    // explicit kill here is preferred. Both ExitRequested and Exit are handled so
-    // the kill fires whether the exit is user-initiated or programmatic.
-    app.run(|app_handle, event| match event {
-        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-            process_runtime::kill_engine_on_exit(app_handle);
+    let exit_started = Arc::new(AtomicBool::new(false));
+    let exit_completed = Arc::new(AtomicBool::new(false));
+    // 終了要求をいったん延期し、MCP・編集列・Bridge・エンジンの非同期停止後に終了する。
+    app.run(move |app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
+            if exit_completed.load(Ordering::Acquire) {
+                return;
+            }
+            api.prevent_exit();
+            if !exit_started.swap(true, Ordering::AcqRel) {
+                let app_handle = app_handle.clone();
+                let exit_completed = Arc::clone(&exit_completed);
+                tauri::async_runtime::spawn(async move {
+                    app_handle.state::<McpRuntime>().shutdown().await;
+                    app_handle.state::<EditService>().shutdown().await;
+                    bridge_state::shutdown_on_exit(app_handle.state::<BridgeState>().inner()).await;
+                    process_runtime::shutdown_on_exit(&app_handle).await;
+                    exit_completed.store(true, Ordering::Release);
+                    app_handle.exit(code.unwrap_or_default());
+                });
+            }
         }
+        tauri::RunEvent::Exit => process_runtime::kill_engine_on_exit(app_handle),
         _ => {}
     });
 }

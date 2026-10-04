@@ -24,21 +24,66 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "norves-editor"
 path = "src/main.rs"
 
+# 実mock必須の受入試験だけを明示的に有効化する。
+[features]
+mcp-e2e = []
+
+[[test]]
+name = "mcp_e2e"
+path = "tests/mcp_e2e.rs"
+required-features = ["mcp-e2e"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2.11", features = [] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 # Bridge crates: src-tauri is a separate workspace, so reference the bridge
 # crates by explicit relative path (no workspace inheritance available here).
 norves-bridge-editor-client = { path = "../../../bridge/crates/norves-bridge-editor-client" }
 norves-bridge-core = { path = "../../../bridge/crates/norves-bridge-core" }
-# rt-multi-thread + macros: parity with the runtime Tauri spins up. sync: the
-# Mutex/Notify guarding the connection state. time: Duration-bounded request
-# awaits. net/io-util are pulled transitively by the editor-client WS transport.
-# process: tokio::process::Command for spawning/awaiting the engine child
-# process (Workstream J).
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
+# Tauriと同じ実行環境を使い、同期機構・期限・子プロセス・loopback HTTP接続を扱う。
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "net", "io-util"] }
 tracing = "0.1"
+# バックエンドの警告(Job への割り当て失敗など)を stderr とログファイルへ出す(`src/backend_log.rs`)。bridge ワークスペースと同じ 0.3 系。
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+# エンジンの実行ファイルを選ぶ OS のファイル選択ダイアログ(`src/engine_settings.rs`)。Rust 側からだけ開く。
+# tauri-plugin-dialog は webview の window.alert / window.confirm を差し替える初期化スクリプトと JS 向け
+# コマンドを持ち込むので使わず、同プラグインが内部で使う rfd を同じ版・同じ機能で直接使う。
+rfd = { version = "0.16", default-features = false, features = ["common-controls-v6", "gtk3"] }
+# MCP の設定、認証トークン、loopback URL を扱う。
+base64 = "0.23"
+getrandom = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+subtle = "2.6"
+url = "2"
+
+# loopback MCP のHTTP入口と公式Streamable HTTPサーバー。
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+rmcp = { version = "3.5.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+# 要求取消しとHTTPサーバーの終了通知に使う。
+tokio-util = { version = "0.7", features = ["rt"] }
+# 埋め込みschemaを検証する。既定機能を無効にし、外部schemaの取得機能を有効にしない。
+jsonschema = { version = "=0.58.4", default-features = false }
+
+[dev-dependencies]
+# HTTP要求と確認待ちの全体期限を仮想時刻で検証する。
+tokio = { version = "1", features = ["test-util"] }
+# loopback HTTPの実試験とRMCPのDiscover/Initializeクライアント。
+reqwest = { version = "0.13", default-features = false }
+rmcp = { version = "3.5.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+# Router境界の単体試験で使うServiceExt。
+tower = { version = "0.5", default-features = false, features = ["util"] }
+
+# エディタが強制終了してもエンジンが残らないよう、起動した子を Job Object に入れる
+# (`src/job_object.rs`)。依存木に既にある 0.61 系に揃える。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

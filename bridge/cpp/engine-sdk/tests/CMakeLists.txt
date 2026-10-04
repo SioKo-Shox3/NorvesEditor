@@ -112,6 +112,22 @@ target_include_directories(ws_server_transport_test PRIVATE
 
 add_test(NAME ws_server_transport_test COMMAND ws_server_transport_test)
 
+# 編集プロフィールのモック動作を直接検査する。
+add_executable(mock_edit_profile_test mock_edit_profile_test.cpp)
+
+target_link_libraries(mock_edit_profile_test PRIVATE norves_bridge_engine_sdk)
+
+target_include_directories(mock_edit_profile_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/examples/mock-engine"
+)
+
+if(MSVC)
+    target_compile_options(mock_edit_profile_test PRIVATE /W4)
+endif()
+
+add_test(NAME mock_edit_profile_test COMMAND mock_edit_profile_test)
+
 # G4 end-to-end test harness: a standalone WebSocket engine SERVER executable
 # that the Rust editor-client e2e test (ws_roundtrip.rs) launches as a separate
 # process and drives over a real local socket. It links the SDK and uses only
