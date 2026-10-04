@@ -296,6 +296,22 @@ fn tool_specs() -> &'static [ToolSpec] {
         false,
     ),
     custom_tool(
+        "edit_undo",
+        "先頭の編集まとまりを取り消す",
+        "許可と全対象を確認し、共通編集列で先頭まとまりを取り消します。人の編集も対象になります。",
+        ToolAccess::Write,
+        &["scene.query"],
+        EMPTY_INPUT_SCHEMA,
+    ),
+    custom_tool(
+        "edit_redo",
+        "取り消した編集まとまりをやり直す",
+        "許可と全対象を確認し、共通編集列で先頭まとまりをやり直します。",
+        ToolAccess::Write,
+        &["scene.query"],
+        EMPTY_INPUT_SCHEMA,
+    ),
+    custom_tool(
         "edit_begin_group",
         "名前付き編集まとまりを開始する",
         "複数の編集をまとめるためのまとまりを開始します。",
@@ -469,7 +485,21 @@ impl McpToolCatalog {
         }
     }
 
+    pub(crate) fn unavailability_message(&self) -> &'static str {
+        let state = self.snapshot();
+        if state.generation.is_none() {
+            "Bridgeに接続してから操作してください。"
+        } else if state.permission == WritePermission::ReadOnly {
+            "MCPは読み取り専用です。Settingsで書き込み許可を変更してください。"
+        } else if !state.write_handlers_ready {
+            "編集サービスを利用できません。"
+        } else {
+            "接続中のエンジンに必要な能力がないか、この道具は未対応です。"
+        }
+    }
+
     /// 一覧に出さないBridge書き込み道具の直接呼び出しも、同じschemaで検証する。
+    #[cfg(test)]
     pub(crate) fn validate_hidden_write_attempt(
         &self,
         name: &str,
@@ -642,9 +672,12 @@ fn method_schema(method: &str) -> &'static str {
 }
 
 fn is_exposed(spec: &ToolSpec, state: &CatalogState) -> bool {
-    spec.capabilities
-        .iter()
-        .all(|required| state.capabilities.contains(*required))
+    state.generation.is_some()
+        && (spec.access == ToolAccess::Read || super::writes::is_implemented_write(spec.name))
+        && spec
+            .capabilities
+            .iter()
+            .all(|required| state.capabilities.contains(*required))
         && (spec.access == ToolAccess::Read
             || (state.permission != WritePermission::ReadOnly && state.write_handlers_ready))
 }
@@ -960,22 +993,29 @@ mod tests {
             catalog.validate_call("asset_get_manifest", &json!({"page":0})),
             Err(ToolInputError::Invalid)
         );
-        assert!(catalog.get("edit_begin_group").is_some());
-        assert!(catalog.get("edit_end_group").is_some());
-        assert!(catalog
-            .validate_call("edit_begin_group", &json!({"name":"x".repeat(128)}))
-            .is_ok());
-        assert_eq!(
-            catalog.validate_call("edit_begin_group", &json!({"name":"x".repeat(129)})),
-            Err(ToolInputError::Invalid)
-        );
-        assert!(catalog
-            .validate_call("edit_begin_group", &json!({"name":"scene setup"}))
-            .is_ok());
-        assert_eq!(
-            catalog.validate_call("edit_begin_group", &json!({"params":{}})),
-            Err(ToolInputError::Invalid)
-        );
+        // 名前付きまとまりのschemaは維持し、実装済みの道具だけを公開する。
+        assert!(catalog.get("edit_begin_group").is_none());
+        assert!(catalog.get("edit_end_group").is_none());
+        let group_schema = input_schema(
+            tool_specs()
+                .iter()
+                .find(|spec| spec.name == "edit_begin_group")
+                .expect("まとまりschemaがある"),
+        )
+        .expect("schemaを解決する");
+        assert!(schema_is_valid(
+            &group_schema,
+            &json!({"name":"x".repeat(128)})
+        ));
+        assert!(!schema_is_valid(
+            &group_schema,
+            &json!({"name":"x".repeat(129)})
+        ));
+        assert!(schema_is_valid(
+            &group_schema,
+            &json!({"name":"scene setup"})
+        ));
+        assert!(!schema_is_valid(&group_schema, &json!({"params":{}})));
         let log_schema = Value::Object(
             catalog
                 .get("logs_get_recent")

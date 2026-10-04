@@ -134,7 +134,8 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
 pub(crate) struct McpReadContext {
     force_confirmation: bool,
     bridge: BridgeFacade,
-    catalog: McpToolCatalog,
+    pub(super) catalog: McpToolCatalog,
+    pub(super) writes: Option<Arc<super::writes::McpWriteService>>,
     logs: Arc<StdMutex<LogBuffer>>,
     snapshots: Arc<Mutex<ReadSnapshotStore>>,
     thumbnails: McpThumbnailService,
@@ -155,6 +156,7 @@ impl McpReadContext {
         Self {
             bridge,
             catalog,
+            writes: None,
             logs,
             snapshots: Arc::new(Mutex::new(ReadSnapshotStore::default())),
             thumbnails,
@@ -244,7 +246,7 @@ impl McpReadContext {
     }
 
     /// 非公開の書き込み道具への直接呼び出しもschema・権限・範囲を検査する。
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) async fn authorize_hidden_write_attempt(
         &self,
         request_lease: &McpRequestLease,
@@ -751,6 +753,7 @@ impl McpReadContext {
         self.catalog.subscribe_changes()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_hidden_write_tool(&self, name: &str) -> bool {
         self.catalog.hidden_write_method(name).is_some()
     }

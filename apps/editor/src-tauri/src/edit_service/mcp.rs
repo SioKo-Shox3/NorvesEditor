@@ -9,6 +9,75 @@ use crate::mcp::{
 pub(super) struct QueuedMcpPermit {
     pub(super) reads: McpReadContext,
     pub(super) permit: McpWritePermit,
+    pub(super) execution: Arc<McpExecution>,
+}
+
+/// 表示用要求ごとの送信境界と確認済み件数。承認IDや認証情報は保持しない。
+#[derive(Default)]
+pub(crate) struct McpExecution {
+    state: AtomicU8,
+    completed: std::sync::atomic::AtomicUsize,
+    queue_state: StdMutex<Option<Arc<AtomicU8>>>,
+}
+
+impl McpExecution {
+    pub(super) fn track_queue(&self, queue_state: Arc<AtomicU8>) {
+        *self
+            .queue_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(queue_state);
+    }
+
+    pub(crate) fn not_sent(&self) {
+        self.state.store(4, Ordering::Release);
+    }
+
+    pub(crate) fn started(&self) {
+        self.state.store(1, Ordering::Release);
+    }
+
+    pub(crate) fn rejected(&self) {
+        self.state.store(2, Ordering::Release);
+    }
+
+    pub(crate) fn finished(&self, value: &Value) {
+        if value.get("accepted").and_then(Value::as_bool) == Some(true) {
+            self.completed.fetch_add(1, Ordering::AcqRel);
+            self.state.store(3, Ordering::Release);
+        } else {
+            self.rejected();
+        }
+    }
+
+    pub(crate) fn is_unknown(&self) -> bool {
+        self.state.load(Ordering::Acquire) == 1
+    }
+
+    pub(crate) fn completed(&self) -> usize {
+        self.completed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn outcome(&self, success: bool) -> &'static str {
+        match self.state.load(Ordering::Acquire) {
+            1 => "unknown",
+            2 if self.completed() == 0 => "rejected",
+            2 => "partial",
+            3 if success => "applied",
+            3 => "partial",
+            _ if success => "noChange",
+            0 if self
+                .queue_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(|state| state.load(Ordering::Acquire) == TICKET_STARTED) =>
+            {
+                "unknown"
+            }
+            4 if self.completed() > 0 => "partial",
+            _ => "notApplied",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -26,6 +95,17 @@ impl EditService {
         reads: McpReadContext,
         lease: McpRequestLease,
         request: McpEditRequest,
+    ) -> Result<Value, BackendError> {
+        self.submit_tracked_mcp(reads, lease, request, Arc::new(McpExecution::default()))
+            .await
+    }
+
+    pub(crate) async fn submit_tracked_mcp(
+        &self,
+        reads: McpReadContext,
+        lease: McpRequestLease,
+        request: McpEditRequest,
+        execution: Arc<McpExecution>,
     ) -> Result<Value, BackendError> {
         let mut reads = reads
             .with_authorization(self.authorization.clone())
@@ -51,8 +131,15 @@ impl EditService {
                     }
                 }
                 .map_err(|message| BackendError::Request { message })?;
-                let ticket =
-                    self.enqueue_confirmed_mcp(reads.clone(), lease.clone(), &request, permit)?;
+                let ticket = self.enqueue_confirmed_mcp(
+                    reads.clone(),
+                    lease.clone(),
+                    &request,
+                    permit,
+                    execution.clone(),
+                )?;
+                // ticketの取消CASと同じ状態を見る。列開始とBridge送信の間も未適用とは断言しない。
+                execution.track_queue(ticket.queue_state.clone());
                 match ticket.outcome_until(lease.request_deadline()).await? {
                     QueueOutcome::Complete(result) => return Ok(result.value),
                     QueueOutcome::Reconfirm => reads = reads.require_reconfirmation(),
@@ -61,9 +148,9 @@ impl EditService {
         };
         tokio::select! {
             biased;
+            result = future => result,
             _ = lease.authorization_cancelled() => Err(BackendError::McpAuthorizationRevoked),
             _ = lease.request_cancelled() => Err(BackendError::EditCancelled),
-            result = future => result,
         }
     }
 
@@ -73,6 +160,7 @@ impl EditService {
         lease: McpRequestLease,
         request: &McpEditRequest,
         permit: McpWritePermit,
+        execution: Arc<McpExecution>,
     ) -> Result<EditTicket, BackendError> {
         let mut history_request = None;
         let mut event_input = None;
@@ -178,18 +266,21 @@ impl EditService {
                         message: "編集引数がobjectではありません。".to_owned(),
                     })?;
                 let auth = lease.clone();
+                let trace = execution.clone();
                 (
                     kind,
                     QueuedAction::Edit(Box::new(move |bridge_lease| {
                         Box::pin(async move {
                             // この検査から送信までawaitを挟まず、送信後のfutureは取消で破棄しない。
                             if !auth.is_current() {
+                                trace.not_sent();
                                 return Err(BackendError::McpAuthorizationRevoked);
                             }
                             let value = bridge
-                                .send_with_lease(&bridge_lease, method, Some(params))
+                                .send_tracked_mcp(&bridge_lease, method, Some(params), Some(&trace))
                                 .await?;
                             validate_write_result(method, &value)?;
+                            trace.finished(&value);
                             Ok(QueuedEditResult { value, prior })
                         })
                     })),
@@ -205,7 +296,11 @@ impl EditService {
                 history_request,
                 event_input,
                 auth_lease: Some(lease),
-                mcp_permit: Some(QueuedMcpPermit { reads, permit }),
+                mcp_permit: Some(QueuedMcpPermit {
+                    reads,
+                    permit,
+                    execution,
+                }),
             },
             action,
         )

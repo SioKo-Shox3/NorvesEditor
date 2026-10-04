@@ -518,6 +518,24 @@ describe('ToolbarActions Undo/Redo', () => {
     expect(screen.getByRole('button', { name: '破棄' })).toBeTruthy();
     expect(screen.getByText(/結果は不明です/)).toBeTruthy();
   });
+
+  it('MCPの単発undo拒否を0件処理済みで表示し、破棄後に操作を再開できる', () => {
+    const { actions, setState } = setup('connected', {}, {}, {
+      editHistorySummary: makeHistory({ pending: true, pendingGroup: {
+        id: 'edit-3-14', name: '値を設定', direction: 'undo', source: 'mcp', createdAt: 14,
+        totalCount: 1, completedCount: 0, outcomeUnknown: false, retryAllowed: true,
+      } }),
+    });
+    expect(screen.getByText('0 / 1 件を処理済み')).toBeTruthy();
+    expect(screen.getByText('出どころ: MCP')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '再試行' })).toBeTruthy();
+    expect(undoBtn().disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '破棄' }));
+    expect(actions.discardPendingEdit).toHaveBeenCalledOnce();
+    setState({ ...makeState('connected'), editHistorySummary: makeHistory({ canUndo: true, undoHeadId: 15 }) });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(undoBtn().disabled).toBe(false);
+  });
 });
 
 // -------------------------------------------------------------------------

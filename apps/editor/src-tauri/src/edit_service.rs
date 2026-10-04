@@ -1145,6 +1145,7 @@ async fn run_history_action(
     bridge: BridgeFacade,
     lease: BridgeLease,
     action: HistoryAction,
+    execution: Option<Arc<mcp::McpExecution>>,
 ) -> Result<QueuedEditResult, BackendError> {
     let mut params = serde_json::Map::new();
     let (method, result_kind) = match (&action.record, action.direction) {
@@ -1232,8 +1233,13 @@ async fn run_history_action(
         }
     };
 
-    let value = bridge.send_with_lease(&lease, method, Some(params)).await?;
+    let value = bridge
+        .send_tracked_mcp(&lease, method, Some(params), execution.as_deref())
+        .await?;
     validate_history_result(method, result_kind, &value)?;
+    if let Some(execution) = execution {
+        execution.finished(&value);
+    }
     Ok(QueuedEditResult::plain(value))
 }
 
@@ -1388,7 +1394,10 @@ async fn process_item(
     event_sink: Option<&EditEventSink>,
     mut item: QueueItem,
 ) -> bool {
-    let checked_mcp_write = item.mcp_permit.is_some();
+    let mcp_execution = item
+        .mcp_permit
+        .as_ref()
+        .map(|permit| permit.execution.clone());
     if item
         .auth_lease
         .as_ref()
@@ -1418,7 +1427,7 @@ async fn process_item(
         return false;
     }
 
-    if let Some(QueuedMcpPermit { reads, permit }) = item.mcp_permit.take() {
+    if let Some(QueuedMcpPermit { reads, permit, .. }) = item.mcp_permit.take() {
         let Some(auth) = item.auth_lease.as_ref() else {
             let _ = item.result.send(Err(BackendError::McpAuthorizationRevoked));
             return false;
@@ -1592,10 +1601,16 @@ async fn process_item(
                         events: Arc::clone(&group_events),
                         retrying: retry_action,
                         auth_lease: item.auth_lease.clone(),
+                        execution: mcp_execution.clone(),
                     },
                 )) as EditFuture
             } else {
-                Box::pin(run_history_action(bridge.clone(), item.lease.clone(), plan)) as EditFuture
+                Box::pin(run_history_action(
+                    bridge.clone(),
+                    item.lease.clone(),
+                    plan,
+                    None,
+                )) as EditFuture
             }
         }
         QueuedAction::Group(_) | QueuedAction::Discard => {
@@ -1717,9 +1732,7 @@ async fn process_item(
                                 {
                                     state.mark_edit_unsupported();
                                 }
-                                if checked_mcp_write && !grouped_action && !matches!(
-                                    error, BackendError::Engine { .. } | BackendError::McpAuthorizationRevoked | BackendError::EditCancelled
-                                ) {
+                                if item.kind != EditKind::RuntimeControl && !grouped_action && mcp_execution.as_ref().is_some_and(|trace| trace.is_unknown()) {
                                     state.mark_mcp_outcome_unknown(item.sequence, item.lease.generation);
                                 }
                             }
@@ -1878,6 +1891,7 @@ struct GroupActionContext {
     events: Arc<StdMutex<Vec<EditAppliedDto>>>,
     retrying: bool,
     auth_lease: Option<McpRequestLease>,
+    execution: Option<Arc<mcp::McpExecution>>,
 }
 
 async fn run_group_history_action(
@@ -1893,6 +1907,7 @@ async fn run_group_history_action(
         events,
         retrying,
         auth_lease,
+        execution,
     } = context;
     let mut completed = if retrying {
         history
@@ -1934,7 +1949,13 @@ async fn run_group_history_action(
             steps: vec![step.clone()],
             grouped: true,
         };
-        let result = run_history_action(bridge.clone(), lease.clone(), step_action.clone()).await;
+        let result = run_history_action(
+            bridge.clone(),
+            lease.clone(),
+            step_action.clone(),
+            execution.clone(),
+        )
+        .await;
         let value = match result {
             Ok(value) if value.value.get("accepted").and_then(Value::as_bool) == Some(true) => {
                 value
@@ -2292,6 +2313,7 @@ pub async fn edit_discard(
 #[cfg(test)]
 mod tests {
     include!("edit_service/mcp_tests.rs");
+    include!("edit_service/writes_tests.rs");
     use super::*;
     use crate::bridge_state::{test_edit_facade, BridgeSessionTestControl};
     use norves_bridge_core::{

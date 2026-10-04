@@ -76,13 +76,15 @@ impl McpRuntime {
         authorization: McpAuthorization,
         app: AppHandle,
     ) -> Self {
+        #[cfg(not(test))]
+        let reads = McpReadContext::default_context().map(|reads| {
+            reads.with_write_service(super::writes::McpWriteService::App(app.clone()))
+        });
+        // Wryのリンクが必要な管理状態の取得は、単体試験では共通サービスを直接注入する。
+        #[cfg(test)]
+        let reads = McpReadContext::default_context();
         let confirmation_events = Self::start_confirmation_events(&authorization, app);
-        Self::build(
-            config_dir,
-            authorization,
-            McpReadContext::default_context(),
-            Some(confirmation_events),
-        )
+        Self::build(config_dir, authorization, reads, Some(confirmation_events))
     }
 
     fn start_confirmation_events(

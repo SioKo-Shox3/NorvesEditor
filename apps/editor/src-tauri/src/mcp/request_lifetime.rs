@@ -81,6 +81,31 @@ impl RequestKey {
 }
 
 /// SDKがfutureを破棄してもリースを取り消す。監視taskを要求の外へ残さない。
+pub(super) async fn run_write<T>(
+    context: &rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    future: impl Future<Output = Result<T, rmcp::ErrorData>>,
+) -> Result<T, rmcp::ErrorData> {
+    let Some(lease) = request_authorization_from_context(context) else {
+        return future.await;
+    };
+    let guard = lease.request_cancellation.clone().drop_guard();
+    tokio::pin!(future);
+    tokio::select! {
+        biased;
+        result = &mut future => {
+            guard.disarm();
+            return result;
+        },
+        _ = context.ct.cancelled() => lease.cancel_request(),
+        _ = lease.request_cancelled() => {},
+        _ = lease.authorization_cancelled() => {},
+        _ = time::sleep_until(lease.request_deadline()) => lease.cancel_request(),
+    }
+    // 書き込み側に取消を観測させ、送信境界・表示IDを持つ結果を返す。
+    future.await
+}
+
+/// 読み取り要求は取消時に待機futureを破棄する。
 pub(super) async fn run<T>(
     context: &rmcp::service::RequestContext<rmcp::service::RoleServer>,
     future: impl Future<Output = Result<T, rmcp::ErrorData>>,

@@ -154,10 +154,34 @@ impl BridgeFacade {
         method: &str,
         params: Option<serde_json::Map<String, Value>>,
     ) -> Result<Value, BackendError> {
-        let request = build_request(allocate_request_id(&self.next_request_id), method, params)?;
+        self.send_tracked_mcp(lease, method, params, None).await
+    }
+
+    /// 書き込みを送る直前から応答検証までを、結果不明として追跡する。
+    pub(crate) async fn send_tracked_mcp(
+        &self,
+        lease: &BridgeLease,
+        method: &str,
+        params: Option<serde_json::Map<String, Value>>,
+        execution: Option<&crate::edit_service::mcp::McpExecution>,
+    ) -> Result<Value, BackendError> {
+        let request = build_request(allocate_request_id(&self.next_request_id), method, params)
+            .inspect_err(|_| {
+                if let Some(execution) = execution {
+                    execution.not_sent();
+                }
+            })?;
+        if let Some(execution) = execution {
+            execution.started();
+        }
         match lease.handle.request(request, REQUEST_TIMEOUT).await {
             Ok(ResponsePayload::Result(value)) => Ok(value),
-            Ok(ResponsePayload::Error(error)) => Err(error.into()),
+            Ok(ResponsePayload::Error(error)) => {
+                if let Some(execution) = execution {
+                    execution.rejected();
+                }
+                Err(error.into())
+            }
             Err(error) => Err(error.into()),
         }
     }

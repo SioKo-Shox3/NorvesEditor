@@ -1935,6 +1935,40 @@ describe('useBridgeActions — undo/redo IPCと実行中ガード', () => {
   beforeEach(() => { vi.clearAllMocks(); });
   afterEach(() => { vi.restoreAllMocks(); });
 
+  it('MCP起源の値編集をCtrl+Zで共通履歴のundoへ渡す', async () => {
+    const updated = makeHistorySummary({ canRedo: true, redoHeadId: 42, redoRevision: 9 });
+    (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {
+      if (cmd === BRIDGE_COMMANDS.editUndo) return Promise.resolve({ accepted: true, appliedValue: false });
+      if (cmd === BRIDGE_COMMANDS.editGetHistory) return Promise.resolve(updated);
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+    const { result } = renderHook(() => {
+      useUndoRedoKeybindings();
+      return useActionHook();
+    }, { wrapper });
+    await act(async () => {
+      seedHistory(result.current.dispatch, makeHistorySummary({
+        canUndo: true, undoHeadId: 42, undoRevision: 8,
+        undoGroup: { id: 'edit-7-42', name: '値を設定', source: 'mcp', count: 1, createdAt: 1 },
+      }));
+      seedPropertySnapshot(result.current.dispatch, 'n-1', 'visible', true);
+    });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+    });
+    expect(tauriCore.invoke).toHaveBeenCalledWith(BRIDGE_COMMANDS.editUndo, { expectedHeadId: 42, expectedRevision: 8 });
+    expect(tauriCore.invoke).not.toHaveBeenCalledWith(BRIDGE_COMMANDS.objectSetProperty, expect.anything());
+    await act(async () => {
+      result.current.dispatch({ type: 'editApplied', payload: {
+        operation: 'setProperty', objectId: 'n-1', property: 'visible', value: false,
+        newId: null, source: 'ui', groupId: 'edit-7-42', generation: 7, sequence: 43,
+        historyRevision: 9, appliedRevision: 12,
+      } });
+    });
+    expect(result.current.state.objectSnapshot?.properties[0]?.value).toBe(false);
+    expect(result.current.state.editHistorySummary?.canRedo).toBe(true);
+  });
+
   it('undo/redoは履歴要約の先頭IDと改訂をTauriへ渡す', async () => {
     const updated = makeHistorySummary({ canUndo: false, canRedo: true, redoHeadId: 53, redoRevision: 9 });
     (tauriCore.invoke as Mock).mockImplementation((cmd: string) => {

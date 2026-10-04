@@ -62,6 +62,7 @@ mod request_lifetime;
 pub mod runtime;
 pub(crate) mod thumbnail;
 pub(crate) mod tool_catalog;
+pub(crate) mod writes;
 
 use authorization::{
     McpWriteOperation, McpWritePermit, McpWritePolicySnapshot, McpWriteSettings, ScopeError,
@@ -524,6 +525,16 @@ pub struct McpHttpServer {
 }
 
 impl McpHttpServer {
+    #[cfg(test)]
+    pub(crate) fn test_with_reads(
+        listener: TcpListener,
+        auth: Arc<McpHttpAuth>,
+        reads: reads::McpReadContext,
+    ) -> Self {
+        let port = listener.local_addr().expect("試験用ポートがある").port();
+        Self::from_listener_with_reads(listener, port, auth, StreamPolicy::default(), reads)
+    }
+
     /// IPv4 loopback だけにバインドする。
     pub async fn bind(port: u16, auth: Arc<McpHttpAuth>) -> io::Result<Self> {
         if port == 0 {
@@ -1773,6 +1784,10 @@ impl ServerHandler for McpServerHandler {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        if matches!(self, Self::ReadTools(_)) && writes::is_implemented_write(&request.name) {
+            return request_lifetime::run_write(&context, self.call_tool_inner(request, &context))
+                .await;
+        }
         request_lifetime::run(&context, self.call_tool_inner(request, &context)).await
     }
 }
@@ -1808,26 +1823,18 @@ impl McpServerHandler {
             .arguments
             .map(Value::Object)
             .unwrap_or_else(|| Value::Object(Map::new()));
-        if reads.get_tool(&request.name).is_none() {
-            if !reads.is_hidden_write_tool(&request.name) {
-                return Err(rmcp::ErrorData::method_not_found::<CallToolRequestMethod>());
-            }
-            let Some(request_lease) = request_authorization_from_context(context) else {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(
-                    "MCP要求の認証リースがありません。",
-                )])
-                .into());
-            };
-            return match reads
-                .authorize_hidden_write_attempt(&request_lease, &request.name, &arguments)
+        if writes::is_implemented_write(&request.name) {
+            return Ok(reads
+                .call_write_tool(
+                    &request.name,
+                    arguments,
+                    request_authorization_from_context(context),
+                )
                 .await
-            {
-                Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)]).into()),
-                Ok(_permit) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                    "この段階ではMCP書き込み道具を公開していません。",
-                )])
-                .into()),
-            };
+                .into());
+        }
+        if reads.get_tool(&request.name).is_none() {
+            return Err(rmcp::ErrorData::method_not_found::<CallToolRequestMethod>());
         }
         if request.name == "viewport_get_thumbnail" {
             return match reads.call_thumbnail_image(arguments).await {

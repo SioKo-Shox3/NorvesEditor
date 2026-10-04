@@ -368,7 +368,7 @@ M2 の共通規則:
 - notes: 先行 MCP-022。既存dockview方式へ登録する。main画面だけが承認する。JS dialog pluginを追加しない。実機レイアウト未確認は別記する。
 
 ## MCP-024: 許可を通した書き込み道具と実行制御を公開する
-- status: todo
+- status: done
 - done-when: NE12/NE13。値設定/create/duplicate/reparent/delete/component付け外し/undo/redo/play/pause/stopが共通列へ渡り、MCPからBridgeへ直接書かない。値設定は言語モデル起源の履歴に積まれ、UIのCtrl+Z相当のundoで戻る。read-only・拒否・確認未完了・能力なしは適用されない。runtimeは許可と操作結果を通り履歴へ積まない。process起動/終了・設定・asset.reloadManifest・任意ファイル道具が存在しない。通信断/timeoutの結果不明は拒否と区別し、自動再送禁止と表示用request IDを返す。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
