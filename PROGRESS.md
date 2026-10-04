@@ -4,6 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
+- MCP-022-B調査: rmcp 3.5.0の旧版取消通知→context.ctと、現行stateless通知の無視をコードで確認。期限試験に必要な依存機能が未有効であることを確認し、変更範囲の判断をblocked/MCP-022-B.mdへ記録した。実装は未完。
 - MCP-022-A: 確認brokerを追跡し、途中コードのDTO/import/receiver/ProtocolVersionと警告を修復。RAIIでfuture破棄・task中止を清掃し、承認/拒否/取消/期限/許可改訂/世代変更、16件上限、要求固有の一回承認、秘密ID非記録を試験した。取得/承認/拒否はmain限定、MCP道具には公開しない。read-onlyのdelete/component.remove/undo内delete拒否、承認後の旧値・対象・範囲・履歴改訂・undo先頭・delete履歴破棄影響の再照合、UI編集と終了の進行を確認。指定6ゲートはexit 0、cargo testは356単体と実mock1件成功。証拠 `.harness/runs/20261004-105014/verify-MCP-022-A-8.txt` / `-9.txt` / `-13.txt`〜`-16.txt`。
 - MCP-021: 起動時read-only、書き込み可/都度確認モード、設定改訂と接続世代による許可失効を検査。シーン部分木では対象・移動元親・作成先・複製先・削除部分木と削除親、履歴先頭まとまりの全記録を照合し、component所属の不明・衝突、未知ID/能力、範囲上限超過を拒否する。書き込み道具は未公開のまま。資産prefix許可はNE19まで対象外。fmt/clippy、IPC名、pnpm typecheckはexit 0。cargo testは同時実行時に既存の世代切替試験が1件失敗した後、単独再実行で331単体・14統合が成功。証拠 `.harness/runs/20261003-161248/verify-MCP-021-1.txt`、`-2.txt`、`-4.txt`〜`-6.txt`。初回失敗は `-3.txt`。
 - MCP-021差し戻し対応: 再接続直後の旧group handle拒否は、actorの処理順により未接続または認可失効で返るため、どちらの失効応答も許容する試験に修正。指定5ゲートはexit 0。cargo testは331単体・1実mock・14統合成功。起動時read-only、モード/設定改訂、再接続、対象範囲、履歴全記録、ノード・snapshot・byte・時間上限の試験も通過。証拠 `.harness/runs/20261003-161248/verify-MCP-021-7.txt`〜`verify-MCP-021-11.txt`。
@@ -51,7 +52,7 @@
 - MCP / 編集層の M2: 元の29タスクのうちMCP-001〜MCP-017とMCP-019〜MCP-021の20件は検証・評価PASS。MCP-022を確認broker/HTTP取消/列内再検証の3つに分け、実行単位は31件。元の完了条件はMCP-022に全て保持する。MCP-018は再検証失敗と評価未完了のためblockedで、確認処理のビルド復旧後に原因を調査して再開する。
 
 ## Next
-- 未完の最優先はMCP-022-B、次に元のMCP-022。MCP-022-Aは実装・指定検証を完了し、評価はランナーへ渡す。MCP-022の完成後はMCP-018を再開し、試験失敗の原因を直して指定検証と評価を通す。ユーザーは残る全タスクの完了まで継続を指示済み。自動的なstatus: doneへの変更や失敗記録の破棄はしない。
+- MCP-022-BはCargo.tomlへのTokio test-util追加を許可範囲に含める判断待ち。再開後に元のMCP-022へ進む。MCP-022-Aは実装・指定検証を完了し、評価はランナーへ渡す。MCP-022の完成後はMCP-018を再開し、試験失敗の原因を直して指定検証と評価を通す。ユーザーは残る全タスクの完了まで継続を指示済み。自動的なstatus: doneへの変更や失敗記録の破棄はしない。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -62,6 +63,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-04 MCP-022-B: paused time試験に必要なTokio test-utilがエディタcrateで無効。許可paths外のapps/editor/src-tauri/Cargo.tomlにdev-dependency機能追加が必要なためBLOCKED。未検証の実装差分は撤回し、TASKSのtodoは維持。開始の集約ゲートexit 0。依存機能とSDK実装の証拠・再開案はblocked/MCP-022-B.mdに記録。
 - 2026-10-04 MCP-022-A: 保存出力を開いて6ゲートの成功を確認。`NORVES_ENGINE_PATH`に既存mock実行ファイルを明示し、実mock試験は0.52秒で成功。process_e2eは14エントリ成功だがNorvesLib用opt-inは未実行。画面操作は未実施。確認期限は120秒と要求残時間の小さい方、許可改訂は旧要求を取消し、新しい要求で新IDを発行する。元のMCP-022の列内再検証・開始済み結果保全とMCP-022-BのHTTP要求寿命は未完のまま。
 - 2026-10-04 MCP-022-A修復記録: WebView2依存を含む画面通知taskの生成を`new_with_app`へ分離し、単体試験のSTATUS_ENTRYPOINT_NOT_FOUNDを解消。確認試験ではBridge世代通知の送信側を保持する。既存HTTP切断試験の現行版要求が400で失敗したため別AIへ相談し、必須_meta/Mcp-Method/Mcp-Nameを補い、現行版はセッションIDを付けない試験入力へ修復。製品HTTP取消の拡張は行っていない。相談証拠 `.harness/runs/20261004-105014/advisor-MCP-022-A.txt`。開始済みactorの認証失効試験の意味は変更していない。
 - 2026-10-04: ユーザーの継続指示を受け、停止/完了をこのスレッドへ報告する15分のheartbeatを設定した（automationId: norveseditor、設定メモは.harness/mcp-completion-follow-up.json）。元のrun 20261003-161248はMCP-022の2回の40分超過で停止し、attemptsはMCP-022=2/MCP-018=3、MCP-018の評価差戻しは1回。この履歴と証拠を保持する。別AIへ相談し、確認brokerのdrop時の残留、列内permit未配線、認証失効時の実行済みfuture破棄、SDK要求ID取消未配線を確認した。相談ログは.harness/mcp-completion-advisor.log。MCP-022-A/Bと元MCP-022へ契約を分配し、元の全完了条件は縮めない。実装はAstra/xhighへ昇格し、評価はランナーの別AIが行う。既存の取消試験とNE13の衝突は、開始済みの結果を保全するNE13を優先して修正する。
