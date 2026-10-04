@@ -159,8 +159,15 @@ impl McpReadContext {
     ) -> Result<McpWritePermit, String> {
         let operation = McpWriteOperation::from_bridge_method(method, params)
             .map_err(|error| error.message().to_owned())?;
-        self.authorize_operation(request_lease, method, method, params.clone(), operation, None)
-            .await
+        self.authorize_operation(
+            request_lease,
+            method,
+            method,
+            params.clone(),
+            operation,
+            None,
+        )
+        .await
     }
 
     /// 非公開の書き込み道具への直接呼び出しもschema・権限・範囲を検査する。
@@ -184,15 +191,8 @@ impl McpReadContext {
         };
         let operation = McpWriteOperation::from_bridge_method(method, &params)
             .map_err(|error| error.message().to_owned())?;
-        self.authorize_operation(
-            request_lease,
-            name,
-            method,
-            params,
-            operation,
-            None,
-        )
-        .await
+        self.authorize_operation(request_lease, name, method, params, operation, None)
+            .await
     }
 
     /// MCP undo/redoの先頭まとまりに含まれる全記録を検査してpermitを返す。
@@ -231,7 +231,6 @@ impl McpReadContext {
             .authorization
             .as_ref()
             .ok_or_else(|| "MCP書き込みの認証状態がありません。".to_owned())?;
-        let requires_confirmation = operation.requires_confirmation();
         let confirmation_broker = authorization.confirmations();
         let mut operation = operation;
         if let Some(current_history) = history_snapshot.as_ref() {
@@ -241,6 +240,7 @@ impl McpReadContext {
                 operation = McpWriteOperation::History(current);
             }
         }
+        let requires_confirmation = operation.requires_confirmation();
         let mut review = self
             .resolve_authorization_review(
                 request_lease,
@@ -262,12 +262,7 @@ impl McpReadContext {
                 )
                 .map_err(|error| error.message().to_owned())?;
             authorization
-                .validate_write_permit(
-                    &permit,
-                    request_lease,
-                    review.generation,
-                    &review.operation,
-                )
+                .validate_write_permit(&permit, request_lease, review.generation, &review.operation)
                 .map_err(|error| error.message().to_owned())?;
             return Ok(permit);
         }
@@ -306,7 +301,9 @@ impl McpReadContext {
                     return Err("HTTP要求が終了したため、この操作は取り下げられました。".to_owned());
                 }
                 ConfirmationResult::GenerationChanged => {
-                    return Err("Bridge接続が切り替わったため、この操作は取り下げられました。".to_owned());
+                    return Err(
+                        "Bridge接続が切り替わったため、この操作は取り下げられました。".to_owned(),
+                    );
                 }
                 ConfirmationResult::Unavailable => {
                     return Err("確認待ちを受け付けられませんでした。".to_owned());
@@ -353,12 +350,7 @@ impl McpReadContext {
                 )
                 .map_err(|error| error.message().to_owned())?;
             authorization
-                .validate_write_permit(
-                    &permit,
-                    request_lease,
-                    review.generation,
-                    &review.operation,
-                )
+                .validate_write_permit(&permit, request_lease, review.generation, &review.operation)
                 .map_err(|error| error.message().to_owned())?;
             return Ok(permit);
         }
@@ -397,8 +389,8 @@ impl McpReadContext {
 
         let mut scope_values = Vec::new();
         let mut tree = None;
-        let show_confirmation = requires_confirmation
-            || policy.settings.mode == crate::mcp::McpWriteMode::Confirm;
+        let show_confirmation =
+            requires_confirmation || policy.settings.mode == crate::mcp::McpWriteMode::Confirm;
         let needs_tree = !matches!(operation, McpWriteOperation::RuntimeControl)
             || policy.settings.scene_root_id.is_some();
         if needs_tree {
@@ -427,11 +419,7 @@ impl McpReadContext {
                 if show_confirmation {
                     if let Some(snapshot_id) = confirmation_snapshot_id(&operation) {
                         let snapshot = self
-                            .read_confirmation_snapshot(
-                                &bridge_lease,
-                                &mut budget,
-                                snapshot_id,
-                            )
+                            .read_confirmation_snapshot(&bridge_lease, &mut budget, snapshot_id)
                             .await?;
                         scope_values.push(snapshot);
                     }
@@ -453,7 +441,8 @@ impl McpReadContext {
             .check_write_preflight(request_lease, &policy)
             .map_err(|error| error.message().to_owned())?;
         let history_snapshot = self.history_source.as_ref().map(|source| source());
-        let preview = make_confirmation_preview(&operation, method, params, tree.as_ref(), &scope_values)?;
+        let preview =
+            make_confirmation_preview(&operation, method, params, tree.as_ref(), &scope_values)?;
         Ok(AuthorizationReview {
             policy,
             generation,
@@ -602,8 +591,8 @@ impl McpReadContext {
                     engine_error_as_data(error)
                 )
             })?;
-        let bytes = parse_scope_snapshot_bytes(&snapshot)
-            .map_err(|error| error.message().to_owned())?;
+        let bytes =
+            parse_scope_snapshot_bytes(&snapshot).map_err(|error| error.message().to_owned())?;
         budget
             .add_bytes(bytes)
             .map_err(|error| error.message().to_owned())?;
@@ -1073,7 +1062,7 @@ fn make_confirmation_preview(
     scope_values: &[Value],
 ) -> Result<ConfirmationPreview, String> {
     let mut target_ids = Vec::new();
-    let mut target_count = 0;
+    let mut target_count;
     let mut before = None;
     let mut after = None;
     let mut source = None;
@@ -1086,13 +1075,15 @@ fn make_confirmation_preview(
             let property = params.get("property").and_then(Value::as_str);
             before = scope_values
                 .iter()
-                .find(|snapshot| snapshot.get("objectId").and_then(Value::as_str) == Some(object_id))
+                .find(|snapshot| {
+                    snapshot.get("objectId").and_then(Value::as_str) == Some(object_id)
+                })
                 .and_then(|snapshot| snapshot.get("properties"))
                 .and_then(Value::as_array)
                 .and_then(|entries| {
-                    entries.iter().find(|entry| {
-                        entry.get("name").and_then(Value::as_str) == property
-                    })
+                    entries
+                        .iter()
+                        .find(|entry| entry.get("name").and_then(Value::as_str) == property)
                 })
                 .and_then(|entry| entry.get("value"))
                 .cloned();
@@ -1115,7 +1106,9 @@ fn make_confirmation_preview(
             target_ids.push(object_id.clone());
             target_ids.extend(new_parent_id.iter().cloned());
             target_count = 1;
-            before = tree.and_then(|value| find_tree_node(value, object_id)).cloned();
+            before = tree
+                .and_then(|value| find_tree_node(value, object_id))
+                .cloned();
             after = Some(json!({
                 "source": before,
                 "parentId": new_parent_id,
@@ -1136,7 +1129,9 @@ fn make_confirmation_preview(
             undo_available = true;
         }
         McpWriteOperation::Delete { object_id } => {
-            before = tree.and_then(|value| find_tree_node(value, object_id)).cloned();
+            before = tree
+                .and_then(|value| find_tree_node(value, object_id))
+                .cloned();
             if let Some(node) = before.as_ref() {
                 collect_tree_ids(node, &mut target_ids);
             } else {
@@ -1158,7 +1153,9 @@ fn make_confirmation_preview(
             target_count = 1;
             before = scope_values
                 .iter()
-                .find(|snapshot| snapshot.get("objectId").and_then(Value::as_str) == Some(component_id))
+                .find(|snapshot| {
+                    snapshot.get("objectId").and_then(Value::as_str) == Some(component_id)
+                })
                 .cloned();
         }
         McpWriteOperation::RuntimeControl => {
@@ -1204,7 +1201,9 @@ fn make_confirmation_preview(
                             }
                             crate::mcp::authorization::McpHistoryDirection::Redo => {
                                 before_values.push(Value::Null);
-                                after_values.push(json!({"sourceObjectId":source_object_id,"parentId":parent_id}));
+                                after_values.push(
+                                    json!({"sourceObjectId":source_object_id,"parentId":parent_id}),
+                                );
                             }
                         }
                     }
@@ -1242,8 +1241,12 @@ fn make_confirmation_preview(
                                 (old_value, new_value)
                             }
                         };
-                        before_values.push(json!({"objectId":object_id,"property":property,"value":old_value}));
-                        after_values.push(json!({"objectId":object_id,"property":property,"value":new_value}));
+                        before_values.push(
+                            json!({"objectId":object_id,"property":property,"value":old_value}),
+                        );
+                        after_values.push(
+                            json!({"objectId":object_id,"property":property,"value":new_value}),
+                        );
                     }
                 }
             }
@@ -1923,6 +1926,7 @@ impl PagingError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::authorization::McpHistoryDirection;
     use norves_bridge_core::{
         decode_typed, encode_envelope, BridgeError, CapabilityDescriptor, Envelope, ErrorCode,
         ResponsePayload, ValidatedEnvelope, VersionString,
@@ -1984,6 +1988,39 @@ mod tests {
         serde_json::from_value(json!({"name":name})).expect("capability descriptor")
     }
 
+    async fn next_confirmation(
+        updates: &mut tokio::sync::watch::Receiver<Vec<McpConfirmationRequestDto>>,
+        previous: Option<&str>,
+    ) -> McpConfirmationRequestDto {
+        timeout(
+            Duration::from_secs(2),
+            updates.wait_for(|pending| {
+                pending
+                    .first()
+                    .is_some_and(|request| Some(request.id.as_str()) != previous)
+            }),
+        )
+        .await
+        .expect("確認待ちへ到達する")
+        .expect("確認通知を受信する")[0]
+            .clone()
+    }
+
+    fn undo_create_action() -> McpHistoryAction {
+        McpHistoryAction {
+            direction: McpHistoryDirection::Undo,
+            head_id: 5,
+            revision: 12,
+            group_name: "作成したオブジェクト".to_owned(),
+            source: crate::edit_service::EditSource::Ui,
+            records: vec![crate::edit_service::HistoryRecord::Create {
+                created_id: "node-1".to_owned(),
+                parent_id: None,
+                kind: Some("object".to_owned()),
+            }],
+        }
+    }
+
     fn test_context(
         generation: u64,
         handle: DispatchHandle,
@@ -1998,7 +2035,10 @@ mod tests {
         handle: DispatchHandle,
         capabilities: &[&str],
         logs: Arc<StdMutex<LogBuffer>>,
-    ) -> (McpReadContext, crate::bridge_state::BridgeSessionTestControl) {
+    ) -> (
+        McpReadContext,
+        crate::bridge_state::BridgeSessionTestControl,
+    ) {
         let (bridge, session) = crate::bridge_state::test_edit_facade(generation, handle);
         let catalog = McpToolCatalog::default();
         let capabilities = capabilities
@@ -2054,7 +2094,7 @@ mod tests {
             &[],
             Arc::new(StdMutex::new(LogBuffer::default())),
         )
-        .with_authorization(authorization);
+        .with_authorization(authorization.clone());
 
         for (name, arguments) in [
             (
@@ -2072,6 +2112,14 @@ mod tests {
                 .expect_err("read-onlyでは削除・取り外しを拒否する");
             assert!(error.contains("読み取り専用"), "{name}: {error}");
         }
+        let action = undo_create_action();
+        let current = action.clone();
+        let error = context
+            .authorize_history(&lease, action, move || Some(current.clone()))
+            .await
+            .expect_err("read-onlyではundo内deleteも拒否する");
+        assert!(error.contains("読み取り専用"));
+        assert!(authorization.confirmations().pending().is_empty());
         assert!(timeout(Duration::from_millis(100), peer.recv())
             .await
             .is_err());
@@ -2079,7 +2127,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn confirm_mode_requires_the_future_approval_flow_and_sends_no_bridge_write() {
+    async fn confirm_mode_waits_for_approval_and_sends_no_bridge_write() {
         let (transport, mut peer) = loopback_pair(8);
         let handle = Dispatcher::spawn(transport);
         let authorization = McpAuthorization::default();
@@ -2090,24 +2138,33 @@ mod tests {
             })
             .expect("都度確認モードへ変更する");
         let lease = authorization.current_lease();
-        let context = test_context(
+        let (context, _session) = test_context_with_session(
             75,
             handle.clone(),
-            &["object.edit", "object.query", "scene.query"],
+            &["runtime.control"],
             Arc::new(StdMutex::new(LogBuffer::default())),
-        )
-        .with_authorization(authorization);
+        );
+        let context = context.with_authorization(authorization.clone());
 
-        assert!(context.get_tool("object_set_property").is_none());
-        let error = context
-            .authorize_hidden_write_attempt(
-                &lease,
-                "object_set_property",
-                &json!({"params":{"objectId":"node","property":"visible","value":true}}),
+        assert!(context.get_tool("runtime_play").is_none());
+        let params = json!({});
+        let mut pending = Box::pin(context.authorize_write(&lease, "runtime.play", &params));
+        crate::mcp::confirmation::tests::poll_pending(pending.as_mut()).await;
+        let broker = authorization.confirmations();
+        let id = broker.pending()[0].id.clone();
+        assert!(broker.approve(&id));
+        let permit = pending.await.expect("承認後にpermitを返す");
+        assert!(authorization
+            .validate_write_permit(&permit, &lease, 75, &McpWriteOperation::RuntimeControl)
+            .is_ok());
+        assert!(authorization
+            .validate_write_permit(
+                &permit,
+                &authorization.current_lease(),
+                75,
+                &McpWriteOperation::RuntimeControl
             )
-            .await
-            .expect_err("都度確認モードでは承認機能が無い間は拒否する");
-        assert!(error.contains("確認"));
+            .is_err());
         assert!(timeout(Duration::from_millis(100), peer.recv())
             .await
             .is_err());
@@ -2186,13 +2243,13 @@ mod tests {
             })
             .expect("都度確認へ変更する");
         let lease = authorization.current_lease();
-        let context = test_context(
+        let (context, _session) = test_context_with_session(
             77,
             handle.clone(),
             &["object.edit", "object.query", "scene.query"],
             Arc::new(StdMutex::new(LogBuffer::default())),
-        )
-        .with_authorization(authorization.clone());
+        );
+        let context = context.with_authorization(authorization.clone());
         let responder = tokio::spawn(async move {
             for old_value in [false, true] {
                 let (tree_id, tree_method, _) = next_request(&mut peer).await;
@@ -2246,10 +2303,7 @@ mod tests {
         assert_eq!(first.after, Some(json!(true)));
         assert!(authorization.confirmations().approve(&first.id));
 
-        updates.changed().await.expect("最初の確認を閉じる");
-        assert!(updates.borrow().is_empty());
-        updates.changed().await.expect("変更後の値で再確認する");
-        let second = updates.borrow()[0].clone();
+        let second = next_confirmation(&mut updates, Some(&first.id)).await;
         assert_eq!(second.before, Some(json!(true)));
         assert_eq!(second.after, Some(json!(true)));
         assert_ne!(first.id, second.id);
@@ -2274,13 +2328,13 @@ mod tests {
             })
             .expect("書き込み可へ変更する");
         let lease = authorization.current_lease();
-        let mut context = test_context(
+        let (context, _session) = test_context_with_session(
             80,
             handle.clone(),
             &["scene.edit", "scene.query"],
             Arc::new(StdMutex::new(LogBuffer::default())),
-        )
-        .with_authorization(authorization.clone());
+        );
+        let mut context = context.with_authorization(authorization.clone());
         context.history_source = Some(Arc::new(|| EditHistoryConfirmationSnapshot {
             generation: Some(80),
             history_revision: 12,
@@ -2300,6 +2354,16 @@ mod tests {
         };
         let current_action = action.clone();
         let current_history = move || Some(current_action.clone());
+        // 初回捕捉の後に先頭が変わっても、現在のundo内deleteから確認必須を判定する。
+        let mut stale_action = action;
+        stale_action.head_id = 4;
+        stale_action.revision = 11;
+        stale_action.records = vec![crate::edit_service::HistoryRecord::SetProperty {
+            object_id: "created-1".to_owned(),
+            property: "visible".to_owned(),
+            old_value: json!(false),
+            new_value: json!(true),
+        }];
         let responder = tokio::spawn(async move {
             let (id, method, _) = next_request(&mut peer).await;
             assert_eq!(method, "scene.getTree");
@@ -2319,14 +2383,20 @@ mod tests {
         let request_lease = lease.clone();
         let pending = tokio::spawn(async move {
             context
-                .authorize_history(&request_lease, action, current_history)
+                .authorize_history(&request_lease, stale_action, current_history)
                 .await
         });
-        updates.changed().await.expect("undo内deleteの確認を通知する");
+        updates
+            .changed()
+            .await
+            .expect("undo内deleteの確認を通知する");
         let confirmation = updates.borrow()[0].clone();
         assert_eq!(confirmation.method, "edit.history");
         assert_eq!(confirmation.target_ids, ["created-1"]);
-        assert_eq!(confirmation.before, Some(json!([{"objectId":"created-1","kind":"object"}])));
+        assert_eq!(
+            confirmation.before,
+            Some(json!([{"objectId":"created-1","kind":"object"}]))
+        );
         assert_eq!(confirmation.after, Some(json!([null])));
         assert_eq!(confirmation.source, Some(EditSourceDto::Ui));
         assert!(confirmation.undo_available);
@@ -2340,6 +2410,434 @@ mod tests {
             .expect_err("undo内deleteを拒否する");
         assert!(error.contains("拒否"));
         responder.await.expect("Bridge mockが完了する");
+    }
+
+    #[tokio::test]
+    async fn component_remove_requires_confirmation_even_when_writes_are_enabled() {
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let authorization = McpAuthorization::default();
+        authorization
+            .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                mode: crate::mcp::McpWriteMode::Enabled,
+                scene_root_id: None,
+            })
+            .expect("書き込み可にする");
+        let (context, _session) = test_context_with_session(
+            96,
+            handle.clone(),
+            &["scene.query", "object.query", "component.edit"],
+            Arc::new(StdMutex::new(LogBuffer::default())),
+        );
+        let context = context.with_authorization(authorization.clone());
+        let responder = tokio::spawn(async move {
+            let (id, method, _) = next_request(&mut peer).await;
+            assert_eq!(method, "scene.getTree");
+            peer.send(response_frame(
+                id,
+                json!({"root":{"id":"node-1","children":[]}}),
+            ))
+            .await
+            .expect("シーンを返す");
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, "object.getSnapshot");
+            assert_eq!(params.expect("所有者照会の引数")["objectId"], "node-1");
+            peer.send(response_frame(id, json!({"objectId":"node-1","properties":[],"components":[{"objectId":"component-1","kind":"Camera"}]})))
+                .await.expect("componentの所属を返す");
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, "object.getSnapshot");
+            assert_eq!(
+                params.expect("確認用snapshotの引数")["objectId"],
+                "component-1"
+            );
+            peer.send(response_frame(id, json!({"objectId":"component-1","properties":[{"name":"enabled","value":true}],"components":[]})))
+                .await.expect("削除前のcomponentを返す");
+            peer
+        });
+        let lease = authorization.current_lease();
+        let mut updates = authorization.confirmations().subscribe();
+        let pending = tokio::spawn(async move {
+            context
+                .authorize_hidden_write_attempt(
+                    &lease,
+                    "component_remove",
+                    &json!({"params":{"objectId":"component-1"}}),
+                )
+                .await
+        });
+        let confirmation = next_confirmation(&mut updates, None).await;
+        assert_eq!(confirmation.target_ids, ["component-1"]);
+        assert_eq!(
+            confirmation.before.as_ref().expect("削除前を表示する")["objectId"],
+            "component-1"
+        );
+        assert!(!confirmation.undo_available);
+        assert!(!pending.is_finished());
+        assert!(authorization.confirmations().reject(&confirmation.id));
+        assert!(pending
+            .await
+            .expect("確認拒否で終了する")
+            .expect_err("取り外しを拒否する")
+            .contains("拒否"));
+        let mut peer = responder.await.expect("確認照会を完了する");
+        assert!(timeout(Duration::from_millis(20), peer.recv())
+            .await
+            .is_err());
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn target_moved_out_of_scope_after_approval_is_rejected() {
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let authorization = McpAuthorization::default();
+        authorization
+            .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                mode: crate::mcp::McpWriteMode::Enabled,
+                scene_root_id: Some("allowed".to_owned()),
+            })
+            .expect("部分木だけ許可する");
+        let (context, _session) = test_context_with_session(
+            97,
+            handle.clone(),
+            &["scene.query", "scene.edit"],
+            Arc::new(StdMutex::new(LogBuffer::default())),
+        );
+        let context = context.with_authorization(authorization.clone());
+        let responder = tokio::spawn(async move {
+            for inside in [true, false] {
+                let (id, method, _) = next_request(&mut peer).await;
+                assert_eq!(method, "scene.getTree");
+                let node = json!({"id":"node-1","children":[]});
+                let children = if inside {
+                    json!([{"id":"allowed","children":[node]}])
+                } else {
+                    json!([{"id":"allowed","children":[]},node])
+                };
+                peer.send(response_frame(
+                    id,
+                    json!({"root":{"id":"scene","children":children}}),
+                ))
+                .await
+                .expect("移動前後のツリーを返す");
+            }
+            peer
+        });
+        let lease = authorization.current_lease();
+        let mut updates = authorization.confirmations().subscribe();
+        let pending = tokio::spawn(async move {
+            context
+                .authorize_write(&lease, "scene.deleteObject", &json!({"objectId":"node-1"}))
+                .await
+        });
+        let confirmation = next_confirmation(&mut updates, None).await;
+        assert!(authorization.confirmations().approve(&confirmation.id));
+        assert!(pending
+            .await
+            .expect("範囲再照合が終了する")
+            .expect_err("範囲外へ移動した対象は拒否する")
+            .contains("部分木の外"));
+        assert!(authorization.confirmations().pending().is_empty());
+        let mut peer = responder.await.expect("再照会を完了する");
+        assert!(timeout(Duration::from_millis(20), peer.recv())
+            .await
+            .is_err());
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn changed_delete_targets_or_history_require_a_fresh_confirmation() {
+        for change in [
+            "targets",
+            "history_revision",
+            "undo_head",
+            "history_generation",
+        ] {
+            let (transport, mut peer) = loopback_pair(8);
+            let handle = Dispatcher::spawn(transport);
+            let authorization = McpAuthorization::default();
+            authorization
+                .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                    mode: crate::mcp::McpWriteMode::Enabled,
+                    scene_root_id: None,
+                })
+                .expect("書き込み可にする");
+            let history = Arc::new(StdMutex::new(EditHistoryConfirmationSnapshot {
+                generation: Some(91),
+                history_revision: 3,
+                undo_head_id: Some(2),
+            }));
+            let source = history.clone();
+            let (context, _session) = test_context_with_session(
+                91,
+                handle.clone(),
+                &["scene.query", "scene.edit"],
+                Arc::new(StdMutex::new(LogBuffer::default())),
+            );
+            let context = context
+                .with_authorization(authorization.clone())
+                .with_history_source(Arc::new(move || *source.lock().expect("履歴を読む")));
+            let initial_tree =
+                json!({"root":{"id":"scene","children":[{"id":"node-1","children":[]}]}});
+            let changed_tree = if change == "targets" {
+                json!({"root":{"id":"scene","children":[{"id":"node-1","children":[{"id":"child","children":[]}]}]}})
+            } else {
+                initial_tree.clone()
+            };
+            let responder = tokio::spawn(async move {
+                for tree in [initial_tree, changed_tree.clone(), changed_tree] {
+                    let (id, method, _) = next_request(&mut peer).await;
+                    assert_eq!(method, "scene.getTree");
+                    peer.send(response_frame(id, tree))
+                        .await
+                        .expect("対象範囲を返す");
+                }
+                peer
+            });
+            let lease = authorization.current_lease();
+            let pending_lease = lease.clone();
+            let mut updates = authorization.confirmations().subscribe();
+            let pending = tokio::spawn(async move {
+                context
+                    .authorize_write(
+                        &pending_lease,
+                        "scene.deleteObject",
+                        &json!({"objectId":"node-1"}),
+                    )
+                    .await
+            });
+            let first = next_confirmation(&mut updates, None).await;
+            assert!(first.clears_history);
+            {
+                let mut history = history.lock().expect("確認中のUI履歴更新を反映する");
+                match change {
+                    "history_revision" => history.history_revision += 1,
+                    "undo_head" => history.undo_head_id = Some(4),
+                    "history_generation" => history.generation = Some(92),
+                    _ => {}
+                }
+            }
+            assert!(authorization.confirmations().approve(&first.id));
+            let second = next_confirmation(&mut updates, Some(&first.id)).await;
+            assert!(!authorization.confirmations().approve(&first.id));
+            assert!(second.clears_history);
+            match change {
+                "targets" => {
+                    assert_eq!(second.target_count, 2);
+                    assert!(second.target_ids.contains(&"child".to_owned()));
+                }
+                "history_revision" => assert_eq!(second.history_revision, 4),
+                "undo_head" => assert_eq!(second.undo_head_id, Some(4)),
+                "history_generation" => assert_eq!(second.history_generation, Some(92)),
+                _ => unreachable!(),
+            }
+            assert!(authorization.confirmations().approve(&second.id));
+            let permit = pending
+                .await
+                .expect("再確認が終了する")
+                .expect("変更後の状態にpermitを発行する");
+            let operation = McpWriteOperation::Delete {
+                object_id: "node-1".to_owned(),
+            };
+            assert!(authorization
+                .validate_write_permit(&permit, &lease, 91, &operation)
+                .is_ok());
+            assert!(authorization
+                .validate_write_permit(&permit, &authorization.current_lease(), 91, &operation)
+                .is_err());
+            let mut peer = responder.await.expect("再照会を完了する");
+            assert!(timeout(Duration::from_millis(20), peer.recv())
+                .await
+                .is_err());
+            handle.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_undo_head_revision_or_target_requires_reconfirmation() {
+        for change in ["head", "revision", "target"] {
+            let (transport, mut peer) = loopback_pair(8);
+            let handle = Dispatcher::spawn(transport);
+            let authorization = McpAuthorization::default();
+            authorization
+                .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                    mode: crate::mcp::McpWriteMode::Enabled,
+                    scene_root_id: None,
+                })
+                .expect("書き込み可にする");
+            let action = undo_create_action();
+            let current = Arc::new(StdMutex::new(action.clone()));
+            let source = current.clone();
+            let (context, _session) = test_context_with_session(
+                93,
+                handle.clone(),
+                &["scene.query", "scene.edit"],
+                Arc::new(StdMutex::new(LogBuffer::default())),
+            );
+            let context = context.with_authorization(authorization.clone());
+            let responder = tokio::spawn(async move {
+                for _ in 0..2 {
+                    let (id, method, _) = next_request(&mut peer).await;
+                    assert_eq!(method, "scene.getTree");
+                    peer.send(response_frame(
+                        id,
+                        json!({"root":{"id":"scene","children":[
+                            {"id":"node-1","children":[]},{"id":"node-2","children":[]}
+                        ]}}),
+                    ))
+                    .await
+                    .expect("undo対象を返す");
+                }
+                peer
+            });
+            let lease = authorization.current_lease();
+            let mut updates = authorization.confirmations().subscribe();
+            let pending = tokio::spawn(async move {
+                context
+                    .authorize_history(&lease, action, move || {
+                        Some(source.lock().expect("現在の履歴を読む").clone())
+                    })
+                    .await
+            });
+            let first = next_confirmation(&mut updates, None).await;
+            {
+                let mut action = current.lock().expect("undo先頭を更新する");
+                match change {
+                    "head" => action.head_id += 1,
+                    "revision" => action.revision += 1,
+                    "target" => {
+                        action.records = vec![crate::edit_service::HistoryRecord::Create {
+                            created_id: "node-2".to_owned(),
+                            parent_id: None,
+                            kind: Some("object".to_owned()),
+                        }]
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            assert!(authorization.confirmations().approve(&first.id));
+            let second = next_confirmation(&mut updates, Some(&first.id)).await;
+            if change == "target" {
+                assert_eq!(second.target_ids, ["node-2"]);
+            }
+            assert!(authorization.confirmations().reject(&second.id));
+            assert!(pending
+                .await
+                .expect("再確認拒否で終了する")
+                .expect_err("古い確認を流用しない")
+                .contains("拒否"));
+            responder.await.expect("履歴再照会を完了する");
+            handle.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_scope_withdraws_old_approval_and_new_request_gets_a_new_id() {
+        use crate::mcp::confirmation::tests::poll_pending;
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let authorization = McpAuthorization::default();
+        authorization
+            .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                mode: crate::mcp::McpWriteMode::Enabled,
+                scene_root_id: None,
+            })
+            .expect("書き込み可にする");
+        let (context, _session) = test_context_with_session(
+            94,
+            handle.clone(),
+            &["scene.query", "scene.edit"],
+            Arc::new(StdMutex::new(LogBuffer::default())),
+        );
+        let context = context.with_authorization(authorization.clone());
+        let responder = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (id, method, _) = next_request(&mut peer).await;
+                assert_eq!(method, "scene.getTree");
+                peer.send(response_frame(
+                    id,
+                    json!({"root":{"id":"scene","children":[{"id":"node-1","children":[]}]}}),
+                ))
+                .await
+                .expect("許可範囲内の対象を返す");
+            }
+            peer
+        });
+        let lease = authorization.current_lease();
+        let params = json!({"objectId":"node-1"});
+        let mut first_request =
+            Box::pin(context.authorize_write(&lease, "scene.deleteObject", &params));
+        let mut updates = authorization.confirmations().subscribe();
+        let first = tokio::select! {
+            result = &mut first_request => panic!("確認前に終了した: {result:?}"),
+            request = next_confirmation(&mut updates, None) => request,
+        };
+        assert!(authorization.confirmations().approve(&first.id));
+        authorization
+            .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                mode: crate::mcp::McpWriteMode::Enabled,
+                scene_root_id: Some("scene".to_owned()),
+            })
+            .expect("許可範囲を改訂する");
+        assert!(first_request.await.is_err());
+        assert!(authorization.confirmations().pending().is_empty());
+        let lease = authorization.current_lease();
+        let mut second_request =
+            Box::pin(context.authorize_write(&lease, "scene.deleteObject", &params));
+        let second = tokio::select! {
+            result = &mut second_request => panic!("新しい確認前に終了した: {result:?}"),
+            request = next_confirmation(&mut updates, Some(&first.id)) => request,
+        };
+        assert!(!authorization.confirmations().approve(&first.id));
+        poll_pending(second_request.as_mut()).await;
+        assert!(authorization.confirmations().reject(&second.id));
+        assert!(second_request
+            .await
+            .expect_err("新しい確認を拒否する")
+            .contains("拒否"));
+        responder.await.expect("範囲再照会を完了する");
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn mcp_catalog_and_direct_calls_do_not_expose_confirmation_commands() {
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let context = test_context(
+            95,
+            handle.clone(),
+            &[
+                "scene.query",
+                "scene.edit",
+                "object.query",
+                "component.edit",
+            ],
+            Arc::new(StdMutex::new(LogBuffer::default())),
+        );
+        for permission in [
+            WritePermission::ReadOnly,
+            WritePermission::Enabled,
+            WritePermission::Confirm,
+        ] {
+            context.set_write_permission(permission);
+            for name in [
+                "get_mcp_confirmations",
+                "approve_mcp_confirmation",
+                "reject_mcp_confirmation",
+            ] {
+                assert!(!context.list_tools().iter().any(|tool| tool.name == name));
+                assert!(context.get_tool(name).is_none());
+                assert!(!context.is_hidden_write_tool(name));
+                assert!(context
+                    .call_tool(name, json!({"confirmationId":"untrusted"}))
+                    .await
+                    .is_err());
+            }
+        }
+        assert!(timeout(Duration::from_millis(20), peer.recv())
+            .await
+            .is_err());
+        handle.shutdown().await;
     }
 
     #[tokio::test]

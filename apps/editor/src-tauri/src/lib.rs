@@ -62,11 +62,8 @@ pub fn run() {
                     .with_history_source(history_source),
             );
             app.manage(edit_service);
-            let mcp_runtime = McpRuntime::new_with_app(
-                config_dir,
-                authorization,
-                app.handle().clone(),
-            );
+            let mcp_runtime =
+                McpRuntime::new_with_app(config_dir, authorization, app.handle().clone());
             app.manage(mcp_runtime.clone());
             tauri::async_runtime::spawn(async move {
                 mcp_runtime.initialize().await;

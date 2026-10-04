@@ -326,7 +326,7 @@ M2 の共通規則:
 - notes: 先行 MCP-020。この段ではwrite道具を公開しない。資産のprefix許可はNE19まで実装せず範囲外として記録する。Tauriセキュリティの評価・本文必須。再接続後の古いまとまりハンドルは未接続または認可失効として拒否する。
 
 ## MCP-022-A: 確認brokerの寿命とmain画面の承認境界を閉じる
-- status: todo
+- status: done
 - done-when: NE13の列外部分。途中のconfirmation.rsを追跡し、試験DTO/型import/可変receiver/ProtocolVersionの所有権を修復してHEADだけでテストをビルドできる。確認登録は承認/拒否/120秒/要求取消/許可改訂/世代変更/future破棄で必ず消える。future破棄はRAIIで清掃し、16件の上限、一回限りで要求固有の承認、取消と拒否の区別、秘密IDの非記録を試験する。取得/承認/拒否はmain画面だけが使え、MCPに承認道具を公開しない。read-onlyでdelete/component.remove/undo内部deleteを拒否し、書き込み可でも確認必須。承認後に列外で旧値/対象/範囲/許可改訂/undo先頭ID/履歴改訂/delete履歴破棄影響を照合し、変更なら新しい確認IDで再確認する。確認待ち中もUI編集と終了が進み、終了で待機を取り下げる。
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml --no-run`
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`

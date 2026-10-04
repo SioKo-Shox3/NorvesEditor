@@ -7,9 +7,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    dto::{
-        McpConfirmationRequestDto, McpServerStateDto, McpSettingsPayload, McpTokenPayload,
-    },
+    dto::{McpConfirmationRequestDto, McpServerStateDto, McpSettingsPayload, McpTokenPayload},
     error::BackendError,
     mcp::{reads::McpReadContext, McpAuthorization, McpHttpAuth, McpHttpServer, McpWriteMode},
     mcp_settings::{McpSettings, McpSettingsError},
@@ -78,19 +76,50 @@ impl McpRuntime {
         authorization: McpAuthorization,
         app: AppHandle,
     ) -> Self {
+        let confirmation_events = Self::start_confirmation_events(&authorization, app);
         Self::build(
             config_dir,
             authorization,
             McpReadContext::default_context(),
-            Some(app),
+            Some(confirmation_events),
         )
+    }
+
+    fn start_confirmation_events(
+        authorization: &McpAuthorization,
+        app: AppHandle,
+    ) -> ConfirmationEventTask {
+        let mut updates = authorization.confirmations().subscribe();
+        let shutdown = CancellationToken::new();
+        let task_shutdown = shutdown.clone();
+        let task = tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = task_shutdown.cancelled() => break,
+                    changed = updates.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let pending = updates.borrow_and_update().clone();
+                        if let Err(error) = app.emit_to(
+                            tauri::EventTarget::webview_window("main"),
+                            events::MCP_CONFIRMATIONS_CHANGED,
+                            pending,
+                        ) {
+                            tracing::warn!(error = %error, "MCP確認待ちの画面通知に失敗しました");
+                        }
+                    }
+                }
+            }
+        });
+        ConfirmationEventTask { shutdown, task }
     }
 
     fn build(
         config_dir: PathBuf,
         authorization: McpAuthorization,
         reads: Option<McpReadContext>,
-        app: Option<AppHandle>,
+        confirmation_events: Option<ConfirmationEventTask>,
     ) -> Self {
         let _ = authorization.set_write_settings(McpWriteSettings::default());
         if let Some(reads) = &reads {
@@ -106,32 +135,6 @@ impl McpRuntime {
                 true,
             ),
         };
-        let confirmation_events = app.map(|app| {
-            let mut updates = authorization.confirmations().subscribe();
-            let shutdown = CancellationToken::new();
-            let task_shutdown = shutdown.clone();
-            let task = tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = task_shutdown.cancelled() => break,
-                        changed = updates.changed() => {
-                            if changed.is_err() {
-                                break;
-                            }
-                            let pending = updates.borrow_and_update().clone();
-                            if let Err(error) = app.emit_to(
-                                tauri::EventTarget::webview_window("main"),
-                                events::MCP_CONFIRMATIONS_CHANGED,
-                                pending,
-                            ) {
-                                tracing::warn!(error = %error, "MCP確認待ちの画面通知に失敗しました");
-                            }
-                        }
-                    }
-                }
-            });
-            ConfirmationEventTask { shutdown, task }
-        });
         Self {
             inner: Arc::new(McpRuntimeInner {
                 config_dir,
@@ -241,7 +244,9 @@ impl McpRuntime {
     /// main画面が表示できる承認待ちだけを返す。
     pub async fn pending_confirmations(
         &self,
+        window_label: &str,
     ) -> Result<Vec<McpConfirmationRequestDto>, BackendError> {
+        require_main_confirmation_window(window_label)?;
         let control = self.inner.control.lock().await;
         if control.closing {
             return Err(runtime_stopping_error());
@@ -252,9 +257,11 @@ impl McpRuntime {
     /// 一度だけ使える要求固有IDを承認または拒否する。
     pub async fn decide_confirmation(
         &self,
+        window_label: &str,
         id: &str,
         approved: bool,
     ) -> Result<(), BackendError> {
+        require_main_confirmation_window(window_label)?;
         let control = self.inner.control.lock().await;
         if control.closing {
             return Err(runtime_stopping_error());
@@ -519,8 +526,8 @@ fn require_trusted_window(window: &WebviewWindow) -> Result<(), BackendError> {
     }
 }
 
-fn require_main_confirmation_window(window: &WebviewWindow) -> Result<(), BackendError> {
-    if is_main_confirmation_window(window.label()) {
+fn require_main_confirmation_window(label: &str) -> Result<(), BackendError> {
+    if is_main_confirmation_window(label) {
         Ok(())
     } else {
         Err(BackendError::Request {
@@ -565,8 +572,7 @@ pub async fn get_mcp_confirmations(
     window: WebviewWindow,
     runtime: State<'_, McpRuntime>,
 ) -> Result<Vec<McpConfirmationRequestDto>, BackendError> {
-    require_main_confirmation_window(&window)?;
-    runtime.pending_confirmations().await
+    runtime.pending_confirmations(window.label()).await
 }
 
 #[tauri::command]
@@ -575,8 +581,9 @@ pub async fn approve_mcp_confirmation(
     runtime: State<'_, McpRuntime>,
     confirmation_id: String,
 ) -> Result<(), BackendError> {
-    require_main_confirmation_window(&window)?;
-    runtime.decide_confirmation(&confirmation_id, true).await
+    runtime
+        .decide_confirmation(window.label(), &confirmation_id, true)
+        .await
 }
 
 #[tauri::command]
@@ -585,8 +592,9 @@ pub async fn reject_mcp_confirmation(
     runtime: State<'_, McpRuntime>,
     confirmation_id: String,
 ) -> Result<(), BackendError> {
-    require_main_confirmation_window(&window)?;
-    runtime.decide_confirmation(&confirmation_id, false).await
+    runtime
+        .decide_confirmation(window.label(), &confirmation_id, false)
+        .await
 }
 
 #[tauri::command]
@@ -634,6 +642,155 @@ mod tests {
     impl Drop for TestDirectory {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn only_main_can_read_approve_or_reject_a_confirmation_and_shutdown_withdraws_it() {
+        use crate::mcp::confirmation::{
+            tests::{poll_pending, request},
+            ConfirmationResult,
+        };
+
+        let directory = TestDirectory::new();
+        let authorization = McpAuthorization::default();
+        let runtime = McpRuntime::new(directory.0.clone(), authorization.clone());
+        let broker = authorization.confirmations();
+        for approved in [true, false] {
+            let lease = authorization.current_lease();
+            let mut pending = Box::pin(broker.request(request(), &lease, std::future::pending()));
+            poll_pending(pending.as_mut()).await;
+            let id = broker.pending()[0].id.clone();
+            for label in [
+                "settings",
+                "game",
+                "Main",
+                "main-child",
+                "",
+                "https://localhost",
+            ] {
+                assert!(runtime.pending_confirmations(label).await.is_err());
+                for decision in [true, false] {
+                    assert!(runtime
+                        .decide_confirmation(label, &id, decision)
+                        .await
+                        .is_err());
+                }
+                assert_eq!(broker.pending().len(), 1);
+            }
+            assert_eq!(
+                runtime
+                    .pending_confirmations("main")
+                    .await
+                    .expect("mainが取得する")[0]
+                    .id,
+                id
+            );
+            runtime
+                .decide_confirmation("main", &id, approved)
+                .await
+                .expect("mainが判断する");
+            assert_eq!(
+                pending.await,
+                if approved {
+                    ConfirmationResult::Approved
+                } else {
+                    ConfirmationResult::Rejected
+                }
+            );
+            let error = runtime
+                .decide_confirmation("main", &id, approved)
+                .await
+                .expect_err("二度目を拒否する");
+            assert!(!error.to_string().contains(&id));
+            assert!(!format!("{error:?}").contains(&id));
+        }
+
+        let lease = authorization.current_lease();
+        let mut pending = Box::pin(broker.request(request(), &lease, std::future::pending()));
+        poll_pending(pending.as_mut()).await;
+        tokio::time::timeout(Duration::from_secs(1), runtime.shutdown())
+            .await
+            .expect("確認待ち中も終了する");
+        assert_eq!(pending.await, ConfirmationResult::Cancelled);
+        assert!(broker.pending().is_empty());
+        assert!(runtime.pending_confirmations("main").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn confirmation_lifecycle_does_not_write_secret_ids_to_logs() {
+        use crate::mcp::confirmation::tests::{poll_pending, request};
+        use std::io::Write;
+        use tracing::instrument::WithSubscriber;
+
+        #[derive(Clone)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0
+                    .lock()
+                    .expect("ログを捕捉する")
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let capture = Capture(Arc::default());
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || writer.clone())
+            .finish();
+        let secrets = async {
+            let directory = TestDirectory::new();
+            let authorization = McpAuthorization::default();
+            let runtime = McpRuntime::new(directory.0.clone(), authorization.clone());
+            let broker = authorization.confirmations();
+            let mut secrets = Vec::new();
+            for outcome in 0..5 {
+                let mut lease = authorization.current_lease();
+                if outcome == 4 {
+                    lease.set_request_deadline(
+                        tokio::time::Instant::now() + Duration::from_millis(20),
+                    );
+                }
+                let mut pending =
+                    Box::pin(broker.request(request(), &lease, std::future::pending()));
+                poll_pending(pending.as_mut()).await;
+                let id = broker.pending()[0].id.clone();
+                match outcome {
+                    0 | 1 => runtime
+                        .decide_confirmation("main", &id, outcome == 0)
+                        .await
+                        .expect("確認に回答する"),
+                    2 => lease.cancel_request(),
+                    3 => {
+                        authorization.revoke();
+                    }
+                    _ => {}
+                }
+                tracing::info!(result = ?pending.await, "確認要求が終了しました");
+                let error = runtime
+                    .decide_confirmation("main", &id, true)
+                    .await
+                    .expect_err("使用済みIDを拒否する");
+                tracing::warn!(error = ?error, "確認に回答できませんでした");
+                secrets.push(id);
+            }
+            runtime.shutdown().await;
+            secrets
+        }
+        .with_subscriber(subscriber)
+        .await;
+        let bytes = capture.0.lock().expect("捕捉ログを読む").clone();
+        let log = String::from_utf8(bytes).expect("ログはUTF-8");
+        assert!(log.contains("確認要求が終了しました"));
+        for secret in secrets {
+            assert!(!log.contains(&secret));
         }
     }
 

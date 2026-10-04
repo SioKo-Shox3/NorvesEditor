@@ -158,10 +158,7 @@ impl McpAuthorization {
         }
         McpRequestLease {
             revision,
-            request_id: self
-                .inner
-                .next_request_id
-                .fetch_add(1, Ordering::Relaxed),
+            request_id: self.inner.next_request_id.fetch_add(1, Ordering::Relaxed),
             authorization_cancellation,
             request_cancellation: CancellationToken::new(),
             deadline: Instant::now() + WRITE_REQUEST_TIMEOUT,
@@ -1350,15 +1347,14 @@ async fn authenticate_and_limit(
     let connection = remote.and_then(|remote| state.registry.get(remote));
     let is_head_request = parts.method == Method::HEAD;
     let body_deadline = request_started + WRITE_REQUEST_TIMEOUT;
-    let body =
-        match time::timeout_at(body_deadline, to_bytes(body, MAX_REQUEST_BODY_BYTES)).await {
-            Ok(Ok(body)) => body,
-            Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
-            Err(_) => {
-                auth_lease.cancel_request();
-                return StatusCode::REQUEST_TIMEOUT.into_response();
-            }
-        };
+    let body = match time::timeout_at(body_deadline, to_bytes(body, MAX_REQUEST_BODY_BYTES)).await {
+        Ok(Ok(body)) => body,
+        Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        Err(_) => {
+            auth_lease.cancel_request();
+            return StatusCode::REQUEST_TIMEOUT.into_response();
+        }
+    };
     let is_write_request = parts.method == Method::POST && contains_write_tool_call(&body);
     let request_deadline = request_started
         + if is_write_request {
@@ -2040,28 +2036,45 @@ mod tests {
         client: &reqwest::Client,
         url: &str,
         token: &str,
-        session: &str,
+        session: Option<&str>,
         protocol_version: ProtocolVersion,
     ) -> reqwest::Response {
+        let mut params = serde_json::json!({"name":"engine_get_status", "arguments":{}});
+        if protocol_version == ProtocolVersion::V_2026_07_28 {
+            params["_meta"] = serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": protocol_version.as_str(),
+                "io.modelcontextprotocol/clientCapabilities": {}
+            });
+        }
         let body = serde_json::to_vec(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": {
-                "name": "engine_get_status",
-                "arguments": {}
-            }
+            "params": params
         }))
         .expect("試験用 tools/call を作る");
-        client
+        let mut builder = client
             .post(url)
             .bearer_auth(token)
-            .header("Mcp-Session-Id", session)
             .header("Mcp-Protocol-Version", protocol_version.as_str())
             .header(ACCEPT, "application/json, text/event-stream")
             .header(CONTENT_TYPE, "application/json")
-            .body(body)
-            .send()
+            .body(body);
+        if let Some(session) = session {
+            builder = builder.header("Mcp-Session-Id", session);
+        }
+        if protocol_version == ProtocolVersion::V_2026_07_28 {
+            builder = builder
+                .header("Mcp-Method", "tools/call")
+                .header("Mcp-Name", "engine_get_status");
+        }
+        let request = builder.build().expect("試験用HTTP要求を構築する");
+        assert_eq!(
+            request.headers().contains_key("Mcp-Session-Id"),
+            protocol_version == ProtocolVersion::V_2025_11_25
+        );
+        client
+            .execute(request)
             .await
             .expect("確認待ちの tools/call を送る")
     }
@@ -2588,10 +2601,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_legacy_and_current_http_requests_cancels_their_request_leases() {
-        for protocol_version in [
-            ProtocolVersion::V_2025_11_25,
-            ProtocolVersion::V_2026_07_28,
-        ] {
+        for protocol_version in [ProtocolVersion::V_2025_11_25, ProtocolVersion::V_2026_07_28] {
             let directory = TestTokenDirectory::new();
             let token = directory.create();
             let token_value = token.expose();
@@ -2600,10 +2610,7 @@ mod tests {
             let catalog = tool_catalog::McpToolCatalog::default();
             catalog.set_connection(Some(1), &[]);
             let server = RunningServer::start_with_handler(
-                Arc::new(McpHttpAuth::with_authorization(
-                    token,
-                    authorization,
-                )),
+                Arc::new(McpHttpAuth::with_authorization(token, authorization)),
                 normal_policy(),
                 McpServerHandler::CancellationProbe {
                     catalog,
@@ -2615,26 +2622,35 @@ mod tests {
                 .pool_max_idle_per_host(0)
                 .build()
                 .expect("切断試験クライアントを作る");
-            let session = initialize_session_for(
-                &client,
-                &server,
-                &token_value,
-                protocol_version,
-            )
-            .await;
+            let session = if protocol_version == ProtocolVersion::V_2025_11_25 {
+                Some(
+                    initialize_session_for(
+                        &client,
+                        &server,
+                        &token_value,
+                        protocol_version.clone(),
+                    )
+                    .await,
+                )
+            } else {
+                None
+            };
             let request_client = client.clone();
             let request_url = server.url();
             let request_token = token_value.clone();
             let request_session = session.clone();
             let request = tokio::spawn(async move {
-                let _response = post_probe_tool_call(
+                let response = post_probe_tool_call(
                     &request_client,
                     &request_url,
                     &request_token,
-                    &request_session,
+                    request_session.as_deref(),
                     protocol_version,
                 )
                 .await;
+                let status = response.status();
+                let body = response.text().await.expect("HTTP試験応答を読む");
+                panic!("取消前にHTTP試験要求が終了しました: {status} {body}");
             });
             let lease = time::timeout(Duration::from_secs(2), leases_rx.recv())
                 .await

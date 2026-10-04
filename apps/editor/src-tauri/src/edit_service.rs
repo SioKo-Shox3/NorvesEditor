@@ -196,7 +196,7 @@ impl EditTicket {
             queue_state,
         } = self;
         let outcome = tokio::time::timeout_at(deadline, result).await;
-        if let Err(_) = &outcome {
+        if outcome.is_err() {
             let _ = queue_state.compare_exchange(
                 TICKET_WAITING,
                 TICKET_CANCELLED,
@@ -3462,6 +3462,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn confirmation_wait_keeps_the_ui_queue_and_shutdown_available() {
+        use crate::mcp::{
+            authorization::McpWriteSettings, log_buffer::LogBuffer, reads::McpReadContext,
+            thumbnail::McpThumbnailService, tool_catalog::McpToolCatalog, McpWriteMode,
+        };
+
+        let authorization = McpAuthorization::default();
+        authorization
+            .set_write_settings(McpWriteSettings {
+                mode: McpWriteMode::Confirm,
+                scene_root_id: None,
+            })
+            .expect("都度確認に切り替える");
+        let (service, _control, handle, _peer) =
+            test_service_with_peer_and_authorization(1, authorization.clone());
+        let catalog = McpToolCatalog::default();
+        catalog.set_connection(
+            Some(1),
+            &[
+                serde_json::from_value(serde_json::json!({"name":"runtime.control"}))
+                    .expect("実行制御の能力を作る"),
+            ],
+        );
+        let context = McpReadContext::new(
+            service.bridge.clone(),
+            catalog,
+            Arc::new(StdMutex::new(LogBuffer::default())),
+            McpThumbnailService::default(),
+        )
+        .with_authorization(authorization.clone())
+        .with_history_source(service.confirmation_history_source());
+        let lease = authorization.current_lease();
+        let broker = authorization.confirmations();
+        let mut updates = broker.subscribe();
+        let pending = tokio::spawn(async move {
+            context
+                .authorize_write(&lease, "runtime.play", &serde_json::json!({}))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), updates.changed())
+            .await
+            .expect("確認待ちへ到達する")
+            .expect("確認を通知する");
+        let id = updates.borrow()[0].id.clone();
+        assert!(service.history_lock_available());
+        let edit = service
+            .enqueue_from_ui(EditKind::Edit, |_| async {
+                success(serde_json::json!({"accepted":true}))
+            })
+            .expect("確認待ち中もUI編集を受け付ける");
+        tokio::time::timeout(Duration::from_secs(1), edit.result())
+            .await
+            .expect("承認せずにUI編集が完了する")
+            .expect("UI編集が成功する");
+        assert_eq!(service.history_summary().applied_revision, 1);
+        assert_eq!(broker.pending()[0].id, id);
+        tokio::time::timeout(Duration::from_secs(1), service.shutdown())
+            .await
+            .expect("確認待ち中も編集actorが終了する");
+        authorization.revoke();
+        assert!(pending.await.expect("確認要求が終了する").is_err());
+        assert!(broker.pending().is_empty());
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn mcp_request_deadline_cancels_an_edit_before_the_actor_starts_it() {
         let authorization = McpAuthorization::default();
         let (service, _control, handle, mut peer) =
@@ -3494,9 +3560,11 @@ mod tests {
         release.send(()).expect("先行要求を解放する");
         blocker.result().await.expect("先行要求が完了する");
         assert!(!ran.load(Ordering::Acquire));
-        assert!(tokio::time::timeout(Duration::from_millis(100), peer.recv())
-            .await
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), peer.recv())
+                .await
+                .is_err()
+        );
         service.shutdown().await;
         handle.shutdown().await;
     }
@@ -3524,7 +3592,7 @@ mod tests {
             started = started_rx => started.expect("最初の操作が開始する"),
         }
 
-        let (next_started, next_started_rx) = oneshot::channel();
+        let (next_started, mut next_started_rx) = oneshot::channel();
         let next = service
             .enqueue_from_ui(EditKind::Edit, move |_| async move {
                 let _ = next_started.send(());
@@ -3535,12 +3603,19 @@ mod tests {
             .await
             .expect("要求期限で結果を返す")
             .expect_err("開始済み操作の期限切れを結果不明として返す");
-        assert!(matches!(timeout_error, BackendError::Request { ref message }
-            if message.contains("結果は不明") && message.contains("自動再送せず")));
-        assert!(matches!(next_started_rx.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+        assert!(
+            matches!(timeout_error, BackendError::Request { ref message }
+            if message.contains("結果は不明") && message.contains("自動再送せず"))
+        );
+        assert!(matches!(
+            next_started_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
 
         release.send(()).expect("Bridge結果を返す");
-        next.result().await.expect("Bridge結果確認後に次の操作が進む");
+        next.result()
+            .await
+            .expect("Bridge結果確認後に次の操作が進む");
         assert!(next_started_rx.try_recv().is_ok());
         assert_eq!(service.history_summary().applied_revision, 1);
         service.shutdown().await;
