@@ -594,6 +594,135 @@ mod writes_tests {
     }
 
     #[tokio::test]
+    async fn public_group_prequeue_denials_are_terminal() {
+        for name in ["edit_begin_group", "edit_end_group"] {
+            for reason in ["revoked", "noLease", "disconnected", "stopped", "full"] {
+                let auth = enabled_auth();
+                let (service, control, handle, mut peer) =
+                    test_service_with_peer_and_authorization(1, auth.clone());
+                let service = Arc::new(service);
+                let context = public_context(&service, ALL_CAPABILITIES);
+                let lease = auth.current_lease();
+                let mut release = None;
+                match reason {
+                    "revoked" => { auth.revoke(); }
+                    "disconnected" => control.disconnect(),
+                    "stopped" => service.shutdown().await,
+                    "full" => {
+                        let (sender, receiver) = oneshot::channel();
+                        let (started, start) = oneshot::channel();
+                        let _blocker = service.enqueue_from_ui(EditKind::Edit, move |_| async move {
+                            started.send(()).expect("先行操作を開始する");
+                            receiver.await.expect("先行操作を解放する");
+                            success(Value::Null)
+                        }).expect("先行操作を受け付ける");
+                        start.await.expect("先行操作が開始する");
+                        let _queued = service.enqueue_from_ui(EditKind::Edit, |_| async { success(Value::Null) })
+                            .expect("待ち列を埋める");
+                        release = Some(sender);
+                        // ticketを破棄しても、actorが取り出すまでは待ち列の容量を消費する。
+                    }
+                    _ => {}
+                }
+                let sequence = service.admission.lock().unwrap().next_sequence;
+                let args = if name == "edit_begin_group" {
+                    json!({"name":"拒否されるまとまり"})
+                } else {
+                    json!({"groupId":"owner-secret-must-not-be-recorded"})
+                };
+                let response = context.call_write_tool(name, args, (reason != "noLease").then_some(lease)).await;
+                assert_eq!(response.is_error, Some(true), "{name}/{reason}");
+                let payload = data(response);
+                assert_eq!(payload["outcome"], "notApplied", "{name}/{reason}");
+                assert_eq!(service.admission.lock().unwrap().next_sequence, sequence);
+                let record = context.operations.snapshot().records.pop().expect("拒否記録がある");
+                assert_eq!(record.request_id, payload["requestId"]);
+                assert_eq!(record.result, payload["operationResult"]);
+                assert_eq!(record.result, if matches!(reason, "revoked" | "noLease") { "rejected" } else { "failed" });
+                assert_eq!(record.outcome, "notApplied");
+                assert!(record.actor_finished, "{name}/{reason}");
+                assert_eq!(record.completed_count, 0);
+                assert!(!record.pending && !record.retry_allowed && !record.automatic_retry_allowed);
+                assert!(!serde_json::to_string(&record).unwrap().contains("owner-secret-must-not-be-recorded"));
+                if let Some(release) = release { release.send(()).expect("先行操作を解放する"); }
+                assert!(tokio::time::timeout(Duration::from_millis(10), peer.recv()).await.is_err());
+                service.shutdown().await;
+                handle.shutdown().await;
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queued_group_cancellation_waits_for_actor_and_preserves_terminal_result() {
+        for name in ["edit_begin_group", "edit_end_group"] {
+            for reason in ["cancelled", "dropped", "revoked", "deadline"] {
+                let auth = enabled_auth();
+                let (service, _control, handle, mut peer) =
+                    test_service_with_peer_and_authorization(8, auth.clone());
+                let service = Arc::new(service);
+                let context = public_context(&service, ALL_CAPABILITIES);
+                let operations = context.operations.clone();
+                let (release, released) = oneshot::channel();
+                let (started, start) = oneshot::channel();
+                let blocker = service.enqueue_from_ui(EditKind::Edit, move |_| async move {
+                    started.send(()).expect("先行操作を開始する");
+                    released.await.expect("先行操作の終了を待つ");
+                    success(Value::Null)
+                }).expect("先行操作を列へ入れる");
+                start.await.expect("先行操作が開始した");
+                let lease = auth.current_lease();
+                let caller_lease = lease.clone();
+                let args = if name == "edit_begin_group" {
+                    json!({"name":"列待ちのまとまり"})
+                } else {
+                    json!({"groupId":"queued-owner-secret"})
+                };
+                let task = tokio::spawn(async move {
+                    context.call_write_tool(name, args, Some(caller_lease)).await
+                });
+                wait_for_enqueued(&service).await;
+                match reason {
+                    "cancelled" => lease.cancel_request(),
+                    "dropped" => task.abort(),
+                    "revoked" => { auth.revoke(); }
+                    "deadline" => tokio::time::advance(Duration::from_secs(126)).await,
+                    _ => unreachable!(),
+                }
+                let response = task.await;
+                if reason == "dropped" {
+                    assert!(response.expect_err("呼出futureが終了する").is_cancelled());
+                } else {
+                    let response = response.expect("呼出元が終了する");
+                    assert_eq!(response.is_error, Some(true));
+                    let payload = data(response);
+                    assert_eq!(payload["outcome"], "notApplied");
+                    assert_eq!(payload["automaticRetryAllowed"], false);
+                }
+                let before = operations.snapshot().records.pop().expect("取消記録がある");
+                assert!(!before.actor_finished, "列待ち中はactorの確定を待つ: {name}/{reason}");
+                assert_eq!(before.outcome, "notApplied");
+                assert_eq!(before.result, match reason { "revoked" => "rejected", "deadline" => "timedOut", _ => "cancelled" });
+                release.send(()).expect("先行操作を解放する");
+                blocker.result().await.expect("先行操作が終わる");
+                service.enqueue_from_ui(EditKind::Edit, |_| async { success(Value::Null) })
+                    .expect("番兵を列へ入れる").result().await.expect("actorが確定する");
+                let after = operations.snapshot().records.pop().expect("確定結果がある");
+                assert_eq!(after.request_id, before.request_id);
+                assert_eq!(after.outcome, "notApplied");
+                assert_eq!(after.result, before.result);
+                assert!(after.actor_finished);
+                assert_eq!(after.completed_count, 0);
+                assert!(!after.pending && !after.retry_allowed && !after.automatic_retry_allowed);
+                assert!(!service.history.lock().unwrap().has_active_group());
+                assert!(!serde_json::to_string(&after).unwrap().contains("queued-owner-secret"));
+                assert!(tokio::time::timeout(Duration::from_millis(10), peer.recv()).await.is_err());
+                service.shutdown().await;
+                handle.shutdown().await;
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn runtime_with_explicit_scene_root_preserves_existing_history() {
         let auth = enabled_auth();
         auth.set_write_settings(McpWriteSettings {
@@ -649,7 +778,15 @@ mod writes_tests {
             let (service, _control, handle, mut peer) =
                 test_service_with_peer_and_authorization(8, auth.clone());
             let service = Arc::new(service);
-            let context = public_context(&service, ALL_CAPABILITIES);
+            let catalog = McpToolCatalog::default();
+            catalog.set_connection(Some(1), &ALL_CAPABILITIES.iter().map(|name| {
+                serde_json::from_value(json!({"name":name})).expect("能力を作る")
+            }).collect::<Vec<_>>());
+            let context = McpReadContext::new(
+                service.bridge.clone(), catalog.clone(),
+                Arc::new(StdMutex::new(LogBuffer::default())), McpThumbnailService::default(),
+            ).with_write_service(service.clone());
+            context.set_write_permission(WritePermission::Enabled);
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("試験HTTPをbindする");
@@ -666,8 +803,8 @@ mod writes_tests {
             let context = context.with_operations(operations.clone());
             let server = McpHttpServer::test_with_reads(
                 listener,
-                Arc::new(McpHttpAuth::with_authorization(token, auth)),
-                context,
+                Arc::new(McpHttpAuth::with_authorization(token, auth.clone())),
+                context.clone(),
             );
             let shutdown = CancellationToken::new();
             let server_task = tokio::spawn(server.serve(shutdown.clone()));
@@ -714,6 +851,12 @@ mod writes_tests {
                 let response: Value = serde_json::from_str(json_text).expect("応答を解析する");
                 let payload = &response["result"]["structuredContent"];
                 assert_eq!(payload["outcome"], expected, "{version}/{name}");
+                let record = operations.snapshot().records.pop().expect("制御の確定記録がある");
+                assert_eq!(record.request_id, payload["requestId"]);
+                assert_eq!(record.outcome, expected);
+                assert_eq!(record.result, if expected == "applied" { "success" } else { "rejected" });
+                assert!(record.actor_finished);
+                assert!(!record.automatic_retry_allowed);
                 if name == "edit_begin_group" {
                     group_id = payload["result"]["groupId"].clone();
                     assert_eq!(group_id.as_str().expect("秘密ID").len(), 64);
@@ -851,6 +994,68 @@ mod writes_tests {
             assert!(records[0].display_group_id.is_some());
             assert_eq!(records[0].display_group_id, records[1].display_group_id);
             assert!(!service.history_summary().can_undo);
+            for (case, reason) in ["invalid", "readOnly", "backendReadOnly", "unavailable"].into_iter().enumerate() {
+                context.set_write_permission(if reason == "readOnly" { WritePermission::ReadOnly } else { WritePermission::Enabled });
+                auth.set_write_settings(McpWriteSettings {
+                    mode: if reason == "backendReadOnly" { McpWriteMode::ReadOnly } else { McpWriteMode::Enabled },
+                    scene_root_id: None,
+                }).expect("拒否条件を設定する");
+                if reason == "unavailable" { catalog.set_connection(None, &[]); }
+                for (index, name) in ["edit_begin_group", "edit_end_group"].into_iter().enumerate() {
+                    // endは後片付けのため、サービスのReadOnly単独では拒否しない。
+                    if reason == "backendReadOnly" && name == "edit_end_group" { continue; }
+                    let sequence = service.admission.lock().unwrap().next_sequence;
+                    let arguments = if reason == "invalid" {
+                        json!({"unexpected":"confirmation-secret-must-not-be-recorded"})
+                    } else if name == "edit_begin_group" {
+                        json!({"name":"拒否されるまとまり"})
+                    } else {
+                        json!({"groupId":group_id})
+                    };
+                    let id = 100 + case * 2 + index;
+                    let mut body = json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+                    if version == "2026-07-28" {
+                        body["params"]["_meta"] = json!({"io.modelcontextprotocol/protocolVersion":version,"io.modelcontextprotocol/clientCapabilities":{}});
+                    }
+                    let mut request = client.post(&url).bearer_auth(&bearer)
+                        .header("Accept", "application/json, text/event-stream")
+                        .header("Mcp-Protocol-Version", version)
+                        .header("Mcp-Method", "tools/call")
+                        .header("Mcp-Name", name).json(&body);
+                    if let Some(session) = &session { request = request.header("Mcp-Session-Id", session); }
+                    let response = request.send().await.expect("拒否される制御をHTTPで呼ぶ");
+                    assert!(response.status().is_success());
+                    let text = response.text().await.expect("拒否応答を読む");
+                    let json_text = text.lines().filter_map(|line| line.strip_prefix("data: ")).find(|line| line.trim_start().starts_with('{')).unwrap_or(&text);
+                    let response: Value = serde_json::from_str(json_text).expect("拒否応答を解析する");
+                    assert_eq!(response["result"]["isError"], true, "{version}/{name}/{reason}");
+                    let payload = &response["result"]["structuredContent"];
+                    assert_eq!(payload["outcome"], "notApplied");
+                    assert_eq!(payload["operationResult"], "rejected");
+                    assert_eq!(payload["automaticRetryAllowed"], false);
+                    let detail = payload["detail"].as_str().expect("拒否理由がある");
+                    assert!(detail.contains(match reason {
+                        "invalid" => "schema", "readOnly" => "読み取り専用",
+                        "backendReadOnly" => "許可", "unavailable" => "接続", _ => unreachable!(),
+                    }), "{version}/{name}/{reason}: {detail}");
+                    assert_eq!(service.admission.lock().unwrap().next_sequence, sequence);
+                    let record = operations.snapshot().records.pop().expect("列前の拒否を記録する");
+                    assert_eq!(record.request_id, payload["requestId"]);
+                    assert_eq!(record.result, "rejected");
+                    assert_eq!(record.outcome, "notApplied");
+                    assert!(record.actor_finished, "{version}/{name}/{reason}");
+                    assert_eq!(record.completed_count, 0);
+                    assert!(record.display_group_id.is_none());
+                    assert!(!record.pending && !record.retry_allowed && !record.automatic_retry_allowed);
+                    let saved = std::fs::read_to_string(directory.join("mcp-operations.jsonl")).expect("列前拒否の保存を読む");
+                    let saved_record: Value = serde_json::from_str(saved.lines().last().expect("保存記録がある")).unwrap();
+                    assert_eq!(saved_record, serde_json::to_value(&record).unwrap());
+                    for secret in [&bearer, group_id.as_str().unwrap(), "confirmation-secret-must-not-be-recorded"] {
+                        assert!(!saved.contains(secret));
+                    }
+                    println!("MCP_GROUP_TERMINAL_OK {version} {name} {reason}");
+                }
+            }
             shutdown.cancel();
             server_task
                 .await

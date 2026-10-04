@@ -95,3 +95,27 @@ PowerShell 5.1でも日本語の道具応答・エラー文をUTF-8で保存す�
 - `redo_dependency_review_rechecks_scope_and_existing_values`: 既存対象の現在値と範囲の変化を列内で検出する。未再作成IDの現在値は保存値で代用しない。
 - `confirmed_mcp_redo_retries_dependencies_with_remapped_ids`: 確認承認後と列内で依存関係を検査し、先行作成成功後の値設定拒否から新IDを維持して再試行する。親変更・子作成・次のundoも新IDを使う。
 - `real_http_and_mock_share_production_services`: Discover / Initializeの各版で親作成→その親への複製→新IDの値設定→end→MCP undo/redo→UI undoを実行し、親ID・値設定対象IDの再採番を検査する。
+
+### まとまり制御の列前拒否と記録の終端（NE14 / MCP-030）
+
+`edit_begin_group` / `edit_end_group` は、制御ticketの発行前に拒否された場合も
+`outcome=notApplied` / `actorFinished=true` で記録を確定する。列へ入った制御の取消は
+actorの処理まで未確定とし、同じrequestIdへ後続結果を反映する。
+
+| 試験 | 検証内容 |
+|---|---|
+| `both_http_versions_dispatch_writes_and_return_structured_outcomes` | 両版HTTPのbegin/endで入力不正、ReadOnly、未接続による道具非公開と、beginのサービス側ReadOnlyを拒否。各版7ケースで受付番号が進まないこと、拒否理由、result/outcome/actorFinished、保存JSONLとの一致、トークン・秘密groupId・確認ID相当の入力値の非記録を検査する。正常begin/endと列内の再end拒否も確定済みとなる |
+| `public_group_prequeue_denials_are_terminal` | begin/endの許可失効、認証リースなし、Bridge未接続、受付停止、列満杯を公開道具入口から拒否。ticket未発行、未適用、確定済み、適用0件、保留なし、再送なし、Bridge送信なしを検査する |
+| `queued_group_cancellation_waits_for_actor_and_preserves_terminal_result` | begin/endの列待ち中に要求取消、呼出future破棄、許可失効、125秒期限超過を発生させる。actor処理前の未確定と処理後の同じIDへの確定、取消・拒否・期限の分類、未送信、自動再送禁止を検査する |
+| `cancelled_queued_public_write_stays_not_sent_when_actor_finishes` / `late_actor_result_replaces_unknown_and_cannot_be_overwritten_by_http` | 通常書き込みの列待ち取消と後続確定、およびHTTP側の遅い結果による確定記録の上書き防止を維持する |
+
+保存先は `.harness/runs/20261004-170201/`。次の出力を開いて成功を確認した。
+
+| コマンド | 保存出力 | 結果 |
+|---|---|---|
+| `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check` | `verify-MCP-030-2.txt` | exit 0 |
+| `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets --features mcp-e2e -- -D warnings` | `verify-MCP-030-3.txt` | exit 0 |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1` | `verify-MCP-030-4.txt` | exit 0。Rust単体407件、両版の実HTTP/実mock受入1件、実mockログ購読1件。SKIP/ignoredなし。`MCP_GROUP_TERMINAL_OK` は両版それぞれ7行 |
+
+まとまり関連21件の個別検証は `verify-MCP-030-1.txt`（exit 0）に保存した。
+画面への判定値はバックエンドの操作記録で検証しており、GUI実機の表示・操作は未確認。

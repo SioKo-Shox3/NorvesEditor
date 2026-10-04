@@ -26,8 +26,12 @@ struct WriteCapture(Arc<McpExecution>, bool);
 impl Drop for WriteCapture {
     fn drop(&mut self) {
         if !self.1 {
-            self.0
-                .record_result(false, Some(&BackendError::EditCancelled), false, None);
+            self.0.record_result(
+                false,
+                Some(&BackendError::EditCancelled),
+                self.0.never_queued(),
+                None,
+            );
         }
     }
 }
@@ -73,10 +77,12 @@ impl McpReadContext {
             .execute_write(name, arguments, lease, execution.clone())
             .await;
         // 列に入る前の確定拒否を、画面で「結果を確認中」と表示させない。
-        // まとまり制御には編集ticketがないため、そちらは制御actorの確定通知に任せる。
-        let no_actor =
-            execution.never_queued() && !matches!(name, "edit_begin_group" | "edit_end_group");
-        execution.record_result(result.is_ok(), result.as_ref().err(), no_actor, None);
+        execution.record_result(
+            result.is_ok(),
+            result.as_ref().err(),
+            execution.never_queued(),
+            None,
+        );
         capture.1 = true;
         write_result(&request_id, name, &execution, result)
     }

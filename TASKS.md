@@ -444,7 +444,7 @@ M2 の共通規則:
 - notes: 先行 MCP-001。別repo文書2本だけの変更をM1承認へ含める。MyWorkflowの合意を読み専用ブランチで編集・コミット・deployする。展開コピーの直接編集/mainコミット/push禁止。不可ならblockedにして他タスクを止めない。MyWorkflowのコミットも進捗へ記録する。
 
 ## MCP-030: 列へ入らなかったまとまり制御の拒否を確定表示する
-- status: todo
+- status: done
 - done-when: NE14。edit_begin_group/edit_end_groupの入力検証・ReadOnly・未接続・許可失効などにより制御の列へ入る前に拒否された要求は、記録の結果・適用状態・actorFinishedが確定済みとして整合し、画面で結果確認中のまま残らない。制御ticketを発行した要求と発行していない要求を型または明示的な状態で識別し、道具名だけで未確定を判断しない。制御列に入った要求の取消・終了・後続のactor確定、通常の編集・履歴・結果不明・自動再送禁止は保持する。秘密groupId/確認ID/トークンを記録しない。両版の公開道具経路で列前の拒否と記録の終端を検証し、queued制御の取消と確定の試験を通す。要件文書と試験対応表へ修正証拠を残す。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets --features mcp-e2e -- -D warnings`

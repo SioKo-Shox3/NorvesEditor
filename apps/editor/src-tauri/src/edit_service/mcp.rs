@@ -23,7 +23,7 @@ pub(crate) struct McpExecution {
 }
 
 impl McpExecution {
-    /// 編集ticketを発行していなければ、後から適用結果を返すactorは存在しない。
+    /// 編集・まとまり制御のticketを発行していなければ、後続のactor確定はない。
     pub(crate) fn never_queued(&self) -> bool {
         self.queue_state
             .lock()
@@ -346,10 +346,19 @@ impl EditService {
         if !lease.is_current() {
             return Err(BackendError::McpAuthorizationRevoked);
         }
+        let execution = match &control {
+            GroupControl::BeginNamed { execution, .. }
+            | GroupControl::EndNamed { execution, .. } => Some(execution.clone()),
+            _ => None,
+        };
         let (ticket, _, _) =
             self.enqueue_control_with_auth(EditSource::Mcp, Some(lease.clone()), |_, _| {
                 QueuedAction::Group(control)
             })?;
+        // 発行に成功した制御ticketだけを追跡し、取消後もactorの確定を待つ。
+        if let Some(execution) = execution {
+            execution.track_queue(ticket.queue_state.clone());
+        }
         ticket
             .outcome_until(lease.request_deadline())
             .await?
