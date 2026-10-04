@@ -335,6 +335,7 @@ mod writes_tests {
             let record = operations.snapshot().records.pop().expect("未送信の記録がある");
             assert_eq!(record.request_id, payload["requestId"]);
             assert_eq!(record.outcome, "notApplied");
+            assert!(record.actor_finished, "列へ入らない確定拒否は未確定表示にしない: {reason}");
             assert_eq!(record.result, if reason == "expired" { "timedOut" } else if reason == "cancelled" { "cancelled" } else { "rejected" });
             let detail = payload["detail"].as_str().expect("拒否理由がある");
             let expected = match reason {

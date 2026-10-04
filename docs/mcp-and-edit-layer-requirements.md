@@ -420,7 +420,7 @@ E4 の各作業は、NorvesLib のアダプタの作業（NorvesLib のロード
 - 設定は `app_config_dir/mcp-settings.json`。`enabled` は既定 `false`、`port` は既定49770で有効範囲は1〜65535。秘密は設定ファイルへ入れない。設定の読み書きは同じディレクトリの一時ファイルと原子的置換を使い、壊れた設定は既定値へ読み替えず起動を止める。トークンの表示形式はパディング無し URL-safe Base64 とし、Settings で明示的に表示・作り直せる。ログ・エラー・操作記録に含めない。作り直しは既存認証、確認待ち、開いたまとまりを無効化する。
 - `Authorization: Bearer` を全 MCP 要求で検証する。Origin が無い CLI は受け付け、存在する Origin は実際の MCP の origin との完全一致だけ許す。`null`、不正形式、外部ホストは403。Host も実際の `127.0.0.1:<port>` と照合する。広い CORS 許可を付けない。
 - axum と rmcp の両方で Origin / Host の許可値を明示する。rmcp の Origin 検証は既定で無効、Host の既定許可はポートを限定しないため、既定に依存しない。旧版の `legacy_session_mode` は明示的に有効とする。
-- HTTP 本体1 MiB、接続32本、実行中の通常要求16件、長寿命ストリーム8本に制限する。axum の body 制限と tokio の Semaphore / timeout で実装する。通常要求は30秒、確認を含む書き込みは要求全体125秒で打ち切る。確認は最大120秒だが、再照会・走査・列の待機も全体期限を消費し、120秒の承認時間を保証しない。要求全体のtimeoutを長寿命SSEへ適用しない。
+- HTTP 本体1 MiB、接続32本、実行中の通常要求16件、長寿命ストリーム8本に制限する。axum の body 制限と tokio の Semaphore / timeout で実装する。本文受信は30秒で打ち切り、受信完了後は通常要求30秒、確認を含む書き込み125秒を別に計る。確認は最大120秒だが、再照会・走査・列の待機も125秒の期限を消費し、120秒の承認時間を保証しない。要求全体のtimeoutを長寿命SSEへ適用しない。
 - 切断・timeout時は、列内でまだ始めていない要求を取消し、実行中は次の操作へ進まない。既に送ったBridge要求は最大5秒の結果を確認し、判明した適用を履歴と画面へ記録する。判明しない場合は結果不明として保留し、再送しない。HTTP応答の破棄とサービスの適用成功を同一視しない。
 - 現行版の `subscriptions/listen` と旧版の GET SSE は別枠で管理し、送受信のアイドル5分・最大寿命30分で閉じる。SDKのkeep-aliveだけではアイドルを延長しない。切断・期限後はクライアントが再購読し、一覧を取得し直す。再生成・無効化・ポート変更で両版のストリームと旧セッションを切断する。
 - 停止時は受付を閉じ、保留を拒否し、実行中のBridge要求とHTTPストリームをキャンセルする。非同期joinの猶予は2秒で、超過した所有タスクを中止してjoinする。Tauriの同期終了フックから無期限のblocking_lockを呼ばず、終了を延期してバックエンドの停止を完了してからexitする。世代の古い応答を新しい接続へ適用しない。
@@ -479,3 +479,44 @@ E4 の各作業は、NorvesLib のアダプタの作業（NorvesLib のロード
 主な推移依存は HTTP の `hyper` / `http-body` / `bytes` / `sse-stream`、SDK の `schemars` / `uuid` / `chrono` / `rand`、schema 検証の参照・正規表現・数値系、PNG の codec と圧縮系。正確な追加一覧は依存導入タスクで `cargo tree` と lock 差分から示す。追加の外部バイナリ・Tauri plugin・JS権限は不要。
 
 根拠: [rmcp の公開依存と機能](https://github.com/modelcontextprotocol/rust-sdk/blob/main/crates/rmcp/Cargo.toml)、[axum](https://docs.rs/crate/axum/0.8.9)、[jsonschema](https://docs.rs/jsonschema/0.58.4/jsonschema/)、[image の復号上限](https://docs.rs/image/0.25.10/image/struct.Limits.html)、[DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata)。
+
+## 12. E0〜E3 の受入と運用上の制限
+
+受入は未合格。作成/複製したIDへ値設定したまとまりは、undo後のMCP redoが認可時の旧ID照合で拒否される。
+MCP-028-Bで修正し、実HTTPの両版を含む全ゲートの成功を確認するまでMCP-028は完了としない。
+
+受入コマンドは `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`。
+既定の実行ファイルは `build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe` で、
+`-EnginePath` または `NORVES_ENGINE_PATH` でも指定できる。実在する実行ファイルを確認して環境へ設定し、
+`NORVES_MOCK_PROFILE=mcp-edit` で起動する。不存在・起動失敗・試験失敗・SKIP・ignored・必須証拠の欠落は非ゼロで終了する。
+Tauriワークスペースの単体試験と `mcp_e2e` / `mcp_reads` を実行する。版ごとの成功印だけでなく、
+境界試験の成功行も検査する。`scripts/verify.ps1 -Cpp` はC++と画面のvitest、IPC名の照合を含む。
+
+`mcp_e2e` は本番の `McpServices`、HTTP handler、Bridge接続/relay、編集actor、許可/確認、操作記録を使う。
+`HeadlessEditor` は通知先を画面の代わりにDTOへ向ける薄い受入用アダプタで、WebViewを起動しない。
+2026-07-28はDiscoverとlisten、2025-11-25はInitializeとpeer通知を実際に受信する。
+HTTPから作成したIDへの値設定を要求をまたぐまとまりへ入れ、一回undo/redoと次のUI undoで再採番を検査する。
+新規mockノードには初期プロパティがないため、作成した親の下へ既存ノードを複製し、その新IDのプロパティを編集する。旧値のないMCP値設定は拒否される。
+表示はエンジンのlive通知を使わず、編集サービスeventによるvitestで確認する。
+実機のdockview配置、狭い幅、別窓からの操作、WebViewを含むTauriコマンドの実操作は未確認。
+
+### 接続と許可
+
+- 現行stateless版ではクライアント別の要求ID空間がない。同じIDの実行中要求は後着が409となり、完了後の遅延取消が別クライアントの同じIDを取り消す場合がある。接続元間でも要求IDを重複させず、完了済み要求へ取消を送らない。旧版はセッションと数値/文字列IDを区別する。
+- Enabledでも、列待ち中に旧値・範囲・履歴改訂などが変われば改めて画面確認を求める。画面を見ていない場合は期限切れになる。許可変更は旧要求を取り下げ、同じ要求の再確認を継続しない。旧改訂の確認だけを取り下げるので、新改訂で登録された確認は保護される。
+- 確認コマンドはバックエンドでmainラベルを検査する。Tauri capabilityによる確認専用権限の追加分離は未対応。サーバー停止中はcontrol lockにより承認/拒否の受付が最大2秒待たされる。
+- 名前付きまとまりは128編集、無操作5分、全体15分で閉じる。同値が受理されただけでは無操作期限を延長しない。履歴に積まれた編集だけが延長する。切断、接続世代交替、許可失効、UI操作などの境界で旧groupIdは利用できなくなる。
+- 部分木取得の根の `parentId` はnullで、元のシーン上の親を返さない。cursorは世代固定で、再接続後は再取得が必要。旧世代の遅い読み取りがsnapshot storeの世代を戻し、現行cursorまで失効させる場合がある。古い結果は返さないが、有効だったページの取り直しが必要になる。
+
+### 適用結果と操作記録
+
+- `result` は要求の終了理由、`outcome` は確認できた適用結果を示す。未送信の `notApplied`、エンジンの確定拒否 `rejected`、確認済み `applied` / `partial`、結果不明 `unknown` を区別する。HTTP取消後にactorが確定した結果は、同じ表示用requestIdへ反映する。自動再送は行わない。
+- 通常書き込みの列に入る前の拒否は確定として記録する。`actorFinished` は後続actor結果を待たないことも含む。開始済みの取消/失効は結果確定まで未適用とは断言しない。送信直前の世代/認証変化が `unknown` になる安全側の分類が残り、履歴の不明印と一致しない場合がある。
+- 単発MCP undoの確定拒否も、完了0件の再試行可能な保留になる。通常UI編集と実行制御を止め、画面の状態確認・再試行・破棄から復旧する。破棄は適用済み変更を自動で戻さず、残存状態を通知する。
+- requestIdには起動ごとの乱数識別を含む。JSON-RPCのクライアント要求IDとは別で、再起動後も操作記録のIDを使い回さない。トークン、確認ID、所有者groupId、要求本文は記録しない。
+- 記録は読み取りと書き込みを合わせた最新500件。大量の読み取りで書き込みのリンク元が画面から押し出される。ファイルは1MiB×2世代で実行中にローテーションする。更新ごとに最大500件のsnapshotを通知し、async actor上で同期ファイル保存するため、高頻度利用の通知量と保存待ちが残る。
+- 一部の期限分類はエラー説明の「期限」/「timed out」に依存する。別の期限を含む拒否が `timedOut` になる場合と、列開始直前の期限切れが認証失効の説明になる場合がある。終了理由だけから適用の有無を推定せず、outcomeと履歴を確認する。
+- AIの操作パネルの許可エラーは確認パネルと重複表示される場合がある。undo道具の記録のリンクは取り消したまとまりを指し、そのまとまりがredoで先頭へ戻ると再度取り消せる。履歴の再取得が失敗した後はパネルを開き直すまでリンクを無効にする。
+- 旧来の `EditService::new_with_app` / `new_with_app_and_authorization`、既定読み取り文脈を使う組み立て入口は残る。本番と実mock受入は `McpServices::new` に統一されている。旧入口の整理は未対応。
+
+受入スクリプトはPowerShell 5.1でも標準出力をUTF-8へ明示的に揃える。

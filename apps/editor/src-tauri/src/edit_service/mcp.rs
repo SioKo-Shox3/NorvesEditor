@@ -23,6 +23,14 @@ pub(crate) struct McpExecution {
 }
 
 impl McpExecution {
+    /// 編集ticketを発行していなければ、後から適用結果を返すactorは存在しない。
+    pub(crate) fn never_queued(&self) -> bool {
+        self.queue_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none()
+    }
+
     pub(crate) fn with_operation(
         operation: crate::mcp::operations::OperationHandle,
         request_lease: Option<McpRequestLease>,

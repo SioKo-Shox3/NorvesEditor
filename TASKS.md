@@ -415,6 +415,15 @@ M2 の共通規則:
 - paths: apps/editor/src-tauri/Cargo.toml, apps/editor/src-tauri/Cargo.lock, apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/tests/mcp_e2e.rs, apps/editor/src-tauri/tests/mcp_reads.rs, scripts/verify-mcp-e2e.ps1
 - notes: 先行MCP-027。MCP-028で計画済みの製品入口切り出しを独立させたもので、新しい機能/依存は追加しない。manifest変更は既存依存のdev-only機能と試験用featureに限定する。Wryを除くサービス入口を本番アダプタからも使い、同じものを実mockへ接続する。最小の実経路の証明と所有権/寿命を閉じ、元のMCP-028の全done-when/verifyは後続で保持する。危険地帯の評価とコミット本文必須。
 
+## MCP-028-B: MCP redoの認可でまとまり内の依存IDを解決する
+- status: todo
+- done-when: MCP-028の実HTTP受入で見つかった、undoにより消えた作成/複製IDを後続の値設定/親変更/子作成が参照するとMCP redoの認可で拒否される不具合を修正する。再作成順の依存IDを識別し、同じまとまり内の先行Create/Duplicateが生成するIDだけを扱う。既存ID/未知ID/逆順の依存/範囲外の親・移動元・移動先は引き続き検査する。既存のcomponent所属/範囲/現在値の検査を丸ごと省略しない。承認後の列内再検証でも同じ解決規則を使い、通常undo、部分失敗/再試行、旧値変化の再確認を保つ。実HTTPでcreate→その親へのduplicate→新IDの値設定→end→MCP undo/redo→UI undoを両版で成功させ、親IDと値設定対象IDが再採番後のIDになることを確認する。
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets --features mcp-e2e -- -D warnings`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
+- paths: apps/editor/src-tauri/src/mcp/authorization.rs, apps/editor/src-tauri/src/mcp/reads.rs, apps/editor/src-tauri/src/edit_service/mcp.rs, apps/editor/src-tauri/src/edit_service/mcp_tests.rs, apps/editor/src-tauri/src/edit_service/groups_tests.rs, apps/editor/src-tauri/tests/mcp_e2e.rs, docs/mcp-and-edit-layer-requirements.md, docs/mcp-undo-test-mapping.md
+- notes: MCP-028の受入で検出。再現は.harness/runs/20261004-144511/acceptance-MCP-028-4.txt、相談はadvisor-MCP-028.txt。resolve_component_targets/check_history/履歴previewが未再作成の旧IDを現存対象として扱う。新規mockノードに初期プロパティが無いため、親作成→n-1をその親へ複製→複製IDのfieldOfViewを変更して再現する。MCP redoをUI redoへ置き換えたり試験を弱めたりしない。Bridge/SDK/mock/NorvesLib変更・新規依存は不要。危険地帯の評価はランナーが行う。修正後にMCP-028を再開して元のdone-when/verify全部を閉じる。
+
 ## MCP-028: モックと実 HTTP で E0〜E3 の受入試験を実行する
 - status: todo
 - done-when: NE07〜NE14。スクリプトがmock実行ファイルを確認してNORVES_ENGINE_PATHを設定し、MCP試験プロフィールと実HTTPクライアントを使う。無効/認証/Origin/Host/能力/2版の通知/ページング/ログ/画像/モード/範囲/必須確認/共通列/履歴/名前付きまとまり/部分失敗/再接続/トークン再生成/終了を試験し、SKIPがあれば非ゼロで終わる。表示はサービスイベントだけのvitestで確認する。全ゲートと実行ログが開かれ、評価されている。Discover/Initializeを明示し、現行listenとlegacy通知の実受信を確認する。
@@ -423,7 +432,7 @@ M2 の共通規則:
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
 - paths: apps/editor/src-tauri/Cargo.toml, apps/editor/src-tauri/Cargo.lock, apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/tests/mcp_e2e.rs, apps/editor/src-tauri/tests/mcp_reads.rs, scripts/verify-mcp-e2e.ps1, docs/mcp-and-edit-layer-requirements.md, docs/mcp-undo-test-mapping.md, docs/architecture.md, docs/adr/0010-backend-edit-service-and-history.md, docs/adr/0011-local-mcp-interface.md
-- notes: 先行 MCP-028-A。共通入口はAで切り出し済みのものを使い、元の全受入条件をこの反復で閉じる。追加pathsは共通入口と受入の検証に限定し、cfg(test)だけの別実装で合格にしない。manifest変更は既存依存のdev-only機能と受入の試験用featureに限り、新規crate/系列は追加しない。画面のコマンド/eventはvitestと名前照合で覆う。NorvesLib用e2eを起動しない。未確認の実機表示は明記し、全体確認済みとしない。新規不具合は別タスクとして記録し、受入契約を満たしてからdoneにする。NEXT_FINDINGSと.harness/mcp-review-follow-up-018.md / mcp-review-follow-up-022-B.md / mcp-review-follow-up-022.md / mcp-review-follow-up-024.md / mcp-review-follow-up-025.mdを照合し、修正済みの証拠か残る挙動・制限を文書と最終報告へ残す。特に現行版の複数クライアント間ID衝突、本文受信30秒と要求全体125秒、Enabledでの再確認、単発MCP undo拒否後の保留/破棄によるUI再開、未送信/拒否/結果不明の区別、書き込みのcancel通知後の応答と記録、本番actorの実mock経路、部分木parentId/cursor世代を確認する。実HTTPで要求をまたいでgroupId付き編集を送り、作成したIDへの値設定のundo/redoで依存ID置換を試験する。同じ値の受理だけでは無操作期限が延長されない挙動も文書へ明記する。元の受入done-whenは縮めない。
+- notes: 先行 MCP-028-A、受入発見のMCP-028-B。026/027/028-Aの評価引き継ぎも照合し、feature付きclippyのコマンド/exitを保存する。共通入口はAで切り出し済みのものを使い、元の全受入条件をこの反復で閉じる。追加pathsは共通入口と受入の検証に限定し、cfg(test)だけの別実装で合格にしない。manifest変更は既存依存のdev-only機能と受入の試験用featureに限り、新規crate/系列は追加しない。画面のコマンド/eventはvitestと名前照合で覆う。NorvesLib用e2eを起動しない。未確認の実機表示は明記し、全体確認済みとしない。新規不具合は別タスクとして記録し、受入契約を満たしてからdoneにする。NEXT_FINDINGSと.harness/mcp-review-follow-up-018.md / mcp-review-follow-up-022-B.md / mcp-review-follow-up-022.md / mcp-review-follow-up-024.md / mcp-review-follow-up-025.mdを照合し、修正済みの証拠か残る挙動・制限を文書と最終報告へ残す。特に現行版の複数クライアント間ID衝突、本文受信30秒と要求全体125秒、Enabledでの再確認、単発MCP undo拒否後の保留/破棄によるUI再開、未送信/拒否/結果不明の区別、書き込みのcancel通知後の応答と記録、本番actorの実mock経路、部分木parentId/cursor世代を確認する。実HTTPで要求をまたいでgroupId付き編集を送り、作成したIDへの値設定のundo/redoで依存ID置換を試験する。同じ値の受理だけでは無操作期限が延長されない挙動も文書へ明記する。元の受入done-whenは縮めない。
 
 ## MCP-029: 管理用ガイドの正本へ所有権とセキュリティを同期する
 - status: todo

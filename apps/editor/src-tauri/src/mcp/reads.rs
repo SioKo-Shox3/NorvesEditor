@@ -532,13 +532,16 @@ impl McpReadContext {
                 }
                 // 履歴の保存値だけでは、エンジン側で変わった現在値を検出できない。
                 if let McpWriteOperation::History(action) = &operation {
+                    let recreated = action.recreated_ids();
                     let mut ids: Vec<_> = action
                         .records
                         .iter()
                         .filter_map(|record| match record {
                             crate::edit_service::HistoryRecord::SetProperty {
                                 object_id, ..
-                            } => Some(object_id.as_str()),
+                            } if !recreated.contains(object_id.as_str()) => {
+                                Some(object_id.as_str())
+                            }
                             _ => None,
                         })
                         .collect();
@@ -631,11 +634,14 @@ impl McpReadContext {
                 targets.push(component_id.as_str());
             }
             McpWriteOperation::History(action) => {
+                let recreated = action.recreated_ids();
                 for record in &action.records {
                     if let crate::edit_service::HistoryRecord::SetProperty { object_id, .. } =
                         record
                     {
-                        if !index.contains_node(object_id) {
+                        if !index.contains_node(object_id)
+                            && !recreated.contains(object_id.as_str())
+                        {
                             targets.push(object_id.as_str());
                         }
                     }
@@ -1297,6 +1303,7 @@ fn make_confirmation_preview(
             after = Some(json!({ "method": method }));
         }
         McpWriteOperation::History(action) => {
+            let recreated = action.recreated_ids();
             let mut before_values = Vec::new();
             let mut after_values = Vec::new();
             for record in &action.records {
@@ -1374,6 +1381,15 @@ fn make_confirmation_preview(
                                 (old_value, new_value)
                             }
                         };
+                        if recreated.contains(object_id.as_str()) {
+                            // まだ存在しない再作成対象に、保存された旧値を現在値として表示しない。
+                            before_values.push(json!({"objectId":object_id,"property":property,
+                                "recreated":true,"valueAvailable":false}));
+                            after_values.push(
+                                json!({"objectId":object_id,"property":property,"value":new_value}),
+                            );
+                            continue;
+                        }
                         let current_value = scope_values
                             .iter()
                             .find(|snapshot| {
@@ -2137,6 +2153,113 @@ mod tests {
 
     fn descriptor(name: &str) -> CapabilityDescriptor {
         serde_json::from_value(json!({"name":name})).expect("能力descriptorを作る")
+    }
+
+    #[tokio::test]
+    async fn redo_dependency_review_rechecks_scope_and_existing_values() {
+        use crate::edit_service::{EditSource, HistoryRecord};
+        for changed in ["none", "value", "scope"] {
+            let (transport, mut peer) = loopback_pair(8);
+            let handle = Dispatcher::spawn(transport);
+            let auth = McpAuthorization::default();
+            auth.set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                mode: crate::mcp::McpWriteMode::Enabled,
+                scene_root_id: Some("allowed".to_owned()),
+            })
+            .unwrap();
+            let (context, _session) = test_context_with_session(
+                19,
+                handle.clone(),
+                &["scene.query", "scene.edit", "object.query", "object.edit"],
+                Arc::new(StdMutex::new(LogBuffer::default())),
+            );
+            let context = context.with_authorization(auth.clone());
+            let action = McpHistoryAction {
+                direction: McpHistoryDirection::Redo,
+                head_id: 1,
+                revision: 1,
+                group_name: "再作成の確認".to_owned(),
+                source: EditSource::Mcp,
+                records: vec![
+                    HistoryRecord::Create {
+                        created_id: "new".to_owned(),
+                        parent_id: Some("parent".to_owned()),
+                        kind: None,
+                    },
+                    HistoryRecord::SetProperty {
+                        object_id: "new".to_owned(),
+                        property: "visible".to_owned(),
+                        old_value: json!(false),
+                        new_value: json!(true),
+                    },
+                    HistoryRecord::SetProperty {
+                        object_id: "existing".to_owned(),
+                        property: "visible".to_owned(),
+                        old_value: json!(false),
+                        new_value: json!(true),
+                    },
+                ],
+            };
+            let responder = tokio::spawn(async move {
+                for pass in 0..2 {
+                    let outside = pass == 1 && changed == "scope";
+                    let parent = json!({"id":"parent"});
+                    let mut tree = json!({"root":{"id":"scene","children":[{"id":"allowed","children":[{"id":"existing"}]}]}});
+                    if outside {
+                        tree["root"]["children"]
+                            .as_array_mut()
+                            .unwrap()
+                            .push(parent);
+                    } else {
+                        tree["root"]["children"][0]["children"]
+                            .as_array_mut()
+                            .unwrap()
+                            .push(parent);
+                    }
+                    let (id, method, _) = next_request(&mut peer).await;
+                    assert_eq!(method, "scene.getTree");
+                    peer.send(response_frame(id, tree)).await.unwrap();
+                    if outside {
+                        break;
+                    }
+                    let (id, method, params) = next_request(&mut peer).await;
+                    assert_eq!(method, "object.getSnapshot");
+                    assert_eq!(
+                        params.unwrap()["objectId"],
+                        "existing",
+                        "未再作成IDのsnapshotを捏造しない"
+                    );
+                    peer.send(response_frame(id,json!({"objectId":"existing","properties":[{"name":"visible","value":pass == 1 && changed == "value"}],"components":[]}))).await.unwrap();
+                }
+                peer
+            });
+            let lease = auth.current_lease();
+            let current = action.clone();
+            let permit = context
+                .authorize_history(&lease, action.clone(), move || Some(current.clone()))
+                .await
+                .unwrap();
+            let preview = &permit.review.as_ref().unwrap().preview;
+            assert_eq!(preview.before.as_ref().unwrap()[1]["valueAvailable"], false);
+            assert!(preview.before.as_ref().unwrap()[1].get("value").is_none());
+            assert_eq!(preview.before.as_ref().unwrap()[2]["value"], false);
+            let result = context
+                .revalidate_queued_permit(&lease, permit, 19, Some(action))
+                .await;
+            match changed {
+                "none" => assert_eq!(result, Ok(true)),
+                "value" => assert_eq!(result, Ok(false)),
+                _ => assert!(result.unwrap_err().contains("部分木の外")),
+            }
+            let mut peer = responder.await.unwrap();
+            assert!(
+                timeout(Duration::from_millis(20), peer.recv())
+                    .await
+                    .is_err(),
+                "認可と再検証は書き込まない"
+            );
+            handle.shutdown().await;
+        }
     }
 
     async fn next_confirmation(

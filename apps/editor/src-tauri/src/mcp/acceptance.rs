@@ -40,6 +40,11 @@ impl HeadlessEditor {
             .map_err(|error| error.to_string())
     }
 
+    /// 本番と同じ切断入口でrelay・接続世代・履歴を失効させる。
+    pub async fn disconnect(&self) {
+        bridge_state::disconnect_quietly(&self.bridge).await;
+    }
+
     pub fn history(&self) -> Value {
         serde_json::to_value(self.services.edits.history_summary()).expect("履歴DTOの直列化")
     }

@@ -72,7 +72,11 @@ impl McpReadContext {
         let result = self
             .execute_write(name, arguments, lease, execution.clone())
             .await;
-        execution.record_result(result.is_ok(), result.as_ref().err(), false, None);
+        // 列に入る前の確定拒否を、画面で「結果を確認中」と表示させない。
+        // まとまり制御には編集ticketがないため、そちらは制御actorの確定通知に任せる。
+        let no_actor =
+            execution.never_queued() && !matches!(name, "edit_begin_group" | "edit_end_group");
+        execution.record_result(result.is_ok(), result.as_ref().err(), no_actor, None);
         capture.1 = true;
         write_result(&request_id, name, &execution, result)
     }

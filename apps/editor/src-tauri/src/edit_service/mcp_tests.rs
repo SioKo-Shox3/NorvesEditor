@@ -72,9 +72,18 @@ async fn wait_for_enqueued(service: &EditService) {
 
 #[tokio::test]
 async fn queued_permit_reconfirms_changed_old_value_and_history_without_blocking_ui() {
+    queued_reconfirmation_case(McpWriteMode::Confirm).await;
+}
+
+#[tokio::test]
+async fn queued_enabled_write_reconfirms_changed_old_value_and_history() {
+    queued_reconfirmation_case(McpWriteMode::Enabled).await;
+}
+
+async fn queued_reconfirmation_case(mode: McpWriteMode) {
     let auth = McpAuthorization::default();
     auth.set_write_settings(McpWriteSettings {
-        mode: McpWriteMode::Confirm,
+        mode,
         scene_root_id: None,
     })
     .expect("都度確認にする");
@@ -108,10 +117,16 @@ async fn queued_permit_reconfirms_changed_old_value_and_history_without_blocking
             .await
     });
     respond_property_review(&mut peer, json!(false)).await;
-    let first = confirmation(&mut updates, None).await;
-    assert_eq!(first.before, Some(json!(false)));
-    assert!(auth.confirmations().approve(&first.id));
-    respond_property_review(&mut peer, json!(false)).await;
+    let first = if mode == McpWriteMode::Confirm {
+        let first = confirmation(&mut updates, None).await;
+        assert_eq!(first.before, Some(json!(false)));
+        assert!(auth.confirmations().approve(&first.id));
+        respond_property_review(&mut peer, json!(false)).await;
+        Some(first)
+    } else {
+        assert!(auth.confirmations().pending().is_empty(), "Enabledの初回は確認不要");
+        None
+    };
     wait_for_enqueued(&service).await;
     release
         .send(())
@@ -120,10 +135,12 @@ async fn queued_permit_reconfirms_changed_old_value_and_history_without_blocking
     // 承認後の列内検査では書き込まず、変化を型付き再確認として返す。
     respond_property_review(&mut peer, json!(true)).await;
     respond_property_review(&mut peer, json!(true)).await;
-    let second = confirmation(&mut updates, Some(&first.id)).await;
+    let second = confirmation(&mut updates, first.as_ref().map(|first| first.id.as_str())).await;
     assert_eq!(second.before, Some(json!(true)));
-    assert_ne!(second.history_revision, first.history_revision);
-    assert!(!auth.confirmations().approve(&first.id));
+    if let Some(first) = first {
+        assert_ne!(second.history_revision, first.history_revision);
+        assert!(!auth.confirmations().approve(&first.id));
+    }
     service
         .enqueue_from_ui(EditKind::Edit, |_| async { success(Value::Null) })
         .expect("再確認中もUIを受け付ける")

@@ -381,6 +381,33 @@ async fn public_group_is_revoked_on_auth_disable_disconnect_and_generation_chang
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn accepted_equal_value_does_not_extend_group_idle_deadline() {
+    let auth = enabled_auth();
+    let (service, _control, handle, peer) =
+        test_service_with_peer_and_authorization(8, auth.clone());
+    let service = Arc::new(service);
+    let context = public_context(&service, ALL_CAPABILITIES);
+    let group = begin_public_group(&context, &auth).await;
+    let peer = public_property(&context, &auth, peer, Some(&group), "node").await;
+    tokio::time::advance(Duration::from_secs(299)).await;
+    // 応答fixtureの旧値falseと同じ値を送る。受理されても新しい履歴はない。
+    let params = json!({"objectId":"node","property":"visible","value":false});
+    let responder = tokio::spawn(serve_write(peer, "object.setProperty", params.clone(),
+        json!({"accepted":true,"appliedValue":false})));
+    let result = data(context.call_write_tool("object_set_property",
+        json!({"groupId":group["groupId"],"params":params}), Some(auth.current_lease())).await);
+    let _peer = responder.await.expect("同値の応答を保持する");
+    assert_eq!(result["outcome"], "applied");
+    assert_eq!(service.history_summary().undo_group.unwrap().count, 1);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    for _ in 0..8 { tokio::task::yield_now().await; }
+    assert!(!service.history.lock().unwrap().has_active_group());
+    assert_public_group_closed(&context, &auth, &group).await;
+    service.shutdown().await;
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn public_group_closes_before_nonundoable_operations_even_with_its_id() {
     for (name, method, params, result, confirm) in [

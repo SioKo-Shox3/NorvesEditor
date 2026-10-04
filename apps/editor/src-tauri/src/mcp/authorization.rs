@@ -70,6 +70,23 @@ pub(crate) struct McpHistoryAction {
     pub(crate) records: Vec<HistoryRecord>,
 }
 
+impl McpHistoryAction {
+    /// redoで再作成する旧ID。利用順と範囲はcheck_historyで別途検証する。
+    pub(crate) fn recreated_ids(&self) -> HashSet<&str> {
+        if self.direction != McpHistoryDirection::Redo {
+            return HashSet::new();
+        }
+        self.records
+            .iter()
+            .filter_map(|record| match record {
+                HistoryRecord::Create { created_id, .. }
+                | HistoryRecord::Duplicate { created_id, .. } => Some(created_id.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
 /// 書き込み道具が要求する対象。
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum McpWriteOperation {
@@ -515,30 +532,40 @@ impl McpSceneScopeIndex {
         if action.records.is_empty() {
             return Err(ScopeError::HistoryUnavailable);
         }
+        // 現在のツリーを変更せず、順に検査を通った再作成だけを後続の対象へ加える。
+        let mut projected = self.clone();
         for record in &action.records {
             match (record, action.direction) {
                 (HistoryRecord::Create { created_id, .. }, McpHistoryDirection::Undo)
                 | (HistoryRecord::Duplicate { created_id, .. }, McpHistoryDirection::Undo) => {
                     self.check_delete_subtree(created_id)?;
                 }
-                (HistoryRecord::Create { parent_id, .. }, McpHistoryDirection::Redo) => {
-                    self.check_parent(parent_id.as_deref())?
+                (
+                    HistoryRecord::Create {
+                        parent_id,
+                        created_id,
+                        ..
+                    },
+                    McpHistoryDirection::Redo,
+                ) => {
+                    projected.add_recreated_node(created_id, parent_id.clone())?;
                 }
                 (
                     HistoryRecord::Duplicate {
                         source_object_id,
-                        created_id: _,
+                        created_id,
                         parent_id,
                     },
                     McpHistoryDirection::Redo,
                 ) => {
-                    self.check_object(source_object_id)?;
-                    let parent = parent_id.as_deref().or_else(|| {
-                        self.nodes
+                    projected.check_object(source_object_id)?;
+                    let parent = parent_id.clone().or_else(|| {
+                        projected
+                            .nodes
                             .get(source_object_id)
-                            .and_then(|node| node.parent.as_deref())
+                            .and_then(|node| node.parent.clone())
                     });
-                    self.check_parent(parent)?;
+                    projected.add_recreated_node(created_id, parent)?;
                 }
                 (
                     HistoryRecord::Reparent {
@@ -548,15 +575,55 @@ impl McpSceneScopeIndex {
                     },
                     _,
                 ) => {
-                    self.check_object(object_id)?;
-                    self.check_parent(old_parent_id.as_deref())?;
-                    self.check_parent(new_parent_id.as_deref())?;
+                    projected.check_object(object_id)?;
+                    projected.check_parent(old_parent_id.as_deref())?;
+                    projected.check_parent(new_parent_id.as_deref())?;
+                    if action.direction == McpHistoryDirection::Redo {
+                        let current_parent = projected
+                            .nodes
+                            .get(object_id)
+                            .and_then(|node| node.parent.as_deref());
+                        projected.check_parent(current_parent)?;
+                        // 後続duplicateの親省略も、先行reparent後の親で検査する。
+                        projected
+                            .nodes
+                            .get_mut(object_id)
+                            .expect("対象を検査済み")
+                            .parent = new_parent_id
+                            .clone()
+                            .or_else(|| Some(projected.scene_root_id.clone()));
+                    }
                 }
                 (HistoryRecord::SetProperty { object_id, .. }, _) => {
-                    self.check_object_or_component(object_id)?;
+                    projected.check_object_or_component(object_id)?;
                 }
             }
         }
+        Ok(())
+    }
+
+    fn add_recreated_node(&mut self, id: &str, parent: Option<String>) -> Result<(), ScopeError> {
+        self.check_parent(parent.as_deref())?;
+        if self.nodes.contains_key(id) || self.component_owners.contains_key(id) {
+            return Err(ScopeError::DuplicateObjectId);
+        }
+        if self.nodes.len() >= MAX_SCOPE_NODES {
+            return Err(ScopeError::LimitExceeded);
+        }
+        let parent = parent.unwrap_or_else(|| self.scene_root_id.clone());
+        self.nodes
+            .get_mut(&parent)
+            .ok_or(ScopeError::ObjectUnknown)?
+            .children
+            .push(id.to_owned());
+        self.nodes.insert(
+            id.to_owned(),
+            SceneNodeMeta {
+                parent: Some(parent),
+                children: Vec::new(),
+            },
+        );
+        self.allowed.insert(id.to_owned());
         Ok(())
     }
 }
@@ -1010,6 +1077,142 @@ mod tests {
             }
             .validate(),
             Err(ScopeError::InvalidScopeRoot)
+        );
+    }
+
+    fn redo(records: Vec<HistoryRecord>) -> McpHistoryAction {
+        McpHistoryAction {
+            direction: McpHistoryDirection::Redo,
+            head_id: 1,
+            revision: 1,
+            group_name: "依存ID".to_owned(),
+            source: EditSource::Mcp,
+            records,
+        }
+    }
+
+    fn create(id: &str, parent: &str) -> HistoryRecord {
+        HistoryRecord::Create {
+            created_id: id.to_owned(),
+            parent_id: Some(parent.to_owned()),
+            kind: None,
+        }
+    }
+
+    fn property(id: &str) -> HistoryRecord {
+        HistoryRecord::SetProperty {
+            object_id: id.to_owned(),
+            property: "visible".to_owned(),
+            old_value: Value::Bool(false),
+            new_value: Value::Bool(true),
+        }
+    }
+
+    #[test]
+    fn redo_allows_only_ordered_recreated_dependencies_inside_scope() {
+        let (scoped, _) = index(Some("allowed"));
+        let records = vec![
+            create("parent", "allowed"),
+            HistoryRecord::Duplicate {
+                source_object_id: "allowed-child".to_owned(),
+                created_id: "copy".to_owned(),
+                parent_id: Some("parent".to_owned()),
+            },
+            property("copy"),
+            HistoryRecord::Reparent {
+                object_id: "copy".to_owned(),
+                old_parent_id: Some("parent".to_owned()),
+                new_parent_id: Some("allowed-grandchild".to_owned()),
+            },
+            create("child", "copy"),
+            property("child"),
+        ];
+        assert_eq!(scoped.check_history(&redo(records.clone())), Ok(()));
+        assert!(
+            !scoped.contains_node("copy"),
+            "認可の投影を実ツリーへ残さない"
+        );
+        for records in [
+            vec![property("parent"), create("parent", "allowed")],
+            vec![create("child", "parent"), create("parent", "allowed")],
+            vec![create("parent", "allowed"), property("unrelated")],
+            vec![
+                HistoryRecord::Duplicate {
+                    source_object_id: "future".to_owned(),
+                    created_id: "copy".to_owned(),
+                    parent_id: Some("allowed".to_owned()),
+                },
+                create("future", "allowed"),
+            ],
+            vec![create("parent", "outside"), property("parent")],
+            vec![create("allowed-child", "allowed")],
+            vec![create("parent", "allowed"), create("parent", "allowed")],
+        ] {
+            assert!(
+                scoped.check_history(&redo(records.clone())).is_err(),
+                "不正な依存を拒否: {records:?}"
+            );
+        }
+        let mut undo = redo(records);
+        undo.direction = McpHistoryDirection::Undo;
+        assert!(undo.recreated_ids().is_empty());
+        assert!(
+            scoped.check_history(&undo).is_err(),
+            "undoには未来のIDを許可しない"
+        );
+    }
+
+    #[test]
+    fn redo_dependencies_do_not_bypass_existing_targets_or_component_membership() {
+        let (mut scoped, _) = index(Some("allowed"));
+        for (owner, component) in [("allowed", "component-in"), ("outside", "component-out")] {
+            let snapshot = norves_bridge_editor_client::parse_object_snapshot_result(&json!({
+                "objectId":owner,"properties":[],"components":[{"objectId":component,"kind":"camera"}]
+            })).unwrap();
+            scoped.record_component_snapshot(owner, snapshot).unwrap();
+        }
+        assert_eq!(
+            scoped.check_history(&redo(vec![
+                create("new", "allowed"),
+                property("component-in")
+            ])),
+            Ok(())
+        );
+        for last in [
+            property("component-out"),
+            property("outside-child"),
+            HistoryRecord::Duplicate {
+                source_object_id: "outside".to_owned(),
+                created_id: "copy".to_owned(),
+                parent_id: Some("new".to_owned()),
+            },
+            HistoryRecord::Reparent {
+                object_id: "new".to_owned(),
+                old_parent_id: Some("outside".to_owned()),
+                new_parent_id: Some("allowed".to_owned()),
+            },
+            HistoryRecord::Reparent {
+                object_id: "new".to_owned(),
+                old_parent_id: Some("allowed".to_owned()),
+                new_parent_id: Some("outside".to_owned()),
+            },
+            create("component-in", "new"),
+        ] {
+            assert!(scoped
+                .check_history(&redo(vec![create("new", "allowed"), last]))
+                .is_err());
+        }
+        // 部分redo済みのIDは実在対象として改めて検査する。
+        assert_eq!(
+            scoped.check_history(&redo(vec![property("allowed-child")])),
+            Ok(())
+        );
+        let records = (0..MAX_SCOPE_NODES)
+            .map(|i| create(&format!("future-{i}"), "allowed"))
+            .collect();
+        assert_eq!(
+            scoped.check_history(&redo(records)),
+            Err(ScopeError::LimitExceeded)
         );
     }
 
