@@ -763,7 +763,29 @@ mod writes_tests {
                     let response = cancellation.send().await.expect("取消通知が届く");
                     assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
                     response.bytes().await.expect("取消応答を読む");
-                    let _ = task.await.expect("HTTP取消が終了する");
+                    let text = tokio::time::timeout(Duration::from_secs(2), task)
+                        .await.expect("取消後にHTTP本文が終了する")
+                        .expect("HTTP取消が終了する");
+                    let json_text = text.lines()
+                        .filter_map(|line| line.strip_prefix("data:"))
+                        .map(str::trim)
+                        .find(|line| line.starts_with('{'))
+                        .or_else(|| text.trim_start().starts_with('{').then_some(text.as_str()));
+                    let response_request_id = if version == "2026-07-28" {
+                        let response: Value = serde_json::from_str(json_text.expect("現行版は取消結果を返す"))
+                            .expect("取消応答を解析する");
+                        assert_eq!(response["id"], id);
+                        assert_eq!(response["result"]["isError"], true);
+                        let payload = &response["result"]["structuredContent"];
+                        assert_eq!(payload["outcome"], "unknown");
+                        assert_eq!(payload["operationResult"], "unknown");
+                        assert_eq!(payload["automaticRetryAllowed"], false);
+                        Some(payload["requestId"].as_str().expect("取消結果の表示ID").to_owned())
+                    } else {
+                        // 旧版のSDKは取消時に要求別SSEを閉じ、道具の結果を返さない。
+                        assert!(json_text.is_none(), "旧版の取消はJSON-RPC結果なしで本文が終了する");
+                        None
+                    };
                     // 旧版はHTTPを先に閉じる場合がある。対象要求の記録まで明示的に同期する。
                     let before = tokio::time::timeout(Duration::from_secs(2), async {
                         loop {
@@ -777,6 +799,10 @@ mod writes_tests {
                         }
                     }).await.expect("取消された要求の結果不明記録が届く");
                     assert_eq!(before.outcome, "unknown");
+                    assert_eq!(before.result, "unknown");
+                    if let Some(request_id) = response_request_id {
+                        assert_eq!(request_id, before.request_id, "応答と操作記録は同じ表示IDを使う");
+                    }
                     assert!(service.history_lock_available());
                     respond(&mut peer, bridge_id, json!({"accepted":outcome == "applied"})).await;
                     service.enqueue_from_ui(EditKind::Edit, |_| async { success(Value::Null) })
@@ -784,9 +810,11 @@ mod writes_tests {
                     let after = operations.snapshot().records.pop().expect("確定記録がある");
                     assert_eq!(after.request_id, before.request_id);
                     assert_eq!(after.outcome, outcome);
+                    assert_eq!(after.result, if outcome == "applied" { "success" } else { "rejected" });
                     assert!(after.actor_finished);
                     assert!(!after.automatic_retry_allowed);
                     assert!(tokio::time::timeout(Duration::from_millis(10), peer.recv()).await.is_err());
+                    println!("MCP_ACCEPTANCE_OK cancel-response-record {version} {outcome}");
                     continue;
                 }
                 if outcome == "unknown" {

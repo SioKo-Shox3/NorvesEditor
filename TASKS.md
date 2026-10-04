@@ -425,7 +425,7 @@ M2 の共通規則:
 - notes: MCP-028の受入で検出。再現は.harness/runs/20261004-144511/acceptance-MCP-028-4.txt、相談はadvisor-MCP-028.txt。resolve_component_targets/check_history/履歴previewが未再作成の旧IDを現存対象として扱う。新規mockノードに初期プロパティが無いため、親作成→n-1をその親へ複製→複製IDのfieldOfViewを変更して再現する。MCP redoをUI redoへ置き換えたり試験を弱めたりしない。Bridge/SDK/mock/NorvesLib変更・新規依存は不要。危険地帯の評価はランナーが行う。修正後にMCP-028を再開して元のdone-when/verify全部を閉じる。 先行MCP-028-A。途中保存175a8ab/ae90c34を含むredo認可修正は未評価。評価者はb32115dからHEADまでのこのタスクの許可pathsの修正全体を開き、再開反復の差分だけで合格にしない。受入追加分はMCP-028で評価する。実装の途中保存と古い成功出力をdoneの根拠にせず、指定検証を現在のHEADで再実行する。
 
 ## MCP-028: モックと実 HTTP で E0〜E3 の受入試験を実行する
-- status: doing
+- status: done
 - done-when: NE07〜NE14。スクリプトがmock実行ファイルを確認してNORVES_ENGINE_PATHを設定し、MCP試験プロフィールと実HTTPクライアントを使う。無効/認証/Origin/Host/能力/2版の通知/ページング/ログ/画像/モード/範囲/必須確認/共通列/履歴/名前付きまとまり/部分失敗/再接続/トークン再生成/終了を試験し、SKIPがあれば非ゼロで終わる。表示はサービスイベントだけのvitestで確認する。全ゲートと実行ログが開かれ、評価されている。Discover/Initializeを明示し、現行listenとlegacy通知の実受信を確認する。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`

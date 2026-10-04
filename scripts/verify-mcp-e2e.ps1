@@ -30,7 +30,11 @@ try {
         'MCP_ACCEPTANCE_OK authentication-origin-host', 'MCP_ACCEPTANCE_OK disabled',
         'MCP_ACCEPTANCE_OK reads-paging-logs-image', 'MCP_ACCEPTANCE_OK scope-group-remap-ui-undo',
         'MCP_ACCEPTANCE_OK mandatory-confirmation-delete-history', 'MCP_ACCEPTANCE_OK reconnect-cursor-group',
-        'MCP_ACCEPTANCE_OK token-regeneration'
+        'MCP_ACCEPTANCE_OK token-regeneration',
+        'MCP_ACCEPTANCE_OK cancel-response-record 2026-07-28 applied',
+        'MCP_ACCEPTANCE_OK cancel-response-record 2026-07-28 rejected',
+        'MCP_ACCEPTANCE_OK cancel-response-record 2025-11-25 applied',
+        'MCP_ACCEPTANCE_OK cancel-response-record 2025-11-25 rejected'
     )) {
         if (-not $output.Contains($marker)) { throw "受入証拠がありません: $marker" }
     }
@@ -46,6 +50,9 @@ try {
         'both_http_versions_dispatch_writes_and_return_structured_outcomes',
         'rejected_single_mcp_undo_is_pending_until_ui_discards_it',
         'redo_remaps_created_ids_across_children_and_resumes_after_known_rejection',
+        'queued_enabled_write_reconfirms_changed_old_value_and_history',
+        'accepted_equal_value_does_not_extend_group_idle_deadline',
+        'cancelled_queued_public_write_stays_not_sent_when_actor_finishes',
         'real_mock_subscription_burst_is_retained_without_a_ui_or_mcp_client'
     )) {
         if ($output -notmatch ([regex]::Escape($test) + ' \.\.\. ok')) { throw "境界試験の成功証拠がありません: $test" }

@@ -48,8 +48,8 @@ NE06のRust側試験は `cargo test --manifest-path apps/editor/src-tauri/Cargo.
 ## E0〜E3 実HTTP受入の対応と証拠
 
 `scripts/verify-mcp-e2e.ps1` は実mock必須の統合試験とRust単体試験をまとめて実行し、SKIP/ignored/必須成功行の欠落を拒否する。
-2026-10-04の保存証拠は `.harness/runs/20261004-144511/verify-MCP-028-B-2.txt`（exit 0）。
-Rust単体404件、実HTTP/実mockの両版シナリオ1件、独立した実mockログ購読1件が成功し、保存出力を開いて確認した。
+2026-10-04の保存証拠は `.harness/runs/20261004-170201/verify-MCP-028-4.txt`（exit 0）。
+Rust単体405件、実HTTP/実mockの両版シナリオ1件、独立した実mockログ購読1件が成功し、保存出力を開いて確認した。
 自動試験の検証結果であり、ランナーの別文脈評価と実機GUI確認の完了を意味しない。
 
 | 契約 | 試験と今回の証拠 |
@@ -62,17 +62,26 @@ Rust単体404件、実HTTP/実mockの両版シナリオ1件、独立した実moc
 | NE12 共通列・履歴・まとまり | 両版の実HTTPで通常値設定とUI undo、begin→groupId付きの親作成→その親への複製→新IDの値設定→end→一回MCP undo/redo→UI undoが成功。親と複製対象の再採番、編集値、終了/再接続後の旧groupId拒否を検査 |
 | NE13 モード・範囲・確認 | 両版でReadOnlyの拒否理由/未適用、Enabledの適用、Confirmのmain承認と別窓拒否、部分木外拒否、まとまりundo内の削除確認、削除の拒否/承認と履歴破棄を検査。`queued_enabled_write_reconfirms_changed_old_value_and_history` は列待ちの変化でEnabledも再確認することを検証 |
 | NE14 記録と確定 | 実HTTP適用のrequestIdと記録/ファイルを照合し、トークン/確認ID/所有者groupIdの非記録を確認。列前の通常書き込み拒否を確定扱いにするassert、500件/保存上限/rotation/保存失敗は単体で成功 |
-| 取消・部分失敗 | `both_http_versions_dispatch_writes_and_return_structured_outcomes` の両版実HTTP取消後の応答/記録、`rejected_single_mcp_undo_is_pending_until_ui_discards_it` の保留/破棄/UI再開、部分成功/不明の再送抑止が単体で成功 |
+| 取消・部分失敗 | `both_http_versions_dispatch_writes_and_return_structured_outcomes` は取消後の現行版のunknown応答/表示ID、旧版のJSON-RPC結果なしのSSE終了を検査。両版で同じ記録のapplied/rejected確定と再送なしを照合し、4件の `cancel-response-record` 成功行を必須とする。`rejected_single_mcp_undo_is_pending_until_ui_discards_it` の保留/破棄/UI再開、部分成功/不明の再送抑止も成功 |
 | 期限とID | `http_lifetime_both_protocols_enforce_30_and_125_seconds_with_paused_time`、`http_lifetime_cancellation_is_scoped_by_typed_id_and_legacy_session`、`accepted_equal_value_does_not_extend_group_idle_deadline` が成功 |
 | redo認可と列内再検証 | `redo_allows_only_ordered_recreated_dependencies_inside_scope` / `redo_dependencies_do_not_bypass_existing_targets_or_component_membership` は逆順/未知/範囲外/衝突/所属/上限を拒否。`redo_dependency_review_rechecks_scope_and_existing_values` は再作成前の現在値を捏造せず、列内で既存値と範囲を再照合することを検証 |
 | サービスeventによる画面更新 | `EditServiceEvents.integration.test.tsx` と操作記録/確認/履歴のvitestを集約ゲートで実行。699件成功。実機の配置・狭幅・窓間操作は未確認 |
 
-集約ゲートは `verify-MCP-028-1.txt`（exit 0、C++ 8/8、画面699件）、修正後のfmtは
-`verify-MCP-028-B-3.txt`（exit 0）、通常clippyは `verify-MCP-028-9.txt`（exit 0）、
-受入feature付きclippyは `verify-MCP-028-B-4.txt`（exit 0）。各ファイルにコマンド行とexitを保存した。
+指定ゲートと受入featureの検査は次のとおり。保存先は `.harness/runs/20261004-170201/` で、各ファイルにコマンド行とexitを保存する。
 
-初回の `acceptance-MCP-028-4.txt` と `verify-MCP-028-7.txt` / `-8.txt` は、MCP redoが未再作成の旧IDの所属検査で拒否された失敗証拠として保持する。
-修正後も同じ公開MCP redoを使い、再作成順だけを認可へ投影して成功させた。元の完了条件と検証は変更していない。
+| コマンド | 保存出力 | 結果 |
+|---|---|---|
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp` | `verify-MCP-028-1.txt` | exit 0。C++ 8/8、画面699件、bridge-types 42件、bridge-ui 45件、IPC commands 46 / events 15一致 |
+| `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check` | `verify-MCP-028-5.txt` | exit 0 |
+| `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings` | `verify-MCP-028-6.txt` | exit 0 |
+| `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets --features mcp-e2e -- -D warnings` | `verify-MCP-028-7.txt` | exit 0 |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1` | `verify-MCP-028-4.txt` | exit 0。405単体＋両版受入1件＋実mockログ1件、SKIP/ignoredなし |
+
+旧保存先 `.harness/runs/20261004-144511/` の `acceptance-MCP-028-4.txt` と `verify-MCP-028-7.txt` / `-8.txt` は、MCP redoが未再作成の旧IDの所属検査で拒否された失敗証拠として保持する。
+40分超過と停止時点の未評価は `PROGRESS.md` と `.harness/mcp-stopped-run-20261004-144511.json` に保持する。
+今回の `verify-MCP-028-2.txt` は取消応答の結果分類をcancelledと期待した試験の失敗（exit 101）。開始済みはunknownを優先する既存契約をコードで照合し、応答・記録・後続確定を検査した成功出力が `-4.txt` である。
+公開MCP redo、元の完了条件と検証を維持する。MCP-028-Bの前提評価は `.harness/runs/20261004-170201/eval-1.out.txt` のPASSを確認済み。
+受入評価の差分は `b32115d` からHEADまで（`175a8ab` / `ae90c34` を含む）の製品修正と受入全体で、再開反復だけの差分に限定しない。
 PowerShell 5.1でも日本語の道具応答・エラー文をUTF-8で保存する。
 
 ### MCP redoの依存ID認可（MCP-028-B）
