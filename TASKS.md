@@ -338,18 +338,18 @@ M2 の共通規則:
 - notes: 先行MCP-021。MCP-022の2回の40分超過を受けた分割であり、新しい機能追加ではない。列内の状態再検証と開始済み操作の結果保全はMCP-022で完成させる。この段のedit_service.rsは途中試験のコンパイル修復と確認待ちが列を占有しない試験に限定する。Broker/DTO/配線と全ゲートを閉じ、元のMCP-022をdoneにしない。危険地帯の評価とコミット本文必須。
 
 ## MCP-022-B: HTTP要求の取消と全体期限を確認待ちへ結ぶ
-- status: blocked
+- status: todo
 - done-when: NE13のHTTP要求寿命。書き込みtools/callは125秒、その他は30秒であることを両版のHTTPで試験する。要求ID別notifications/cancelledとRequestContext.ctをその要求のリースへ結び、他の要求を取り消さない。現行/旧版ともHTTP応答破棄でリースを取り消す。確認/再照会/範囲走査/列待ちに合計125秒の期限を適用し、確認期限はmin(120秒,残り)とする。HTTP→要求取消、要求取消→確認登録清掃、SDK context→要求取消を製品の経路で試験し、期限はpaused timeでも反証する。未対応SDK挙動を推測せずrmcpの使用版のコードと実受信で確認する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - verify: `node scripts/check-protocol-names.mjs`
 - verify: `pnpm -r --if-present typecheck`
-- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/dto.rs
-- notes: 先行MCP-022-A。MCP-022のHTTP切断と全体期限の契約を引き継ぐ。層をつないだ最終受入はMCP-028でも行い、ここでは実HTTPのリース取消とbroker清掃を別々に証明する。書き込み道具の本公開はMCP-024。危険地帯の評価とコミット本文必須。
+- paths: apps/editor/src-tauri/Cargo.toml, apps/editor/src-tauri/Cargo.lock, apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/dto.rs
+- notes: 先行MCP-022-A。MCP-022のHTTP切断と全体期限の契約を引き継ぐ。層をつないだ最終受入はMCP-028でも行い、ここでは実HTTPのリース取消とbroker清掃を別々に証明する。書き込み道具の本公開はMCP-024。既存Tokioのdev-dependenciesにtest-utilだけを追加できる。新しいcrateや系列は追加せず、製品側の機能は維持する。M1の既存依存の機能追加と継続指示の範囲にある計画修正であり、再承認は不要。停止・未評価の履歴は保持する。危険地帯の評価とコミット本文必須。
 
 ## MCP-022: 要求ごとの書き込み確認をバックエンドで管理する
-- status: blocked
+- status: todo
 - done-when: NE13。delete/component.removeとMCP undo内部deleteはwrite可でも確認必須、read-onlyでは拒否する。列外の確認brokerが120秒/拒否/HTTP切断/認証改訂/世代変更で取り下げる。一度だけの要求固有確認で、承認後に旧値/対象/範囲/許可改訂/undo先頭IDと履歴改訂/deleteの履歴破棄影響を照合し、違えば再確認する。待機中もUI編集と終了が進む。MCPから承認できず、信頼したmain画面commandだけが承認する。要求全体125秒に再照会/走査/列待ちも含める。旧版はHTTP応答破棄と要求ID別cancelを結び、両版の切断取消を試験する。未開始は列から取消、開始済みは次の操作へ進まずBridge結果を確認し、適用済みと結果不明を区別する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

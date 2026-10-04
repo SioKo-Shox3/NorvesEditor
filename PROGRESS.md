@@ -50,11 +50,11 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 元の29タスクのうちMCP-001〜MCP-017とMCP-019〜MCP-021の20件は検証・評価PASS。MCP-022を確認broker/HTTP取消/列内再検証の3つに分け、実行単位は31件。元の完了条件はMCP-022に全て保持する。MCP-018は再検証失敗と評価未完了のためblockedで、確認処理のビルド復旧後に原因を調査して再開する。
+- MCP / 編集層の M2: 元の29タスクのうちMCP-001〜MCP-017とMCP-019〜MCP-021の20件、および分割したMCP-022-Aは検証・評価PASS。実行単位は31件。元の完了条件はMCP-022に全て保持する。MCP-018は再検証失敗と評価未完了のためblockedで、MCP-022の評価PASS後に別AIへ失敗原因を相談して再開する。
 
 ## Next
-- MCP-022: 先行MCP-022-Bの範囲判断と実装・検証完了後に再開する。列内permit再検証、列外への型付き再確認、開始済みBridge結果の保全は未実装。MCP-022の完了条件は維持する。
-- MCP-022-BはCargo.tomlへのTokio test-util追加を許可範囲に含める判断待ち。再開後に元のMCP-022へ進む。MCP-022-Aは実装・指定検証を完了し、評価はランナーへ渡す。MCP-022の完成後はMCP-018を再開し、試験失敗の原因を直して指定検証と評価を通す。ユーザーは残る全タスクの完了まで継続を指示済み。自動的なstatus: doneへの変更や失敗記録の破棄はしない。
+- MCP-022-B: 許可pathsへCargo.toml/Cargo.lockを加え、既存Tokioのdev-only test-utilを追加してpaused timeと両版の実HTTPで反証する。既存依存の機能追加という承認済み範囲で計画を補正し、todoへ戻した。完了条件・指定検証を縮めない。
+- MCP-022: Bの検証・評価PASS後に列内permit再検証、列外への型付き再確認、開始済みBridge結果の保全を完成させる。Bの範囲不足に連動したblockedを解除してtodoへ戻した。MCP-022の完成後はMCP-018の過去の失敗を別AIに相談し、指定検証と評価を通す。ユーザーは残る全タスクの完了まで継続を指示済み。自動的なstatus: doneへの変更や失敗記録の破棄はしない。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -65,6 +65,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-04 11:40 再開整理: MCP-022-BのTokio test-utilは新規crateではなく既存依存の開発用機能であり、M1承認と全残作業の継続指示の範囲でmanifest/lockの許可パスを補正した。元run 20261004-105014は規定の--stopによりMCP-023の途中でABORTED。B/022は実装未完・未評価のまま、履歴と停止証拠を保持する。作業ツリーに製品コードの途中差分は無い。開始ゲートverify.ps1 -SkipFrontendはexit 0（C++とフロントエンドは対象外）、実出力.harness/mcp-resume-preflight-20261004-1140.logを開いた。MCP-022-Aの評価PASSと非阻害指摘は.harness/runs/20261004-105014/eval-1.out.txtおよびNEXT_FINDINGS.mdで追跡する。
 - 2026-10-04 MCP-022: Bのpaused time試験に必要なCargo.toml変更は今回もpaths外で、他タスクの範囲・完了条件を変更できないためBLOCKED。製品コードは変更せず、MCP-022をdoneにしない。開始証拠 `.harness/runs/20261004-105014/preflight-MCP-022.txt` は開いて確認済みだが、エディタ独立Cargo workspaceの指定5ゲートは未実行。既存TASKS.mdのMCP-022-B blocked差分を保持し、この反復のコミットには含めない。
 - 2026-10-04 MCP-022-B: paused time試験に必要なTokio test-utilがエディタcrateで無効。許可paths外のapps/editor/src-tauri/Cargo.tomlにdev-dependency機能追加が必要なためBLOCKED。未検証の実装差分は撤回し、TASKSのtodoは維持。開始の集約ゲートexit 0。依存機能とSDK実装の証拠・再開案はblocked/MCP-022-B.mdに記録。
 - 2026-10-04 MCP-022-A: 保存出力を開いて6ゲートの成功を確認。`NORVES_ENGINE_PATH`に既存mock実行ファイルを明示し、実mock試験は0.52秒で成功。process_e2eは14エントリ成功だがNorvesLib用opt-inは未実行。画面操作は未実施。確認期限は120秒と要求残時間の小さい方、許可改訂は旧要求を取消し、新しい要求で新IDを発行する。元のMCP-022の列内再検証・開始済み結果保全とMCP-022-BのHTTP要求寿命は未完のまま。
