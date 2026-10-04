@@ -532,14 +532,14 @@ impl McpReadContext {
                 }
                 // 履歴の保存値だけでは、エンジン側で変わった現在値を検出できない。
                 if let McpWriteOperation::History(action) = &operation {
-                    let recreated = action.recreated_ids();
                     let mut ids: Vec<_> = action
                         .records
                         .iter()
-                        .filter_map(|record| match record {
+                        .enumerate()
+                        .filter_map(|(position, record)| match record {
                             crate::edit_service::HistoryRecord::SetProperty {
                                 object_id, ..
-                            } if !recreated.contains(object_id.as_str()) => {
+                            } if !action.recreates_before(position, object_id) => {
                                 Some(object_id.as_str())
                             }
                             _ => None,
@@ -634,13 +634,12 @@ impl McpReadContext {
                 targets.push(component_id.as_str());
             }
             McpWriteOperation::History(action) => {
-                let recreated = action.recreated_ids();
-                for record in &action.records {
+                for (position, record) in action.records.iter().enumerate() {
                     if let crate::edit_service::HistoryRecord::SetProperty { object_id, .. } =
                         record
                     {
                         if !index.contains_node(object_id)
-                            && !recreated.contains(object_id.as_str())
+                            && !action.recreates_before(position, object_id)
                         {
                             targets.push(object_id.as_str());
                         }
@@ -1303,10 +1302,9 @@ fn make_confirmation_preview(
             after = Some(json!({ "method": method }));
         }
         McpWriteOperation::History(action) => {
-            let recreated = action.recreated_ids();
             let mut before_values = Vec::new();
             let mut after_values = Vec::new();
-            for record in &action.records {
+            for (position, record) in action.records.iter().enumerate() {
                 match record {
                     crate::edit_service::HistoryRecord::Create {
                         created_id,
@@ -1381,7 +1379,7 @@ fn make_confirmation_preview(
                                 (old_value, new_value)
                             }
                         };
-                        if recreated.contains(object_id.as_str()) {
+                        if action.recreates_before(position, object_id) {
                             // まだ存在しない再作成対象に、保存された旧値を現在値として表示しない。
                             before_values.push(json!({"objectId":object_id,"property":property,
                                 "recreated":true,"valueAvailable":false}));

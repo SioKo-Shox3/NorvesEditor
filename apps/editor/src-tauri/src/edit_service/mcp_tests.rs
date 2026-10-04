@@ -173,6 +173,106 @@ async fn queued_reconfirmation_case(mode: McpWriteMode) {
     handle.shutdown().await;
 }
 
+#[tokio::test]
+async fn confirmed_mcp_redo_retries_dependencies_with_remapped_ids() {
+    let auth = McpAuthorization::default();
+    auth.set_write_settings(McpWriteSettings {
+        mode: McpWriteMode::Confirm,
+        scene_root_id: None,
+    })
+    .unwrap();
+    let (service, _control, handle, mut peer) =
+        test_service_with_peer_and_authorization(8, auth.clone());
+    let service = Arc::new(service);
+    let group = service
+        .begin_group_from_mcp("親と子を作成して移動".to_owned())
+        .await
+        .unwrap();
+    enqueue_grouped_create(&service, group, Some("scene".to_owned()), None, "old-parent".to_owned())
+        .result().await.unwrap();
+    enqueue_grouped_property(&service, group, "old-parent", "visible", json!(false), json!(true))
+        .result().await.unwrap();
+    enqueue_grouped_reparent(&service, group, "old-parent".to_owned(), Some("destination".to_owned()), Some("scene".to_owned()))
+        .result().await.unwrap();
+    enqueue_grouped_create(&service, group, Some("old-parent".to_owned()), None, "old-child".to_owned())
+        .result().await.unwrap();
+    service.end_group_from_mcp(group).await.unwrap();
+
+    let undo = queue_history_action(&service, HistoryDirection::Undo);
+    for (expected_method, expected_id) in [
+        ("scene.deleteObject", "old-child"),
+        ("scene.reparentObject", "old-parent"),
+        ("object.setProperty", "old-parent"),
+        ("scene.deleteObject", "old-parent"),
+    ] {
+        let (id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, expected_method);
+        assert_eq!(params.unwrap()["objectId"], expected_id);
+        respond(&mut peer, id, json!({"accepted":true,"appliedValue":false})).await;
+    }
+    undo.result().await.unwrap();
+
+    let context = confirmed_context(&service, &["scene.query", "scene.edit", "object.query", "object.edit"]);
+    let mut updates = auth.confirmations().subscribe();
+    let worker = service.clone();
+    let lease = auth.current_lease();
+    let redo = tokio::spawn(async move {
+        worker.submit_confirmed_mcp(context, lease, McpEditRequest::History(McpHistoryDirection::Redo)).await
+    });
+    let tree = json!({"root":{"id":"scene","children":[{"id":"destination"}]}});
+    respond_tree(&mut peer, tree.clone()).await;
+    let request = confirmation(&mut updates, None).await;
+    assert_eq!(request.before.as_ref().unwrap()[1]["valueAvailable"], false);
+    auth.confirmations().approve(&request.id);
+    // 承認直後と列内で同じ依存関係を再検査し、存在しないIDのsnapshotを求めない。
+    respond_tree(&mut peer, tree.clone()).await;
+    respond_tree(&mut peer, tree).await;
+    let (id, method, params) = next_request(&mut peer).await;
+    assert_eq!(method, "scene.createObject");
+    assert_eq!(params.unwrap()["parentId"], "scene");
+    respond(&mut peer, id, json!({"accepted":true,"newId":"fresh-parent"})).await;
+    let (id, method, params) = next_request(&mut peer).await;
+    assert_eq!(method, "object.setProperty");
+    assert_eq!(params.unwrap()["objectId"], "fresh-parent");
+    respond(&mut peer, id, json!({"accepted":false})).await;
+    assert!(redo.await.unwrap().is_err());
+    let pending = service.history_summary().pending_group.unwrap();
+    assert_eq!(pending.completed_count, 1);
+    assert_eq!(pending.total_count, 4);
+    assert!(pending.retry_allowed);
+    assert!(!pending.outcome_unknown);
+
+    let worker = service.clone();
+    let retry = tokio::spawn(async move { worker.retry_pending_from_ui().await });
+    for (expected_method, expected_params, result) in [
+        ("object.setProperty", json!({"objectId":"fresh-parent","property":"visible","value":true}), json!({"accepted":true,"appliedValue":true})),
+        ("scene.reparentObject", json!({"objectId":"fresh-parent","newParentId":"destination"}), json!({"accepted":true})),
+        ("scene.createObject", json!({"parentId":"fresh-parent"}), json!({"accepted":true,"newId":"fresh-child"})),
+    ] {
+        let (id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, expected_method, "作成済みの親を再作成しない");
+        assert_eq!(Value::Object(params.unwrap()), expected_params);
+        respond(&mut peer, id, result).await;
+    }
+    retry.await.unwrap().unwrap();
+    assert!(!service.history_summary().pending);
+    let undo = queue_history_action(&service, HistoryDirection::Undo);
+    for (expected_method, expected_id) in [
+        ("scene.deleteObject", "fresh-child"),
+        ("scene.reparentObject", "fresh-parent"),
+        ("object.setProperty", "fresh-parent"),
+        ("scene.deleteObject", "fresh-parent"),
+    ] {
+        let (id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, expected_method);
+        assert_eq!(params.unwrap()["objectId"], expected_id);
+        respond(&mut peer, id, json!({"accepted":true,"appliedValue":false})).await;
+    }
+    undo.result().await.unwrap();
+    service.shutdown().await;
+    handle.shutdown().await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn confirmed_queue_cancellation_before_start_sends_no_bridge_request() {
     for reason in ["http", "authorization", "deadline", "generation"] {

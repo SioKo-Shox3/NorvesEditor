@@ -45,28 +45,32 @@ MCP-005で完了したNE03の4〜8は、表の各行に実試験名を記録し�
 
 NE06のRust側試験は `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml` の証拠 `.harness/runs/20261003-035149/verify-MCP-009-3.txt` で確認する。fmt、clippy、IPC名照合、TypeScript型検査も `verify-MCP-009-1.txt`〜`verify-MCP-009-5.txt` に保存する。
 
-## E0〜E3 実HTTP受入の対応と未合格箇所
+## E0〜E3 実HTTP受入の対応と証拠
 
 `scripts/verify-mcp-e2e.ps1` は実mock必須の統合試験とRust単体試験をまとめて実行し、SKIP/ignored/必須成功行の欠落を拒否する。
-2026-10-04の受入は未合格。`.harness/runs/20261004-144511/verify-MCP-028-7.txt` は401単体成功後、
-`real_http_and_mock_share_production_services` が作成依存IDを持つまとまりのMCP redoで失敗し、exit 1となった。
+2026-10-04の保存証拠は `.harness/runs/20261004-144511/verify-MCP-028-B-2.txt`（exit 0）。
+Rust単体404件、実HTTP/実mockの両版シナリオ1件、独立した実mockログ購読1件が成功し、保存出力を開いて確認した。
+自動試験の検証結果であり、ランナーの別文脈評価と実機GUI確認の完了を意味しない。
 
 | 契約 | 試験と今回の証拠 |
 |---|---|
-| NE07 無効・認証・Host/Origin・トークン・終了 | `mcp_e2e::security_case` の実HTTP認証/Host/Originは成功。無効/トークン再生成/終了の統合後段はredo失敗のため未到達。`mcp::runtime::tests` とHTTP寿命試験は401単体の出力で成功 |
-| NE08 能力と2版通知 | 現行Discover/listenの実mock通知を受信。legacy Initializeの新しい全受入は未到達。`current_http_listen_notifies_after_connection_permission_and_disconnect_changes` / `legacy_http_list_changes_are_sent_to_each_peer` は単体内の実HTTPで成功 |
-| NE09 ツリー・snapshot・schema・資産・ページ | `mcp_e2e::read_case` で実mockを解析し、pageSize=1の継続、部分木根parentId=null、maxDepth、入力拒否、資産解決を確認。再接続後cursor拒否の統合後段は未到達。容量/LRU/世代境界は単体で成功 |
-| NE10 ログ | 実HTTPから世代の3件を取得し、afterSequenceで2件へ絞り込む。保持/欠落/世代/購読は単体で成功。独立したmcp_readsはcargoが失敗で打ち切るため、この出力では未実行 |
-| NE11 画像 | 実HTTPからimage/pngのbase64をPNGとして復号し、byteと寸法の上限を確認。縮小と時刻付き一覧の単体試験も成功 |
-| NE12 共通列・履歴・まとまり | 実HTTPの通常値設定とUI undo、名前付きの親作成→複製→新IDの値設定→一回MCP undoまで成功。MCP redoは旧IDの所属検査で拒否されるため不合格。MCP-028-Bで修正後、再採番と次のUI undoまで通す |
-| NE13 モード・範囲・確認 | ReadOnlyの拒否理由/未適用、Enabledの適用、Confirmのmain承認と別窓拒否、部分木外拒否、まとまりundo内の削除確認は実HTTPで成功。`queued_enabled_write_reconfirms_changed_old_value_and_history` は列待ちの変化でEnabledも再確認することを検証 |
-| NE14 記録と確定 | 実HTTP適用のrequestIdと記録/ファイルを照合し、トークン/確認IDの非記録を確認。列前の通常書き込み拒否を確定扱いにするassert、500件/保存上限/rotation/保存失敗は単体で成功 |
+| NE07 無効・認証・Host/Origin・トークン・終了 | `mcp_e2e::security_case` の実HTTP認証/Host/Origin、各版のトークン再生成と旧トークン拒否、無効化時のport閉鎖、HTTP/actor/Bridge終了のjoinが成功 |
+| NE08 能力と2版通知 | 実mockの能力から公開道具を検査し、現行Discover/listenとlegacy Initialize/peerの通知を実受信。`current_http_listen_notifies_after_connection_permission_and_disconnect_changes` / `legacy_http_list_changes_are_sent_to_each_peer` も単体内の実HTTPで成功 |
+| NE09 ツリー・snapshot・schema・資産・ページ | 各版の `mcp_e2e::read_case` で実mockを解析し、pageSize=1の継続、部分木根parentId=null、maxDepth、入力拒否、資産解決を確認。再接続後cursor拒否を実HTTPで検査。容量/LRU/世代境界は単体で成功 |
+| NE10 ログ | 各版の実HTTPから世代の3件を取得し、afterSequenceで2件へ絞り込む。保持/欠落/世代/購読は単体で成功。`real_mock_subscription_burst_is_retained_without_a_ui_or_mcp_client` は環境指定で実mockを起動して成功 |
+| NE11 画像 | 各版の実HTTPからimage/pngのbase64をPNGとして復号し、byteと寸法の上限を確認。縮小と時刻付き一覧の単体試験も成功 |
+| NE12 共通列・履歴・まとまり | 両版の実HTTPで通常値設定とUI undo、begin→groupId付きの親作成→その親への複製→新IDの値設定→end→一回MCP undo/redo→UI undoが成功。親と複製対象の再採番、編集値、終了/再接続後の旧groupId拒否を検査 |
+| NE13 モード・範囲・確認 | 両版でReadOnlyの拒否理由/未適用、Enabledの適用、Confirmのmain承認と別窓拒否、部分木外拒否、まとまりundo内の削除確認、削除の拒否/承認と履歴破棄を検査。`queued_enabled_write_reconfirms_changed_old_value_and_history` は列待ちの変化でEnabledも再確認することを検証 |
+| NE14 記録と確定 | 実HTTP適用のrequestIdと記録/ファイルを照合し、トークン/確認ID/所有者groupIdの非記録を確認。列前の通常書き込み拒否を確定扱いにするassert、500件/保存上限/rotation/保存失敗は単体で成功 |
 | 取消・部分失敗 | `both_http_versions_dispatch_writes_and_return_structured_outcomes` の両版実HTTP取消後の応答/記録、`rejected_single_mcp_undo_is_pending_until_ui_discards_it` の保留/破棄/UI再開、部分成功/不明の再送抑止が単体で成功 |
 | 期限とID | `http_lifetime_both_protocols_enforce_30_and_125_seconds_with_paused_time`、`http_lifetime_cancellation_is_scoped_by_typed_id_and_legacy_session`、`accepted_equal_value_does_not_extend_group_idle_deadline` が成功 |
+| redo認可と列内再検証 | `redo_allows_only_ordered_recreated_dependencies_inside_scope` / `redo_dependencies_do_not_bypass_existing_targets_or_component_membership` は逆順/未知/範囲外/衝突/所属/上限を拒否。`redo_dependency_review_rechecks_scope_and_existing_values` は再作成前の現在値を捏造せず、列内で既存値と範囲を再照合することを検証 |
 | サービスeventによる画面更新 | `EditServiceEvents.integration.test.tsx` と操作記録/確認/履歴のvitestを集約ゲートで実行。699件成功。実機の配置・狭幅・窓間操作は未確認 |
 
-集約ゲートは `verify-MCP-028-1.txt`（exit 0、C++ 8/8、画面699件）、fmtは `-4.txt`（exit 0）、
-通常clippyは `-5.txt`（exit 0）、受入feature付きclippyは `-6.txt`（exit 0）。
-各ファイルにコマンド行とexitを保存した。失敗出力を残し、元の完了条件は変更しない。
+集約ゲートは `verify-MCP-028-1.txt`（exit 0、C++ 8/8、画面699件）、修正後のfmtは
+`verify-MCP-028-B-3.txt`（exit 0）、通常clippyは `verify-MCP-028-9.txt`（exit 0）、
+受入feature付きclippyは `verify-MCP-028-B-4.txt`（exit 0）。各ファイルにコマンド行とexitを保存した。
 
-PowerShell 5.1の出力をUTF-8へ統一した後の `verify-MCP-028-8.txt` でも、401単体成功と同じMCP redo拒否（exit 1）を確認した。日本語の道具応答・エラー文は文字化けせず保存されている。
+初回の `acceptance-MCP-028-4.txt` と `verify-MCP-028-7.txt` / `-8.txt` は、MCP redoが未再作成の旧IDの所属検査で拒否された失敗証拠として保持する。
+修正後も同じ公開MCP redoを使い、再作成順だけを認可へ投影して成功させた。元の完了条件と検証は変更していない。
+PowerShell 5.1でも日本語の道具応答・エラー文をUTF-8で保存する。

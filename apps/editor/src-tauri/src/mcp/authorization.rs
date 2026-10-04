@@ -71,19 +71,14 @@ pub(crate) struct McpHistoryAction {
 }
 
 impl McpHistoryAction {
-    /// redoで再作成する旧ID。利用順と範囲はcheck_historyで別途検証する。
-    pub(crate) fn recreated_ids(&self) -> HashSet<&str> {
-        if self.direction != McpHistoryDirection::Redo {
-            return HashSet::new();
-        }
-        self.records
-            .iter()
-            .filter_map(|record| match record {
+    /// この操作より前に再作成される旧IDだけを解決する。範囲はcheck_historyで検証する。
+    pub(crate) fn recreates_before(&self, position: usize, object_id: &str) -> bool {
+        self.direction == McpHistoryDirection::Redo
+            && self.records.iter().take(position).any(|record| match record {
                 HistoryRecord::Create { created_id, .. }
-                | HistoryRecord::Duplicate { created_id, .. } => Some(created_id.as_str()),
-                _ => None,
+                | HistoryRecord::Duplicate { created_id, .. } => created_id == object_id,
+                _ => false,
             })
-            .collect()
     }
 }
 
@@ -1155,7 +1150,7 @@ mod tests {
         }
         let mut undo = redo(records);
         undo.direction = McpHistoryDirection::Undo;
-        assert!(undo.recreated_ids().is_empty());
+        assert!(!undo.recreates_before(undo.records.len(), "parent"));
         assert!(
             scoped.check_history(&undo).is_err(),
             "undoには未来のIDを許可しない"

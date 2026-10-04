@@ -480,10 +480,10 @@ E4 の各作業は、NorvesLib のアダプタの作業（NorvesLib のロード
 
 根拠: [rmcp の公開依存と機能](https://github.com/modelcontextprotocol/rust-sdk/blob/main/crates/rmcp/Cargo.toml)、[axum](https://docs.rs/crate/axum/0.8.9)、[jsonschema](https://docs.rs/jsonschema/0.58.4/jsonschema/)、[image の復号上限](https://docs.rs/image/0.25.10/image/struct.Limits.html)、[DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata)。
 
-## 12. E0〜E3 の受入と運用上の制限
+## 13. E0〜E3 の受入と運用上の制限
 
-受入は未合格。作成/複製したIDへ値設定したまとまりは、undo後のMCP redoが認可時の旧ID照合で拒否される。
-MCP-028-Bで修正し、実HTTPの両版を含む全ゲートの成功を確認するまでMCP-028は完了としない。
+実HTTPと実mockによる両版の受入は成功している。試験と保存証拠は `mcp-undo-test-mapping.md` に対応付ける。
+自動試験の結果と、以下に示す運用上の制限・未確認の実機表示を区別する。
 
 受入コマンドは `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`。
 既定の実行ファイルは `build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe` で、
@@ -506,6 +506,7 @@ HTTPから作成したIDへの値設定を要求をまたぐまとまりへ入�
 - Enabledでも、列待ち中に旧値・範囲・履歴改訂などが変われば改めて画面確認を求める。画面を見ていない場合は期限切れになる。許可変更は旧要求を取り下げ、同じ要求の再確認を継続しない。旧改訂の確認だけを取り下げるので、新改訂で登録された確認は保護される。
 - 確認コマンドはバックエンドでmainラベルを検査する。Tauri capabilityによる確認専用権限の追加分離は未対応。サーバー停止中はcontrol lockにより承認/拒否の受付が最大2秒待たされる。
 - 名前付きまとまりは128編集、無操作5分、全体15分で閉じる。同値が受理されただけでは無操作期限を延長しない。履歴に積まれた編集だけが延長する。切断、接続世代交替、許可失効、UI操作などの境界で旧groupIdは利用できなくなる。
+- redoの認可は履歴の実行順で検査し、同じまとまりの先行Create/Duplicateが生成するIDだけを後続の対象・親として扱う。逆順参照、未知ID、既存IDとの衝突、範囲外の親・複製元・移動先を拒否する。既存対象のcomponent所属・現在値と範囲は列内でも再照合する。再作成前の対象には現在値がないため、確認表示で保存値を現在値として代用しない。
 - 部分木取得の根の `parentId` はnullで、元のシーン上の親を返さない。cursorは世代固定で、再接続後は再取得が必要。旧世代の遅い読み取りがsnapshot storeの世代を戻し、現行cursorまで失効させる場合がある。古い結果は返さないが、有効だったページの取り直しが必要になる。
 
 ### 適用結果と操作記録
