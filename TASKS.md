@@ -287,14 +287,14 @@ M2 の共通規則:
 - notes: 先行 MCP-003。新規asset.editやasset.saveを作らない。既存capabilityだけを広告する。
 
 ## MCP-018: 読み取り道具と上限付きの続きを実装する
-- status: blocked
+- status: todo
 - done-when: NE09/NE10。状態・能力・ツリー・snapshot・schema・asset一覧/resolve・最近のログを、モックに対する試験で確認する。1応答256KiB/200項目で切り、切った位置と有効なcursorで続きを返す。rootId/maxDepthを相手が無視してもバックエンドで範囲を絞る。世代変更・期限・改竄cursorを拒否する。snapshot保持16MiB、単一項目超過を明示し、非信頼のエンジン文字列をデータとして返す。ツリーはid/parentId/depthを持つ平坦な深さ優先項目。cursorは5分/世代に結び、LRUで16MiB超過時に古いsnapshotを追い出す。追い出し/単一snapshot超過を試験する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - paths: apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/tests/mcp_reads.rs
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_ENGINE_PATH=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test --manifest-path apps/editor/src-tauri/Cargo.toml --test mcp_reads -- --nocapture; exit $LASTEXITCODE"`
-- notes: 先行 MCP-015/MCP-016/MCP-017。実mockを使うmcp_readsをこのタスクで実行する。envなしの通常cargo testではopt-inをSKIPと明示し、env指定の不正パス/起動失敗は必ず失敗させる。cursorをBridgeへ送らない。
+- notes: 先行 MCP-015/MCP-016/MCP-017。実mockを使うmcp_readsをこのタスクで実行する。envなしの通常cargo testではopt-inをSKIPと明示し、env指定の不正パス/起動失敗は必ず失敗させる。cursorをBridgeへ送らない。MCP-022の評価PASS後、別AIへ過去3失敗/評価差戻し1回の証拠を渡して相談済み（.harness/mcp-018-recovery-advisor.log）。旧f2fabdaの応答タスク内shutdownと受信処理の競合が原因で、6feb491の途中保存で順序は修正済みだが、このタスクは未検証のためtodoへ戻す。試験では応答taskがpeerを返し、call_tool後に先にjoinして応答taskのpanicを診断し、strip_prefix失敗では実際のエラー先頭をUTF-8境界で最大256文字だけ表示する。全assertと上限検査を維持し、shutdownは検査後に行う。応答前のshutdownを明示して旧失敗経路を決定的に再現し、接続断とエンジン由来JSONデータを区別する回帰試験を残す。兄弟試験の100ms後shutdownも応答task外へ出し、sleepや成功回数に頼らない。必要な世代送信側は保持し、dispatcherへのbiased追加や製品の停止意味変更はしない。旧評価の英語表示と触ったブロックは規約に合わせる。元のdone-when/verifyは維持し、診断・指定検証・別文脈再評価まで通してからdoneにする。過去の停止/失敗/未評価を隠さず保持する。
 
 ## MCP-019: PNG を検証・縮小して MCP に返す
 - status: done
@@ -395,15 +395,15 @@ M2 の共通規則:
 - verify: `node scripts/check-protocol-names.mjs`
 - verify: `pnpm -r --if-present typecheck`
 - paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/dto.rs, apps/editor/src-tauri/src/protocol_names.rs, bridge/ts/packages/bridge-ui/src/**, bridge/ts/packages/bridge-types/src/**
-- notes: 先行 MCP-025。backend.logと同じディレクトリ、別ファイル。試験は一時ディレクトリ。操作記録の要約はエンジン由来文字列を命令として使わない。
+- notes: 先行 MCP-025。backend.logと同じディレクトリ、別ファイル。試験は一時ディレクトリ。操作記録の要約はエンジン由来文字列を命令として使わない。MCP-023の評価指摘に従い、既存の確認取得/承認/拒否と型をbridge-uiのindexから再公開する（実装は既存commandsを使う）。MCP-027で確認UIの相対パス中継を解消できるようにする。
 
 ## MCP-027: AI の操作パネルと履歴へのリンクを出す
 - status: todo
 - done-when: NE14。AIの操作パネルに時刻・道具・対象・要約・結果・まとまりIDと確認待ちを表示し、取り消し可能なまとまりのリンクで共通列のundoを行う。履歴の順番を飛び越して対象だけを消さず、現在取り消せないリンクは理由とともに無効にする。初期取得・イベント・拒否・部分失敗・ファイル失敗・購読解除のvitestが通る。
 - verify: `pnpm -C apps/editor typecheck`
 - verify: `pnpm -C apps/editor test`
-- paths: apps/editor/src/components/McpOperationsPanel.tsx, apps/editor/src/components/__tests__/McpOperationsPanel.test.tsx, apps/editor/src/components/McpApprovalPanel.tsx, apps/editor/src/hooks/useMcpOperations.ts, apps/editor/src/hooks/__tests__/useMcpOperations.test.tsx, apps/editor/src/shell/**, apps/editor/src/**/*.css, apps/editor/src/components/AppLayout.tsx
-- notes: 先行 MCP-026。既存dockviewのパネル登録方式に揃える。実装工程やモデル名をUIへ書かない。
+- paths: apps/editor/src/components/McpOperationsPanel.tsx, apps/editor/src/components/__tests__/McpOperationsPanel.test.tsx, apps/editor/src/components/McpApprovalPanel.tsx, apps/editor/src/hooks/useMcpOperations.ts, apps/editor/src/hooks/__tests__/useMcpOperations.test.tsx, apps/editor/src/hooks/useMcpApprovals.ts, apps/editor/src/hooks/__tests__/useMcpApprovals.test.tsx, apps/editor/src/shell/**, apps/editor/src/**/*.css, apps/editor/src/components/AppLayout.tsx
+- notes: 先行 MCP-026。既存dockviewのパネル登録方式に揃える。実装工程やモデル名をUIへ書かない。MCP-023の評価指摘もここで閉じる。確認許可の取得失敗後の成功で旧エラーを消し、新しい確認通知を隠さないことをvitestで確認する。MCP-026で再公開したbridge-uiの入口を使い、確認UIの相対パス中継を解消する。許可が未確認の間の承認抑止は維持する。
 
 ## MCP-028: モックと実 HTTP で E0〜E3 の受入試験を実行する
 - status: todo
@@ -413,7 +413,7 @@ M2 の共通規則:
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
 - paths: apps/editor/src-tauri/tests/mcp_e2e.rs, apps/editor/src-tauri/tests/mcp_reads.rs, scripts/verify-mcp-e2e.ps1, docs/mcp-and-edit-layer-requirements.md, docs/mcp-undo-test-mapping.md, docs/architecture.md, docs/adr/0010-backend-edit-service-and-history.md, docs/adr/0011-local-mcp-interface.md
-- notes: 先行 MCP-027。実AppHandleのロードが必要なWryを試験に持ち込まず、製品で使うサービス/HTTP入口を切り出してmock Bridgeと接続する。画面のコマンド/eventはvitestと名前照合で覆う。NorvesLib用e2eを起動しない。未確認の実機表示は明記し、全体確認済みとしない。新規不具合は別タスクとして記録し、受入契約を満たしてからdoneにする。
+- notes: 先行 MCP-027。実AppHandleのロードが必要なWryを試験に持ち込まず、製品で使うサービス/HTTP入口を切り出してmock Bridgeと接続する。画面のコマンド/eventはvitestと名前照合で覆う。NorvesLib用e2eを起動しない。未確認の実機表示は明記し、全体確認済みとしない。新規不具合は別タスクとして記録し、受入契約を満たしてからdoneにする。NEXT_FINDINGSのMCP-022-A/B/022/023の残課題と.harness/mcp-review-follow-up-022-B.md / mcp-review-follow-up-022.mdを照合し、修正済みの証拠か残る挙動・制限を文書と最終報告へ残す。特に現行版の複数クライアント間ID衝突、本文受信30秒と要求全体125秒、Enabledでの再確認、単発MCP undo拒否後の保留/破棄によるUI再開、未送信/拒否/結果不明の区別、本番actorの実mock経路を確認する。元の受入done-whenは縮めない。
 
 ## MCP-029: 管理用ガイドの正本へ所有権とセキュリティを同期する
 - status: todo

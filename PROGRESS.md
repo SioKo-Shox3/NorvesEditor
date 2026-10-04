@@ -53,12 +53,11 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 元の29タスクのうちMCP-001〜MCP-017とMCP-019〜MCP-021の20件、および分割したMCP-022-Aは検証・評価PASS。実行単位は31件。元の完了条件はMCP-022に全て保持する。MCP-018は再検証失敗と評価未完了のためblockedで、MCP-022の評価PASS後に別AIへ失敗原因を相談して再開する。
+- MCP / 編集層の M2: 実行単位31件のうち24件は検証・評価PASS（MCP-001〜017、019〜023、022-A/B）。MCP-018はMCP-022の評価PASS後に別AIへ失敗原因を相談し、todoへ戻した。残りはMCP-018とMCP-024〜029。元の完了条件と検証は維持する。
 
 ## Next
-- MCP-023: 実装と指定検証を完了。反復後の評価はランナーへ委ねる。`LOOP_STOP` の `after-iteration` を検知したため、この反復で終了し次タスクは開始しない。再開時の先行先はMCP-024。MCP確認パネルの実機レイアウト、狭い幅の折り返し、実Tauri窓間の操作は未確認。
-- MCP-022-B: 実装と指定検証は完了。危険地帯の評価はランナーの別文脈評価で行う。MCP-022/MCP-028の列内再検証・開始済み結果保全・最終受入は引き続き別タスク。
-- MCP-022: 実装と指定検証は完了。危険地帯の評価はランナーが反復後に行う。次はMCP-023の画面表示。MCP-024の書き込み公開では `EditService::submit_confirmed_mcp` と `McpEditRequest` を利用し、列外確認と列内再検証を通す。MCP-018の過去の失敗はMCP-022評価PASS後に別AIへ相談し、指定検証と評価を通す。過去の失敗記録は保持する。
+- MCP-018: 相談の推奨A/Bを採用し、現在の停止順序を固定して診断を強める。旧f2fabdaの応答task内shutdownが応答受信に先行した場合を明示的に再現し、接続断を未信頼のエンジンJSONと取り違えない試験を残す。兄弟試験の100ms後shutdownをtask外へ移す。全assert・元の指定検証・実mock・別文脈再評価を維持する。相談ログ.harness/mcp-018-recovery-advisor.logはexit 0で開いた。過去3失敗/評価差戻し1回は保持する。
+- MCP-018の検証・評価後はMCP-024〜029を継続する。MCP-024はEditService::submit_confirmed_mcp/McpEditRequestで列外確認と列内再検証を通す。MCP-022-A/B/022/023の非阻害指摘はNEXT_FINDINGSで追跡し、同じE3の操作記録・画面・受入へ反映する。ユーザーは残る全タスクの完了まで継続を指示済み。自動的なstatus: doneへの変更や失敗記録の破棄はしない。MCP確認パネルの実機レイアウトと実Tauri窓間操作は未確認として残す。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -69,6 +68,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-04 13:10 再開整理: run 20261004-114213はMCP-022-B/022/023の指定検証・評価PASS後、メインが帳簿更新用に予約した反復境界で停止した。ユーザーの停止指示ではない。停止状態と全証拠を保持し、MCP-018をtodoへ戻して最優先に再試行する。MCP-023の再検証はtypecheck exit 0、vitest 31ファイル665件成功、評価PASSを開いた。開始ゲートverify.ps1 -SkipFrontendはexit 0、実出力.harness/mcp-018-requeue-preflight.logを開いた（C++/フロントエンドは対象外）。計画修正だけで製品コードを編集していない。
 - 2026-10-04 MCP-023完了: 確認購読はAppLayoutが所有し、パネルの開閉では解除しない。初期取得より通知を優先し、期限はbackendのexpiresAtを使って表示を消す（UI時計だけで承認/拒否は送らない）。許可取得中/失敗時は承認不可とし、通知とmainへのfocusで再取得する。共通パッケージの入口に承認関数/DTOの再公開が無いため、許可範囲のshell/mcpApprovals.tsで既存commandsとDTOを再公開した。検証初回の未公開importと、画面テストで対象IDが2箇所にある検索条件の失敗は修復済み（-1.txt/-5.txtを保持）。Tauri capabilityでの承認command多層化は今回の範囲外で未対応、GUI実機未確認もMCP-028で追跡する。
 - 2026-10-04 MCP-023着手: 完了条件は許可モード/部分木の設定、dockview確認パネルの対象/前後/出どころ/取り消し可否/全履歴破棄表示、閉じた状態の件数通知、read-onlyで承認非表示、待機中のUI編集継続。承認/拒否/120秒/取消/初期取得競合/購読解除をvitestで検証し、`pnpm -C apps/editor typecheck` と `pnpm -C apps/editor test` の保存出力を開いて判定する。許可パス外の変更または製品判断が必要なら停止する。開始集約ゲートはexit 0、フロントエンド639件成功。GUI実機レイアウトは未確認として残す。
 - 2026-10-04 MCP-022完了: 開始済み要求の失効でfutureを破棄する旧試験はNE13と衝突するため、取消後の適用結果を保持してから列を進める試験へ置換した。実Bridgeのループバック試験でHTTP取消/許可改訂/125秒期限と適用/拒否/5秒Bridge結果不明を組み合わせ、単発作成と多段undoを検査した。初回は試験補助API名の誤り、次はTauri別runtimeとpaused clockの不一致で失敗した。局所相談2件を保存し、試験時だけactorを同じTokio runtimeへ載せて修復、本番の起動方法は維持した。成功証拠は-11.txt、失敗-1.txt/-2.txt/-3.txt/-9.txtも保持する。許可改訂の新登録巻き込みとHTTP終了の誤表示は旧改訂指定の清掃で対応。main commandの多層化・GUI実機表示はMCP-023/MCP-028で未確認、サーバー停止中の最大2秒遅延は残る。NORVES_ENGINE_PATHを既存mockへ指定した実mockは1件/0.52秒、process_e2eは14エントリ成功だがNorvesLib opt-inは未実行。
