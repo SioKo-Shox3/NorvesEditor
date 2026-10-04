@@ -237,17 +237,21 @@ async fn started_confirmed_write_preserves_applied_rejected_and_unknown_results_
             if reason == "deadline" {
                 tokio::time::advance(Duration::from_secs(124)).await;
             }
+            let operations = context.operations.clone();
+            let operation = operations.begin("scene_create_object", &json!({}));
+            let execution = Arc::new(mcp::McpExecution::with_operation(operation, Some(lease.clone())));
             let task_lease = lease.clone();
             let worker = service.clone();
             let task = tokio::spawn(async move {
                 worker
-                    .submit_confirmed_mcp(
+                    .submit_tracked_mcp(
                         context,
                         task_lease,
                         McpEditRequest::Bridge {
                             method: "scene.createObject",
                             params: json!({"kind":"object"}),
                         },
+                        execution,
                     )
                     .await
             });
@@ -287,7 +291,12 @@ async fn started_confirmed_write_preserves_applied_rejected_and_unknown_results_
                 _ => unreachable!(),
             }
             let outcome = next.result().await;
+            let record = operations.snapshot().records.pop().expect("取消後もactorが結果を記録する");
+            assert_eq!(record.outcome, result);
+            assert!(record.actor_finished);
+            assert_eq!(record.completed_count, usize::from(result == "applied"));
             let summary = service.history_summary();
+            assert_eq!(record.pending, summary.pending);
             if result == "unknown" {
                 assert!(outcome.is_err());
                 let pending = summary.pending_group.expect("結果不明を履歴へ保留する");
@@ -335,15 +344,19 @@ async fn cancelled_mcp_undo_keeps_first_bridge_result_and_never_starts_second_de
             let service = Arc::new(service);
             let context = confirmed_context(&service, &["scene.edit", "scene.query"]);
             let lease = auth.current_lease();
+            let operations = context.operations.clone();
+            let operation = operations.begin("edit_undo", &json!({}));
+            let execution = Arc::new(mcp::McpExecution::with_operation(operation, Some(lease.clone())));
             let task_lease = lease.clone();
             let worker = service.clone();
             let mut updates = auth.confirmations().subscribe();
             let task = tokio::spawn(async move {
                 worker
-                    .submit_confirmed_mcp(
+                    .submit_tracked_mcp(
                         context,
                         task_lease,
                         McpEditRequest::History(McpHistoryDirection::Undo),
+                        execution,
                     )
                     .await
             });
@@ -379,6 +392,11 @@ async fn cancelled_mcp_undo_keeps_first_bridge_result_and_never_starts_second_de
                 .expect("後続を入れる");
             assert!(sentinel.result().await.is_err());
             let summary = service.history_summary();
+            let record = operations.snapshot().records.pop().expect("部分成功を記録する");
+            assert_eq!(record.outcome, if unknown { "unknown" } else { "partial" });
+            assert_eq!(record.completed_count, usize::from(!unknown));
+            assert!(record.pending && !record.retry_allowed);
+            assert!(record.display_group_id.is_some());
             let pending = summary.pending_group.expect("未処理の残りを保留する");
             assert_eq!(pending.completed_count, usize::from(!unknown));
             assert_eq!(pending.total_count, 2);

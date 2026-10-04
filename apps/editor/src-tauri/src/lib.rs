@@ -33,7 +33,7 @@ use mcp::McpAuthorization;
 use process_runtime::ProcessState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use workspace::WorkspaceState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -48,6 +48,16 @@ pub fn run() {
             // 配布版にもWARN以上を残せるよう、AppHandle生成後にログ出力先を決める。
             backend_log::init(app.path().app_log_dir().ok());
             let config_dir = app.path().app_config_dir().map_err(std::io::Error::other)?;
+            let operations = mcp::operations::OperationStore::new(app.path().app_log_dir().ok());
+            let operation_app = app.handle().clone();
+            operations.set_sink(Arc::new(move |payload| {
+                let _ = operation_app.emit_to(
+                    tauri::EventTarget::webview_window("main"),
+                    protocol_names::events::MCP_OPERATIONS_CHANGED,
+                    payload,
+                );
+            }));
+            app.manage(operations.clone());
             let authorization = McpAuthorization::default();
             let bridge = app.state::<BridgeState>();
             let edit_service = EditService::new_with_app_and_authorization(
@@ -59,7 +69,8 @@ pub fn run() {
             crate::mcp::reads::McpReadContext::install_default(
                 bridge
                     .mcp_read_context()
-                    .with_history_source(history_source),
+                    .with_history_source(history_source)
+                    .with_operations(operations),
             );
             app.manage(edit_service);
             let mcp_runtime =
@@ -108,6 +119,7 @@ pub fn run() {
             mcp::runtime::set_mcp_settings,
             mcp::runtime::set_mcp_write_access,
             mcp::runtime::get_mcp_confirmations,
+            mcp::runtime::get_mcp_operations,
             mcp::runtime::approve_mcp_confirmation,
             mcp::runtime::reject_mcp_confirmation,
             mcp::runtime::get_mcp_token,

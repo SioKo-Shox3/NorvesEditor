@@ -57,6 +57,7 @@ pub(crate) mod confirmation;
 #[allow(dead_code)]
 pub(crate) mod images;
 pub mod log_buffer;
+pub(crate) mod operations;
 pub(crate) mod reads;
 mod request_lifetime;
 pub mod runtime;
@@ -1788,7 +1789,36 @@ impl ServerHandler for McpServerHandler {
             return request_lifetime::run_write(&context, self.call_tool_inner(request, &context))
                 .await;
         }
-        request_lifetime::run(&context, self.call_tool_inner(request, &context)).await
+        let mut capture = if let Self::ReadTools(reads) = self {
+            Some(operations::ReadCapture {
+                operation: reads.operations.begin(
+                    &request.name,
+                    &request
+                        .arguments
+                        .clone()
+                        .map(Value::Object)
+                        .unwrap_or(Value::Null),
+                ),
+                lease: request_authorization_from_context(&context),
+                finished: false,
+            })
+        } else {
+            None
+        };
+        let result = request_lifetime::run(&context, self.call_tool_inner(request, &context)).await;
+        if let Some(capture) = &mut capture {
+            let status = match &result {
+                Ok(rmcp::model::CallToolResponse::Complete(response))
+                    if response.is_error != Some(true) =>
+                {
+                    "success"
+                }
+                Err(error) if error.code == rmcp::model::ErrorCode::METHOD_NOT_FOUND => "rejected",
+                _ => "failed",
+            };
+            capture.finish(status);
+        }
+        result
     }
 }
 

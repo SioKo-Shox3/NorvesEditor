@@ -4,6 +4,7 @@ mod writes_tests {
     use crate::mcp::{tool_catalog::WritePermission, writes::McpWriteService};
 
     include!("groups_tests.rs");
+    include!("operations_tests.rs");
 
     const ALL_CAPABILITIES: &[&str] = &[
         "scene.query",
@@ -181,6 +182,7 @@ mod writes_tests {
                 );
             }
             let context = public_context(&service, ALL_CAPABILITIES);
+            let operations = context.operations.clone();
             assert!(context.get_tool(name).is_some(), "{name}");
             let lease = auth.current_lease();
             let mut updates = auth.confirmations().subscribe();
@@ -212,6 +214,10 @@ mod writes_tests {
                 .as_str()
                 .expect("表示ID")
                 .starts_with("mcp-write-"));
+            let record = operations.snapshot().records.pop().expect("操作記録がある");
+            assert_eq!(record.request_id, result["requestId"]);
+            assert_eq!(record.outcome, "applied");
+            assert!(record.actor_finished);
             let summary = service.history_summary();
             if name.starts_with("runtime_")
                 || name.starts_with("component_")
@@ -278,6 +284,7 @@ mod writes_tests {
                     ALL_CAPABILITIES
                 },
             );
+            let operations = context.operations.clone();
             if reason == "readOnly" {
                 auth.set_write_settings(McpWriteSettings::default())
                     .expect("読み取り専用にする");
@@ -325,6 +332,10 @@ mod writes_tests {
             assert_eq!(response.is_error, Some(true));
             let payload = data(response);
             assert_eq!(payload["outcome"], "notApplied", "{reason}");
+            let record = operations.snapshot().records.pop().expect("未送信の記録がある");
+            assert_eq!(record.request_id, payload["requestId"]);
+            assert_eq!(record.outcome, "notApplied");
+            assert_eq!(record.result, if reason == "expired" { "timedOut" } else if reason == "cancelled" { "cancelled" } else { "rejected" });
             let detail = payload["detail"].as_str().expect("拒否理由がある");
             let expected = match reason {
                 "readOnly" => "読み取り専用",
@@ -364,6 +375,7 @@ mod writes_tests {
                     test_service_with_peer_and_authorization(8, auth.clone());
                 let service = Arc::new(service);
                 let context = public_context(&service, ALL_CAPABILITIES);
+                let operations = context.operations.clone();
                 let lease = auth.current_lease();
                 let task = tokio::spawn(async move {
                     context
@@ -394,6 +406,10 @@ mod writes_tests {
                 let response = task.await.expect("結果が返る");
                 assert_eq!(response.is_error, Some(true));
                 let payload = data(response);
+                let record = operations.snapshot().records.pop().expect("失敗結果を記録する");
+                assert_eq!(record.request_id, payload["requestId"]);
+                assert_eq!(record.outcome, payload["outcome"]);
+                if failure == "timeout" { assert_eq!(record.result, "timedOut"); }
                 let rejected = matches!(failure, "rejected" | "engineError");
                 assert_eq!(
                     payload["outcome"],
@@ -507,7 +523,15 @@ mod writes_tests {
             .call_write_tool("edit_undo", json!({}), Some(auth.current_lease()))
             .await;
         let _peer = responder.await.expect("拒否応答が完了する");
-        assert_eq!(data(response)["outcome"], "rejected");
+        let payload = data(response);
+        assert_eq!(payload["outcome"], "rejected");
+        assert_eq!(payload["pending"], true);
+        assert_eq!(payload["retryAllowed"], true);
+        let record = context.operations.snapshot().records.pop().expect("保留記録がある");
+        assert_eq!(record.request_id, payload["requestId"]);
+        assert_eq!(record.outcome, "rejected");
+        assert!(record.pending && record.retry_allowed);
+        assert!(record.summary.contains("保留"));
         let pending = service
             .history_summary()
             .pending_group
@@ -637,6 +661,8 @@ mod writes_tests {
                 .load_or_create(&directory)
                 .expect("試験トークンを作る");
             let bearer = token.expose();
+            let operations = crate::mcp::operations::OperationStore::new(Some(directory.clone()));
+            let context = context.with_operations(operations.clone());
             let server = McpHttpServer::test_with_reads(
                 listener,
                 Arc::new(McpHttpAuth::with_authorization(token, auth)),
@@ -696,10 +722,12 @@ mod writes_tests {
                 }
             }
             let mut display_ids = Vec::new();
-            for (id, name, outcome) in [
-                (1, "runtime_play", "applied"),
-                (2, "runtime_pause", "rejected"),
-                (3, "runtime_stop", "unknown"),
+            for (id, name, outcome, cancel) in [
+                (1, "runtime_play", "applied", false),
+                (2, "runtime_pause", "rejected", false),
+                (4, "runtime_play", "applied", true),
+                (5, "runtime_pause", "rejected", true),
+                (3, "runtime_stop", "unknown", false),
             ] {
                 let mut body = json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":{"params":{}}}});
                 if version == "2026-07-28" {
@@ -723,6 +751,43 @@ mod writes_tests {
                 });
                 let (bridge_id, method, _) = next_request(&mut peer).await;
                 assert_eq!(method, name.replace('_', "."));
+                if cancel {
+                    let before_revision = operations.snapshot().revision;
+                    let mut cancellation = client.post(&url).bearer_auth(&bearer)
+                        .header("Accept", "application/json, text/event-stream")
+                        .header("Mcp-Method", "notifications/cancelled")
+                        .header("Mcp-Protocol-Version", version)
+                        .json(&json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id}}));
+                    if let Some(session) = &session { cancellation = cancellation.header("Mcp-Session-Id", session); }
+                    let response = cancellation.send().await.expect("取消通知が届く");
+                    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+                    response.bytes().await.expect("取消応答を読む");
+                    let _ = task.await.expect("HTTP取消が終了する");
+                    // 旧版はHTTPを先に閉じる場合がある。対象要求の記録まで明示的に同期する。
+                    let before = tokio::time::timeout(Duration::from_secs(2), async {
+                        loop {
+                            let snapshot = operations.snapshot();
+                            if snapshot.revision > before_revision {
+                                if let Some(record) = snapshot.records.last().filter(|record| record.tool == name && record.outcome == "unknown") {
+                                    break record.clone();
+                                }
+                            }
+                            tokio::task::yield_now().await;
+                        }
+                    }).await.expect("取消された要求の結果不明記録が届く");
+                    assert_eq!(before.outcome, "unknown");
+                    assert!(service.history_lock_available());
+                    respond(&mut peer, bridge_id, json!({"accepted":outcome == "applied"})).await;
+                    service.enqueue_from_ui(EditKind::Edit, |_| async { success(Value::Null) })
+                        .expect("結果確定を待つ番兵を入れる").result().await.expect("actorが結果を確定する");
+                    let after = operations.snapshot().records.pop().expect("確定記録がある");
+                    assert_eq!(after.request_id, before.request_id);
+                    assert_eq!(after.outcome, outcome);
+                    assert!(after.actor_finished);
+                    assert!(!after.automatic_retry_allowed);
+                    assert!(tokio::time::timeout(Duration::from_millis(10), peer.recv()).await.is_err());
+                    continue;
+                }
                 if outcome == "unknown" {
                     handle.shutdown().await;
                 } else {
@@ -749,6 +814,13 @@ mod writes_tests {
                 display_ids.push(payload["requestId"].as_str().expect("表示ID").to_owned());
             }
             assert!(display_ids.windows(2).all(|pair| pair[0] != pair[1]));
+            let records = operations.snapshot().records;
+            for id in &display_ids { assert!(records.iter().any(|record| &record.request_id == id)); }
+            let file = std::fs::read_to_string(directory.join("mcp-operations.jsonl")).expect("実HTTP操作の保存を読む");
+            assert!(!file.contains(&bearer));
+            assert!(!file.contains(group_id.as_str().expect("所有者秘密")));
+            assert!(records[0].display_group_id.is_some());
+            assert_eq!(records[0].display_group_id, records[1].display_group_id);
             assert!(!service.history_summary().can_undo);
             shutdown.cancel();
             server_task

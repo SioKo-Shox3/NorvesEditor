@@ -460,3 +460,34 @@ mod tests {
         );
     }
 }
+
+/// 操作の安全な要約。任意の引数・応答本文・所有者IDを保持しない。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOperationDto {
+    pub request_id: String,
+    pub session_id: String,
+    pub timestamp: u64,
+    pub tool: String,
+    /// 対象の種類と起動内で比較できる指紋。生の対象IDではない。
+    pub target: String,
+    pub summary: String,
+    pub result: String,
+    pub outcome: String,
+    pub display_group_id: Option<String>,
+    pub completed_count: usize,
+    pub pending: bool,
+    pub retry_allowed: bool,
+    pub automatic_retry_allowed: bool,
+    pub actor_finished: bool,
+}
+
+/// 初期取得と更新通知は同じ有界snapshot。古い改訂の到着はUI側で無視できる。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOperationsDto {
+    pub session_id: String,
+    pub revision: u64,
+    pub records: Vec<McpOperationDto>,
+    pub storage_error: Option<String>,
+}

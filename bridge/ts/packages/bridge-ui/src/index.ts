@@ -46,7 +46,7 @@ export async function subscribeEvent<TPayload>(
 // Re-export bridge-types for consumer convenience.
 export type * from '@norves/bridge-types';
 
-// Re-export IPC name constants and derived types (P3).
+// IPC名と型付きcommandを公開する。
 export {
   BRIDGE_COMMANDS,
   workspaceOpen,
@@ -76,6 +76,10 @@ export {
   getMcpSettings,
   setMcpSettings,
   setMcpWriteAccess,
+  getMcpOperations,
+  getMcpConfirmations,
+  approveMcpConfirmation,
+  rejectMcpConfirmation,
   getMcpToken,
   regenerateMcpToken,
   type BridgeCommandName,
@@ -85,7 +89,7 @@ export {
   type BridgeEventName,
 } from './events.js';
 
-// Re-export IPC contract types (P6).
+// バックエンドと共通のIPC契約型を公開する。
 export type {
   AssetEntry,
   AssetManifestResult,
@@ -99,6 +103,9 @@ export type {
   McpSettingsPayload,
   McpTokenPayload,
   McpWriteMode,
+  McpConfirmationRequest,
+  McpOperation,
+  McpOperationsPayload,
   WorkspacePayload,
   UiPropertyCapture,
   UiParentCapture,

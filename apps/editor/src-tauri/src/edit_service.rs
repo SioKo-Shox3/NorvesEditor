@@ -55,9 +55,11 @@ enum QueuedAction {
 enum GroupControl {
     BeginNamed {
         name: String,
+        execution: Arc<mcp::McpExecution>,
     },
     EndNamed {
         secret: String,
+        execution: Arc<mcp::McpExecution>,
     },
     CloseFailed {
         token: u64,
@@ -1411,7 +1413,97 @@ async fn run_actor(
     }
 }
 
+// HTTP応答の受信者が消えても、actorが確定した結果を同じ要求IDへ残す。
+// 一時的な結果チャネルは同じactor内だけで完結し、別taskや無界の待ち列を作らない。
+struct McpActorCapture {
+    execution: Arc<mcp::McpExecution>,
+    history: Arc<StdMutex<HistoryState>>,
+    finished: bool,
+}
+
+impl Drop for McpActorCapture {
+    fn drop(&mut self) {
+        if !self.finished {
+            let history = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .summary();
+            self.execution.record_result(
+                false,
+                Some(&BackendError::EditServiceStopping),
+                true,
+                Some(&history),
+            );
+        }
+    }
+}
+
 async fn process_item(
+    bridge: &BridgeFacade,
+    sessions: &mut watch::Receiver<Option<BridgeLease>>,
+    shutdown: &mut watch::Receiver<bool>,
+    auth_changes: &mut watch::Receiver<u64>,
+    history: &Arc<StdMutex<HistoryState>>,
+    event_sink: Option<&EditEventSink>,
+    mut item: QueueItem,
+) -> bool {
+    let execution = item
+        .mcp_permit
+        .as_ref()
+        .map(|permit| permit.execution.clone())
+        .or_else(|| match &item.action {
+            QueuedAction::Group(
+                GroupControl::BeginNamed { execution, .. }
+                | GroupControl::EndNamed { execution, .. },
+            ) => Some(execution.clone()),
+            _ => None,
+        });
+    let Some(execution) = execution else {
+        return process_item_inner(
+            bridge,
+            sessions,
+            shutdown,
+            auth_changes,
+            history,
+            event_sink,
+            item,
+        )
+        .await;
+    };
+    let mut capture = McpActorCapture {
+        execution: execution.clone(),
+        history: history.clone(),
+        finished: false,
+    };
+    let (sender, mut receiver) = oneshot::channel();
+    let reply = std::mem::replace(&mut item.result, sender);
+    let stopping = process_item_inner(
+        bridge,
+        sessions,
+        shutdown,
+        auth_changes,
+        history,
+        event_sink,
+        item,
+    )
+    .await;
+    let result = receiver
+        .try_recv()
+        .unwrap_or(Err(BackendError::EditServiceStopping));
+    if !matches!(result, Ok(QueueOutcome::Reconfirm)) {
+        let summary = history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .summary();
+        execution.record_result(result.is_ok(), result.as_ref().err(), true, Some(&summary));
+    }
+    capture.finished = true;
+    let _ = reply.send(result);
+    stopping
+}
+
+async fn process_item_inner(
     bridge: &BridgeFacade,
     sessions: &mut watch::Receiver<Option<BridgeLease>>,
     shutdown: &mut watch::Receiver<bool>,
@@ -1594,6 +1686,19 @@ async fn process_item(
         (prepared_action, history_before)
     };
 
+    if let Some(trace) = &mcp_execution {
+        if let Some(plan) = &prepared_action {
+            trace.display_group(history::group_id(
+                plan.group.key.generation,
+                plan.group.key.sequence,
+            ));
+        } else if prepared_history.is_some() || item.group_token.is_some() {
+            trace.display_group(history::group_id(
+                item.lease.generation,
+                item.group_token.unwrap_or(item.sequence),
+            ));
+        }
+    }
     let grouped_action = prepared_action
         .as_ref()
         .is_some_and(|action| action.grouped || retry_action || item.source == EditSource::Mcp);
@@ -1891,12 +1996,19 @@ fn process_control_item(
         }
         state.expire_group();
         match item.action {
-            QueuedAction::Group(GroupControl::BeginNamed { name }) => {
+            QueuedAction::Group(GroupControl::BeginNamed { name, execution }) => {
                 let value = state.begin_named_group(item.sequence, name, item.lease.generation)?;
+                execution.display_group(history::group_id(item.lease.generation, item.sequence));
+                execution.control_finished();
                 Ok(QueuedEditResult::plain(value))
             }
-            QueuedAction::Group(GroupControl::EndNamed { secret }) => {
+            QueuedAction::Group(GroupControl::EndNamed { secret, execution }) => {
+                let group = state.active_display_group_id();
                 state.end_named_group(&secret)?;
+                if let Some(group) = group {
+                    execution.display_group(group);
+                }
+                execution.control_finished();
                 Ok(QueuedEditResult::plain(serde_json::json!({"closed":true})))
             }
             QueuedAction::Group(GroupControl::Boundary { secret, keep }) => {

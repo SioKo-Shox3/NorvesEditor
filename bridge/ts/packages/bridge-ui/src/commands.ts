@@ -19,6 +19,7 @@ import type {
   EditDiscardResult,
   EngineSettingsPayload,
   McpSettingsPayload,
+  McpOperationsPayload,
   McpConfirmationRequest,
   McpTokenPayload,
   McpWriteMode,
@@ -72,6 +73,7 @@ export const BRIDGE_COMMANDS = {
   setMcpSettings: 'set_mcp_settings',
   setMcpWriteAccess: 'set_mcp_write_access',
   getMcpConfirmations: 'get_mcp_confirmations',
+  getMcpOperations: 'get_mcp_operations',
   approveMcpConfirmation: 'approve_mcp_confirmation',
   rejectMcpConfirmation: 'reject_mcp_confirmation',
   getMcpToken: 'get_mcp_token',
@@ -87,6 +89,11 @@ export const BRIDGE_COMMANDS = {
 
 /** Union of all valid Tauri command name strings. */
 export type BridgeCommandName = (typeof BRIDGE_COMMANDS)[keyof typeof BRIDGE_COMMANDS];
+
+/** 操作記録と保存エラーを取得する。更新通知より古いrevisionは無視する。 */
+export function getMcpOperations(): Promise<McpOperationsPayload> {
+  return invoke(BRIDGE_COMMANDS.getMcpOperations);
+}
 
 /** 承認待ち確認をmain画面で取得する。 */
 export function getMcpConfirmations(): Promise<McpConfirmationRequest[]> {

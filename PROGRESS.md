@@ -4,6 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
+- MCP-026: 操作の時刻・道具・対象指紋・固定要約・結果・表示まとまりIDを有界500件のsnapshotへ記録し、mainへの通知と初期取得を追加。app_log_dir/mcp-operations.jsonlへ実行中も1MiB×2世代で保存し、保存失敗をsnapshotへ表示する。要求IDに起動識別を含め、所有者groupId/確認ID/トークン/本文を記録しない。HTTP取消後のactor確定を同じIDへ反映し、未送信・拒否・適用済み・部分成功・結果不明・期限・単発undo拒否後の保留を整合させた。両版の実HTTP取消、列待ち取消、保留破棄後のUI再開、秘密非記録、rotation/保持上限を検証。bridge-uiから操作記録と既存確認command/DTOを公開。指定5ゲートはexit 0、Rust単体399件・実mock読み取り1件（0.53秒）・process_e2e 14件、bridge-ui45件成功。保存出力 `.harness/runs/20261004-144511/verify-MCP-026-3.txt`〜`-5.txt` / `-9.txt`〜`-11.txt` を開いて確認した。評価は反復後にランナーが行う。
 - MCP-025: edit_begin_group/edit_end_groupとparams外枠のgroupIdを公開。OS乱数256 bitの秘密を表示IDから分離し、共通列で所持・期限・世代を照合する。128編集/無操作5分/全体15分、IDなし/別ID/UI/undo/redo/非取り消し操作、認証失効/無効化/Bridge切断/世代変更で閉鎖。end前のUI undo、逆順undo/順redo、部分失敗と未処理部分からの再試行、まとまり内redo依存ID置換を検証した。両版の実HTTPで要求をまたぐ開始/終了・旧ID拒否を確認。指定fmt/clippy/cargo testはexit 0、Rust単体392件・実mock1件（0.52秒）・プロセス統合14件成功。保存出力 `.harness/runs/20261004-131449/verify-MCP-025-9.txt`〜`-11.txt` を開いて確認した。別文脈評価は反復後にランナーが行う。
 - MCP-024: 値設定/create/duplicate/reparent/delete/component付け外し/undo/redo/play/pause/stopの12道具を、許可・確認・列内再検証を通す共通編集サービスへ接続した。MCP起源の単発履歴とUI undo、Ctrl+Z、確認待ち中のUI操作、拒否理由と未適用、componentの非取り消し表示、runtimeの既存履歴保全を試験。両版の実HTTPで適用/拒否/Bridge切断の結果不明を確認し、結果に表示用requestId・自動再送禁止・確認済み件数を返す。列開始直後の取消も未適用と断言しない。指定fmt/clippy/cargo test/pnpm testはexit 0、Rust単体381件・実mock読み取り1件（0.53秒）・フロントエンド667件成功。保存出力 `.harness/runs/20261004-131449/verify-MCP-024-8.txt` / `-11.txt`〜`-13.txt` を開いて確認した。別文脈評価は反復後にランナーが行う。
 - MCP-018差し戻し対応: 応答taskがpeerを返し、call_tool完了→taskのjoin→結果の検査→shutdownの順に固定した。エラー先頭は失敗時だけUTF-8の文字境界で最大256文字を診断し、JSON/文字列/byte上限の全assertを維持。応答前停止の回帰試験で接続断を決定的に再現し、エンジン由来JSONやmessageと区別した。範囲検査・ツリー・資産manifestの兄弟試験も停止をtask外へ移した。指定fmt/clippy/cargo test/実mock mcp_readsは全てexit 0、Rust単体373件と実mock1件（0.52秒）成功。保存出力 `.harness/runs/20261004-131449/verify-MCP-018-1.txt`〜`-7.txt` を開いて確認した。別文脈評価は反復後にランナーが実施する。
@@ -56,10 +57,10 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 元の29機能を分割した実行単位32件のうち27件は検証・評価PASS（MCP-001〜025、022-A/B）。残りはMCP-026/027/028-A/028/029。MCP-018の過去3失敗/評価差戻し1回、MCP-022の過去2回の40分超過と未評価の履歴は保持し、現在のPASSと区別する。元の完了条件と検証は維持する。
+- MCP / 編集層の M2: 元の29機能を分割した実行単位32件のうち27件は検証・評価PASS（MCP-001〜025、022-A/B）。MCP-026は実装・指定検証済みで評価はランナーが行う。残りはMCP-027/028-A/028/029。MCP-018の過去3失敗/評価差戻し1回、MCP-022の過去2回の40分超過と未評価の履歴は保持し、現在のPASSと区別する。元の完了条件と検証は維持する。
 
 ## Next
-- MCP-026から継続する。公開入口mcp/writes.rs、結果追跡edit_service/mcp.rs、秘密と期限edit_service/groups.rs/history.rsを使い、NE14でrequestIdと操作記録を対応させる。HTTP取消後の開始済み結果と保留も整合させるため、必要なactor側の捕捉を許可pathsへ含めた。秘密groupId/確認IDを残さずdisplayGroupIdを使う。MCP-027で画面、MCP-028で実mock/両版実HTTP、MCP-029で正本ガイド同期を完成させる。
+- MCP-027へ進む。bridge-uiのgetMcpOperations/McpOperationsPayload/BRIDGE_EVENTS.mcpOperationsChangedを使い、sessionIdとrevisionで初期取得と通知の前後を判定する。記録は現在の起動の最新500件で、過去起動分はJSONLだけに残す。resultは要求終了理由、outcomeは実適用状態。履歴へのリンクは同一起動のdisplayGroupIdで照合し、対象は生IDを含まない指紋。getMcpConfirmations/approveMcpConfirmation/rejectMcpConfirmation/McpConfirmationRequestもindexから利用できる。GUI実機の表示確認は未実施。
 - MCP-028の計画済みの共通入口切り出しをMCP-028-Aへ独立させ、製品mcp/edit_service/bridge_state/libとmanifestの最小許可パスを補った。Aで本番と実mockの同じ入口を最小試験で証明し、元のMCP-028で全受入シナリオと文書を閉じる。新しい機能やcrate/系列を足さず、cfg(test)専用の別実装で合格にしない。評価残課題はNEXT_FINDINGSと各.harness/mcp-review-follow-upで追跡する。既存タスクの全done-when/verifyを維持し、ユーザーの継続指示どおり残り4機能/5実行単位を完成させる。GUI実機のレイアウトとTauri窓間操作は未確認として残す。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
@@ -71,6 +72,7 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-04 MCP-026: 対象文字列にも秘密が入り得るため、保存する対象は種類と起動内の指紋（512B超は省略）とした。要約・道具名は固定語彙、記録は最大500件、保存は1MiB×現行/前世代。期限後にactorが適用を確認した場合はresult=timedOut/outcome=appliedを併記する。初期の試験失敗はrotation試験の投入量不足、確認取消分類、実HTTP試験のMcp-Method不足。相談 `advisor-MCP-026.txt` の推奨に従い、分類をMcpExecutionへ集約し、旧版HTTPの終了と記録生成を独立に同期した。失敗出力-1/-2を保持する。最終ゲート出力は保存後に全て開いた。実mockはNORVES_ENGINE_PATHを明示、NorvesLib固有opt-inとGUI実機は未確認。
 - 2026-10-04 14:40 再開整理: run 20261004-131449はMCP-018/024/025の指定検証・評価PASS後、メインが予約した反復境界で停止した。停止状態と全証拠を保持し、次はMCP-026。MCP-025のfmt/clippy/cargo testの再検証と392単体、環境指定の実mock1件（0.52秒）の保存出力、評価PASSを開いた。開始ゲートverify.ps1 -SkipFrontendはexit 0、.harness/mcp-final-plan-preflight.logを開いた（C++/フロントエンドは対象外）。計画修正だけで製品コードを編集していない。
 - 2026-10-04 MCP-025判断: 単調時計で期限を管理し、成功した編集でのみ無操作期限を更新する。失敗した編集は成功済み部分を閉じ、誤ったendは他のまとまりを閉じない。redo対象がなくても開いたまとまりは閉じる。確認中のUI割込み後は旧IDの再開を拒否する。初回の新規試験で通知read lock保持による競合とredo無対象時の閉鎖漏れを検出して修正。旧値取得失敗試験はsnapshotへの明示エラー応答を使う。最終指定3ゲートは全て成功、実mock環境を明示しSKIPなし。GUI実機確認は行っていない。
 - 2026-10-04 MCP-025実装前: NE12/NE06の秘密groupId所持・表示ID分離、共通列での開始/終了/割込み閉鎖、128編集/無操作5分/全体15分、認証失効/切断/世代変更、まとまりundo/redoと部分失敗を完了条件として試験する。指定fmt/clippy/cargo testの出力を保存して開く。許可paths外・破壊的変更・製品判断が必要なら停止する。開始verify.ps1はexit 0、保存出力の全ゲート成功を確認した。

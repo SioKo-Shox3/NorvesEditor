@@ -12,15 +12,92 @@ pub(super) struct QueuedMcpPermit {
     pub(super) execution: Arc<McpExecution>,
 }
 
-/// 表示用要求ごとの送信境界と確認済み件数。承認IDや認証情報は保持しない。
+/// 表示用要求ごとの送信境界と確認済み件数。記録DTOへ承認IDや認証情報を渡さない。
 #[derive(Default)]
 pub(crate) struct McpExecution {
     state: AtomicU8,
     completed: std::sync::atomic::AtomicUsize,
     queue_state: StdMutex<Option<Arc<AtomicU8>>>,
+    operation: Option<crate::mcp::operations::OperationHandle>,
+    request_lease: Option<McpRequestLease>,
 }
 
 impl McpExecution {
+    pub(crate) fn with_operation(
+        operation: crate::mcp::operations::OperationHandle,
+        request_lease: Option<McpRequestLease>,
+    ) -> Self {
+        Self {
+            operation: Some(operation),
+            request_lease,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn operation_snapshot(&self) -> Option<crate::dto::McpOperationDto> {
+        self.operation
+            .as_ref()
+            .map(|operation| operation.snapshot())
+    }
+
+    pub(super) fn display_group(&self, group: String) {
+        if let Some(operation) = &self.operation {
+            operation.group(group);
+        }
+    }
+
+    pub(super) fn control_finished(&self) {
+        self.state.store(3, Ordering::Release);
+    }
+
+    pub(crate) fn record_result(
+        &self,
+        success: bool,
+        error: Option<&BackendError>,
+        actor_finished: bool,
+        history: Option<&EditHistorySummaryDto>,
+    ) {
+        if actor_finished {
+            // actorが戻った後なら、Bridge送信境界に達しなかったことを確定できる。
+            let _ = self
+                .state
+                .compare_exchange(0, 4, Ordering::AcqRel, Ordering::Acquire);
+        }
+        let Some(operation) = &self.operation else {
+            return;
+        };
+        let outcome = self.outcome(success);
+        let result = crate::mcp::operations::result_kind(
+            outcome,
+            error,
+            self.request_lease
+                .as_ref()
+                .is_some_and(|lease| tokio::time::Instant::now() >= lease.request_deadline()),
+        );
+        // 確認待ちの取消はRequest型でも返るため、説明文から原因を推測しない。
+        let result = if outcome == "notApplied"
+            && result != "timedOut"
+            && self
+                .request_lease
+                .as_ref()
+                .is_some_and(|lease| !lease.is_current() && lease.is_authorization_current())
+        {
+            "cancelled"
+        } else {
+            result
+        };
+        operation.finish(crate::mcp::operations::OperationUpdate {
+            result,
+            outcome,
+            completed: self.completed(),
+            pending: history.is_some_and(|history| history.pending),
+            retry_allowed: history
+                .and_then(|history| history.pending_group.as_ref())
+                .is_some_and(|pending| pending.retry_allowed),
+            actor_finished,
+        });
+    }
+
     pub(super) fn track_queue(&self, queue_state: Arc<AtomicU8>) {
         *self
             .queue_state
@@ -138,7 +215,10 @@ impl EditService {
                     return self
                         .submit_group_control(
                             &lease,
-                            GroupControl::BeginNamed { name: name.clone() },
+                            GroupControl::BeginNamed {
+                                name: name.clone(),
+                                execution: execution.clone(),
+                            },
                         )
                         .await;
                 }
@@ -148,6 +228,7 @@ impl EditService {
                             &lease,
                             GroupControl::EndNamed {
                                 secret: group_id.clone(),
+                                execution: execution.clone(),
                             },
                         )
                         .await;

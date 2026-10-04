@@ -136,6 +136,7 @@ pub(crate) struct McpReadContext {
     bridge: BridgeFacade,
     pub(super) catalog: McpToolCatalog,
     pub(super) writes: Option<Arc<super::writes::McpWriteService>>,
+    pub(crate) operations: super::operations::OperationStore,
     logs: Arc<StdMutex<LogBuffer>>,
     snapshots: Arc<Mutex<ReadSnapshotStore>>,
     thumbnails: McpThumbnailService,
@@ -157,6 +158,7 @@ impl McpReadContext {
             bridge,
             catalog,
             writes: None,
+            operations: super::operations::OperationStore::default(),
             logs,
             snapshots: Arc::new(Mutex::new(ReadSnapshotStore::default())),
             thumbnails,
@@ -179,6 +181,11 @@ impl McpReadContext {
         source: Arc<dyn Fn() -> EditHistoryConfirmationSnapshot + Send + Sync + 'static>,
     ) -> Self {
         self.history_source = Some(source);
+        self
+    }
+
+    pub(crate) fn with_operations(mut self, operations: super::operations::OperationStore) -> Self {
+        self.operations = operations;
         self
     }
 

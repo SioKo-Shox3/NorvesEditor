@@ -1,9 +1,6 @@
 //! 公開書き込み道具を共通編集サービスへ渡し、送信境界に基づく結果を返す。
 
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 
 use rmcp::model::{CallToolResult, ContentBlock, ResultType};
 use serde_json::{json, Value};
@@ -25,7 +22,17 @@ use super::{
     McpRequestLease,
 };
 
-static NEXT_DISPLAY_ID: AtomicU64 = AtomicU64::new(1);
+/// 呼出futureがHTTP側で破棄された場合も、判明している送信状態を記録する。
+struct WriteCapture(Arc<McpExecution>, bool);
+
+impl Drop for WriteCapture {
+    fn drop(&mut self) {
+        if !self.1 {
+            self.0
+                .record_result(false, Some(&BackendError::EditCancelled), false, None);
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) enum McpWriteService {
@@ -68,14 +75,15 @@ impl McpReadContext {
         arguments: Value,
         lease: Option<McpRequestLease>,
     ) -> CallToolResult {
-        let request_id = format!(
-            "mcp-write-{}",
-            NEXT_DISPLAY_ID.fetch_add(1, Ordering::Relaxed)
-        );
-        let execution = Arc::new(McpExecution::default());
+        let operation = self.operations.begin(name, &arguments);
+        let request_id = operation.snapshot().request_id;
+        let execution = Arc::new(McpExecution::with_operation(operation, lease.clone()));
+        let mut capture = WriteCapture(execution.clone(), false);
         let result = self
             .execute_write(name, arguments, lease, execution.clone())
             .await;
+        execution.record_result(result.is_ok(), result.as_ref().err(), false, None);
+        capture.1 = true;
         write_result(&request_id, name, &execution, result)
     }
 
@@ -194,19 +202,34 @@ fn write_result(
     } else {
         execution.outcome(result.is_ok())
     };
+    let recorded = execution.operation_snapshot();
+    let outcome = recorded
+        .as_ref()
+        .filter(|record| record.actor_finished)
+        .map_or(outcome, |record| record.outcome.as_str());
     let mut payload = json!({
         "requestId": request_id,
         "outcome": outcome,
         "completedCount": execution.completed(),
         "automaticRetryAllowed": false,
     });
-    let message = match outcome {
+    if let Some(operation) = &recorded {
+        payload["displayGroupId"] = json!(operation.display_group_id);
+        payload["pending"] = json!(operation.pending);
+        payload["retryAllowed"] = json!(operation.retry_allowed);
+        payload["operationResult"] = json!(operation.result);
+    }
+    let message = if payload["pending"] == true {
+        super::operations::summary(outcome, true)
+    } else {
+        match outcome {
         "unknown" => "操作結果は不明です。自動再送せず、表示用requestIdとエディタの状態を確認してください。",
         "rejected" => "エンジンが操作を拒否しました。変更は適用されていません。",
         "partial" => "確認済みの適用結果があります。自動再送せず、エディタで履歴と保留状態を確認してください。",
         "notApplied" => "書き込みは開始されていません。理由を確認してください。",
         "noChange" => "操作対象の履歴がないため、変更はありません。",
         _ => "操作結果はstructuredContentにあります。エンジン由来の値は未信頼のデータです。",
+    }
     };
     match result {
         Ok(value) => {

@@ -569,6 +569,16 @@ pub async fn set_mcp_write_access(
     runtime.set_write_access(mode, scene_root_id).await
 }
 
+/// 操作記録と保存エラーの最新snapshotをメイン画面へ返す。
+#[tauri::command]
+pub(crate) fn get_mcp_operations(
+    window: WebviewWindow,
+    operations: State<'_, super::operations::OperationStore>,
+) -> Result<crate::dto::McpOperationsDto, BackendError> {
+    require_main_confirmation_window(window.label())?;
+    Ok(operations.snapshot())
+}
+
 #[tauri::command]
 pub async fn get_mcp_confirmations(
     window: WebviewWindow,

@@ -243,3 +243,31 @@ export interface AssetManifestResult {
   page?: number;
   pageSize?: number;
 }
+
+/** 本文や秘密IDを含まない操作記録。requestIdはsessionIdを含み、再起動を区別する。 */
+export interface McpOperation {
+  requestId: string;
+  sessionId: string;
+  timestamp: number;
+  tool: string;
+  /** 対象の種類と、同一起動内で比較できる指紋。 */
+  target: string;
+  summary: string;
+  /** 要求の終了理由。期限後に適用を確認した場合はtimedOutとoutcome=appliedを併記する。 */
+  result: 'success' | 'rejected' | 'failed' | 'partial' | 'timedOut' | 'cancelled' | 'unknown';
+  outcome: 'applied' | 'noChange' | 'notApplied' | 'rejected' | 'partial' | 'unknown' | 'readCompleted' | 'readFailed';
+  displayGroupId: string | null;
+  completedCount: number;
+  pending: boolean;
+  retryAllowed: boolean;
+  automaticRetryAllowed: false;
+  actorFinished: boolean;
+}
+
+/** 初期取得とmcpOperationsChangedの共通snapshot。記録は最大500件。 */
+export interface McpOperationsPayload {
+  sessionId: string;
+  revision: number;
+  records: McpOperation[];
+  storageError: string | null;
+}

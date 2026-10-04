@@ -27,6 +27,7 @@ export const BRIDGE_EVENTS = {
   editApplied: 'bridge:edit-applied',
   editHistoryChanged: 'bridge:edit-history-changed',
   mcpConfirmationsChanged: 'bridge:mcp-confirmations-changed',
+  mcpOperationsChanged: 'bridge:mcp-operations-changed',
 } as const;
 
 /** Union of all valid Tauri event name strings. */

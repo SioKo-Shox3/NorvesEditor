@@ -715,6 +715,12 @@ impl HistoryState {
         Ok(())
     }
 
+    pub(super) fn active_display_group_id(&self) -> Option<String> {
+        self.active_group
+            .as_ref()
+            .map(|group| group_id(group.metadata.key.generation, group.token))
+    }
+
     pub(super) fn group_deadline(&self) -> Option<Instant> {
         self.active_group
             .as_ref()

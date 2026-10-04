@@ -387,7 +387,7 @@ M2 の共通規則:
 - notes: 先行 MCP-024。stateless HTTP断でクライアント同一性を推定しない。legacy session IDは補助のみ。別まとまり横断のID復元は行わない。
 
 ## MCP-026: 言語モデルの操作結果を記録・保存する
-- status: todo
+- status: done
 - done-when: NE14。時刻・道具・対象・要約・結果・まとまりIDを成功/拒否/失敗/部分成功/時間切れすべてで記録し、UIへ通知して初期取得できる。app_log_dirのmcp-operations.jsonlへ1MiB×2世代で保存する。トークン・巨大値・本文を含めず、ファイル失敗を表示する。boundedな保持、rotation、秘密の非記録のRust試験がある。結果不明と自動再送禁止を明示し、所有者groupId/確認IDを保存しない。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
