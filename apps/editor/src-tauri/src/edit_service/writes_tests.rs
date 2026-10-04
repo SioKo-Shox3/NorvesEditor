@@ -1,7 +1,7 @@
 // 公開道具から許可・共通列・Bridge応答・画面の履歴操作までを検査する。
 mod writes_tests {
     use super::*;
-    use crate::mcp::{tool_catalog::WritePermission, writes::McpWriteService};
+    use crate::mcp::tool_catalog::WritePermission;
 
     include!("groups_tests.rs");
     include!("operations_tests.rs");
@@ -17,7 +17,7 @@ mod writes_tests {
 
     fn public_context(service: &Arc<EditService>, capabilities: &[&str]) -> McpReadContext {
         let context = confirmed_context(service, capabilities)
-            .with_write_service(McpWriteService::Test(service.clone()));
+            .with_write_service(service.clone());
         context.set_write_permission(WritePermission::Enabled);
         context
     }

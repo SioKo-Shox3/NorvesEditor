@@ -79,10 +79,10 @@ enum GroupControl {
     },
 }
 
-type EditEventSink = Arc<dyn Fn(EditServiceEvent) + Send + Sync + 'static>;
+pub(crate) type EditEventSink = Arc<dyn Fn(EditServiceEvent) + Send + Sync + 'static>;
 
 #[derive(Clone)]
-enum EditServiceEvent {
+pub(crate) enum EditServiceEvent {
     Applied(EditAppliedDto),
     HistoryChanged(EditHistorySummaryDto),
 }
@@ -272,14 +272,15 @@ impl EditTicket {
 
 /// UIとMCPで共有し、接続世代ごとの編集列と履歴を所有する。
 #[allow(dead_code)]
+#[derive(Clone)]
 pub(crate) struct EditService {
     bridge: BridgeFacade,
     sender: mpsc::Sender<QueueItem>,
-    admission: StdMutex<Admission>,
+    admission: Arc<StdMutex<Admission>>,
     history: Arc<StdMutex<HistoryState>>,
     authorization: McpAuthorization,
     shutdown_tx: watch::Sender<bool>,
-    join: Mutex<Option<JoinHandle<()>>>,
+    join: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 #[allow(dead_code)]
@@ -301,6 +302,19 @@ impl EditService {
             bridge,
             QUEUE_CAPACITY,
             Some(tauri_event_sink(app)),
+            authorization,
+        )
+    }
+
+    pub(crate) fn with_services(
+        bridge: BridgeFacade,
+        authorization: McpAuthorization,
+        event_sink: Option<EditEventSink>,
+    ) -> Self {
+        Self::with_capacity_and_sink_and_authorization(
+            bridge,
+            QUEUE_CAPACITY,
+            event_sink,
             authorization,
         )
     }
@@ -355,14 +369,14 @@ impl EditService {
         Self {
             bridge,
             sender,
-            admission: StdMutex::new(Admission {
+            admission: Arc::new(StdMutex::new(Admission {
                 accepting: true,
                 next_sequence: 0,
-            }),
+            })),
             history,
             authorization,
             shutdown_tx,
-            join: Mutex::new(Some(join)),
+            join: Arc::new(Mutex::new(Some(join))),
         }
     }
 
@@ -2460,7 +2474,7 @@ fn emit_service_event(event_sink: Option<&EditEventSink>, event: EditServiceEven
     }
 }
 
-fn tauri_event_sink(app: AppHandle) -> EditEventSink {
+pub(crate) fn tauri_event_sink(app: AppHandle) -> EditEventSink {
     Arc::new(move |event| {
         let result = match event {
             EditServiceEvent::Applied(payload) => app.emit(events::EDIT_APPLIED, payload),

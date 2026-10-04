@@ -135,7 +135,7 @@ pub(crate) struct McpReadContext {
     force_confirmation: bool,
     bridge: BridgeFacade,
     pub(super) catalog: McpToolCatalog,
-    pub(super) writes: Option<Arc<super::writes::McpWriteService>>,
+    pub(super) writes: Option<Arc<crate::edit_service::EditService>>,
     pub(crate) operations: super::operations::OperationStore,
     logs: Arc<StdMutex<LogBuffer>>,
     snapshots: Arc<Mutex<ReadSnapshotStore>>,

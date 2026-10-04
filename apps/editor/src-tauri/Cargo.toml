@@ -24,6 +24,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "norves-editor"
 path = "src/main.rs"
 
+# 実mock必須の受入試験だけを明示的に有効化する。
+[features]
+mcp-e2e = []
+
+[[test]]
+name = "mcp_e2e"
+path = "tests/mcp_e2e.rs"
+required-features = ["mcp-e2e"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

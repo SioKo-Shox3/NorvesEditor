@@ -406,7 +406,7 @@ M2 の共通規則:
 - notes: 先行 MCP-026。既存dockviewのパネル登録方式に揃える。実装工程やモデル名をUIへ書かない。MCP-023の評価指摘もここで閉じる。確認許可の取得失敗後の成功で旧エラーを消し、新しい確認通知を隠さないことをvitestで確認する。MCP-026で再公開したbridge-uiの入口を使い、確認UIの相対パス中継を解消する。許可が未確認の間の承認抑止は維持する。
 
 ## MCP-028-A: 本番と受入試験のサービス入口を共有する
-- status: todo
+- status: done
 - done-when: NE07〜NE14の受入基盤。AppHandleを使うアダプタと、実mock/実HTTPの試験が同じMCP handler・許可/確認・共通編集列・操作記録を使う構成へ切り出す。試験用にcfg(test)だけの別の書き込み/許可実装を作らない。Wry/WebView2を試験にロードせず、Bridgeの実mockを起動して現行Discover/旧版Initializeの両入口から状態読み取りと許可付き編集が共通列へ届く最小試験を通す。起動失敗/不正パス/SKIPは失敗にし、全体の受入を完了扱いにしない。HTTP/Bridge/actorの終了をjoinし、トークン・秘密IDを露出しない。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

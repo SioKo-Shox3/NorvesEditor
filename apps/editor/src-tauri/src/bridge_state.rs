@@ -48,7 +48,7 @@ use norves_bridge_editor_client::{
 };
 use serde_json::Value;
 use tauri::async_runtime::JoinHandle;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -281,20 +281,19 @@ enum Phase {
     Connected(LiveConnection),
 }
 
-/// Tauri-managed backend state. Guarded by a `tokio::sync::Mutex`; the guard is
-/// never held across an I/O `.await` (see module docs).
+/// 接続状態を共有するバックエンド。複製しても同じ接続・世代を参照する。
+/// 状態のロックはI/Oのawaitへ持ち越さない。
+#[derive(Clone)]
 pub struct BridgeState {
-    inner: Mutex<Phase>,
-    /// Monotonic source of unique request correlation ids. Shared so every
-    /// in-flight request across all commands gets a distinct id.
+    inner: Arc<Mutex<Phase>>,
+    /// 全コマンドが共有する、要求相関IDの単調カウンタ。
     next_request_id: Arc<AtomicU64>,
-    /// Monotonic source of unique connect-attempt tokens. Bumped when an attempt
-    /// starts so setup, relay self-heal, and commit share one identity.
-    next_generation: AtomicU64,
+    /// 接続試行ごとの世代。setup、relayの切断処理、接続確定で共有する。
+    next_generation: Arc<AtomicU64>,
     session_tx: watch::Sender<Option<BridgeLease>>,
     current_generation: Arc<StdMutex<Option<u64>>>,
     /// 世代切り替えでlog.subscribe要求を取り消す。
-    attempt_cancellation: StdMutex<Option<(u64, CancellationToken)>>,
+    attempt_cancellation: Arc<StdMutex<Option<(u64, CancellationToken)>>>,
     /// relayが受信したログをUI通知前に有界保持する。
     log_buffer: Arc<StdMutex<LogBuffer>>,
     mcp_tool_catalog: crate::mcp::tool_catalog::McpToolCatalog,
@@ -306,12 +305,12 @@ impl Default for BridgeState {
     fn default() -> Self {
         let (session_tx, _) = watch::channel(None);
         let state = BridgeState {
-            inner: Mutex::new(Phase::Disconnected),
+            inner: Arc::new(Mutex::new(Phase::Disconnected)),
             next_request_id: Arc::new(AtomicU64::new(0)),
-            next_generation: AtomicU64::new(0),
+            next_generation: Arc::new(AtomicU64::new(0)),
             session_tx,
             current_generation: Arc::new(StdMutex::new(None)),
-            attempt_cancellation: StdMutex::new(None),
+            attempt_cancellation: Arc::new(StdMutex::new(None)),
             log_buffer: Arc::new(StdMutex::new(LogBuffer::default())),
             mcp_tool_catalog: crate::mcp::tool_catalog::McpToolCatalog::default(),
             thumbnail_service: crate::mcp::thumbnail::McpThumbnailService::default(),
@@ -617,7 +616,8 @@ async fn unsubscribe_log_stream(conn: &LiveConnection) {
 /// `log.message`はUI通知より先に現行世代の保管庫へ記録する。`Lagged`では欠落した通知数を
 /// 世代状態に記録し、`Closed`ではrelayが所有する世代だけを切断状態へ戻す。
 fn spawn_relay(
-    app: AppHandle,
+    state: BridgeState,
+    sink: BridgeEventSink,
     generation: u64,
     mut events: tokio::sync::broadcast::Receiver<Arc<ValidatedEnvelope>>,
 ) -> JoinHandle<()> {
@@ -628,7 +628,6 @@ fn spawn_relay(
                     if let ValidatedEnvelope::Event { event, params, .. } = &*envelope {
                         let name = event.as_str();
                         if name == "log.message" {
-                            let state = app.state::<BridgeState>();
                             let phase = state.inner.lock().await;
                             if let Some(params) = params {
                                 let mut log_buffer = state
@@ -677,26 +676,21 @@ fn spawn_relay(
                                     .as_ref()
                                     .map(|map| Value::Object(map.clone()))
                                     .unwrap_or(Value::Null);
-                                if let Err(err) = app.emit(channel, payload) {
-                                    tracing::warn!(
-                                        channel,
-                                        error = %err,
-                                        "relay: failed to emit event to UI"
-                                    );
-                                }
+                                sink(channel, payload);
                             }
                             None => {
-                                tracing::debug!(event = name, "relay: unknown event, skipping");
+                                tracing::debug!(
+                                    event = name,
+                                    "未対応のBridgeイベントを無視しました"
+                                );
                             }
                         }
                     } else {
-                        // The dispatcher only broadcasts Event variants; anything
-                        // else is unexpected but non-fatal.
-                        tracing::debug!("relay: non-event envelope on broadcast, skipping");
+                        // dispatcherはEventだけを配信する。その他の通知は無視する。
+                        tracing::debug!("イベント以外のBridge通知を無視しました");
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
-                    let state = app.state::<BridgeState>();
                     let phase = state.inner.lock().await;
                     if phase_has_generation(&phase, generation) {
                         state
@@ -705,28 +699,23 @@ fn spawn_relay(
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .note_missed_events(generation, n);
                     }
-                    tracing::warn!(skipped = n, "relay: broadcast lagged, continuing");
+                    tracing::warn!(skipped = n, "Bridge通知の欠落を記録して購読を継続します");
                 }
                 Err(RecvError::Closed) => {
-                    tracing::debug!("relay: broadcast closed, checking generation and exiting");
-                    let state = app.state::<BridgeState>();
+                    tracing::debug!("Bridge通知が終了したため、所有世代の接続を閉じます");
                     let mut guard = state.inner.lock().await;
                     reset_owned_phase_and_then(&mut guard, generation, |_| {
                         state.publish_session(None);
                         state.cancel_attempt(generation);
                         state.end_log_generation(generation);
-                        // `emit` is synchronous in Tauri 2. Keep transition and
-                        // publication in this one mutex interval so a connect
-                        // commit cannot interleave between them.
+                        // 切断状態と通知を同じロック区間で公開する。
                         let payload = ConnectionStatePayload::disconnected(Some(
                             "connection closed".to_owned(),
                         ));
-                        if let Err(err) = app.emit(events::CONNECTION_STATE, payload) {
-                            tracing::warn!(
-                                error = %err,
-                                "relay: failed to emit disconnect state"
-                            );
-                        }
+                        sink(
+                            events::CONNECTION_STATE,
+                            serde_json::to_value(payload).expect("接続状態の直列化"),
+                        );
                     });
                     drop(guard);
                     return;
@@ -753,21 +742,16 @@ async fn wait_for_dispatcher_shutdown(shutdown: impl Future<Output = ()>) -> boo
         .is_ok()
 }
 
-/// The shared connect flow used by `bridge_connect` (and, after teardown, by
-/// `bridge_reconnect`).
-///
-/// Runs WITHOUT the state lock held: dial with retry, subscribe BEFORE hello,
-/// spawn the relay, perform the handshake, then strictly discover capabilities
-/// on the same dispatcher. On any failure it tears down whatever it built so
-/// nothing leaks, and returns a [`BackendError`].
+/// 通知先によらず同じ接続・購読・hello・能力検査を行う。
+/// 状態ロックを持たずにI/Oを行い、失敗時は作成済みdispatcherとrelayを終了する。
 async fn run_connect_flow(
-    app: AppHandle,
+    sink: BridgeEventSink,
     state: &BridgeState,
     endpoint: String,
     generation: u64,
     cancellation: CancellationToken,
 ) -> Result<LiveConnection, BackendError> {
-    // 1. Dial with retry -> DispatchHandle.
+    // 再試行付きで接続してdispatcherを得る。
     if cancellation.is_cancelled() {
         return Err(BackendError::NotConnected);
     }
@@ -778,12 +762,11 @@ async fn run_connect_flow(
         result = connect_with_retry(&endpoint, &retry_config) => result?,
     };
 
-    // 2. Subscribe to events BEFORE hello so no early event is missed.
+    // helloより先に購読し、初期イベントを取りこぼさない。
     let events = handle.subscribe_events();
 
-    // 3. Spawn the relay BEFORE hello with the attempt token allocated by the
-    //    caller, so setup, relay self-heal, and commit use one generation.
-    let relay = spawn_relay(app, generation, events);
+    // 接続試行と同じ世代のrelayをhelloより先に起動する。
+    let relay = spawn_relay(state.clone(), sink, generation, events);
 
     let setup = complete_connection_setup(handle, relay, state).await?;
     if cancellation.is_cancelled() {
@@ -926,27 +909,33 @@ async fn send_method(
 // Tauri commands. Fn names MUST equal the P3 `protocol_names::commands` consts.
 // ===========================================================================
 
-/// Shared connect entrypoint used by BOTH `bridge_connect` and the process
-/// runtime's `launch_engine` (plan J3).
-///
-/// This is exactly `bridge_connect`'s body, factored out so the process module
-/// can establish a connection WITHOUT duplicating the phase-transition guard or
-/// the `Phase` type (which stays private to this module). It:
-///
-/// 1. briefly locks to transition `Disconnected -> Connecting` (rejecting an
-///    overlapping connect/launch with [`BackendError::AlreadyConnected`]), drops
-///    the guard, then
-/// 2. runs the full connect flow WITHOUT the lock held, then
-/// 3. on success briefly locks to store the `Connected` phase and emits
-///    `CONNECTION_STATE`; on failure resets the phase to `Disconnected`.
-///
-/// No lock is ever held across the connect `.await` (see module docs).
+/// 画面接続とエンジン起動から使うTauriアダプタ。
+/// 接続の世代検査と停止は共通入口へ渡し、AppHandleは通知先にだけ使う。
 pub(crate) async fn connect_on_port(
     app: AppHandle,
     state: &BridgeState,
     port: u16,
 ) -> Result<ConnectionStatePayload, BackendError> {
-    // Brief lock: transition Disconnected -> Connecting, reject overlap.
+    connect_service(tauri_bridge_sink(app), state, port).await
+}
+
+/// 接続とイベント処理を画面の通知先から分離した共通入口。
+pub(crate) type BridgeEventSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
+
+fn tauri_bridge_sink(app: AppHandle) -> BridgeEventSink {
+    Arc::new(move |channel, payload| {
+        if let Err(error) = app.emit(channel, payload) {
+            tracing::warn!(error = %error, "Bridgeイベントを画面へ送信できませんでした");
+        }
+    })
+}
+
+pub(crate) async fn connect_service(
+    sink: BridgeEventSink,
+    state: &BridgeState,
+    port: u16,
+) -> Result<ConnectionStatePayload, BackendError> {
+    // 接続試行を短いロックで登録し、重複接続を拒否する。
     let token = state.alloc_generation();
     let cancellation = {
         let mut guard = state.inner.lock().await;
@@ -960,10 +949,10 @@ pub(crate) async fn connect_on_port(
                 return Err(BackendError::AlreadyConnected);
             }
         }
-    }; // guard dropped: connect I/O runs WITHOUT the lock.
+    }; // 接続I/Oへロックを持ち越さない。
 
     let endpoint = ws_url_for_port(port);
-    let result = run_connect_flow(app.clone(), state, endpoint, token, cancellation).await;
+    let result = run_connect_flow(sink.clone(), state, endpoint, token, cancellation).await;
     state.finish_attempt(token);
 
     match result {
@@ -973,20 +962,22 @@ pub(crate) async fn connect_on_port(
                 let mut guard = state.inner.lock().await;
                 try_commit_connection(&mut guard, token, conn, |phase| {
                     state.publish_session(edit_lease(phase));
-                    // Synchronous emit under the same lock interval as commit.
-                    let _ = app.emit(events::CONNECTION_STATE, payload.clone());
+                    // 接続確定と同じロック区間で通知する。
+                    sink(
+                        events::CONNECTION_STATE,
+                        serde_json::to_value(&payload).expect("接続状態の直列化"),
+                    );
                 })
             };
             if let Some(conn) = commit {
-                // Disconnect or a newer attempt invalidated this token while
-                // setup was in flight. Tear down without publishing ready.
+                // 切断または新しい試行で失効した接続を、公開せず終了する。
                 tear_down(conn).await;
                 return Err(BackendError::NotConnected);
             }
             Ok(payload)
         }
         Err(err) => {
-            // Reset only this failed attempt; never clobber a newer token.
+            // 失敗した試行だけを戻し、新しい試行を上書きしない。
             let mut guard = state.inner.lock().await;
             if reset_connecting_if_matches(&mut guard, token) {
                 state.publish_session(None);
@@ -1140,8 +1131,15 @@ pub async fn bridge_reconnect(
     // Tear down the OLD relay + handle WITHOUT the lock held.
     tear_down(old).await;
 
-    // Re-run the full connect flow (subscribe -> spawn relay -> hello).
-    let result = run_connect_flow(app.clone(), state.inner(), endpoint, token, cancellation).await;
+    // 共通の接続処理で購読・relay起動・helloをやり直す。
+    let result = run_connect_flow(
+        tauri_bridge_sink(app.clone()),
+        state.inner(),
+        endpoint,
+        token,
+        cancellation,
+    )
+    .await;
     state.inner().finish_attempt(token);
     match result {
         Ok(conn) => {

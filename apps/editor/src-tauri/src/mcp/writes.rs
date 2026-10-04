@@ -4,8 +4,6 @@ use std::sync::Arc;
 
 use rmcp::model::{CallToolResult, ContentBlock, ResultType};
 use serde_json::{json, Value};
-#[cfg(not(test))]
-use tauri::{AppHandle, Manager};
 
 use crate::{
     edit_service::{
@@ -34,14 +32,6 @@ impl Drop for WriteCapture {
     }
 }
 
-#[derive(Clone)]
-pub(crate) enum McpWriteService {
-    #[cfg(not(test))]
-    App(AppHandle),
-    #[cfg(test)]
-    Test(Arc<EditService>),
-}
-
 pub(crate) fn is_implemented_write(name: &str) -> bool {
     matches!(
         name,
@@ -63,8 +53,8 @@ pub(crate) fn is_implemented_write(name: &str) -> bool {
 }
 
 impl McpReadContext {
-    pub(crate) fn with_write_service(mut self, service: McpWriteService) -> Self {
-        self.writes = Some(Arc::new(service));
+    pub(crate) fn with_write_service(mut self, service: Arc<EditService>) -> Self {
+        self.writes = Some(service);
         self.catalog.set_write_handlers_ready(true);
         self
     }
@@ -153,27 +143,11 @@ impl McpReadContext {
             },
             _ => return Err(local_error("この書き込み道具は未対応です。")),
         };
-        match self
-            .writes
-            .as_deref()
+        self.writes
+            .as_ref()
             .ok_or_else(|| local_error("編集サービスを利用できません。"))?
-        {
-            #[cfg(not(test))]
-            McpWriteService::App(app) => {
-                let service = app
-                    .try_state::<EditService>()
-                    .ok_or_else(|| local_error("編集サービスを利用できません。"))?;
-                service
-                    .submit_tracked_mcp(self.clone(), lease, request, execution)
-                    .await
-            }
-            #[cfg(test)]
-            McpWriteService::Test(service) => {
-                service
-                    .submit_tracked_mcp(self.clone(), lease, request, execution)
-                    .await
-            }
-        }
+            .submit_tracked_mcp(self.clone(), lease, request, execution)
+            .await
     }
 }
 

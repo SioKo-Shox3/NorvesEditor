@@ -70,21 +70,23 @@ impl McpRuntime {
         )
     }
 
-    /// main画面へ確認待ちの更新を送るruntimeを作る。
-    pub fn new_with_app(
+    /// 画面の有無に依存しないサービス構成を受け取る。
+    pub(crate) fn with_services(
         config_dir: PathBuf,
         authorization: McpAuthorization,
-        app: AppHandle,
+        reads: McpReadContext,
     ) -> Self {
-        #[cfg(not(test))]
-        let reads = McpReadContext::default_context().map(|reads| {
-            reads.with_write_service(super::writes::McpWriteService::App(app.clone()))
-        });
-        // Wryのリンクが必要な管理状態の取得は、単体試験では共通サービスを直接注入する。
-        #[cfg(test)]
-        let reads = McpReadContext::default_context();
-        let confirmation_events = Self::start_confirmation_events(&authorization, app);
-        Self::build(config_dir, authorization, reads, Some(confirmation_events))
+        Self::build(config_dir, authorization, Some(reads), None)
+    }
+
+    /// 既存サービスへ画面通知だけを接続する。
+    pub(crate) fn attach_app(&mut self, app: AppHandle) {
+        let events = Self::start_confirmation_events(&self.inner.authorization, app);
+        *self
+            .inner
+            .confirmation_events
+            .try_lock()
+            .expect("起動中の通知登録") = Some(events);
     }
 
     fn start_confirmation_events(

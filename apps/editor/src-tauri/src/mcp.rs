@@ -54,6 +54,8 @@ use axum::extract::connect_info::Connected;
 pub(crate) mod authorization;
 pub(crate) mod confirmation;
 // E4で接続するまで、一覧ヘルパーは内部APIとして保持する。
+#[cfg(feature = "mcp-e2e")]
+pub mod acceptance;
 #[allow(dead_code)]
 pub(crate) mod images;
 pub mod log_buffer;
@@ -61,6 +63,7 @@ pub(crate) mod operations;
 pub(crate) mod reads;
 mod request_lifetime;
 pub mod runtime;
+pub(crate) mod service;
 pub(crate) mod thumbnail;
 pub(crate) mod tool_catalog;
 pub(crate) mod writes;

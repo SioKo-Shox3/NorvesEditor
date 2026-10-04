@@ -29,7 +29,6 @@ use bridge_state::BridgeState;
 use edit_service::EditService;
 use engine_settings::EngineSettingsState;
 use mcp::runtime::McpRuntime;
-use mcp::McpAuthorization;
 use process_runtime::ProcessState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -58,23 +57,16 @@ pub fn run() {
                 );
             }));
             app.manage(operations.clone());
-            let authorization = McpAuthorization::default();
             let bridge = app.state::<BridgeState>();
-            let edit_service = EditService::new_with_app_and_authorization(
-                bridge.edit_facade(),
-                app.handle().clone(),
-                authorization.clone(),
+            let services = mcp::service::McpServices::new(
+                &bridge,
+                config_dir,
+                operations,
+                Some(edit_service::tauri_event_sink(app.handle().clone())),
             );
-            let history_source = edit_service.confirmation_history_source();
-            crate::mcp::reads::McpReadContext::install_default(
-                bridge
-                    .mcp_read_context()
-                    .with_history_source(history_source)
-                    .with_operations(operations),
-            );
-            app.manage(edit_service);
-            let mcp_runtime =
-                McpRuntime::new_with_app(config_dir, authorization, app.handle().clone());
+            app.manage(services.edits);
+            let mut mcp_runtime = services.runtime;
+            mcp_runtime.attach_app(app.handle().clone());
             app.manage(mcp_runtime.clone());
             tauri::async_runtime::spawn(async move {
                 mcp_runtime.initialize().await;
