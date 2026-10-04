@@ -435,7 +435,7 @@ M2 の共通規則:
 - notes: 先行 MCP-028-A、受入発見のMCP-028-B。026/027/028-Aの評価引き継ぎも照合し、feature付きclippyのコマンド/exitを保存する。共通入口はAで切り出し済みのものを使い、元の全受入条件をこの反復で閉じる。追加pathsは共通入口と受入の検証に限定し、cfg(test)だけの別実装で合格にしない。manifest変更は既存依存のdev-only機能と受入の試験用featureに限り、新規crate/系列は追加しない。画面のコマンド/eventはvitestと名前照合で覆う。NorvesLib用e2eを起動しない。未確認の実機表示は明記し、全体確認済みとしない。新規不具合は別タスクとして記録し、受入契約を満たしてからdoneにする。NEXT_FINDINGSと.harness/mcp-review-follow-up-018.md / mcp-review-follow-up-022-B.md / mcp-review-follow-up-022.md / mcp-review-follow-up-024.md / mcp-review-follow-up-025.mdを照合し、修正済みの証拠か残る挙動・制限を文書と最終報告へ残す。特に現行版の複数クライアント間ID衝突、本文受信30秒と要求全体125秒、Enabledでの再確認、単発MCP undo拒否後の保留/破棄によるUI再開、未送信/拒否/結果不明の区別、書き込みのcancel通知後の応答と記録、本番actorの実mock経路、部分木parentId/cursor世代を確認する。実HTTPで要求をまたいでgroupId付き編集を送り、作成したIDへの値設定のundo/redoで依存ID置換を試験する。同じ値の受理だけでは無操作期限が延長されない挙動も文書へ明記する。元の受入done-whenは縮めない。 MCP-028-Bの評価PASSを先行条件にする。受入の基準線はb32115d。評価者は175a8ab/ae90c34を含むb32115dからHEADまでの受入変更と製品修正をすべて開き、再開反復だけの差分で合格にしない。過去の40分超過・検証失敗・未評価はPROGRESSと.harness/mcp-stopped-run-20261004-144511.jsonに保持する。元のdone-when/verifyを現在のHEADで全て実行する。
 
 ## MCP-029: 管理用ガイドの正本へ所有権とセキュリティを同期する
-- status: todo
+- status: done
 - done-when: NE01の管理用文書同期。MyWorkflowの正本architecture/tauri-securityが編集サービス・loopback MCP・秘密保護を記録し、deploy後の管理外コピーが一致する。NorvesEditor製品文書と矛盾しない。
 - verify: `git -C ../MyWorkflow diff main --check`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "if ((Get-FileHash 'docs/agent-guide/architecture.md').Hash -ne (Get-FileHash '../MyWorkflow/projects/NorvesEditor/agent-guide/architecture.md').Hash) { exit 1 }; if ((Get-FileHash 'docs/agent-guide/tauri-security.md').Hash -ne (Get-FileHash '../MyWorkflow/projects/NorvesEditor/agent-guide/tauri-security.md').Hash) { exit 1 }"`
