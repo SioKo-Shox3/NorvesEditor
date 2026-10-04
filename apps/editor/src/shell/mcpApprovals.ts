@@ -3,5 +3,5 @@ export {
   getMcpConfirmations,
   approveMcpConfirmation,
   rejectMcpConfirmation,
-} from '../../../../bridge/ts/packages/bridge-ui/src/commands.js';
-export type { McpConfirmationRequest } from '../../../../bridge/ts/packages/bridge-ui/src/ipc-types.js';
+} from '@norves/bridge-ui';
+export type { McpConfirmationRequest } from '@norves/bridge-ui';

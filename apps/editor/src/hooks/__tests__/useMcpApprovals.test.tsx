@@ -4,7 +4,7 @@ import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BRIDGE_EVENTS, type McpSettingsPayload, type UnlistenFn } from '@norves/bridge-ui';
 import { useMcpApprovals } from '../useMcpApprovals.js';
-import type { McpConfirmationRequest } from '../../shell/mcpApprovals.js';
+import type { McpConfirmationRequest } from '@norves/bridge-ui';
 
 const ipc = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: ipc.invoke }));
@@ -156,6 +156,32 @@ describe('useMcpApprovals', () => {
     await act(async () => { changed({ payload: pending }); });
     await act(async () => { old.resolve({ ...settings, writeMode: 'enabled' }); });
     expect(result.current.mode).toBe('readOnly');
+  });
+
+  it('許可取得失敗後の成功で旧エラーを消し、再取得中は承認を送らない', async () => {
+    const { result } = await mount();
+    ipc.invoke.mockRejectedValueOnce(new Error('settings'));
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(result.current.error).toContain('許可を取得できません');
+    const retry = deferred<McpSettingsPayload>();
+    ipc.invoke.mockReturnValueOnce(retry.promise);
+    const replacement = request('new-request');
+    act(() => { changed({ payload: [replacement] }); result.current.decide(replacement.id, true); });
+    expect(result.current.mode).toBeUndefined();
+    expect(result.current.notice).toContain('届いています');
+    expect(ipc.invoke).not.toHaveBeenCalledWith('approve_mcp_confirmation', expect.anything());
+    await act(async () => { retry.resolve(settings); });
+    expect(result.current.error).toBeUndefined();
+    expect(result.current.mode).toBe('confirm');
+    expect(result.current.requests).toEqual([replacement]);
+  });
+
+  it('許可取得成功で決定失敗のエラーまで消さない', async () => {
+    const { result } = await mount();
+    ipc.invoke.mockRejectedValueOnce(new Error('decision'));
+    await act(async () => { result.current.decide(pending[0].id, true); });
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(result.current.error).toContain('応答に失敗');
   });
 
   it('決定失敗を表示し、操作中の表示を解除する', async () => {

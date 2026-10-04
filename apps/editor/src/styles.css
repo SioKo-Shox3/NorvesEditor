@@ -502,6 +502,35 @@ html, body, #root {
   margin: 8px 0;
 }
 
+.mcp-operations {
+  height: 100%;
+}
+
+.mcp-operations .mcp-approvals {
+  height: auto;
+  flex: none;
+}
+
+.mcp-operations__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.mcp-operations__record {
+  border-top: 1px solid var(--color-border);
+  padding: 8px 0;
+  overflow-wrap: anywhere;
+}
+
+.mcp-operations__record dd {
+  margin-left: 12px;
+}
+
+.mcp-operations__undo {
+  text-decoration: underline;
+}
+
 /*
  * Secondary windows (Connection / Settings) host a single panel directly,
  * without dockview. The body becomes a padded flex column so the panel fills

@@ -398,7 +398,7 @@ M2 の共通規則:
 - notes: 先行 MCP-025。backend.logと同じディレクトリ、別ファイル。試験は一時ディレクトリ。操作記録の要約はエンジン由来文字列を命令として使わない。MCP-023の評価指摘に従い、既存の確認取得/承認/拒否と型をbridge-uiのindexから再公開する（実装は既存commandsを使う）。MCP-027で確認UIの相対パス中継を解消できるようにする。MCP-024の評価残課題をNE14の範囲で閉じる。表示用requestIdと操作記録を対応させ、再起動後に衝突しない識別または起動を区別する記録を使う。単発MCP undo拒否後の保留、未送信/拒否/適用済み/結果不明、HTTP取消後の開始済みBridge結果を記録・表示と整合させて検証する。actor側の結果捕捉は追加paths内で行い、Bridge I/O中にロックを持たない。秘密groupId/確認IDを記録せずdisplayGroupIdを使う。元のdone-when/verifyを維持する。
 
 ## MCP-027: AI の操作パネルと履歴へのリンクを出す
-- status: todo
+- status: done
 - done-when: NE14。AIの操作パネルに時刻・道具・対象・要約・結果・まとまりIDと確認待ちを表示し、取り消し可能なまとまりのリンクで共通列のundoを行う。履歴の順番を飛び越して対象だけを消さず、現在取り消せないリンクは理由とともに無効にする。初期取得・イベント・拒否・部分失敗・ファイル失敗・購読解除のvitestが通る。
 - verify: `pnpm -C apps/editor typecheck`
 - verify: `pnpm -C apps/editor test`

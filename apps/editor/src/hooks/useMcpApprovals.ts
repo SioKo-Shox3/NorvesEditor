@@ -6,13 +6,11 @@ import {
   BRIDGE_EVENTS,
   type McpWriteMode,
   type UnlistenFn,
-} from '@norves/bridge-ui';
-import {
   approveMcpConfirmation,
   rejectMcpConfirmation,
   getMcpConfirmations,
   type McpConfirmationRequest,
-} from '../shell/mcpApprovals.js';
+} from '@norves/bridge-ui';
 
 export interface McpApprovalsState {
   requests: McpConfirmationRequest[];
@@ -33,6 +31,7 @@ export function useMcpApprovals(): McpApprovalsState {
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState('');
   const [error, setError] = useState<string>();
+  const [settingsError, setSettingsError] = useState<string>();
   const current = useRef({ requests, mode });
   current.current = { requests, mode };
   const inFlight = useRef(new Set<string>());
@@ -60,9 +59,10 @@ export function useMcpApprovals(): McpApprovalsState {
         const next = settings.writeMode ?? 'readOnly';
         current.current.mode = next;
         setMode(next);
+        setSettingsError(undefined);
       } catch {
         if (active && request === settingsRequest) {
-          setError('書き込み許可を取得できません。メイン画面を選び直して再取得してください。');
+          setSettingsError('書き込み許可を取得できません。メイン画面を選び直して再取得してください。');
         }
       }
     };
@@ -161,5 +161,5 @@ export function useMcpApprovals(): McpApprovalsState {
     });
   }, []);
 
-  return { requests, mode, loading, busyIds, notice, error, decide };
+  return { requests, mode, loading, busyIds, notice, error: error ?? settingsError, decide };
 }
