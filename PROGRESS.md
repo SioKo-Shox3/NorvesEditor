@@ -47,10 +47,10 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
-- MCP / 編集層の M2: 承認済み29タスクを評価付きランナーで進行中。MCP-001〜MCP-017とMCP-019〜MCP-021の20件は実装・指定検証済み。MCP-021の評価はこの反復後にランナーが実施する。MCP-018は実装済みだが再検証の試験失敗でblocked。Done節の実装記録は、その評価完了を意味しない。
+- MCP / 編集層の M2: 元の29タスクのうちMCP-001〜MCP-017とMCP-019〜MCP-021の20件は検証・評価PASS。MCP-022を確認broker/HTTP取消/列内再検証の3つに分け、実行単位は31件。元の完了条件はMCP-022に全て保持する。MCP-018は再検証失敗と評価未完了のためblockedで、確認処理のビルド復旧後に原因を調査して再開する。
 
 ## Next
-- 未完の最優先はMCP-022。MCP-018は試験失敗の原因確認と評価が残っている。
+- 未完の最優先はMCP-022-A、次にMCP-022-B/MCP-022。MCP-022の完成後はMCP-018を再開し、試験失敗の原因を直して指定検証と評価を通す。ユーザーは残る全タスクの完了まで継続を指示済み。自動的なstatus: doneへの変更や失敗記録の破棄はしない。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
 - 画面操作が要る確認が残っている:
@@ -61,6 +61,8 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-04: ユーザーの継続指示を受け、停止/完了をこのスレッドへ報告する15分のheartbeatを設定した（automationId: norveseditor、設定メモは.harness/mcp-completion-follow-up.json）。元のrun 20261003-161248はMCP-022の2回の40分超過で停止し、attemptsはMCP-022=2/MCP-018=3、MCP-018の評価差戻しは1回。この履歴と証拠を保持する。別AIへ相談し、確認brokerのdrop時の残留、列内permit未配線、認証失効時の実行済みfuture破棄、SDK要求ID取消未配線を確認した。相談ログは.harness/mcp-completion-advisor.log。MCP-022-A/Bと元MCP-022へ契約を分配し、元の全完了条件は縮めない。実装はAstra/xhighへ昇格し、評価はランナーの別AIが行う。既存の取消試験とNE13の衝突は、開始済みの結果を保全するNE13を優先して修正する。
+- 2026-10-04開始検証: scripts/verify.ps1 -Cppはexit 0（画面639件、証拠.harness/mcp-completion-preflight.log）。途中コードを含めたTauri cargo testはE0433/E0063/E0596/E0382でビルド失敗（.harness/mcp-completion-tauri.log）。MCP-022-Aでこの4件と警告を先に修復する。未追跡のconfirmation.rsを保持し、完成時に追跡へ加える。
 - 2026-10-03 MCP-021差し戻し対応: 旧group handleの試験を、再接続で可能な未接続/認可失効どちらの拒否も確認する形へ修正した。fmt / clippy / cargo test（331単体・1実mock・14統合）/ IPC名 / pnpm typecheck はすべてexit 0。保存ログを開いて試験結果・IPC同期・型検査を確認。範囲認可試験は起動時read-only、write/confirm、再接続・設定変更の失効、各対象と履歴全記録、容量超過と期限切れを確認した。
 - 2026-10-03 MCP-020差し戻し対応: `resize_exact`の入力幅に比例する中間画像を避けるため`thumbnail_exact`へ切り替えた。最大寸法・独立した全画像2 MiBの回帰試験と2枚目の番号字形試験を追加。指定3ゲートはexit 0、cargo testは329単体・1 mcp_reads・14 process_e2e成功。保存出力を開いて確認した: `preflight-MCP-020-16.txt` / `verify-MCP-020-4.txt`〜`verify-MCP-020-6.txt`。
 - 2026-10-03 MCP-020: scripts/verify.ps1 と指定fmt/clippy/cargo testを実行し、保存出力を開いて確認。最終cargo testは328単体・1 mcp_reads・14 process_e2e成功。初回だけ既存edit_serviceの世代変更テストが1件失敗したが、コード変更せず同じ全テストを再実行して成功した。時刻書式はHH:MM:SS.mmm、PNGは8 bit以下を許可し16 bitは作業上限のため拒否する。

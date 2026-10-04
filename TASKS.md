@@ -325,6 +325,29 @@ M2 の共通規則:
 - paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/dto.rs, apps/editor/src-tauri/src/protocol_names.rs, bridge/ts/packages/bridge-ui/src/**, bridge/ts/packages/bridge-types/src/**
 - notes: 先行 MCP-020。この段ではwrite道具を公開しない。資産のprefix許可はNE19まで実装せず範囲外として記録する。Tauriセキュリティの評価・本文必須。再接続後の古いまとまりハンドルは未接続または認可失効として拒否する。
 
+## MCP-022-A: 確認brokerの寿命とmain画面の承認境界を閉じる
+- status: todo
+- done-when: NE13の列外部分。途中のconfirmation.rsを追跡し、試験DTO/型import/可変receiver/ProtocolVersionの所有権を修復してHEADだけでテストをビルドできる。確認登録は承認/拒否/120秒/要求取消/許可改訂/世代変更/future破棄で必ず消える。future破棄はRAIIで清掃し、16件の上限、一回限りで要求固有の承認、取消と拒否の区別、秘密IDの非記録を試験する。取得/承認/拒否はmain画面だけが使え、MCPに承認道具を公開しない。read-onlyでdelete/component.remove/undo内部deleteを拒否し、書き込み可でも確認必須。承認後に列外で旧値/対象/範囲/許可改訂/undo先頭ID/履歴改訂/delete履歴破棄影響を照合し、変更なら新しい確認IDで再確認する。確認待ち中もUI編集と終了が進み、終了で待機を取り下げる。
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml --no-run`
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `node scripts/check-protocol-names.mjs`
+- verify: `pnpm -r --if-present typecheck`
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/dto.rs, apps/editor/src-tauri/src/protocol_names.rs, bridge/ts/packages/bridge-ui/src/**, bridge/ts/packages/bridge-types/src/**
+- notes: 先行MCP-021。MCP-022の2回の40分超過を受けた分割であり、新しい機能追加ではない。列内の状態再検証と開始済み操作の結果保全はMCP-022で完成させる。この段のedit_service.rsは途中試験のコンパイル修復と確認待ちが列を占有しない試験に限定する。Broker/DTO/配線と全ゲートを閉じ、元のMCP-022をdoneにしない。危険地帯の評価とコミット本文必須。
+
+## MCP-022-B: HTTP要求の取消と全体期限を確認待ちへ結ぶ
+- status: todo
+- done-when: NE13のHTTP要求寿命。書き込みtools/callは125秒、その他は30秒であることを両版のHTTPで試験する。要求ID別notifications/cancelledとRequestContext.ctをその要求のリースへ結び、他の要求を取り消さない。現行/旧版ともHTTP応答破棄でリースを取り消す。確認/再照会/範囲走査/列待ちに合計125秒の期限を適用し、確認期限はmin(120秒,残り)とする。HTTP→要求取消、要求取消→確認登録清掃、SDK context→要求取消を製品の経路で試験し、期限はpaused timeでも反証する。未対応SDK挙動を推測せずrmcpの使用版のコードと実受信で確認する。
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `node scripts/check-protocol-names.mjs`
+- verify: `pnpm -r --if-present typecheck`
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/dto.rs
+- notes: 先行MCP-022-A。MCP-022のHTTP切断と全体期限の契約を引き継ぐ。層をつないだ最終受入はMCP-028でも行い、ここでは実HTTPのリース取消とbroker清掃を別々に証明する。書き込み道具の本公開はMCP-024。危険地帯の評価とコミット本文必須。
+
 ## MCP-022: 要求ごとの書き込み確認をバックエンドで管理する
 - status: todo
 - done-when: NE13。delete/component.removeとMCP undo内部deleteはwrite可でも確認必須、read-onlyでは拒否する。列外の確認brokerが120秒/拒否/HTTP切断/認証改訂/世代変更で取り下げる。一度だけの要求固有確認で、承認後に旧値/対象/範囲/許可改訂/undo先頭IDと履歴改訂/deleteの履歴破棄影響を照合し、違えば再確認する。待機中もUI編集と終了が進む。MCPから承認できず、信頼したmain画面commandだけが承認する。要求全体125秒に再照会/走査/列待ちも含める。旧版はHTTP応答破棄と要求ID別cancelを結び、両版の切断取消を試験する。未開始は列から取消、開始済みは次の操作へ進まずBridge結果を確認し、適用済みと結果不明を区別する。
@@ -334,7 +357,7 @@ M2 の共通規則:
 - verify: `node scripts/check-protocol-names.mjs`
 - verify: `pnpm -r --if-present typecheck`
 - paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/src/dto.rs, apps/editor/src-tauri/src/protocol_names.rs, bridge/ts/packages/bridge-ui/src/**, bridge/ts/packages/bridge-types/src/**
-- notes: 先行 MCP-021。状態の再検証を列内で行い、確認待ちを列内へ持ち込まない。確認IDも秘密として通常ログへ出さない。UI表示は次タスク。Tauriセキュリティの評価・本文必須。
+- notes: 先行MCP-022-A/MCP-022-B。元のdone-whenをすべて保持する最終統合。permitを所有権ごと列へ渡し、Bridge I/O前に許可/世代/対象の状態指紋/旧値/履歴改訂/undo先頭を再検証する。変更は型付きの再確認要求で列外へ戻し、確認待ちを列内へ持ち込まない。未開始の取消は送信ゼロ、開始済みはHTTP切断/期限/認証失効でもBridge futureを破棄せず、Bridge自身の期限内に適用済み/拒否/結果不明を区別して履歴へ反映し、多段操作の次の段へ進まない。終了時だけ従来の2秒猶予で中止する。既存のactor_cancels_an_in_flight_mcp_request_when_its_lease_is_revokedはNE13の開始済み結果保全と衝突するため、この契約に沿った試験へ置き換えることを許可し、理由と結果を記録する。Bridge I/O中はロックを持たない。確認IDは秘密として通常ログへ出さない。UI表示はMCP-023。危険地帯の評価・本文必須。
 
 ## MCP-023: 許可モードと確認待ちを画面へ出す
 - status: todo
