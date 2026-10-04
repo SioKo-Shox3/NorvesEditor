@@ -287,7 +287,7 @@ M2 の共通規則:
 - notes: 先行 MCP-003。新規asset.editやasset.saveを作らない。既存capabilityだけを広告する。
 
 ## MCP-018: 読み取り道具と上限付きの続きを実装する
-- status: todo
+- status: done
 - done-when: NE09/NE10。状態・能力・ツリー・snapshot・schema・asset一覧/resolve・最近のログを、モックに対する試験で確認する。1応答256KiB/200項目で切り、切った位置と有効なcursorで続きを返す。rootId/maxDepthを相手が無視してもバックエンドで範囲を絞る。世代変更・期限・改竄cursorを拒否する。snapshot保持16MiB、単一項目超過を明示し、非信頼のエンジン文字列をデータとして返す。ツリーはid/parentId/depthを持つ平坦な深さ優先項目。cursorは5分/世代に結び、LRUで16MiB超過時に古いsnapshotを追い出す。追い出し/単一snapshot超過を試験する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

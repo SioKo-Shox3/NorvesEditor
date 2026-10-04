@@ -1,5 +1,6 @@
 //! 実mockの読み取りBridgeメソッドとlog.subscribe保管経路を検証する試験。
 
+use std::io::Write;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -32,9 +33,9 @@ fn request(id: &str, method: &str, params: Value) -> ValidatedEnvelope {
         .cloned()
         .expect("要求paramsはオブジェクト");
     ValidatedEnvelope::Request {
-        version: VersionString::try_from("0.2".to_owned()).expect("protocol version"),
-        id: CorrelationId::try_from(id.to_owned()).expect("correlation id"),
-        method: MethodName::try_from(method.to_owned()).expect("method name"),
+        version: VersionString::try_from("0.2".to_owned()).expect("有効なプロトコル版を使う"),
+        id: CorrelationId::try_from(id.to_owned()).expect("要求IDを作る"),
+        method: MethodName::try_from(method.to_owned()).expect("メソッド名を作る"),
         params: Some(params),
         session_id: None,
         seq: None,
@@ -60,7 +61,12 @@ async fn result(
 #[tokio::test]
 async fn real_mock_subscription_burst_is_retained_without_a_ui_or_mcp_client() {
     let Some(engine_path) = std::env::var_os("NORVES_ENGINE_PATH").map(PathBuf::from) else {
-        eprintln!("[SKIP] NORVES_ENGINE_PATHが設定されていません");
+        // libtestの出力捕捉を通さず、通常のcargo testにも未実行の理由を残す。
+        writeln!(
+            std::io::stderr().lock(),
+            "[SKIP] mcp_reads: NORVES_ENGINE_PATHが設定されていません"
+        )
+        .expect("実mock試験を実行しない理由を表示する");
         return;
     };
     assert!(
