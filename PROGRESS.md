@@ -4,6 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
+- MCP-025: edit_begin_group/edit_end_groupとparams外枠のgroupIdを公開。OS乱数256 bitの秘密を表示IDから分離し、共通列で所持・期限・世代を照合する。128編集/無操作5分/全体15分、IDなし/別ID/UI/undo/redo/非取り消し操作、認証失効/無効化/Bridge切断/世代変更で閉鎖。end前のUI undo、逆順undo/順redo、部分失敗と未処理部分からの再試行、まとまり内redo依存ID置換を検証した。両版の実HTTPで要求をまたぐ開始/終了・旧ID拒否を確認。指定fmt/clippy/cargo testはexit 0、Rust単体392件・実mock1件（0.52秒）・プロセス統合14件成功。保存出力 `.harness/runs/20261004-131449/verify-MCP-025-9.txt`〜`-11.txt` を開いて確認した。別文脈評価は反復後にランナーが行う。
 - MCP-024: 値設定/create/duplicate/reparent/delete/component付け外し/undo/redo/play/pause/stopの12道具を、許可・確認・列内再検証を通す共通編集サービスへ接続した。MCP起源の単発履歴とUI undo、Ctrl+Z、確認待ち中のUI操作、拒否理由と未適用、componentの非取り消し表示、runtimeの既存履歴保全を試験。両版の実HTTPで適用/拒否/Bridge切断の結果不明を確認し、結果に表示用requestId・自動再送禁止・確認済み件数を返す。列開始直後の取消も未適用と断言しない。指定fmt/clippy/cargo test/pnpm testはexit 0、Rust単体381件・実mock読み取り1件（0.53秒）・フロントエンド667件成功。保存出力 `.harness/runs/20261004-131449/verify-MCP-024-8.txt` / `-11.txt`〜`-13.txt` を開いて確認した。別文脈評価は反復後にランナーが行う。
 - MCP-018差し戻し対応: 応答taskがpeerを返し、call_tool完了→taskのjoin→結果の検査→shutdownの順に固定した。エラー先頭は失敗時だけUTF-8の文字境界で最大256文字を診断し、JSON/文字列/byte上限の全assertを維持。応答前停止の回帰試験で接続断を決定的に再現し、エンジン由来JSONやmessageと区別した。範囲検査・ツリー・資産manifestの兄弟試験も停止をtask外へ移した。指定fmt/clippy/cargo test/実mock mcp_readsは全てexit 0、Rust単体373件と実mock1件（0.52秒）成功。保存出力 `.harness/runs/20261004-131449/verify-MCP-018-1.txt`〜`-7.txt` を開いて確認した。別文脈評価は反復後にランナーが実施する。
 - MCP-023: Settingsへ許可モード/部分木入力、mainのdockviewへ対象/前後/要求元/履歴の出どころ/取り消し可否/削除時の全履歴破棄を示す確認パネルを追加。閉じても通知と件数を維持しクリックで開く。承認/拒否/120秒と要求残時間/取り下げ/初期取得競合/StrictMode購読解除/連打/許可応答順序、read-onlyの承認非表示、待機中の実Inspector編集を試験。typecheck exit 0、vitest 31ファイル665件成功。保存出力 `.harness/runs/20261004-114213/verify-MCP-023-6.txt` / `verify-MCP-023-7.txt` を開いて確認した。
@@ -55,10 +56,11 @@
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
 ## In progress
+- MCP-025の実装・指定検証・帳簿更新を完了。ランナーの別文脈評価待ち。
 - MCP / 編集層の M2: 実行単位31件のうち24件は検証・評価PASS（MCP-001〜017、019〜023、022-A/B）。MCP-018は相談後の修正と指定検証を完了し、ランナーの別文脈評価待ち。未実装はMCP-024〜029。元の完了条件と検証は維持する。
 
 ## Next
-- MCP-024の別文脈評価後はMCP-025。名前付きまとまりのschemaは保持しているが道具はまだ非公開、groupId付き書き込みは明示拒否する。公開入口はmcp/writes.rs、結果追跡はedit_service/mcp.rs。単発MCP undoのaccepted:falseは0件処理済み・再試行可の保留となり、UIの表示・破棄・編集再開まで試験済み。
+- MCP-025の別文脈評価後はMCP-026。公開入口はmcp/writes.rs、結果追跡はedit_service/mcp.rs、秘密の管理と期限はedit_service/groups.rsとhistory.rs。操作記録にはbegin結果の秘密groupIdを残さず、displayGroupIdを使う。まとまりの名前/件数はend前からUI要約で取得できる。
 - MCP-018: ランナーで今回の差分を別文脈評価する。応答前停止の実際の接続断はverify-MCP-018-1.txt、指定4ゲートは-2.txt〜-5.txt、無効な実行パス/起動失敗の期待どおりのexit 101は-6.txt/-7.txt。相談ログ.harness/mcp-018-recovery-advisor.log、旧f2fabdaの停止競合、6feb491の未検証途中保存、過去3失敗/評価差戻し1回の記録は保持する。
 - MCP-018の検証・評価後はMCP-024〜029を継続する。MCP-024はEditService::submit_confirmed_mcp/McpEditRequestで列外確認と列内再検証を通す。MCP-022-A/B/022/023の非阻害指摘はNEXT_FINDINGSで追跡し、同じE3の操作記録・画面・受入へ反映する。ユーザーは残る全タスクの完了まで継続を指示済み。自動的なstatus: doneへの変更や失敗記録の破棄はしない。MCP確認パネルの実機レイアウトと実Tauri窓間操作は未確認として残す。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
@@ -71,6 +73,8 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-04 MCP-025判断: 単調時計で期限を管理し、成功した編集でのみ無操作期限を更新する。失敗した編集は成功済み部分を閉じ、誤ったendは他のまとまりを閉じない。redo対象がなくても開いたまとまりは閉じる。確認中のUI割込み後は旧IDの再開を拒否する。初回の新規試験で通知read lock保持による競合とredo無対象時の閉鎖漏れを検出して修正。旧値取得失敗試験はsnapshotへの明示エラー応答を使う。最終指定3ゲートは全て成功、実mock環境を明示しSKIPなし。GUI実機確認は行っていない。
+- 2026-10-04 MCP-025実装前: NE12/NE06の秘密groupId所持・表示ID分離、共通列での開始/終了/割込み閉鎖、128編集/無操作5分/全体15分、認証失効/切断/世代変更、まとまりundo/redoと部分失敗を完了条件として試験する。指定fmt/clippy/cargo testの出力を保存して開く。許可paths外・破壊的変更・製品判断が必要なら停止する。開始verify.ps1はexit 0、保存出力の全ゲート成功を確認した。
 - 2026-10-04 MCP-024完了: 送信前の局所失敗はnotApplied、エンジンのaccepted:false/エラーはrejected、送信後のtimeout/切断/不正応答はunknownに分類する。runtimeの結果不明は応答へ返し、編集履歴の保留には積まない。開始と取消の競合はticketの取消CASと同じ状態を参照して保守的にunknownにする。相談 `.harness/runs/20261004-131449/advisor-MCP-024.txt` の指摘を反映し、12道具・8拒否理由、実ルート許可、列開始境界、両版HTTPを追加検査。失敗出力（Wryの既知リンク制約、新規試験の引数名/SSE読取/理由文字列、clippyのenumサイズ）は保持。Wryの管理状態取得は製品だけで使い、単体/HTTP試験は同じEditServiceを直接注入する。GUIと実Tauri管理状態の取得は未確認。明示取消後の旧版SDK応答抑止は依存のtest_cancelled_response.rsで確認したが、新規の公開書き込み道具に対する実HTTP取消通知後の応答有無は未検証（Bridge切断/timeoutの結果分類、先行MCP-022のHTTP取消・開始済み結果保全試験は通過）。実mockはNORVES_ENGINE_PATHを指定して実行、process_e2eの14エントリは成功だがNorvesLib用opt-inは未実行。
 - 2026-10-04 MCP-024実装前: NE12/NE13を完了条件とし、12道具の共通列経由・言語モデル履歴とUI undo・拒否/確認未完了/能力不足の未適用・runtime非履歴・禁止道具の非公開・結果不明と表示ID/自動再送禁止を試験する。指定fmt/clippy/cargo test/pnpm testの出力を保存して開く。許可paths外・破壊的変更・製品判断が必要なら停止する。開始verify.ps1はexit 0（フロントエンド665件）、保存出力を確認済み。1呼び出し1まとまりとし、名前付きまとまりの公開はMCP-025へ残す。
 - 2026-10-04 MCP-018検証完了: 読み取り関連29試験はexit 0。応答前停止では `request failed: bridge connection closed before a response arrived` を記録し、巨大なエンジンエラーは日本語の固定説明に続くJSONデータとして上限内に返る。100msの待ちは追加Bridge要求が無いことの検査だけに残し、停止順序を決める待ちには使わない。通常cargo testは実mock未指定のSKIPを明示、指定mockはSKIPなしで1件成功。不在パスと実行不可ファイルは各exit 101で失敗し、SKIPに落ちないことを確認した（-6.txt/-7.txtは意図した失敗の証拠）。process_e2eの実エンジンopt-inとGUIは未確認。旧評価の非阻害事項（実mockはBridge層、部分木根のparentIdはnull、旧世代読取完了による現行cursor失効）は今回変更しておらず、NEXT_FINDINGSの記録を維持する。

@@ -83,7 +83,21 @@ impl McpExecution {
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) enum McpEditRequest {
-    Bridge { method: &'static str, params: Value },
+    Bridge {
+        method: &'static str,
+        params: Value,
+    },
+    GroupedBridge {
+        method: &'static str,
+        params: Value,
+        group_id: String,
+    },
+    BeginGroup {
+        name: String,
+    },
+    EndGroup {
+        group_id: String,
+    },
     History(McpHistoryDirection),
 }
 
@@ -110,14 +124,81 @@ impl EditService {
         let mut reads = reads
             .with_authorization(self.authorization.clone())
             .with_history_source(self.confirmation_history_source());
+        let mut group_token = None;
         let future = async {
+            group_token = match &request {
+                McpEditRequest::BeginGroup { name } => {
+                    if self.authorization.write_policy_snapshot().settings.mode
+                        == crate::mcp::McpWriteMode::ReadOnly
+                    {
+                        return Err(BackendError::Request {
+                            message: "書き込みが許可されていません。".to_owned(),
+                        });
+                    }
+                    return self
+                        .submit_group_control(
+                            &lease,
+                            GroupControl::BeginNamed { name: name.clone() },
+                        )
+                        .await;
+                }
+                McpEditRequest::EndGroup { group_id } => {
+                    return self
+                        .submit_group_control(
+                            &lease,
+                            GroupControl::EndNamed {
+                                secret: group_id.clone(),
+                            },
+                        )
+                        .await;
+                }
+                McpEditRequest::GroupedBridge {
+                    method, group_id, ..
+                } => {
+                    let keep = matches!(
+                        *method,
+                        "object.setProperty"
+                            | "scene.createObject"
+                            | "scene.duplicateObject"
+                            | "scene.reparentObject"
+                    );
+                    self.submit_group_control(
+                        &lease,
+                        GroupControl::Boundary {
+                            secret: Some(group_id.clone()),
+                            keep,
+                        },
+                    )
+                    .await?
+                    .as_u64()
+                }
+                McpEditRequest::History(_) => None,
+                McpEditRequest::Bridge { .. } => None,
+            };
             loop {
                 let permit = match &request {
-                    McpEditRequest::Bridge { method, params } => {
+                    McpEditRequest::Bridge { method, params }
+                    | McpEditRequest::GroupedBridge { method, params, .. } => {
                         reads.authorize_write(&lease, method, params).await
                     }
                     McpEditRequest::History(direction) => {
                         let Some(action) = self.history_action_for_mcp(*direction) else {
+                            // redo対象がない場合も、開いたまとまりは列上で閉じる。
+                            let active = self
+                                .history
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .has_active_group();
+                            if active {
+                                self.submit_group_control(
+                                    &lease,
+                                    GroupControl::Boundary {
+                                        secret: None,
+                                        keep: false,
+                                    },
+                                )
+                                .await?;
+                            }
                             return Ok(Value::Null);
                         };
                         let history = Arc::clone(&self.history);
@@ -129,6 +210,9 @@ impl EditService {
                             })
                             .await
                     }
+                    McpEditRequest::BeginGroup { .. } | McpEditRequest::EndGroup { .. } => {
+                        unreachable!()
+                    }
                 }
                 .map_err(|message| BackendError::Request { message })?;
                 let ticket = self.enqueue_confirmed_mcp(
@@ -137,6 +221,7 @@ impl EditService {
                     &request,
                     permit,
                     execution.clone(),
+                    group_token,
                 )?;
                 // ticketの取消CASと同じ状態を見る。列開始とBridge送信の間も未適用とは断言しない。
                 execution.track_queue(ticket.queue_state.clone());
@@ -146,14 +231,43 @@ impl EditService {
                 }
             }
         };
-        tokio::select! {
+        let result = tokio::select! {
             biased;
             result = future => result,
             _ = lease.authorization_cancelled() => Err(BackendError::McpAuthorizationRevoked),
             _ = lease.request_cancelled() => Err(BackendError::EditCancelled),
+        };
+        // 旧値取得・許可確認で止まった場合も、成功済みの部分だけを閉じる。
+        // 要求の通信断そのものからは永続所有者の終了を推定しない。
+        if result.is_err() && lease.is_current() {
+            if let Some(token) = group_token {
+                let _ = self
+                    .submit_group_control(&lease, GroupControl::CloseFailed { token })
+                    .await;
+            }
         }
+        result
     }
 
+    async fn submit_group_control(
+        &self,
+        lease: &McpRequestLease,
+        control: GroupControl,
+    ) -> Result<Value, BackendError> {
+        if !lease.is_current() {
+            return Err(BackendError::McpAuthorizationRevoked);
+        }
+        let (ticket, _, _) =
+            self.enqueue_control_with_auth(EditSource::Mcp, Some(lease.clone()), |_, _| {
+                QueuedAction::Group(control)
+            })?;
+        ticket
+            .outcome_until(lease.request_deadline())
+            .await?
+            .into_value()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn enqueue_confirmed_mcp(
         &self,
         reads: McpReadContext,
@@ -161,6 +275,7 @@ impl EditService {
         request: &McpEditRequest,
         permit: McpWritePermit,
         execution: Arc<McpExecution>,
+        group_token: Option<u64>,
     ) -> Result<EditTicket, BackendError> {
         let mut history_request = None;
         let mut event_input = None;
@@ -183,7 +298,8 @@ impl EditService {
                     }),
                 )
             }
-            McpEditRequest::Bridge { method, params } => {
+            McpEditRequest::Bridge { method, params }
+            | McpEditRequest::GroupedBridge { method, params, .. } => {
                 let prior = permit.captured_prior();
                 history_request = match &permit.operation {
                     McpWriteOperation::Property { object_id } => {
@@ -286,12 +402,13 @@ impl EditService {
                     })),
                 )
             }
+            McpEditRequest::BeginGroup { .. } | McpEditRequest::EndGroup { .. } => unreachable!(),
         };
         self.enqueue_action_with_context(
             EnqueueContext {
                 source: EditSource::Mcp,
                 kind,
-                group_token: None,
+                group_token,
                 event_request: history_request.clone(),
                 history_request,
                 event_input,

@@ -20,6 +20,7 @@ use crate::mcp::{
 };
 use crate::protocol_names::events;
 
+mod groups;
 mod history;
 pub(crate) mod mcp;
 
@@ -52,6 +53,19 @@ enum QueuedAction {
 }
 
 enum GroupControl {
+    BeginNamed {
+        name: String,
+    },
+    EndNamed {
+        secret: String,
+    },
+    CloseFailed {
+        token: u64,
+    },
+    Boundary {
+        secret: Option<String>,
+        keep: bool,
+    },
     Begin {
         token: u64,
         generation: u64,
@@ -1314,6 +1328,10 @@ async fn run_actor(
         .synchronize(generation);
 
     loop {
+        let group_deadline = history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .group_deadline();
         tokio::select! {
             biased;
             changed = shutdown.changed() => {
@@ -1360,6 +1378,14 @@ async fn run_actor(
                         event_sink.as_ref(),
                         EditServiceEvent::HistoryChanged(after),
                     );
+                }
+            }
+            _ = groups::wait_deadline(group_deadline) => {
+                let mut state = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.expire_group() {
+                    let summary = state.summary();
+                    drop(state);
+                    emit_service_event(event_sink.as_ref(), EditServiceEvent::HistoryChanged(summary));
                 }
             }
             item = receiver.recv() => {
@@ -1490,7 +1516,22 @@ async fn process_item(
             return false;
         }
         if !retry_action {
+            // 画面が捕捉した同じ先頭だけを、閉鎖による改訂の変化に追従させる。
+            let current_cursor = match &item.action {
+                QueuedAction::History(request) => {
+                    state.history_cursor(request.direction)
+                        == (request.expected_head_id, request.expected_revision)
+                }
+                _ => false,
+            };
+            state.expire_group();
             state.close_group_unless(item.group_token);
+            if current_cursor {
+                if let QueuedAction::History(request) = &mut item.action {
+                    (request.expected_head_id, request.expected_revision) =
+                        state.history_cursor(request.direction);
+                }
+            }
             if let Some(token) = item.group_token {
                 if !state.has_group(token, item.lease.generation) {
                     let after = state.summary();
@@ -1712,6 +1753,9 @@ async fn process_item(
                                     item.lease.generation,
                                 );
                             }
+                            if item.group_token.is_some() && value.value.get("accepted").and_then(Value::as_bool) != Some(true) {
+                                state.close_group_unless(None);
+                            }
                             Ok(value)
                         }
                     }),
@@ -1722,6 +1766,9 @@ async fn process_item(
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
                             state.synchronize(current);
                             if current == Some(item.lease.generation) {
+                                if item.group_token.is_some() {
+                                    state.close_group_unless(None);
+                                }
                                 if let Some(plan) = prepared_action.as_ref().filter(|_| !grouped_action) {
                                     state.finish_action_failure(plan);
                                 } else if matches!(
@@ -1842,7 +1889,26 @@ fn process_control_item(
                     .to_owned(),
             });
         }
+        state.expire_group();
         match item.action {
+            QueuedAction::Group(GroupControl::BeginNamed { name }) => {
+                let value = state.begin_named_group(item.sequence, name, item.lease.generation)?;
+                Ok(QueuedEditResult::plain(value))
+            }
+            QueuedAction::Group(GroupControl::EndNamed { secret }) => {
+                state.end_named_group(&secret)?;
+                Ok(QueuedEditResult::plain(serde_json::json!({"closed":true})))
+            }
+            QueuedAction::Group(GroupControl::Boundary { secret, keep }) => {
+                let token = state.group_boundary(secret.as_deref(), keep)?;
+                Ok(QueuedEditResult::plain(serde_json::json!(token)))
+            }
+            QueuedAction::Group(GroupControl::CloseFailed { token }) => {
+                if state.has_group(token, item.lease.generation) {
+                    state.close_group_unless(None);
+                }
+                Ok(QueuedEditResult::plain(Value::Null))
+            }
             QueuedAction::Group(GroupControl::Begin {
                 token,
                 generation: expected_generation,
@@ -3218,7 +3284,7 @@ mod tests {
         service
             .end_group_from_mcp(group)
             .await
-            .expect("部分適用されたまとまりを閉じる");
+            .expect_err("部分失敗で既に閉じたまとまりは拒否する");
         let summary = service.history_summary();
         assert_eq!(
             summary.undo_group.as_ref().map(|group| group.count),

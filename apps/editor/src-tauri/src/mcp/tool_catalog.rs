@@ -314,7 +314,7 @@ fn tool_specs() -> &'static [ToolSpec] {
     custom_tool(
         "edit_begin_group",
         "名前付き編集まとまりを開始する",
-        "複数の編集をまとめるためのまとまりを開始します。",
+        "複数の編集をまとめます。返された秘密のgroupIdを後続編集のparams外枠に指定してください。128編集・無操作5分・全体15分、別編集やUI操作で閉じます。",
         ToolAccess::Write,
         &["object.edit", "scene.edit", "component.edit"],
         r#"{
@@ -327,7 +327,7 @@ fn tool_specs() -> &'static [ToolSpec] {
     custom_tool(
         "edit_end_group",
         "名前付き編集まとまりを終了する",
-        "groupIdで指定した名前付き編集まとまりを終了します。",
+        "秘密のgroupIdを持つ名前付き編集まとまりを閉じます。表示用IDは使えません。閉鎖後のgroupIdは失効します。",
         ToolAccess::Write,
         &["object.edit", "scene.edit", "component.edit"],
         r#"{
@@ -993,9 +993,9 @@ mod tests {
             catalog.validate_call("asset_get_manifest", &json!({"page":0})),
             Err(ToolInputError::Invalid)
         );
-        // 名前付きまとまりのschemaは維持し、実装済みの道具だけを公開する。
-        assert!(catalog.get("edit_begin_group").is_none());
-        assert!(catalog.get("edit_end_group").is_none());
+        // 名前付きまとまりも公開schemaで検証する。
+        assert!(catalog.get("edit_begin_group").is_some());
+        assert!(catalog.get("edit_end_group").is_some());
         let group_schema = input_schema(
             tool_specs()
                 .iter()

@@ -3,6 +3,8 @@ mod writes_tests {
     use super::*;
     use crate::mcp::{tool_catalog::WritePermission, writes::McpWriteService};
 
+    include!("groups_tests.rs");
+
     const ALL_CAPABILITIES: &[&str] = &[
         "scene.query",
         "scene.edit",
@@ -430,7 +432,7 @@ mod writes_tests {
             .filter(|tool| tool.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(false))
             .map(|tool| tool.name.to_string())
             .collect();
-        assert_eq!(names.len(), 12, "{names:?}");
+        assert_eq!(names.len(), 14, "{names:?}");
         for forbidden in [
             "launch_engine",
             "stop_engine",
@@ -440,8 +442,6 @@ mod writes_tests {
             "file_write",
             "object_invoke",
             "runtime_step",
-            "edit_begin_group",
-            "edit_end_group",
             "mcp_approve_confirmation",
         ] {
             assert!(context.get_tool(forbidden).is_none(), "{forbidden}");
@@ -663,6 +663,37 @@ mod writes_tests {
                         .to_owned(),
                 );
                 response.bytes().await.expect("初期化応答を読む");
+            }
+            let mut group_id = Value::Null;
+            for (id, name, expected) in [(10, "edit_begin_group", "applied"), (11, "edit_end_group", "applied"), (12, "edit_end_group", "notApplied")] {
+                let arguments = if name == "edit_begin_group" { json!({"name":"HTTPのまとまり"}) } else { json!({"groupId":group_id}) };
+                let mut body = json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+                if version == "2026-07-28" {
+                    body["params"]["_meta"] = json!({"io.modelcontextprotocol/protocolVersion":version,"io.modelcontextprotocol/clientCapabilities":{}});
+                }
+                // 要求ごとに別のHTTP接続を使う。所有権は返された秘密IDだけで継続する。
+                let mut request = reqwest::Client::new().post(&url).bearer_auth(&bearer)
+                    .header("Accept", "application/json, text/event-stream")
+                    .header("Mcp-Protocol-Version", version)
+                    .header("Mcp-Method", "tools/call")
+                    .header("Mcp-Name", name).json(&body);
+                if let Some(session) = &session {
+                    request = request.header("Mcp-Session-Id", session);
+                }
+                let response = request.send().await.expect("まとまり道具をHTTPで呼ぶ");
+                assert!(response.status().is_success());
+                let text = response.text().await.expect("まとまり応答を読む");
+                let json_text = text.lines().filter_map(|line| line.strip_prefix("data: ")).find(|line| line.trim_start().starts_with('{')).unwrap_or(&text);
+                let response: Value = serde_json::from_str(json_text).expect("応答を解析する");
+                let payload = &response["result"]["structuredContent"];
+                assert_eq!(payload["outcome"], expected, "{version}/{name}");
+                if name == "edit_begin_group" {
+                    group_id = payload["result"]["groupId"].clone();
+                    assert_eq!(group_id.as_str().expect("秘密ID").len(), 64);
+                    assert_ne!(payload["result"]["displayGroupId"], group_id);
+                } else {
+                    assert!(!text.contains(group_id.as_str().expect("秘密ID")));
+                }
             }
             let mut display_ids = Vec::new();
             for (id, name, outcome) in [

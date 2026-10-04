@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::future::Future;
 
 use serde_json::Value;
+use tokio::time::Instant;
 
+use super::groups::{GroupSecret, IDLE_TIMEOUT, MAX_EDITS, TOTAL_TIMEOUT};
 use super::{EditKind, EditSource};
 use crate::bridge_state::BridgeLease;
 use crate::dto::{
@@ -75,6 +77,9 @@ struct HistoryEntry {
 #[derive(Clone, Debug, PartialEq)]
 struct ActiveGroup {
     token: u64,
+    secret: Option<GroupSecret>,
+    started_at: Instant,
+    last_edit_at: Instant,
     metadata: GroupMetadata,
     entries: Vec<HistoryEntry>,
 }
@@ -454,10 +459,7 @@ impl HistoryState {
     }
 
     fn group_summary(&self, direction: HistoryDirection) -> Option<EditGroupSummaryDto> {
-        let stack = match direction {
-            HistoryDirection::Undo => &self.undo,
-            HistoryDirection::Redo => &self.redo,
-        };
+        let stack = self.visible_stack(direction);
         let entry = stack.last()?;
         Some(EditGroupSummaryDto {
             id: group_id(entry.group.key.generation, entry.group.key.sequence),
@@ -504,14 +506,22 @@ impl HistoryState {
     }
 
     pub(super) fn history_cursor(&self, direction: HistoryDirection) -> (Option<u64>, u64) {
-        let stack = match direction {
-            HistoryDirection::Undo => &self.undo,
-            HistoryDirection::Redo => &self.redo,
-        };
+        let stack = self.visible_stack(direction);
         (
             stack.last().map(|entry| entry.marker.sequence),
             self.revision,
         )
+    }
+
+    fn visible_stack(&self, direction: HistoryDirection) -> &[HistoryEntry] {
+        match direction {
+            HistoryDirection::Undo => self
+                .active_group
+                .as_ref()
+                .filter(|group| !group.entries.is_empty())
+                .map_or(&self.undo, |group| &group.entries),
+            HistoryDirection::Redo => &self.redo,
+        }
     }
 
     pub(super) fn prepare_action(&self, request: HistoryActionRequest) -> Option<HistoryAction> {
@@ -519,10 +529,7 @@ impl HistoryState {
         if self.edit_unsupported || self.pending || request.expected_revision != self.revision {
             return None;
         }
-        let stack = match request.direction {
-            HistoryDirection::Undo => &self.undo,
-            HistoryDirection::Redo => &self.redo,
-        };
+        let stack = self.visible_stack(request.direction);
         let entry = stack.last()?;
         if entry.marker.sequence != expected_head_id {
             return None;
@@ -604,6 +611,9 @@ impl HistoryState {
         self.close_active_group();
         self.active_group = Some(ActiveGroup {
             token,
+            secret: None,
+            started_at: Instant::now(),
+            last_edit_at: Instant::now(),
             metadata: GroupMetadata {
                 key: GroupKey {
                     generation,
@@ -622,6 +632,7 @@ impl HistoryState {
     }
 
     pub(super) fn end_group(&mut self, token: u64) -> Result<bool, BackendError> {
+        self.expire_group();
         if self.active_group.as_ref().map(|group| group.token) != Some(token) {
             return Err(BackendError::Request {
                 message: "まとまりIDが現在のまとまりと一致しません。".to_owned(),
@@ -632,6 +643,89 @@ impl HistoryState {
 
     pub(super) fn close_group_unless(&mut self, token: Option<u64>) -> bool {
         if self.active_group.as_ref().map(|group| group.token) != token {
+            self.close_active_group()
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn begin_named_group(
+        &mut self,
+        token: u64,
+        name: String,
+        generation: u64,
+    ) -> Result<Value, BackendError> {
+        let secret = GroupSecret::generate()?;
+        self.begin_group(token, name, EditSource::Mcp, generation)?;
+        let value = serde_json::json!({
+            "groupId": secret.expose(),
+            "displayGroupId": group_id(generation, token),
+            "maxEdits": MAX_EDITS,
+            "idleTimeoutSeconds": IDLE_TIMEOUT.as_secs(),
+            "totalTimeoutSeconds": TOTAL_TIMEOUT.as_secs(),
+        });
+        if let Some(group) = self.active_group.as_mut() {
+            group.secret = Some(secret);
+        }
+        Ok(value)
+    }
+
+    /// 列上でだけ秘密を照合する。未知IDも先行まとまりを閉じ、失効済みIDは復活させない。
+    pub(super) fn group_boundary(
+        &mut self,
+        secret: Option<&str>,
+        keep: bool,
+    ) -> Result<Option<u64>, BackendError> {
+        self.expire_group();
+        let token = secret.and_then(|candidate| {
+            self.active_group
+                .as_ref()
+                .filter(|group| {
+                    group
+                        .secret
+                        .as_ref()
+                        .is_some_and(|secret| secret.matches(candidate))
+                })
+                .map(|group| group.token)
+        });
+        self.close_group_unless(token.filter(|_| keep));
+        if secret.is_some() && token.is_none() {
+            return Err(BackendError::Request {
+                message: "groupIdが無効または失効しています。新しいまとまりを開始してください。"
+                    .to_owned(),
+            });
+        }
+        Ok(token.filter(|_| keep))
+    }
+
+    pub(super) fn end_named_group(&mut self, secret: &str) -> Result<(), BackendError> {
+        self.expire_group();
+        // endは編集の割込みではないので、誤ったIDで他のまとまりを閉じない。
+        if !self
+            .active_group
+            .as_ref()
+            .and_then(|group| group.secret.as_ref())
+            .is_some_and(|current| current.matches(secret))
+        {
+            return Err(BackendError::Request {
+                message: "groupIdが無効または失効しています。".to_owned(),
+            });
+        }
+        self.close_active_group();
+        Ok(())
+    }
+
+    pub(super) fn group_deadline(&self) -> Option<Instant> {
+        self.active_group
+            .as_ref()
+            .map(|group| (group.started_at + TOTAL_TIMEOUT).min(group.last_edit_at + IDLE_TIMEOUT))
+    }
+
+    pub(super) fn expire_group(&mut self) -> bool {
+        if self
+            .group_deadline()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
             self.close_active_group()
         } else {
             false
@@ -1347,6 +1441,7 @@ impl HistoryState {
                 };
                 if let Some(group) = self.active_group.as_mut() {
                     group.entries.push(entry);
+                    group.last_edit_at = Instant::now();
                 }
                 if self
                     .active_group
@@ -1355,6 +1450,14 @@ impl HistoryState {
                 {
                     self.redo.clear();
                 }
+                if self
+                    .active_group
+                    .as_ref()
+                    .is_some_and(|group| group.entries.len() >= MAX_EDITS)
+                {
+                    self.close_active_group();
+                }
+                self.expire_group();
             } else {
                 let metadata = GroupMetadata {
                     key: GroupKey {

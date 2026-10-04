@@ -378,7 +378,7 @@ M2 の共通規則:
 - notes: 先行 MCP-023。asset編集/object.invoke/runtime.stepはE4。1呼び出し1まとまり。component付け外しは既存の非取り消し操作であることを結果へ明示する。
 
 ## MCP-025: 名前付きまとまりの開始・終了と自動閉鎖を公開する
-- status: todo
+- status: done
 - done-when: NE12/NE06。beginの256 bit groupIdをparams外枠で受け、正しいID所持を所有者とする。秘密と表示用IDを分け、共有トークン/自己申告client名を同一性に使わない。複数編集が1回undoで戻り、groupIdなし/別ID/UI/undo/redo/非取り消し操作の前に閉じる。128編集/無操作5分/全体15分/無効化/認証失効で閉じる。期限後IDは拒否する。人の列を止めず、同じまとまり内redoの依存IDを置換し、部分失敗はNE06を使う。Bridge切断/世代変更で閉じて旧groupIdを拒否する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

@@ -47,6 +47,8 @@ pub(crate) fn is_implemented_write(name: &str) -> bool {
             | "component_remove"
             | "edit_undo"
             | "edit_redo"
+            | "edit_begin_group"
+            | "edit_end_group"
             | "runtime_play"
             | "runtime_pause"
             | "runtime_stop"
@@ -96,6 +98,18 @@ impl McpReadContext {
                 })
             })?;
         let request = match (name, validated) {
+            ("edit_begin_group", ValidatedToolInput::Custom(input)) => McpEditRequest::BeginGroup {
+                name: input["name"]
+                    .as_str()
+                    .ok_or_else(|| local_error("まとまり名がありません。"))?
+                    .to_owned(),
+            },
+            ("edit_end_group", ValidatedToolInput::Custom(input)) => McpEditRequest::EndGroup {
+                group_id: input["groupId"]
+                    .as_str()
+                    .ok_or_else(|| local_error("groupIdがありません。"))?
+                    .to_owned(),
+            },
             ("edit_undo", ValidatedToolInput::Custom(_)) => {
                 McpEditRequest::History(McpHistoryDirection::Undo)
             }
@@ -118,13 +132,17 @@ impl McpReadContext {
             (
                 _,
                 ValidatedToolInput::BridgeWrite {
-                    group_id: Some(_), ..
+                    params,
+                    group_id: Some(group_id),
                 },
-            ) => {
-                return Err(local_error(
-                    "名前付きまとまりは未対応です。groupIdを指定した操作は適用しません。",
-                ));
-            }
+            ) => McpEditRequest::GroupedBridge {
+                method: self
+                    .catalog
+                    .hidden_write_method(name)
+                    .ok_or_else(|| local_error("この書き込み道具は未対応です。"))?,
+                params,
+                group_id,
+            },
             _ => return Err(local_error("この書き込み道具は未対応です。")),
         };
         match self
@@ -171,7 +189,11 @@ fn write_result(
     execution: &McpExecution,
     result: Result<Value, BackendError>,
 ) -> CallToolResult {
-    let outcome = execution.outcome(result.is_ok());
+    let outcome = if result.is_ok() && matches!(name, "edit_begin_group" | "edit_end_group") {
+        "applied"
+    } else {
+        execution.outcome(result.is_ok())
+    };
     let mut payload = json!({
         "requestId": request_id,
         "outcome": outcome,
