@@ -349,7 +349,7 @@ M2 の共通規則:
 - notes: 先行MCP-022-A。MCP-022のHTTP切断と全体期限の契約を引き継ぐ。層をつないだ最終受入はMCP-028でも行い、ここでは実HTTPのリース取消とbroker清掃を別々に証明する。書き込み道具の本公開はMCP-024。危険地帯の評価とコミット本文必須。
 
 ## MCP-022: 要求ごとの書き込み確認をバックエンドで管理する
-- status: todo
+- status: blocked
 - done-when: NE13。delete/component.removeとMCP undo内部deleteはwrite可でも確認必須、read-onlyでは拒否する。列外の確認brokerが120秒/拒否/HTTP切断/認証改訂/世代変更で取り下げる。一度だけの要求固有確認で、承認後に旧値/対象/範囲/許可改訂/undo先頭IDと履歴改訂/deleteの履歴破棄影響を照合し、違えば再確認する。待機中もUI編集と終了が進む。MCPから承認できず、信頼したmain画面commandだけが承認する。要求全体125秒に再照会/走査/列待ちも含める。旧版はHTTP応答破棄と要求ID別cancelを結び、両版の切断取消を試験する。未開始は列から取消、開始済みは次の操作へ進まずBridge結果を確認し、適用済みと結果不明を区別する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
