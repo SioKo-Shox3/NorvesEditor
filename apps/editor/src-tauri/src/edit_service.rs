@@ -21,11 +21,16 @@ use crate::mcp::{
 use crate::protocol_names::events;
 
 mod history;
+pub(crate) mod mcp;
+
+use mcp::QueuedMcpPermit;
 
 use history::{
     HistoryAction, HistoryActionRequest, HistoryMarker, HistoryOperationContext, HistoryState,
 };
-pub(crate) use history::{HistoryCapture, HistoryRequest, PriorCapture, QueuedEditResult};
+pub(crate) use history::{
+    HistoryCapture, HistoryPrior, HistoryRequest, PriorCapture, QueuedEditResult,
+};
 pub(crate) use history::{HistoryDirection, HistoryRecord};
 
 const QUEUE_CAPACITY: usize = 64;
@@ -109,6 +114,22 @@ pub(crate) enum EditSource {
     Mcp,
 }
 
+enum QueueOutcome {
+    Complete(QueuedEditResult),
+    Reconfirm,
+}
+
+impl QueueOutcome {
+    fn into_value(self) -> Result<Value, BackendError> {
+        match self {
+            Self::Complete(result) => Ok(result.value),
+            Self::Reconfirm => Err(BackendError::Request {
+                message: "対象が変わったため、エディタ画面で再確認してください。".to_owned(),
+            }),
+        }
+    }
+}
+
 struct QueueItem {
     sequence: u64,
     source: EditSource,
@@ -120,9 +141,10 @@ struct QueueItem {
     event_request: Option<HistoryRequest>,
     event_input: Option<EditEventInput>,
     auth_lease: Option<McpRequestLease>,
+    mcp_permit: Option<QueuedMcpPermit>,
     cancelled: oneshot::Receiver<()>,
     queue_state: Arc<AtomicU8>,
-    result: oneshot::Sender<Result<QueuedEditResult, BackendError>>,
+    result: oneshot::Sender<Result<QueueOutcome, BackendError>>,
 }
 
 struct EnqueueContext {
@@ -133,6 +155,7 @@ struct EnqueueContext {
     event_request: Option<HistoryRequest>,
     event_input: Option<EditEventInput>,
     auth_lease: Option<McpRequestLease>,
+    mcp_permit: Option<QueuedMcpPermit>,
 }
 
 struct Admission {
@@ -143,7 +166,7 @@ struct Admission {
 /// ticketのdropは開始前だけを取り消す。実行中の要求はサービス停止時に中止する。
 #[allow(dead_code)]
 pub(crate) struct EditTicket {
-    result: oneshot::Receiver<Result<QueuedEditResult, BackendError>>,
+    result: oneshot::Receiver<Result<QueueOutcome, BackendError>>,
     cancel: TicketCancellationGuard,
     queue_state: Arc<AtomicU8>,
 }
@@ -183,13 +206,22 @@ impl EditTicket {
             .await
             .unwrap_or(Err(BackendError::EditServiceStopping));
         drop(cancel);
-        outcome.map(|result| result.value)
+        outcome.and_then(QueueOutcome::into_value)
     }
 
     pub(crate) async fn result_until(
         self,
         deadline: tokio::time::Instant,
     ) -> Result<Value, BackendError> {
+        self.outcome_until(deadline)
+            .await
+            .and_then(QueueOutcome::into_value)
+    }
+
+    async fn outcome_until(
+        self,
+        deadline: tokio::time::Instant,
+    ) -> Result<QueueOutcome, BackendError> {
         let EditTicket {
             result,
             cancel,
@@ -206,7 +238,7 @@ impl EditTicket {
         }
         drop(cancel);
         match outcome {
-            Ok(Ok(outcome)) => outcome.map(|result| result.value),
+            Ok(Ok(outcome)) => outcome,
             Ok(Err(_)) => Err(BackendError::EditServiceStopping),
             Err(_) if queue_state.load(Ordering::Acquire) == TICKET_STARTED => {
                 Err(BackendError::Request {
@@ -289,7 +321,7 @@ impl EditService {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let auth_changes = authorization.subscribe_revision();
         let history = Arc::new(StdMutex::new(HistoryState::default()));
-        let join = tauri::async_runtime::spawn(run_actor(
+        let actor = run_actor(
             bridge.clone(),
             receiver,
             bridge.subscribe(),
@@ -298,7 +330,12 @@ impl EditService {
             Arc::clone(&history),
             event_sink.clone(),
             authorization.clone(),
-        ));
+        );
+        #[cfg(not(test))]
+        let join = tauri::async_runtime::spawn(actor);
+        // 要求とactorの時計を揃え、仮想時計で全体期限とBridge期限を検査する。
+        #[cfg(test)]
+        let join = JoinHandle::Tokio(tokio::spawn(actor));
         Self {
             bridge,
             sender,
@@ -379,6 +416,7 @@ impl EditService {
                 event_request: None,
                 event_input: None,
                 auth_lease: Some(auth_lease),
+                mcp_permit: None,
             },
             Box::new(|lease| {
                 Box::pin(async move { action(lease).await.map(QueuedEditResult::plain) })
@@ -435,6 +473,7 @@ impl EditService {
                 event_request: Some(request),
                 event_input: None,
                 auth_lease: Some(auth_lease),
+                mcp_permit: None,
             },
             Box::new(|lease| Box::pin(action(lease))),
         )
@@ -556,6 +595,7 @@ impl EditService {
                 event_request: Some(request),
                 event_input: None,
                 auth_lease: Some(auth_lease),
+                mcp_permit: None,
             },
             Box::new(|lease| Box::pin(action(lease))),
         )
@@ -698,6 +738,7 @@ impl EditService {
             event_request: None,
             event_input: None,
             auth_lease: (source == EditSource::Mcp).then(|| self.authorization.current_lease()),
+            mcp_permit: None,
             cancelled,
             queue_state: Arc::clone(&queue_state),
             result,
@@ -809,6 +850,7 @@ impl EditService {
                 event_request,
                 event_input,
                 auth_lease: None,
+                mcp_permit: None,
             },
             action,
         )
@@ -819,6 +861,14 @@ impl EditService {
         context: EnqueueContext,
         action: EditAction,
     ) -> Result<EditTicket, BackendError> {
+        self.enqueue_action_with_context(context, QueuedAction::Edit(action))
+    }
+
+    fn enqueue_action_with_context(
+        &self,
+        context: EnqueueContext,
+        action: QueuedAction,
+    ) -> Result<EditTicket, BackendError> {
         let EnqueueContext {
             source,
             kind,
@@ -827,6 +877,7 @@ impl EditService {
             event_request,
             event_input,
             mut auth_lease,
+            mcp_permit,
         } = context;
         if source == EditSource::Mcp && auth_lease.is_none() {
             auth_lease = Some(self.authorization.current_lease());
@@ -847,12 +898,13 @@ impl EditService {
             source,
             kind,
             lease,
-            action: QueuedAction::Edit(action),
+            action,
             group_token,
             history_request,
             event_request,
             event_input,
             auth_lease,
+            mcp_permit,
             cancelled,
             queue_state: Arc::clone(&queue_state),
             result,
@@ -919,6 +971,7 @@ impl EditService {
             event_request: None,
             event_input: None,
             auth_lease,
+            mcp_permit: None,
             cancelled,
             queue_state: Arc::clone(&queue_state),
             result,
@@ -1074,7 +1127,9 @@ fn completed_noop_ticket() -> EditTicket {
     let (result_tx, result) = oneshot::channel();
     let (cancel, cancelled) = oneshot::channel();
     let queue_state = Arc::new(AtomicU8::new(TICKET_WAITING));
-    let _ = result_tx.send(Ok(QueuedEditResult::plain(Value::Null)));
+    let _ = result_tx.send(Ok(QueueOutcome::Complete(QueuedEditResult::plain(
+        Value::Null,
+    ))));
     drop(cancelled);
     EditTicket {
         result,
@@ -1083,13 +1138,6 @@ fn completed_noop_ticket() -> EditTicket {
             queue_state: Arc::clone(&queue_state),
         },
         queue_state,
-    }
-}
-
-async fn wait_for_auth_revocation(lease: Option<McpRequestLease>) {
-    match lease {
-        Some(lease) => lease.cancelled().await,
-        None => std::future::pending().await,
     }
 }
 
@@ -1340,6 +1388,7 @@ async fn process_item(
     event_sink: Option<&EditEventSink>,
     mut item: QueueItem,
 ) -> bool {
+    let checked_mcp_write = item.mcp_permit.is_some();
     if item
         .auth_lease
         .as_ref()
@@ -1359,13 +1408,50 @@ async fn process_item(
         return process_control_item(bridge, history, event_sink, item);
     }
     if !bridge.is_current(item.lease.generation) {
-        let outcome = if matches!(item.action, QueuedAction::History(_)) {
-            Ok(QueuedEditResult::plain(Value::Null))
-        } else {
-            Err(BackendError::NotConnected)
-        };
-        let _ = item.result.send(outcome);
+        let outcome =
+            if item.source == EditSource::Ui && matches!(item.action, QueuedAction::History(_)) {
+                Ok(QueuedEditResult::plain(Value::Null))
+            } else {
+                Err(BackendError::NotConnected)
+            };
+        let _ = item.result.send(outcome.map(QueueOutcome::Complete));
         return false;
+    }
+
+    if let Some(QueuedMcpPermit { reads, permit }) = item.mcp_permit.take() {
+        let Some(auth) = item.auth_lease.as_ref() else {
+            let _ = item.result.send(Err(BackendError::McpAuthorizationRevoked));
+            return false;
+        };
+        let current_history = match &permit.operation {
+            crate::mcp::authorization::McpWriteOperation::History(action) => {
+                mcp::current_history(bridge, history, action.direction)
+            }
+            _ => None,
+        };
+        let validated = tokio::select! {
+            biased;
+            _ = shutdown.changed() => {
+                let _ = item.result.send(Err(BackendError::EditServiceStopping));
+                return true;
+            },
+            _ = auth.authorization_cancelled() => Err("MCP要求の許可が失効しました。".to_owned()),
+            _ = auth.request_cancelled() => Err("MCP要求が取り消されました。".to_owned()),
+            _ = &mut item.cancelled => Err("MCP要求が取り消されました。".to_owned()),
+            _ = tokio::time::sleep_until(auth.request_deadline()) => Err("MCP要求の全体期限を超えました。".to_owned()),
+            result = reads.revalidate_queued_permit(auth, permit, item.lease.generation, current_history) => result,
+        };
+        match validated {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = item.result.send(Ok(QueueOutcome::Reconfirm));
+                return false;
+            }
+            Err(message) => {
+                let _ = item.result.send(Err(BackendError::Request { message }));
+                return false;
+            }
+        }
     }
 
     let unsupported_scene_edit = item
@@ -1433,7 +1519,11 @@ async fn process_item(
                     if after != history_before {
                         emit_service_event(event_sink, EditServiceEvent::HistoryChanged(after));
                     }
-                    let _ = item.result.send(Ok(QueuedEditResult::plain(Value::Null)));
+                    let _ = item
+                        .result
+                        .send(Ok(QueueOutcome::Complete(QueuedEditResult::plain(
+                            Value::Null,
+                        ))));
                     return false;
                 };
                 Some(action)
@@ -1456,7 +1546,7 @@ async fn process_item(
 
     let grouped_action = prepared_action
         .as_ref()
-        .is_some_and(|action| action.grouped || retry_action);
+        .is_some_and(|action| action.grouped || retry_action || item.source == EditSource::Mcp);
     let group_events = Arc::new(StdMutex::new(Vec::new()));
     if item
         .auth_lease
@@ -1483,7 +1573,11 @@ async fn process_item(
         QueuedAction::Edit(action) => action(item.lease.clone()),
         QueuedAction::History(_) | QueuedAction::Retry => {
             let Some(plan) = prepared_action.clone() else {
-                let _ = item.result.send(Ok(QueuedEditResult::plain(Value::Null)));
+                let _ = item
+                    .result
+                    .send(Ok(QueueOutcome::Complete(QueuedEditResult::plain(
+                        Value::Null,
+                    ))));
                 return false;
             };
             if grouped_action {
@@ -1497,6 +1591,7 @@ async fn process_item(
                         sequence: item.sequence,
                         events: Arc::clone(&group_events),
                         retrying: retry_action,
+                        auth_lease: item.auth_lease.clone(),
                     },
                 )) as EditFuture
             } else {
@@ -1535,9 +1630,6 @@ async fn process_item(
                     break (Err(BackendError::NotConnected), false);
                 }
             }
-            _ = wait_for_auth_revocation(item.auth_lease.clone()) => {
-                break (Err(BackendError::McpAuthorizationRevoked), false);
-            }
             changed = auth_changes.changed() => {
                 if changed.is_err() {
                     break (Err(BackendError::McpAuthorizationRevoked), false);
@@ -1554,13 +1646,6 @@ async fn process_item(
                         event_sink,
                         EditServiceEvent::HistoryChanged(after),
                     );
-                }
-                if item
-                    .auth_lease
-                    .as_ref()
-                    .is_some_and(|lease| !lease.is_current())
-                {
-                    break (Err(BackendError::McpAuthorizationRevoked), false);
                 }
             }
             result = &mut action => {
@@ -1632,6 +1717,11 @@ async fn process_item(
                                 {
                                     state.mark_edit_unsupported();
                                 }
+                                if checked_mcp_write && !grouped_action && !matches!(
+                                    error, BackendError::Engine { .. } | BackendError::McpAuthorizationRevoked | BackendError::EditCancelled
+                                ) {
+                                    state.mark_mcp_outcome_unknown(item.sequence, item.lease.generation);
+                                }
                             }
                         });
                         Err(error)
@@ -1696,7 +1786,7 @@ async fn process_item(
     if history_after != history_before {
         emit_service_event(event_sink, EditServiceEvent::HistoryChanged(history_after));
     }
-    let _ = item.result.send(outcome);
+    let _ = item.result.send(outcome.map(QueueOutcome::Complete));
     stopping
 }
 
@@ -1775,7 +1865,7 @@ fn process_control_item(
     if after != before {
         emit_service_event(event_sink, EditServiceEvent::HistoryChanged(after));
     }
-    let _ = item.result.send(outcome);
+    let _ = item.result.send(outcome.map(QueueOutcome::Complete));
     false
 }
 
@@ -1787,6 +1877,7 @@ struct GroupActionContext {
     sequence: u64,
     events: Arc<StdMutex<Vec<EditAppliedDto>>>,
     retrying: bool,
+    auth_lease: Option<McpRequestLease>,
 }
 
 async fn run_group_history_action(
@@ -1801,6 +1892,7 @@ async fn run_group_history_action(
         sequence,
         events,
         retrying,
+        auth_lease,
     } = context;
     let mut completed = if retrying {
         history
@@ -1814,6 +1906,18 @@ async fn run_group_history_action(
     };
     let total = action.group.count;
     for queued_step in &action.steps {
+        if auth_lease.as_ref().is_some_and(|lease| !lease.is_current()) {
+            if completed == 0 {
+                return Err(BackendError::EditCancelled);
+            }
+            history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .start_pending_group(&action, completed, false, false);
+            return Err(BackendError::Request {
+                message: format!("MCP要求が取り消されました。{completed}件の適用結果を確認済みです。残りの操作は開始していません。"),
+            });
+        }
         if !bridge.is_current(lease.generation) {
             return Err(BackendError::NotConnected);
         }
@@ -2187,6 +2291,7 @@ pub async fn edit_discard(
 
 #[cfg(test)]
 mod tests {
+    include!("edit_service/mcp_tests.rs");
     use super::*;
     use crate::bridge_state::{test_edit_facade, BridgeSessionTestControl};
     use norves_bridge_core::{
@@ -3847,39 +3952,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn actor_cancels_an_in_flight_mcp_request_when_its_lease_is_revoked() {
+    async fn actor_preserves_an_in_flight_mcp_result_when_its_lease_is_revoked() {
         let authorization = McpAuthorization::default();
         let (service, _control, handle, _peer) =
             test_service_with_peer_and_authorization(4, authorization.clone());
         let (started, started_rx) = oneshot::channel();
-        let (dropped, dropped_rx) = oneshot::channel();
-        struct DropNotice(Option<oneshot::Sender<()>>);
-        impl Drop for DropNotice {
-            fn drop(&mut self) {
-                if let Some(sender) = self.0.take() {
-                    let _ = sender.send(());
-                }
-            }
-        }
-        let auth_lease = authorization.current_lease();
+        let (release, release_rx) = oneshot::channel();
         let ticket = service
-            .enqueue_from_mcp_authorized(auth_lease, EditKind::Edit, move |_| async move {
-                let _notice = DropNotice(Some(dropped));
-                let _ = started.send(());
-                std::future::pending::<Result<Value, BackendError>>().await
-            })
-            .expect("認証済みMCP要求を列へ入れる");
-        started_rx.await.expect("MCP要求が実行を始める");
-
+            .enqueue_from_mcp_authorized(
+                authorization.current_lease(),
+                EditKind::Edit,
+                move |_| async move {
+                    let _ = started.send(());
+                    release_rx.await.expect("取消後もBridge結果を待つ");
+                    success(serde_json::json!({"accepted":true}))
+                },
+            )
+            .expect("MCP要求を列へ入れる");
+        started_rx.await.expect("Bridge操作が開始する");
         authorization.revoke();
-        assert!(matches!(
-            ticket.result().await,
-            Err(BackendError::McpAuthorizationRevoked)
-        ));
-        tokio::time::timeout(Duration::from_secs(1), dropped_rx)
-            .await
-            .expect("失効要求のfutureを破棄する")
-            .expect("要求の取消を確認する");
+        let next = service
+            .enqueue_from_ui(EditKind::Edit, |_| async { success(Value::Null) })
+            .expect("後続UI操作を列へ入れる");
+        assert_eq!(service.history_summary().applied_revision, 0);
+        release.send(()).expect("失効後のBridge結果を返す");
+        assert_eq!(
+            ticket.result().await.expect("適用結果を保全する")["accepted"],
+            true
+        );
+        next.result().await.expect("結果確認後にUI操作が進む");
+        assert_eq!(service.history_summary().applied_revision, 1);
         service.shutdown().await;
         handle.shutdown().await;
     }

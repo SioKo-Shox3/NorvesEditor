@@ -189,7 +189,8 @@ impl McpAuthorization {
             }
             false
         });
-        self.inner.confirmations.cancel_all();
+        // 新改訂の確認を巻き込まず、旧登録だけを同期的に取り下げる。
+        self.inner.confirmations.cancel_before_revision(revision);
         revision
     }
 
@@ -246,6 +247,7 @@ impl McpAuthorization {
             request_id: lease.request_id(),
             confirmed: false,
             operation,
+            review: None,
         })
     }
 
@@ -265,6 +267,7 @@ impl McpAuthorization {
             request_id: lease.request_id(),
             confirmed: true,
             operation,
+            review: None,
         })
     }
 

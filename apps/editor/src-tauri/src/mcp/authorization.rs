@@ -370,7 +370,9 @@ impl McpSceneScopeIndex {
     }
 
     pub(crate) fn scene_object_ids(&self) -> Vec<String> {
-        self.nodes.keys().cloned().collect()
+        let mut ids: Vec<_> = self.nodes.keys().cloned().collect();
+        ids.sort_unstable();
+        ids
     }
 
     pub(crate) fn contains_node(&self, object_id: &str) -> bool {
@@ -599,6 +601,7 @@ pub(crate) struct McpWritePermit {
     pub(crate) request_id: u64,
     pub(crate) confirmed: bool,
     pub(crate) operation: McpWriteOperation,
+    pub(crate) review: Option<Box<super::reads::AuthorizationReview>>,
 }
 
 /// 認証・モード・範囲の検査に成功した瞬間の設定snapshot。

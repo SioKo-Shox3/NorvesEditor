@@ -805,6 +805,29 @@ impl HistoryState {
         self.start_pending_group(action, completed, !retry_allowed, retry_allowed);
     }
 
+    /// Bridgeが結果を確定できないMCP編集を、再送不可の保留として表示する。
+    pub(super) fn mark_mcp_outcome_unknown(&mut self, sequence: u64, generation: u64) {
+        self.pending = true;
+        self.pending_group = Some(PendingGroupAction {
+            direction: HistoryDirection::Undo,
+            metadata: GroupMetadata {
+                key: GroupKey {
+                    generation,
+                    sequence,
+                },
+                name: "MCP編集の結果確認".to_owned(),
+                source: EditSource::Mcp,
+                created_at: unix_millis(),
+                count: 1,
+                named: false,
+            },
+            completed: 0,
+            outcome_unknown: true,
+            retry_allowed: false,
+        });
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     pub(super) fn clear_completed_pending_group(&mut self, key: &GroupKey) {
         if self
             .pending_group

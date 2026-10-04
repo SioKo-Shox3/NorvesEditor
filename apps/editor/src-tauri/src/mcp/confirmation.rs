@@ -38,6 +38,7 @@ struct BrokerInner {
 struct PendingConfirmation {
     request: McpConfirmationRequestDto,
     decision: oneshot::Sender<bool>,
+    auth_revision: u64,
 }
 
 /// 呼び出しfutureの中止・破棄でも登録と画面通知を確実に片付ける。
@@ -100,7 +101,14 @@ impl McpConfirmationBroker {
             if requests.len() >= MAX_PENDING_CONFIRMATIONS {
                 return ConfirmationResult::Unavailable;
             }
-            requests.insert(id.clone(), PendingConfirmation { request, decision });
+            requests.insert(
+                id.clone(),
+                PendingConfirmation {
+                    request,
+                    decision,
+                    auth_revision: lease.revision(),
+                },
+            );
             self.publish_locked(&requests);
         }
 
@@ -140,6 +148,18 @@ impl McpConfirmationBroker {
         self.decide(id, false)
     }
 
+    /// 遅れて届く旧改訂の取消でも、新しい改訂の確認登録を残す。
+    pub(crate) fn cancel_before_revision(&self, revision: u64) {
+        let mut requests = self
+            .inner
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        requests.retain(|_, pending| pending.auth_revision >= revision);
+        self.publish_locked(&requests);
+    }
+
+    #[cfg(test)]
     pub(crate) fn cancel_all(&self) {
         let pending = {
             let mut requests = self
@@ -316,6 +336,29 @@ pub(crate) mod tests {
             ConfirmationResult::Cancelled
         );
         assert!(broker.pending().is_empty());
+    }
+
+    #[tokio::test]
+    async fn late_revision_cleanup_preserves_new_confirmations_and_reports_revocation() {
+        let auth = McpAuthorization::default();
+        let broker = auth.confirmations();
+        let old_lease = auth.current_lease();
+        let mut old = Box::pin(broker.request(request(), &old_lease, std::future::pending()));
+        poll_pending(old.as_mut()).await;
+        let old_id = broker.pending()[0].id.clone();
+        let revision = auth.revoke();
+        assert!(broker.pending().is_empty());
+        let new_lease = auth.current_lease();
+        let mut new = Box::pin(broker.request(request(), &new_lease, std::future::pending()));
+        poll_pending(new.as_mut()).await;
+        let new_id = broker.pending()[0].id.clone();
+        broker.cancel_before_revision(revision);
+        assert_eq!(old.await, ConfirmationResult::Cancelled);
+        assert!(!old_lease.is_authorization_current());
+        assert_eq!(broker.pending().len(), 1);
+        assert!(!broker.approve(&old_id));
+        assert!(broker.approve(&new_id));
+        assert_eq!(new.await, ConfirmationResult::Approved);
     }
 
     #[tokio::test]
