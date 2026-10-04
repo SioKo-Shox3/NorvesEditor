@@ -338,7 +338,7 @@ M2 の共通規則:
 - notes: 先行MCP-021。MCP-022の2回の40分超過を受けた分割であり、新しい機能追加ではない。列内の状態再検証と開始済み操作の結果保全はMCP-022で完成させる。この段のedit_service.rsは途中試験のコンパイル修復と確認待ちが列を占有しない試験に限定する。Broker/DTO/配線と全ゲートを閉じ、元のMCP-022をdoneにしない。危険地帯の評価とコミット本文必須。
 
 ## MCP-022-B: HTTP要求の取消と全体期限を確認待ちへ結ぶ
-- status: todo
+- status: done
 - done-when: NE13のHTTP要求寿命。書き込みtools/callは125秒、その他は30秒であることを両版のHTTPで試験する。要求ID別notifications/cancelledとRequestContext.ctをその要求のリースへ結び、他の要求を取り消さない。現行/旧版ともHTTP応答破棄でリースを取り消す。確認/再照会/範囲走査/列待ちに合計125秒の期限を適用し、確認期限はmin(120秒,残り)とする。HTTP→要求取消、要求取消→確認登録清掃、SDK context→要求取消を製品の経路で試験し、期限はpaused timeでも反証する。未対応SDK挙動を推測せずrmcpの使用版のコードと実受信で確認する。
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`

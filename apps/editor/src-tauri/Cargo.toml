@@ -60,6 +60,8 @@ tokio-util = { version = "0.7", features = ["rt"] }
 jsonschema = { version = "=0.58.4", default-features = false }
 
 [dev-dependencies]
+# HTTP要求と確認待ちの全体期限を仮想時刻で検証する。
+tokio = { version = "1", features = ["test-util"] }
 # loopback HTTPの実試験とRMCPのDiscover/Initializeクライアント。
 reqwest = { version = "0.13", default-features = false }
 rmcp = { version = "3.5.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }

@@ -74,12 +74,12 @@ impl McpConfirmationBroker {
     where
         F: Future<Output = ()> + Send,
     {
-        if !lease.is_current() {
-            return ConfirmationResult::Cancelled;
-        }
         let Some(deadline) = lease.confirmation_deadline() else {
             return ConfirmationResult::TimedOut;
         };
+        if !lease.is_current() {
+            return ConfirmationResult::Cancelled;
+        }
         let id = match confirmation_id() {
             Some(id) => id,
             None => return ConfirmationResult::Unavailable,
@@ -462,7 +462,7 @@ pub(crate) mod tests {
         assert!(!broker.approve(&id));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn confirmation_deadline_is_120_seconds_or_the_remaining_request_time() {
         let auth = McpAuthorization::default();
         let mut lease = auth.current_lease();
@@ -482,6 +482,40 @@ pub(crate) mod tests {
                 .await,
             ConfirmationResult::TimedOut
         );
+        assert!(broker.pending().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn broker_expires_at_120_seconds_and_uses_remaining_time_after_reconfirmation() {
+        let auth = McpAuthorization::default();
+        let broker = auth.confirmations();
+        let lease = auth.current_lease();
+        let mut pending = Box::pin(broker.request(request(), &lease, std::future::pending()));
+        poll_pending(pending.as_mut()).await;
+        let id = broker.pending()[0].id.clone();
+        time::advance(Duration::from_secs(119)).await;
+        poll_pending(pending.as_mut()).await;
+        assert!(broker.approve(&id));
+        assert_eq!(pending.await, ConfirmationResult::Approved);
+
+        // 再確認で120秒を取り直さず、同じ要求の残り6秒を上限にする。
+        let mut pending = Box::pin(broker.request(request(), &lease, std::future::pending()));
+        poll_pending(pending.as_mut()).await;
+        let id = broker.pending()[0].id.clone();
+        time::advance(Duration::from_secs(5)).await;
+        poll_pending(pending.as_mut()).await;
+        time::advance(Duration::from_secs(1)).await;
+        assert_eq!(pending.await, ConfirmationResult::TimedOut);
+        assert!(broker.pending().is_empty());
+        assert!(!broker.approve(&id));
+
+        let lease = auth.current_lease();
+        let mut pending = Box::pin(broker.request(request(), &lease, std::future::pending()));
+        poll_pending(pending.as_mut()).await;
+        time::advance(Duration::from_secs(119)).await;
+        poll_pending(pending.as_mut()).await;
+        time::advance(Duration::from_secs(1)).await;
+        assert_eq!(pending.await, ConfirmationResult::TimedOut);
         assert!(broker.pending().is_empty());
     }
 }

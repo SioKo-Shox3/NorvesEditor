@@ -4,6 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
+- MCP-022-B: 両版の実HTTPで書き込み125秒/その他30秒、HTTP破棄、要求ID別通知、SDK context.ctから要求リースへの取消を確認。現行stateless通知を入口で補い、旧版はSDKのcontext.ctを通す。数値/文字列ID・旧版セッションを分離し、実行中の重複IDを拒否、通常16枠が満杯でも取消通知を配送する。要求取消から確認登録清掃、120秒と要求残時間の最小値、確認/範囲/再照会/再確認/列待ちの125秒を製品経路とpaused timeで検査。指定5ゲートはexit 0、Rust単体364件成功。保存出力 `.harness/runs/20261004-114213/verify-MCP-022-B-7.txt` / `-8.txt` / `-11.txt`〜`-13.txt` を開いて確認した。
 - MCP-022開始確認: 集約ゲートexit 0、保存出力を開いてBridge Rust・IPC名・フロントエンド639件などの成功を確認した。先行MCP-022-BがblockedでHTTP要求寿命の実装を欠くため、最終統合は未完。停止理由と再開条件をblocked/MCP-022.mdへ記録した。
 - MCP-022-B調査: rmcp 3.5.0の旧版取消通知→context.ctと、現行stateless通知の無視をコードで確認。期限試験に必要な依存機能が未有効であることを確認し、変更範囲の判断をblocked/MCP-022-B.mdへ記録した。実装は未完。
 - MCP-022-A: 確認brokerを追跡し、途中コードのDTO/import/receiver/ProtocolVersionと警告を修復。RAIIでfuture破棄・task中止を清掃し、承認/拒否/取消/期限/許可改訂/世代変更、16件上限、要求固有の一回承認、秘密ID非記録を試験した。取得/承認/拒否はmain限定、MCP道具には公開しない。read-onlyのdelete/component.remove/undo内delete拒否、承認後の旧値・対象・範囲・履歴改訂・undo先頭・delete履歴破棄影響の再照合、UI編集と終了の進行を確認。指定6ゲートはexit 0、cargo testは356単体と実mock1件成功。証拠 `.harness/runs/20261004-105014/verify-MCP-022-A-8.txt` / `-9.txt` / `-13.txt`〜`-16.txt`。
@@ -53,7 +54,7 @@
 - MCP / 編集層の M2: 元の29タスクのうちMCP-001〜MCP-017とMCP-019〜MCP-021の20件、および分割したMCP-022-Aは検証・評価PASS。実行単位は31件。元の完了条件はMCP-022に全て保持する。MCP-018は再検証失敗と評価未完了のためblockedで、MCP-022の評価PASS後に別AIへ失敗原因を相談して再開する。
 
 ## Next
-- MCP-022-B: 許可pathsへCargo.toml/Cargo.lockを加え、既存Tokioのdev-only test-utilを追加してpaused timeと両版の実HTTPで反証する。既存依存の機能追加という承認済み範囲で計画を補正し、todoへ戻した。完了条件・指定検証を縮めない。
+- MCP-022-B: 実装と指定検証は完了。危険地帯の評価はランナーの別文脈評価で行う。MCP-022/MCP-028の列内再検証・開始済み結果保全・最終受入は引き続き別タスク。
 - MCP-022: Bの検証・評価PASS後に列内permit再検証、列外への型付き再確認、開始済みBridge結果の保全を完成させる。Bの範囲不足に連動したblockedを解除してtodoへ戻した。MCP-022の完成後はMCP-018の過去の失敗を別AIに相談し、指定検証と評価を通す。ユーザーは残る全タスクの完了まで継続を指示済み。自動的なstatus: doneへの変更や失敗記録の破棄はしない。
 - M2: `node ~/.agent-workflow/loop.mjs --repo . --engine codex --unattended --evaluate feature`。各反復の評価はランナーが行い、承認済み範囲内で再承認を求めない。
 - MCP の範囲は NE01〜NE14。NE15〜NE22 / NorvesLib 変更は入れない。以下の既存実機確認は別主題として保持する。
@@ -65,6 +66,8 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 2026-10-04 MCP-022-B完了: rmcp 3.5.0のtower.rs(現行通知の無視とHTTP破棄)・service.rs(旧版ID別context取消)を開き、抜粋をsdk-MCP-022-B.txtへ保存。現行版はクライアント帰属を推測せず、実行中の重複IDを409で拒否する。本文受信は種別確定前の30秒上限、書き込み全体は受信開始から125秒。既存Tokioの開発用test-utilだけを有効にし、lock差分は無し。HTTP試験の初回は仮想時計をタイマー端数で止めたまま取消を待つ試験側の停止が発生したため、対象テストだけを停止し、1msの切り上げと有限回の確認へ修正した(失敗証拠-2.txtは保持、成功-3.txt/-10.txt/-13.txt)。NORVES_ENGINE_PATH未指定の実mock・NorvesLib opt-inを合格とは扱わず、GUIも未確認。既存の停止・未評価履歴とAの非阻害指摘は保持する。
+- 2026-10-04 MCP-022-B実装前: 完了条件は両版HTTPの30/125秒、要求ID別通知・SDK ct・HTTP破棄から要求取消、確認登録清掃、確認/再照会/範囲/列待ちの同一期限を実経路とpaused timeで反証すること。指定fmt/clippy/cargo test/IPC名/typecheckを保存して開く。許可paths外・破壊的変更・製品判断が必要なら停止し、書き込み公開とMCP-022の最終統合には進まない。
 - 2026-10-04 11:40 再開整理: MCP-022-BのTokio test-utilは新規crateではなく既存依存の開発用機能であり、M1承認と全残作業の継続指示の範囲でmanifest/lockの許可パスを補正した。元run 20261004-105014は規定の--stopによりMCP-023の途中でABORTED。B/022は実装未完・未評価のまま、履歴と停止証拠を保持する。作業ツリーに製品コードの途中差分は無い。開始ゲートverify.ps1 -SkipFrontendはexit 0（C++とフロントエンドは対象外）、実出力.harness/mcp-resume-preflight-20261004-1140.logを開いた。MCP-022-Aの評価PASSと非阻害指摘は.harness/runs/20261004-105014/eval-1.out.txtおよびNEXT_FINDINGS.mdで追跡する。
 - 2026-10-04 MCP-022: Bのpaused time試験に必要なCargo.toml変更は今回もpaths外で、他タスクの範囲・完了条件を変更できないためBLOCKED。製品コードは変更せず、MCP-022をdoneにしない。開始証拠 `.harness/runs/20261004-105014/preflight-MCP-022.txt` は開いて確認済みだが、エディタ独立Cargo workspaceの指定5ゲートは未実行。既存TASKS.mdのMCP-022-B blocked差分を保持し、この反復のコミットには含めない。
 - 2026-10-04 MCP-022-B: paused time試験に必要なTokio test-utilがエディタcrateで無効。許可paths外のapps/editor/src-tauri/Cargo.tomlにdev-dependency機能追加が必要なためBLOCKED。未検証の実装差分は撤回し、TASKSのtodoは維持。開始の集約ゲートexit 0。依存機能とSDK実装の証拠・再開案はblocked/MCP-022-B.mdに記録。

@@ -58,6 +58,7 @@ pub(crate) mod confirmation;
 pub(crate) mod images;
 pub mod log_buffer;
 pub(crate) mod reads;
+mod request_lifetime;
 pub mod runtime;
 pub(crate) mod thumbnail;
 pub(crate) mod tool_catalog;
@@ -441,7 +442,9 @@ impl McpRequestLease {
 
     /// 要求がまだ現在の認証改訂に属するかを返す。
     pub fn is_current(&self) -> bool {
-        self.is_authorization_current() && !self.request_cancellation.is_cancelled()
+        self.is_authorization_current()
+            && !self.request_cancellation.is_cancelled()
+            && Instant::now() < self.deadline
     }
 }
 
@@ -729,6 +732,51 @@ struct ConnectionRegistry {
 }
 
 impl ConnectionRegistry {
+    // 同じ名前空間の実行中IDを一意にし、取消先の取り違えを防ぐ。
+    fn retain_request(
+        &self,
+        connection: &ConnectionState,
+        lease: McpRequestLease,
+        key: Option<request_lifetime::RequestKey>,
+    ) -> bool {
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(key) = &key {
+            if entries.values().filter_map(Weak::upgrade).any(|state| {
+                state
+                    .active_request
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_ref()
+                    .is_some_and(|active| active.key.as_ref() == Some(key))
+            }) {
+                return false;
+            }
+        }
+        connection.retain_request(ActiveHttpRequest { lease, key })
+    }
+
+    fn cancel_request(&self, key: &request_lifetime::RequestKey) {
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for state in entries.values().filter_map(Weak::upgrade) {
+            let active = state
+                .active_request
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(active) = active
+                .as_ref()
+                .filter(|active| active.key.as_ref() == Some(key))
+            {
+                active.lease.cancel_request();
+            }
+        }
+    }
+
     fn insert(&self, remote: SocketAddr, state: &Arc<ConnectionState>) {
         self.entries
             .lock()
@@ -777,7 +825,12 @@ struct ConnectionState {
     stream_permit: Mutex<Option<OwnedSemaphorePermit>>,
     request_deadline: Mutex<Option<Instant>>,
     head_request: Mutex<bool>,
-    active_request: Mutex<Option<McpRequestLease>>,
+    active_request: Mutex<Option<ActiveHttpRequest>>,
+}
+
+struct ActiveHttpRequest {
+    lease: McpRequestLease,
+    key: Option<request_lifetime::RequestKey>,
 }
 
 impl ConnectionState {
@@ -860,7 +913,7 @@ impl ConnectionState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn retain_request(&self, lease: McpRequestLease) -> bool {
+    fn retain_request(&self, request: ActiveHttpRequest) -> bool {
         let mut active = self
             .active_request
             .lock()
@@ -868,7 +921,7 @@ impl ConnectionState {
         if active.is_some() {
             false
         } else {
-            *active = Some(lease);
+            *active = Some(request);
             true
         }
     }
@@ -880,7 +933,7 @@ impl ConnectionState {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if active
             .as_ref()
-            .is_some_and(|lease| lease.request_id() == request_id)
+            .is_some_and(|request| request.lease.request_id() == request_id)
         {
             active.take();
         }
@@ -891,7 +944,7 @@ impl ConnectionState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
-            .map(McpRequestLease::request_id)
+            .map(|request| request.lease.request_id())
     }
 
     fn cancel_active_request(&self) {
@@ -900,8 +953,8 @@ impl ConnectionState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
-        if let Some(lease) = lease {
-            lease.cancel_request();
+        if let Some(request) = lease {
+            request.lease.cancel_request();
         }
     }
 }
@@ -1346,7 +1399,8 @@ async fn authenticate_and_limit(
         .map(|connect| connect.0 .0);
     let connection = remote.and_then(|remote| state.registry.get(remote));
     let is_head_request = parts.method == Method::HEAD;
-    let body_deadline = request_started + WRITE_REQUEST_TIMEOUT;
+    // 種別が確定しない本文受信にも通常期限を適用し、低速送信で期限を延ばさせない。
+    let body_deadline = request_started + state.policy.request;
     let body = match time::timeout_at(body_deadline, to_bytes(body, MAX_REQUEST_BODY_BYTES)).await {
         Ok(Ok(body)) => body,
         Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
@@ -1371,10 +1425,27 @@ async fn authenticate_and_limit(
     if !auth_lease.is_current() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let request_key = request_lifetime::request_key(&parts.headers, &body);
+    let cancellation = (parts.method == Method::POST)
+        .then(|| request_lifetime::cancellation_key(&parts.headers, &body))
+        .flatten();
+    if let Some(key) = cancellation.as_ref().filter(|key| key.is_stateless()) {
+        // rmcp 3.5.0のstateless HTTPは通知を配送せず202を返すため、入口で補う。
+        // legacyはSDKが要求IDからcontext.ctを取り消すので、そちらの経路を通す。
+        state.registry.cancel_request(key);
+    }
     auth_lease.set_request_deadline(request_deadline);
     let request_lease = auth_lease.clone();
     let mut request = Request::from_parts(parts, Body::from(body));
     request.extensions_mut().insert(auth_lease);
+
+    // 全16要求が確認待ちでも、その要求を解放する取消通知は受け付ける。
+    // 通知は通常枠を使わず、本文上限・認証・接続上限・30秒期限は維持する。
+    if cancellation.is_some() {
+        return time::timeout_at(request_deadline, next.run(request))
+            .await
+            .unwrap_or_else(|_| StatusCode::GATEWAY_TIMEOUT.into_response());
+    }
 
     let admission = if is_long_stream {
         match state.limits.streams.clone().try_acquire_owned() {
@@ -1409,10 +1480,13 @@ async fn authenticate_and_limit(
     }
 
     if let Some(connection) = &connection {
-        if !connection.retain_request(request_lease.clone()) {
+        if !state
+            .registry
+            .retain_request(connection, request_lease.clone(), request_key)
+        {
             connection.release_ordinary();
             connection.release_stream();
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            return StatusCode::CONFLICT.into_response();
         }
     }
 
@@ -1539,7 +1613,7 @@ enum McpServerHandler {
     #[cfg(test)]
     CancellationProbe {
         catalog: tool_catalog::McpToolCatalog,
-        leases: tokio::sync::mpsc::UnboundedSender<McpRequestLease>,
+        leases: tokio::sync::mpsc::UnboundedSender<(McpRequestLease, CancellationToken)>,
     },
 }
 
@@ -1696,15 +1770,25 @@ impl ServerHandler for McpServerHandler {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        request_lifetime::run(&context, self.call_tool_inner(request, &context)).await
+    }
+}
+
+impl McpServerHandler {
+    async fn call_tool_inner(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: &rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         #[cfg(test)]
         if let Self::CancellationProbe { leases, .. } = self {
-            let Some(lease) = request_authorization_from_context(&context) else {
+            let Some(lease) = request_authorization_from_context(context) else {
                 return Err(rmcp::ErrorData::method_not_found::<CallToolRequestMethod>());
             };
             leases
-                .send(lease.clone())
+                .send((lease.clone(), context.ct.clone()))
                 .map_err(|_| rmcp::ErrorData::method_not_found::<CallToolRequestMethod>())?;
-            lease.request_cancelled().await;
+            std::future::pending::<()>().await;
             return Ok(CallToolResult::success(vec![]).into());
         }
         let Self::ReadTools(reads) = self else {
@@ -1725,7 +1809,7 @@ impl ServerHandler for McpServerHandler {
             if !reads.is_hidden_write_tool(&request.name) {
                 return Err(rmcp::ErrorData::method_not_found::<CallToolRequestMethod>());
             }
-            let Some(request_lease) = request_authorization_from_context(&context) else {
+            let Some(request_lease) = request_authorization_from_context(context) else {
                 return Ok(CallToolResult::error(vec![ContentBlock::text(
                     "MCP要求の認証リースがありません。",
                 )])
@@ -1758,6 +1842,7 @@ impl ServerHandler for McpServerHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("mcp/http_lifetime_tests.rs");
     use axum::http::header::HeaderValue;
     use axum::http::header::ACCEPT;
     use rmcp::{
@@ -2652,7 +2737,7 @@ mod tests {
                 let body = response.text().await.expect("HTTP試験応答を読む");
                 panic!("取消前にHTTP試験要求が終了しました: {status} {body}");
             });
-            let lease = time::timeout(Duration::from_secs(2), leases_rx.recv())
+            let (lease, _) = time::timeout(Duration::from_secs(2), leases_rx.recv())
                 .await
                 .expect("HTTP道具要求が開始する")
                 .expect("要求リースを受け取る");

@@ -227,6 +227,28 @@ impl McpReadContext {
         operation: McpWriteOperation,
         history_snapshot: Option<Arc<dyn Fn() -> Option<McpHistoryAction> + Send + Sync>>,
     ) -> Result<McpWritePermit, String> {
+        tokio::select! {
+            biased;
+            _ = request_lease.authorization_cancelled() => Err("MCP要求の許可が失効しました。".to_owned()),
+            _ = request_lease.request_cancelled() => Err("MCP要求が取り消されました。".to_owned()),
+            _ = tokio::time::sleep_until(request_lease.request_deadline()) => {
+                Err("MCP書き込み要求の全体期限を超えました。".to_owned())
+            },
+            result = self.authorize_operation_inner(
+                request_lease, tool_name, method, params, operation, history_snapshot,
+            ) => result,
+        }
+    }
+
+    async fn authorize_operation_inner(
+        &self,
+        request_lease: &McpRequestLease,
+        tool_name: &str,
+        method: &str,
+        params: Value,
+        operation: McpWriteOperation,
+        history_snapshot: Option<Arc<dyn Fn() -> Option<McpHistoryAction> + Send + Sync>>,
+    ) -> Result<McpWritePermit, String> {
         let authorization = self
             .authorization
             .as_ref()
@@ -1925,6 +1947,7 @@ impl PagingError {
 
 #[cfg(test)]
 mod tests {
+    include!("reads_lifetime_tests.rs");
     use super::*;
     use crate::mcp::authorization::McpHistoryDirection;
     use norves_bridge_core::{

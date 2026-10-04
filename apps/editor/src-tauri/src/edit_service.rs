@@ -3569,6 +3569,94 @@ mod tests {
         handle.shutdown().await;
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn confirmation_and_queue_wait_share_the_same_125_second_request_deadline() {
+        use crate::mcp::{
+            authorization::McpWriteSettings, confirmation::tests::poll_pending,
+            log_buffer::LogBuffer, reads::McpReadContext, thumbnail::McpThumbnailService,
+            tool_catalog::McpToolCatalog, McpWriteMode,
+        };
+        let authorization = McpAuthorization::default();
+        authorization
+            .set_write_settings(McpWriteSettings {
+                mode: McpWriteMode::Confirm,
+                scene_root_id: None,
+            })
+            .expect("都度確認にする");
+        let (service, _control, handle, _peer) =
+            test_service_with_peer_and_authorization(4, authorization.clone());
+        let catalog = McpToolCatalog::default();
+        catalog.set_connection(
+            Some(1),
+            &[
+                serde_json::from_value(serde_json::json!({"name":"runtime.control"}))
+                    .expect("能力を作る"),
+            ],
+        );
+        let context = McpReadContext::new(
+            service.bridge.clone(),
+            catalog,
+            Arc::new(StdMutex::new(LogBuffer::default())),
+            McpThumbnailService::default(),
+        )
+        .with_authorization(authorization.clone());
+        let lease = authorization.current_lease();
+        let started = tokio::time::Instant::now();
+        let params = serde_json::json!({});
+        let mut permission = Box::pin(context.authorize_write(&lease, "runtime.play", &params));
+        poll_pending(permission.as_mut()).await;
+        let id = authorization.confirmations().pending()[0].id.clone();
+        tokio::time::advance(Duration::from_secs(119)).await;
+        assert!(authorization.confirmations().approve(&id));
+        permission.await.expect("119秒で承認される");
+
+        let (release, release_rx) = oneshot::channel();
+        let (started_tx, started_rx) = oneshot::channel();
+        let blocker = service
+            .enqueue_from_ui(EditKind::Edit, move |_| async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+                success(Value::Null)
+            })
+            .expect("UI操作を先に実行する");
+        started_rx.await.expect("UI操作が開始する");
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let action_ran = ran.clone();
+        let mut submit = Box::pin(service.submit_from_mcp_authorized(
+            lease,
+            EditKind::RuntimeControl,
+            move |_| async move {
+                action_ran.store(true, Ordering::Release);
+                success(Value::Null)
+            },
+        ));
+        poll_pending(submit.as_mut()).await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        poll_pending(submit.as_mut()).await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let result = submit
+            .await
+            .expect_err("確認後の列待ちも同じ全体期限を使う");
+        assert!(
+            matches!(result, BackendError::Request { ref message } if message.contains("Bridge開始前"))
+        );
+        assert_eq!(
+            tokio::time::Instant::now(),
+            started + Duration::from_secs(125)
+        );
+        release.send(()).expect("UI操作を完了させる");
+        blocker.result().await.expect("UI操作が完了する");
+        service
+            .enqueue_from_ui(EditKind::Edit, |_| async { success(Value::Null) })
+            .expect("列を進める")
+            .result()
+            .await
+            .expect("後続UI操作が完了する");
+        assert!(!ran.load(Ordering::Acquire));
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
     #[tokio::test]
     async fn started_mcp_edit_waits_for_bridge_result_before_advancing_the_queue() {
         let authorization = McpAuthorization::default();
