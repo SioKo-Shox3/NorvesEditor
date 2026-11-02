@@ -451,3 +451,52 @@ M2 の共通規則:
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
 - paths: apps/editor/src-tauri/src/mcp/writes.rs, apps/editor/src-tauri/src/mcp/operations.rs, apps/editor/src-tauri/src/mcp/operations/**, apps/editor/src-tauri/src/edit_service/mcp.rs, apps/editor/src-tauri/src/edit_service/mcp_tests.rs, apps/editor/src-tauri/src/edit_service/writes_tests.rs, docs/mcp-and-edit-layer-requirements.md, docs/mcp-undo-test-mapping.md
 - notes: 先行MCP-028/029。MCP-028評価PASSのnon-blocking 1をNE14の既存契約内で修復する。根拠は.harness/mcp-review-follow-up-028.md。列前拒否を認可・入力検査を飛ばして成功扱いにせず、記録の終端だけを正しくする。進行中の制御ticketを早まって確定させない。試験を削除・SKIP・弱化しない。新規依存/Bridge仕様/SDK/mock/NorvesLib/GUI実機操作は不要。Rustのasync寿命と許可境界の評価はランナーが行い、コミット本文を付ける。元のMCP-028の完了条件・検証・PASSは保持する。最終検証・評価PASSは20261004-170201のeval-5.out.txtとrecheck-MCP-030-5-1〜-3.txtで確認。コードのtreeを変えない本文整備後のコミットは873b7e1（旧6c789b4）、対応表は.harness/mcp-message-hygiene/result.json。
+
+## E4-001: 資産の編集の方式を決め、Bridge の仕様・SDK・モック・Rust クライアントに資産のプロパティの一覧・設定・保存を足す
+- status: todo
+- done-when: 最初の編集の前に、`docs/mcp-and-edit-layer-requirements.md` の 10 章にある未決事項 4(値の場所の書き方)と 6 の保存の部分を、推奨の案で決めて記録する。作者は後から変えられる。あわせて状態の行を更新し、2026-11-03 の人の指示で NE19 の一部を範囲に入れたことを書く。推奨の案は次のとおり。値の場所は、エンジンが一覧で返す不透明な文字列とし、エディタは解釈しない。資産は既存の `logicalPath` で指す。開く・閉じるは線に出さない。保存は同期の要求 1 回とする。`asset.setProperty` の結果では `previousValue` を必須にする。拒否の理由は機械照合の英語コード `type_mismatch`・`out_of_range`・`unknown_property` を既存のエラーモデルに載せて返す。実装は次の 5 点。(1) `asset.getProperties`・`asset.setProperty`・`asset.save` の params/result の schema と、positive/negative の fixture を足す。(2) `capabilities.md` に能力 `asset.edit` を追記する。(3) SDK の `IBridgeEngineAdapter` に仮想関数を足し、既定は `METHOD_NOT_SUPPORTED` を返す。`server.cpp` の振り分けも足す。(4) モックの MCP 試験プロフィールに、型付きのプロパティ(範囲つきの数値・文字列・真偽)を持つ偽の資産を置く。既定プロフィールの golden は変えない。(5) `norves-bridge-editor-client` に型付きの呼び出しを足し、能力の無い相手には送らない。実プロセスのモックを相手に次を試験する。一覧→設定→保存→一覧で値が一致する。型違い・範囲外・未知の場所は拒否され、前の値を保つ。`previousValue` が設定前の値と一致する。
+- verify: `python scripts/validate-bridge-fixtures.py`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test -p norves-bridge-editor-client --test conformance -- --nocapture; exit $LASTEXITCODE"`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test -p norves-bridge-editor-client --test mcp_mock_profile -- --nocapture; exit $LASTEXITCODE"`
+- paths: docs/mcp-and-edit-layer-requirements.md, bridge/spec/schema/methods/**, bridge/spec/fixtures/methods/**, bridge/spec/docs/**, bridge/cpp/engine-sdk/include/Norves/Bridge/**, bridge/cpp/engine-sdk/src/**, bridge/cpp/engine-sdk/tests/**, bridge/cpp/examples/mock-engine/**, bridge/crates/norves-bridge-core/src/**, bridge/crates/norves-bridge-editor-client/src/**, bridge/crates/norves-bridge-editor-client/tests/**, bridge/conformance/**, bridge/ts/packages/bridge-types/src/**
+- from: NorvesLib/GAME-GR137-VFX
+- notes: 危険地帯(プロトコルのスキーマと互換性・C++ SDK の公開 API)。評価者を通し、コミット本文を書く。互換性は `docs/agent-guide/protocol-schema.md` に従い、能力で交渉する。線の上の名前は NorvesLib の GR137 の節(`Docs/Plans/GameFeatureRoadmap.md`)に合わせる。NorvesLib の `NorvesLibBridgeAdapter` から `BridgeAssetPropertyEditor` へつなぐ作業は NorvesLib 側なので、終わったら PROGRESS.md の Notes に `要起票:` で残す。
+
+## E4-002: MCP の道具から資産のプロパティの一覧・設定・保存を呼ぶ
+- status: todo
+- after: E4-001
+- done-when: 能力 `asset.edit` がある接続だけに、一覧の読み取りの道具と、設定・保存の書き込みの道具が出る。能力が無い・未接続・読み取りのみのモードでは、書き込みの道具は出ない。params は埋め込みの spec と意味が一致し、未知の項目・型違い・上限違反は送る前に拒否する。設定は共通の列(edit_service)を通り、言語モデル起源の履歴に積まれる。画面の Ctrl+Z に当たる取り消しで、`previousValue` に戻る。MCP から Bridge へ直接は書かない。保存は要求ごとの確認(MCP-022)を必須にする。保存は履歴に積まず、取り消せない操作として操作記録に残す。拒否(理由コード付き)・確認未完了・能力なしの要求は適用されない。通信断と時間切れは「結果不明」として拒否と区別し、自動で再送しない。範囲を指定した許可が資産を表せない場合は、拒否する側に倒し、その扱いを PROGRESS.md に記録する。`scripts/verify-mcp-e2e.ps1` の受入の印に `MCP_ACCEPTANCE_OK asset-edit-save-undo` を足し、実 HTTP とモックで次を確かめる。一覧→設定→保存→一覧で値が一致する。取り消しで前の値に戻る。型違いは拒否される。
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
+- verify: `pnpm -C apps/editor test`
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/tests/mcp_e2e.rs, scripts/verify-mcp-e2e.ps1, bridge/ts/packages/bridge-ui/src/ipc-types.ts, apps/editor/src/state/**
+- from: NorvesLib/GAME-GR137-VFX
+- notes: 履歴の種類を足して画面の型や表示が要るときだけ、`ipc-types.ts` と `apps/editor/src/state/**` を触る。資産を編集する画面は作らない。
+
+## E4-003: 決定的な撮影の方式を決め、バッファの方針・Bridge の仕様・SDK・モック・Rust クライアントに足す
+- status: todo
+- done-when: 最初の編集の前に、`docs/mcp-and-edit-layer-requirements.md` の 10 章にある未決事項 5(撮影のディレクトリと片付け)と 6 の撮影の部分を、推奨の案で決めて記録する。作者は後から変えられる。推奨の案は次のとおり。撮影は、受け付けの応答 `{captureId}` と、完了のイベント `viewport.captureCompleted`(captureId・ファイルの場所・寸法・刻み・画素の要約値・失敗の理由)に分ける。params は `settleFrames` と `maxWidth`/`maxHeight`(上限あり)、それにエディタが決める撮影用ディレクトリと出力名とする。エンジンは PNG をファイルに書き、Bridge に画像を載せない。片付けは件数と日数で決める。NE17(刻み)を前提にしない理由(エンジンがエポックを始め直して進める)も書く。その前に、`docs/memory-buffer-policy.md` にファイルで受け渡す方式を書く(上限・寿命・所有・場所の検証)。実装は次の 4 点。(1) メソッド `viewport.captureDeterministic` とイベントの schema、positive/negative の fixture を足し、能力 `viewport.capture` を `capabilities.md` に追記する。(2) SDK に仮想関数を足し、既定は `METHOD_NOT_SUPPORTED` を返す。振り分けと、既存の `emitEvent` による完了の送出も足す。(3) モックの MCP 試験プロフィールは、同じ引数なら同じバイトになる PNG を指定のディレクトリに書き、完了を送る。既定プロフィールの golden は変えない。(4) Rust クライアントは、要求を送って完了を時間切れ付きで待つ。captureId と接続の世代を照合し、ディレクトリの外・`..`・別の captureId を拒否する。時間切れは拒否と区別する。実プロセスのモックを相手に次を試験する。同じ引数で 2 回撮ると要約値とバイトが一致する。場所の外は拒否される。時間切れが区別される。
+- verify: `python scripts/validate-bridge-fixtures.py`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test -p norves-bridge-editor-client --test conformance -- --nocapture; exit $LASTEXITCODE"`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test -p norves-bridge-editor-client --test mcp_mock_profile -- --nocapture; exit $LASTEXITCODE"`
+- paths: docs/memory-buffer-policy.md, docs/mcp-and-edit-layer-requirements.md, bridge/spec/schema/**, bridge/spec/fixtures/**, bridge/spec/docs/**, bridge/cpp/engine-sdk/include/Norves/Bridge/**, bridge/cpp/engine-sdk/src/**, bridge/cpp/engine-sdk/tests/**, bridge/cpp/examples/mock-engine/**, bridge/crates/norves-bridge-core/src/**, bridge/crates/norves-bridge-editor-client/src/**, bridge/crates/norves-bridge-editor-client/tests/**, bridge/conformance/**, bridge/ts/packages/bridge-types/src/**
+- from: NorvesLib/GAME-GR137-VFX
+- notes: 危険地帯(プロトコルのスキーマ・C++ SDK の公開 API・バッファとメモリの所有権)。評価者を通し、コミット本文を書く。GPU も実際のエンジンも使わない(モックの偽の画像だけ)。NorvesLib の `BridgeDeterministicCapture` へつなぐ作業は NorvesLib 側なので、終わったら PROGRESS.md の Notes に `要起票:` で残す。
+
+## E4-004: MCP の道具から決定的な撮影を呼ぶ
+- status: todo
+- after: E4-003
+- done-when: 能力 `viewport.capture` がある接続だけに、撮影の道具が出る。撮影はエンジンの状態を変える操作として扱う。書き込みモードの許可を通し、履歴に積まず操作記録に残す(runtime の制御と同じ扱い)。撮影用ディレクトリはバックエンドがアプリのデータディレクトリの下に持ち、E4-003 で決めた件数と日数の規則で古い撮影を片付ける(試験あり)。完了で返った場所がそのディレクトリの中かを確かめる。PNG は既存の検証と上限(MCP-019 の `images.rs`)で確かめてから、MCP の画像(長辺の上限で縮小)と文字(要約値・寸法・刻み)で返す。完了の待ちは、時間切れと HTTP 要求の取り消し(MCP-022-B)に結ぶ。切断と世代の変更は「結果不明」として返し、自動で再送しない。`scripts/verify-mcp-e2e.ps1` の受入の印に `MCP_ACCEPTANCE_OK deterministic-capture` を足し、実 HTTP とモックで、同じ引数で 2 回撮ると要約値が一致することを確かめる。
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/tests/mcp_e2e.rs, scripts/verify-mcp-e2e.ps1
+- from: NorvesLib/GAME-GR137-VFX
+- notes: 危険地帯(バッファの所有・ファイルの場所の検証)。評価者を通す。実際のエンジンを相手にした一致の確認は、NorvesLib の `GAME-GR137-VFX-CHECK` の側で行う。
