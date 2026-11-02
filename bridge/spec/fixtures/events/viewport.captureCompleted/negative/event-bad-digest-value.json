@@ -1,0 +1,21 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "event",
+  "event": "viewport.captureCompleted",
+  "sessionId": "sess-7f3a",
+  "seq": 43,
+  "params": {
+    "captureId": "mock-capture-1",
+    "status": "succeeded",
+    "path": "/captures/cap-20261103T000000Z-1.png",
+    "width": 64,
+    "height": 36,
+    "frame": 2,
+    "pixelDigest": {
+      "algorithm": "fnv1a64-rgba8",
+      "value": "0123456789abcde"
+    },
+    "fileBytes": 9320
+  }
+}

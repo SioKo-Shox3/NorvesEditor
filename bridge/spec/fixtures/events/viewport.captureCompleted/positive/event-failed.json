@@ -1,0 +1,16 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "event",
+  "event": "viewport.captureCompleted",
+  "sessionId": "sess-7f3a",
+  "seq": 43,
+  "params": {
+    "captureId": "mock-capture-1",
+    "status": "failed",
+    "failure": {
+      "code": "OUTPUT_WRITE_FAILED",
+      "message": "画像ファイルを書き込めませんでした。"
+    }
+  }
+}
