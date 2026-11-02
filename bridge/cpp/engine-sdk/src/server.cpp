@@ -294,6 +294,18 @@ namespace Norves::Bridge
             {
                 return finish(id, m_Adapter.assetGetManifest(params));
             }
+            if (method == "asset.getProperties")
+            {
+                return finish(id, m_Adapter.assetGetProperties(params));
+            }
+            if (method == "asset.setProperty")
+            {
+                return finish(id, m_Adapter.assetSetProperty(params));
+            }
+            if (method == "asset.save")
+            {
+                return finish(id, m_Adapter.assetSave(params));
+            }
             if (method == "viewport.getThumbnail")
             {
                 return finish(id, m_Adapter.viewportGetThumbnail(params));

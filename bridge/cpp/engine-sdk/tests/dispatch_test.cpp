@@ -204,6 +204,41 @@ namespace
         int m_RemoveCallCount = 0;
     };
 
+    // @brief 資産編集の偽アダプタ。受信したメソッドと params を控え、固定の結果を返す。
+    class AssetEditAdapter : public FakeAdapter
+    {
+    public:
+        Result<JsonValue, BridgeError> assetGetProperties(const JsonValue& params) override
+        {
+            m_LastMethod = "asset.getProperties";
+            m_LastParams = params;
+            ++m_CallCount;
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(
+                R"({"logicalPath":"assets/material.json","properties":[{"path":"opaque:roughness","valueType":"number","value":0.5,"minimum":0,"maximum":1}]})"));
+        }
+
+        Result<JsonValue, BridgeError> assetSetProperty(const JsonValue& params) override
+        {
+            m_LastMethod = "asset.setProperty";
+            m_LastParams = params;
+            ++m_CallCount;
+            return Result<JsonValue, BridgeError>::ok(
+                ParseOrFail(R"({"previousValue":0.5,"appliedValue":0.75})"));
+        }
+
+        Result<JsonValue, BridgeError> assetSave(const JsonValue& params) override
+        {
+            m_LastMethod = "asset.save";
+            m_LastParams = params;
+            ++m_CallCount;
+            return Result<JsonValue, BridgeError>::ok(ParseOrFail(R"({"saved":true})"));
+        }
+
+        std::string m_LastMethod;
+        JsonValue m_LastParams;
+        int m_CallCount = 0;
+    };
+
     // ワイヤーフレームビルダー -----------------------------------------------------------
 
     std::string RequestFrame(std::string_view id, std::string_view method,
@@ -372,7 +407,8 @@ namespace
                                        "scene.deleteObject",    "scene.reparentObject",
                                        "scene.duplicateObject", "asset.resolve",
                                        "asset.getManifest",     "component.add",
-                                       "component.remove"};
+                                       "component.remove",      "asset.getProperties",
+                                       "asset.setProperty",     "asset.save"};
         for (std::string_view method : methods)
         {
             const std::string frame = RequestFrame("o-1", method, "");
@@ -432,6 +468,52 @@ namespace
                 NORVES_CHECK_EQ(adapter.m_RemoveCallCount, 1);
                 NORVES_CHECK(response->find(R"("accepted":false)") != std::string::npos);
             }
+        }
+    }
+
+    // @brief 資産編集の params・結果・id がそのまま通ることを確かめる。
+    void TestAssetEditPassesParamsThrough()
+    {
+        struct AssetEditCase
+        {
+            std::string_view id;
+            std::string_view method;
+            std::string_view paramsJson;
+            std::string_view resultJson;
+        };
+
+        constexpr AssetEditCase Cases[] = {
+            {"a-1", "asset.getProperties", R"({"logicalPath":"assets/material.json"})",
+             R"({"logicalPath":"assets/material.json","properties":[{"path":"opaque:roughness","valueType":"number","value":0.5,"minimum":0,"maximum":1}]})"},
+            {"a-2", "asset.setProperty",
+             R"({"logicalPath":"assets/material.json","path":"opaque:roughness","value":0.75})",
+             R"({"previousValue":0.5,"appliedValue":0.75})"},
+            // 必須欄がない場合も SDK は検証せずアダプタへ渡す。
+            {"a-3", "asset.save", R"({})", R"({"saved":true})"},
+        };
+
+        AssetEditAdapter adapter;
+        BridgeEngineServer server(adapter);
+        for (const AssetEditCase& testCase : Cases)
+        {
+            const int previousCallCount = adapter.m_CallCount;
+            const std::string frame =
+                RequestFrame(testCase.id, testCase.method, testCase.paramsJson);
+            auto response = server.handleFrame(frame);
+            NORVES_CHECK(response.has_value());
+            if (!response.has_value())
+            {
+                continue;
+            }
+
+            const Envelope env = DecodeOrFail(*response);
+            NORVES_CHECK_EQ(env.id, std::optional<std::string>{std::string(testCase.id)});
+            NORVES_CHECK(!env.error.has_value());
+            const JsonValue expected = ParseOrFail(testCase.resultJson);
+            NORVES_CHECK(env.result.has_value() && *env.result == expected);
+            NORVES_CHECK_EQ(adapter.m_LastMethod, std::string(testCase.method));
+            NORVES_CHECK(adapter.m_LastParams == ParseOrFail(testCase.paramsJson));
+            NORVES_CHECK_EQ(adapter.m_CallCount, previousCallCount + 1);
         }
     }
 
@@ -704,6 +786,7 @@ int main()
     TestUnimplementedOptionalMethodsAreMethodNotSupported();
     TestOptionalMethodPassesAdapterResult();
     TestComponentEditPassesParamsThrough();
+    TestAssetEditPassesParamsThrough();
     TestAssetReloadManifestDispatchesPresentEmptyObject();
     TestAssetReloadManifestDefaultIsMethodNotSupported();
     TestAssetReloadManifestRejectsInvalidParamsWithoutDispatch();

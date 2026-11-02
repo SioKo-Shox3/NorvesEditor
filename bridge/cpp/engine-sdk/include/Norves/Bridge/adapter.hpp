@@ -204,6 +204,44 @@ namespace Norves::Bridge
             return not_supported(params);
         }
 
+        /// @brief asset.getProperties。能力 asset.edit を広告するアダプタだけが実装する。
+        /// path はエンジンが決める不透明な値の場所であり、エディタは解釈しない。
+        /// 開く・閉じる操作は通信に載せず、アダプタが必要に応じて内部で開く。
+        /// ライブメモリへの参照を渡さず、値コピーされたスナップショット/DTO を返す。
+        ///
+        /// @param params { logicalPath }
+        /// @return { logicalPath, properties:[{ path, valueType, value, unit?, minimum?,
+        ///           maximum?, description? }] }
+        virtual Result<JsonValue, BridgeError> assetGetProperties(const JsonValue& params)
+        {
+            return not_supported(params);
+        }
+
+        /// @brief asset.setProperty。能力 asset.edit を広告するアダプタだけが実装する。
+        /// 型違い・範囲外・未知の場所や資産は値を変えず、error 応答で拒否する。
+        /// code は ENGINE_ASSET_EDIT_REJECTED、data は { method, reason, path? }。
+        /// reason は type_mismatch / out_of_range / unknown_property / unknown_asset。
+        /// ライブメモリへの参照を渡さず、変更前後の値をスナップショット/DTO として返す。
+        ///
+        /// @param params { logicalPath, path, value }
+        /// @return { previousValue, appliedValue? }。previousValue は必須。
+        virtual Result<JsonValue, BridgeError> assetSetProperty(const JsonValue& params)
+        {
+            return not_supported(params);
+        }
+
+        /// @brief asset.save。能力 asset.edit を広告するアダプタだけが実装する。
+        /// 同期で保存し、応答が完了を表す。失敗は ENGINE_ASSET_EDIT_REJECTED、
+        /// data は { method, reason, path? }、reason は save_failed で返す。
+        /// ライブメモリへの参照を渡さず、値コピーされた DTO のみを返す。
+        ///
+        /// @param params { logicalPath }
+        /// @return { saved: true }
+        virtual Result<JsonValue, BridgeError> assetSave(const JsonValue& params)
+        {
+            return not_supported(params);
+        }
+
     protected:
         IBridgeEngineAdapter() = default;
         IBridgeEngineAdapter(const IBridgeEngineAdapter&) = default;
