@@ -168,3 +168,4 @@
 - `pnpm lint` は実体が無い(どのパッケージにも lint スクリプトが無い)。緑でも何も検査していない。
 - NorvesLib の作業ツリーは `feature/rendering-r4-ddgi` の未コミットの変更を抱えている。今回の主題では NorvesLib に触らない。
 - U1 要件文書に値の場所と保存の決定・状態の更新を記録する: 着地(直し 0 回)
+- U2 asset.getProperties / setProperty / save の schema と fixture を足す: 着地(直し 0 回)

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/asset.setProperty.result.schema.json",
+  "title": "asset.setProperty response result",
+  "description": "Acknowledgement of an asset.setProperty request. Values are snapshot copies, never references into engine live memory. Rejection is returned as an error response with code ENGINE_ASSET_EDIT_REJECTED and an English message. Its data object contains string fields 'method' (asset.setProperty) and 'reason' (type_mismatch, out_of_range, unknown_property, unknown_asset, or save_failed), and a string 'path' field only when applicable.",
+  "type": "object",
+  "required": ["previousValue"],
+  "additionalProperties": false,
+  "properties": {
+    "previousValue": {
+      "description": "Snapshot copy of the value before the change.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/propertyValue"
+    },
+    "appliedValue": {
+      "description": "Optional snapshot copy of the value actually applied, which may be normalized from the requested value.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/propertyValue"
+    }
+  }
+}

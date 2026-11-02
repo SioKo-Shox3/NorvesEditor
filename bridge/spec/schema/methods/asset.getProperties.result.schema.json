@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/asset.getProperties.result.schema.json",
+  "title": "asset.getProperties response result",
+  "description": "Properties of one asset. The values are snapshot copies, never references into engine live memory. Failure is returned as an error response with code ENGINE_ASSET_EDIT_REJECTED and an English message. Its data object contains string fields 'method' (asset.getProperties) and 'reason' (type_mismatch, out_of_range, unknown_property, unknown_asset, or save_failed), and a string 'path' field only when applicable.",
+  "type": "object",
+  "required": ["logicalPath", "properties"],
+  "additionalProperties": false,
+  "properties": {
+    "logicalPath": {
+      "description": "Logical path of the asset whose properties are returned.",
+      "type": "string",
+      "minLength": 1
+    },
+    "properties": {
+      "description": "Snapshot of the asset's properties.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/assetProperty" }
+    }
+  },
+  "$defs": {
+    "assetProperty": {
+      "description": "One asset property and its snapshot value.",
+      "type": "object",
+      "required": ["path", "valueType", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "Opaque, engine-defined location of the value. The editor must not interpret it and must return it unchanged to asset.setProperty.",
+          "type": "string",
+          "minLength": 1
+        },
+        "valueType": {
+          "description": "Free-form generic type name, e.g. number, integer, string, or boolean.",
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "description": "Snapshot copy of the property value.",
+          "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/propertyValue"
+        },
+        "unit": {
+          "description": "Optional unit of the property value.",
+          "type": "string"
+        },
+        "minimum": {
+          "description": "Optional minimum property value.",
+          "type": "number"
+        },
+        "maximum": {
+          "description": "Optional maximum property value.",
+          "type": "number"
+        },
+        "description": {
+          "description": "Optional human-readable description of the property.",
+          "type": "string"
+        }
+      }
+    }
+  }
+}
