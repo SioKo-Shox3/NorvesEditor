@@ -171,3 +171,4 @@
 - U2 asset.getProperties / setProperty / save の schema と fixture を足す: 着地(直し 0 回)
 - U4 SDK のアダプタに 3 つの仮想関数と振り分けを足す: 着地(直し 0 回)
 - U3 仕様文書に能力 asset.edit・拒否コード・3 メソッドを書く: 着地(直し 0 回)
+- U5 モックの mcp-edit プロフィールに偽の資産と 3 メソッドを足す: 着地(直し 0 回)
