@@ -69,6 +69,7 @@ convention only — there is no closed enumeration of engine codes.
 | --- | --- | --- | --- | --- | --- |
 | `ENGINE_ASSET_LOAD_FAILED` | extension (example) | maybe | `error.reported` event (engine wire) | `asset` | example engine-defined code: an asset failed to load. |
 | `ENGINE_INVALID_PARAMS` | extension | no | `asset.reloadManifest` error response (id-bearing) | `method` | method-specific params failed validation before adapter dispatch. |
+| `ENGINE_ASSET_EDIT_REJECTED` | extension | no | `asset.getProperties` / `asset.setProperty` / `asset.save` error response (id-bearing) | `method`, `reason`, `path` (optional) | the engine refused an asset property query, property change, or save; a rejected property change leaves the value unchanged. |
 
 ## Code ↔ fixture correspondence
 
@@ -83,6 +84,7 @@ this document (`bridge/spec/docs/`).
 | `BRIDGE_TRANSPORT_ERROR` | [`../fixtures/events/error.reported/positive/event-synthesized-valid.json`](../fixtures/events/error.reported/positive/event-synthesized-valid.json) |
 | `ENGINE_ASSET_LOAD_FAILED` | [`../fixtures/events/error.reported/positive/event-engine-valid.json`](../fixtures/events/error.reported/positive/event-engine-valid.json) |
 | `ENGINE_INVALID_PARAMS` | [`../fixtures/envelope/positive/response-error-engine-invalid-params.json`](../fixtures/envelope/positive/response-error-engine-invalid-params.json) |
+| `ENGINE_ASSET_EDIT_REJECTED` | [`../fixtures/methods/asset.setProperty/positive/response-error-type-mismatch.json`](../fixtures/methods/asset.setProperty/positive/response-error-type-mismatch.json) |
 
 ## Update discipline
 
@@ -100,6 +102,14 @@ not an envelope `error.code`. It is **deliberately not** a member of this
 registry. It shares the same screaming-snake-case pattern only because that
 casing convention is reused protocol-wide; the shared pattern does not make it a
 registry member.
+
+For `ENGINE_ASSET_EDIT_REJECTED`, `data.method` identifies the failed method and
+`data.reason` carries a lowercase machine-readable reason code, such as
+`type_mismatch`, `out_of_range`, `unknown_property`, `unknown_asset`, or
+`save_failed`. These reasons form an open set, separate from the envelope
+`error.code` registry; they are not registry entries. `data.path` is a string
+included only when a property path is applicable. The error `message` is an
+English explanation.
 
 ## Compatibility and versioning
 

@@ -47,6 +47,8 @@ viewport.thumbnail  return a low-frequency still thumbnail of the external
 asset.read          read asset resolution health and loaded manifest snapshots
                     via asset.resolve and asset.getManifest (asset browser live
                     overlay surface, protocol 0.2)
+asset.edit          edit asset properties through engine-owned opaque property
+                    paths and save synchronously (protocol 0.2)
 asset.reload        reload the manifest path configured at engine startup via
                     asset.reloadManifest (protocol 0.2)
 component.edit      attach/detach components on an object via component.add and
@@ -124,6 +126,24 @@ using its offline workspace manifest. Returned values are DTO snapshots only and
 must not contain references to loaded asset memory, package buffers, or engine
 manifest storage.
 
+The `asset.edit` token advertises that an engine can answer
+`asset.getProperties`, `asset.setProperty`, and `asset.save`. These methods are
+optional and engine-agnostic; the editor must not send them to an engine that
+does not advertise the token. Property values are DTO snapshot copies, never
+references into engine live memory. Each property `path` is an opaque,
+engine-owned string returned by `asset.getProperties`: the editor must not
+interpret it and must pass it unchanged to `asset.setProperty`. Opening and
+closing an asset are editor-local operations; no asset open/close methods travel
+over the wire.
+
+A successful `asset.setProperty` result must include `previousValue`, the snapshot
+value before the change; `appliedValue` is optional and may report a normalized
+value. A refusal is an id-bearing error response with
+`ENGINE_ASSET_EDIT_REJECTED`, leaving the property value unchanged (see
+[`error-model.md`](./error-model.md)). `asset.save` is one synchronous request:
+a success response with `saved: true` means saving has completed. Saving is not
+an undoable operation.
+
 The `asset.reload` token advertises that an engine can answer
 `asset.reloadManifest`, synchronously reloading only the manifest path already
 configured at engine startup. The method takes a present empty params object and
@@ -177,6 +197,10 @@ establishes that capabilities are negotiated per connection during the handshake
 Handshake fixtures that exercise capabilities live under
 [`../fixtures/methods/bridge.hello/`](../fixtures/methods/bridge.hello/) and
 [`../fixtures/methods/bridge.getCapabilities/`](../fixtures/methods/bridge.getCapabilities/).
+Asset editing fixtures live under
+[`../fixtures/methods/asset.getProperties/`](../fixtures/methods/asset.getProperties/),
+[`../fixtures/methods/asset.setProperty/`](../fixtures/methods/asset.setProperty/), and
+[`../fixtures/methods/asset.save/`](../fixtures/methods/asset.save/).
 See [`message-payloads.md`](./message-payloads.md) for the per-message payload
 reference and [`../fixtures/README.md`](../fixtures/README.md) for the validation
 procedure.

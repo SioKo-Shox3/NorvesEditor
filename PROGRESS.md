@@ -170,3 +170,4 @@
 - U1 要件文書に値の場所と保存の決定・状態の更新を記録する: 着地(直し 0 回)
 - U2 asset.getProperties / setProperty / save の schema と fixture を足す: 着地(直し 0 回)
 - U4 SDK のアダプタに 3 つの仮想関数と振り分けを足す: 着地(直し 0 回)
+- U3 仕様文書に能力 asset.edit・拒否コード・3 メソッドを書く: 着地(直し 0 回)
