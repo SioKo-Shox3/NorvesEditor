@@ -418,6 +418,26 @@ impl EditService {
                             old_value: PriorCapture::InAction,
                         })
                     }
+                    McpWriteOperation::AssetProperty { logical_path, path } => {
+                        Some(HistoryRequest::SetAssetProperty {
+                            logical_path: logical_path.clone(),
+                            path: path.clone(),
+                            requested_value: params.get("value").cloned().ok_or_else(|| {
+                                BackendError::Request {
+                                    message: "設定する値がありません。".to_owned(),
+                                }
+                            })?,
+                        })
+                    }
+                    McpWriteOperation::AssetSave { logical_path } => {
+                        event_input = Some(EditEventInput {
+                            operation: "assetSave",
+                            object_id: None,
+                            property: None,
+                            value: Some(serde_json::json!({"logicalPath": logical_path})),
+                        });
+                        None
+                    }
                     McpWriteOperation::Create { parent_id } => Some(HistoryRequest::CreateObject {
                         parent_id: parent_id.clone(),
                         kind: params

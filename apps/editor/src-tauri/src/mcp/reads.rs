@@ -21,7 +21,7 @@ use crate::{
         authorization::{
             parse_scope_snapshot_bytes, parse_scope_tree_bytes, with_scope_deadline,
             McpHistoryAction, McpSceneScopeIndex, McpScopeBudget, McpWriteOperation,
-            McpWritePermit, McpWritePolicySnapshot,
+            McpWritePermit, McpWritePolicySnapshot, ScopeError,
         },
         confirmation::ConfirmationResult,
         McpAuthorization, McpRequestLease,
@@ -477,6 +477,14 @@ impl McpReadContext {
         authorization
             .check_write_preflight(request_lease, &policy)
             .map_err(|error| error.message().to_owned())?;
+        if matches!(
+            operation,
+            McpWriteOperation::AssetProperty { .. } | McpWriteOperation::AssetSave { .. }
+        ) && policy.settings.scene_root_id.is_some()
+        {
+            return Err(ScopeError::AssetOutsideScope.message().to_owned());
+        }
+        validate_asset_write_input(&operation, params)?;
         let generation = self
             .catalog
             .current_generation()
@@ -497,8 +505,11 @@ impl McpReadContext {
         let show_confirmation = requires_confirmation
             || matches!(operation, McpWriteOperation::Property { .. })
             || policy.settings.mode == crate::mcp::McpWriteMode::Confirm;
-        let needs_tree = !matches!(operation, McpWriteOperation::RuntimeControl)
-            || policy.settings.scene_root_id.is_some();
+        let needs_tree = !matches!(
+            operation,
+            McpWriteOperation::AssetProperty { .. } | McpWriteOperation::AssetSave { .. }
+        ) && (!matches!(operation, McpWriteOperation::RuntimeControl)
+            || policy.settings.scene_root_id.is_some());
         if needs_tree {
             let resolution = async {
                 let (mut index, mut budget, tree_result) = self
@@ -553,6 +564,29 @@ impl McpReadContext {
                                 .await?,
                         );
                     }
+                    let mut logical_paths: Vec<_> = action
+                        .records
+                        .iter()
+                        .filter_map(|record| match record {
+                            crate::edit_service::HistoryRecord::SetAssetProperty {
+                                logical_path,
+                                ..
+                            } => Some(logical_path.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    logical_paths.sort_unstable();
+                    logical_paths.dedup();
+                    for logical_path in logical_paths {
+                        let (result, _) = self
+                            .read_authorization_asset_properties(
+                                &bridge_lease,
+                                &mut budget,
+                                logical_path,
+                            )
+                            .await?;
+                        scope_values.push(result);
+                    }
                 }
                 Ok::<(), String>(())
             };
@@ -561,6 +595,24 @@ impl McpReadContext {
                 .await
                 .map_err(|_| "MCP書き込み要求の全体期限を超えました。".to_owned())?
                 .map_err(|error| error.message().to_owned())??;
+        } else if let McpWriteOperation::AssetProperty { logical_path, path } = &operation {
+            let resolution = async {
+                let mut budget =
+                    McpScopeBudget::new(0).map_err(|error| error.message().to_owned())?;
+                let (result, properties) = self
+                    .read_authorization_asset_properties(&bridge_lease, &mut budget, logical_path)
+                    .await?;
+                validate_asset_property_value(&properties, path, &params["value"])?;
+                scope_values.push(result);
+                Ok::<(), String>(())
+            };
+            tokio::time::timeout_at(
+                request_lease.request_deadline(),
+                with_scope_deadline(resolution),
+            )
+            .await
+            .map_err(|_| "MCP書き込み要求の全体期限を超えました。".to_owned())?
+            .map_err(|error| error.message().to_owned())??;
         }
         if !self.bridge.is_current(generation) {
             return Err(
@@ -696,6 +748,44 @@ impl McpReadContext {
         } else {
             Err("componentの所属を確認できないため、操作を拒否しました。".to_owned())
         }
+    }
+
+    async fn read_authorization_asset_properties(
+        &self,
+        lease: &BridgeLease,
+        budget: &mut McpScopeBudget,
+        logical_path: &str,
+    ) -> Result<(Value, norves_bridge_editor_client::AssetProperties), String> {
+        budget
+            .begin_snapshot()
+            .map_err(|error| error.message().to_owned())?;
+        let mut params = Map::new();
+        params.insert(
+            "logicalPath".to_owned(),
+            Value::String(logical_path.to_owned()),
+        );
+        let result = self
+            .bridge
+            .send_with_lease(lease, "asset.getProperties", Some(params))
+            .await
+            .map_err(|error| {
+                format!(
+                    "資産の現在値を取得できません: {}",
+                    engine_error_as_data(error)
+                )
+            })?;
+        let bytes = serde_json::to_vec(&result)
+            .map_err(|_| "資産の現在値をJSONへ変換できません。".to_owned())?
+            .len();
+        budget
+            .add_bytes(bytes)
+            .map_err(|error| error.message().to_owned())?;
+        let properties = norves_bridge_editor_client::parse_asset_properties_result(&result)
+            .map_err(|_| "asset.getPropertiesの応答形式が不正です。".to_owned())?;
+        if properties.logical_path != logical_path {
+            return Err("資産の現在値のlogicalPathが要求と一致しません。".to_owned());
+        }
+        Ok((result, properties))
     }
 
     async fn read_confirmation_snapshot(
@@ -1156,6 +1246,82 @@ async fn wait_for_bridge_generation_change(
     }
 }
 
+fn validate_asset_write_input(operation: &McpWriteOperation, params: &Value) -> Result<(), String> {
+    let (logical_path, path) = match operation {
+        McpWriteOperation::AssetProperty { logical_path, path } => (logical_path, Some(path)),
+        McpWriteOperation::AssetSave { logical_path } => (logical_path, None),
+        _ => return Ok(()),
+    };
+    if logical_path.len() > 1024 || path.is_some_and(|path| path.len() > 1024) {
+        return Err("資産のlogicalPathまたはpathが1024バイトの上限を超えています。".to_owned());
+    }
+    if path.is_some() {
+        let value = params
+            .get("value")
+            .ok_or_else(|| ScopeError::InvalidWriteRequest.message().to_owned())?;
+        let size = serde_json::to_vec(value)
+            .map_err(|_| "資産の値をJSONへ変換できません。".to_owned())?
+            .len();
+        if size > MAX_CONFIRMATION_VALUE_BYTES {
+            return Err("資産の値が64 KiBの上限を超えています。".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn validate_asset_property_value(
+    properties: &norves_bridge_editor_client::AssetProperties,
+    path: &str,
+    value: &Value,
+) -> Result<(), String> {
+    let property = properties
+        .properties
+        .iter()
+        .find(|property| property.path == path)
+        .ok_or_else(|| {
+            "資産に指定のプロパティがありません。asset_get_propertiesで取得したpathをそのまま指定してください。".to_owned()
+        })?;
+    let matches_type = match property.value_type.as_str() {
+        "number" => value.is_number(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        _ => true,
+    };
+    if !matches_type {
+        return Err(format!(
+            "値の型が資産のプロパティの型({})と一致しません。",
+            property.value_type
+        ));
+    }
+    if let Some(number) = value.as_f64() {
+        if property.minimum.is_some_and(|minimum| number < minimum)
+            || property.maximum.is_some_and(|maximum| number > maximum)
+        {
+            return Err("値が資産のプロパティの範囲を外れています。".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn asset_current_value<'a>(
+    scope_values: &'a [Value],
+    logical_path: &str,
+    path: &str,
+) -> Option<&'a Value> {
+    scope_values
+        .iter()
+        .find(|snapshot| snapshot.get("logicalPath").and_then(Value::as_str) == Some(logical_path))
+        .and_then(|snapshot| snapshot.get("properties"))
+        .and_then(Value::as_array)
+        .and_then(|properties| {
+            properties
+                .iter()
+                .find(|entry| entry.get("path").and_then(Value::as_str) == Some(path))
+        })
+        .and_then(|entry| entry.get("value"))
+}
+
 fn confirmation_snapshot_id(operation: &McpWriteOperation) -> Option<&str> {
     match operation {
         McpWriteOperation::Property { object_id } => Some(object_id),
@@ -1240,6 +1406,20 @@ fn make_confirmation_preview(
                 .cloned();
             after = params.get("value").cloned();
             undo_available = true;
+        }
+        McpWriteOperation::AssetProperty { logical_path, path } => {
+            target_ids.push(logical_path.clone());
+            target_count = 1;
+            let current_value = asset_current_value(scope_values, logical_path, path)
+                .ok_or_else(|| "資産の現在値を取得できません。".to_owned())?;
+            before = Some(json!({"logicalPath":logical_path,"path":path,"value":current_value}));
+            after = Some(json!({"logicalPath":logical_path,"path":path,"value":params["value"]}));
+            undo_available = true;
+        }
+        McpWriteOperation::AssetSave { logical_path } => {
+            target_ids.push(logical_path.clone());
+            target_count = 1;
+            after = Some(json!({"logicalPath":logical_path,"save":true}));
         }
         McpWriteOperation::Create { parent_id } => {
             target_ids.extend(parent_id.iter().cloned());
@@ -1422,7 +1602,28 @@ fn make_confirmation_preview(
                             json!({"objectId":object_id,"property":property,"value":new_value}),
                         );
                     }
-                    crate::edit_service::HistoryRecord::SetAssetProperty { .. } => {}
+                    crate::edit_service::HistoryRecord::SetAssetProperty {
+                        logical_path,
+                        path,
+                        old_value,
+                        new_value,
+                    } => {
+                        target_ids.push(logical_path.clone());
+                        let new_value = match action.direction {
+                            crate::mcp::authorization::McpHistoryDirection::Undo => old_value,
+                            crate::mcp::authorization::McpHistoryDirection::Redo => new_value,
+                        };
+                        let current_value = asset_current_value(scope_values, logical_path, path)
+                            .ok_or_else(|| {
+                            "取り消し対象の資産の現在値を取得できません。".to_owned()
+                        })?;
+                        before_values.push(
+                            json!({"logicalPath":logical_path,"path":path,"value":current_value}),
+                        );
+                        after_values.push(
+                            json!({"logicalPath":logical_path,"path":path,"value":new_value}),
+                        );
+                    }
                 }
             }
             before = Some(Value::Array(before_values));
@@ -2346,6 +2547,155 @@ mod tests {
             McpReadContext::new(bridge, catalog, logs, McpThumbnailService::default()),
             session,
         )
+    }
+
+    #[tokio::test]
+    async fn asset_property_authorization_rejects_invalid_values_before_writing() {
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let authorization = McpAuthorization::default();
+        authorization
+            .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                mode: crate::mcp::McpWriteMode::Enabled,
+                scene_root_id: None,
+            })
+            .expect("資産の書き込みを許可する");
+        let (context, _session) = test_context_with_session(
+            98,
+            handle.clone(),
+            &["asset.edit"],
+            Arc::new(StdMutex::new(LogBuffer::default())),
+        );
+        let context = context.with_authorization(authorization.clone());
+        let responder = tokio::spawn(async move {
+            for value in [5, 5, 5, 5, 5, 5, 7] {
+                let (id, method, params) = next_request(&mut peer).await;
+                assert_eq!(method, "asset.getProperties", "認可中に書き込みを送らない");
+                assert_eq!(
+                    params.expect("資産の照会引数"),
+                    json!({"logicalPath":"effects/a.vfx.json"})
+                        .as_object()
+                        .expect("照会引数の期待値")
+                        .clone()
+                );
+                peer.send(response_frame(
+                    id,
+                    json!({
+                        "logicalPath":"effects/a.vfx.json",
+                        "properties":[{"path":"rate","valueType":"number","value":value,
+                            "minimum":0,"maximum":10}]
+                    }),
+                ))
+                .await
+                .expect("資産の現在値を返す");
+            }
+            peer
+        });
+        let lease = authorization.current_lease();
+        for (path, value, expected_error) in [
+            ("missing", json!(6), "資産に指定のプロパティがありません。asset_get_propertiesで取得したpathをそのまま指定してください。"),
+            ("rate", json!("x"), "値の型が資産のプロパティの型(number)と一致しません。"),
+            ("rate", json!(11), "値が資産のプロパティの範囲を外れています。"),
+        ] {
+            assert_eq!(
+                context
+                    .authorize_write(&lease, "asset.setProperty", &json!({
+                        "logicalPath":"effects/a.vfx.json","path":path,"value":value
+                    }))
+                    .await
+                    .expect_err("不正な資産編集を送る前に拒否する"),
+                expected_error
+            );
+        }
+        let params = json!({"logicalPath":"effects/a.vfx.json","path":"rate","value":6});
+        let permit = context
+            .authorize_write(&lease, "asset.setProperty", &params)
+            .await
+            .expect("正しい値にpermitを発行する");
+        assert!(permit.captured_prior().is_none());
+        let preview = &permit
+            .review
+            .as_ref()
+            .expect("資産のレビューを保持する")
+            .preview;
+        assert_eq!(preview.target_ids, ["effects/a.vfx.json"]);
+        assert_eq!(
+            preview.before,
+            Some(json!({
+                "logicalPath":"effects/a.vfx.json","path":"rate","value":5
+            }))
+        );
+        assert_eq!(preview.after, Some(params.clone()));
+        assert!(preview.undo_available);
+        assert!(!preview.clears_history);
+        assert_eq!(
+            context
+                .revalidate_queued_permit(&lease, permit, 98, None)
+                .await,
+            Ok(true),
+            "現在値が同じならレビューが一致する"
+        );
+        let permit = context
+            .authorize_write(&lease, "asset.setProperty", &params)
+            .await
+            .expect("再照合するpermitを発行する");
+        assert_eq!(
+            context
+                .revalidate_queued_permit(&lease, permit, 98, None)
+                .await,
+            Ok(false),
+            "資産の現在値が変わったら再確認が必要になる"
+        );
+        let mut peer = responder.await.expect("資産の照会を完了する");
+        assert!(timeout(Duration::from_millis(20), peer.recv())
+            .await
+            .is_err());
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn scoped_asset_authorization_rejects_without_bridge_requests() {
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let authorization = McpAuthorization::default();
+        let (context, _session) = test_context_with_session(
+            99,
+            handle.clone(),
+            &["asset.edit"],
+            Arc::new(StdMutex::new(LogBuffer::default())),
+        );
+        let context = context.with_authorization(authorization.clone());
+        for root in ["allowed", "scene"] {
+            authorization
+                .set_write_settings(crate::mcp::authorization::McpWriteSettings {
+                    mode: crate::mcp::McpWriteMode::Enabled,
+                    scene_root_id: Some(root.to_owned()),
+                })
+                .expect("シーン部分木だけを許可する");
+            let lease = authorization.current_lease();
+            for (method, params) in [
+                (
+                    "asset.setProperty",
+                    json!({
+                        "logicalPath":"effects/a.vfx.json","path":"rate","value":6
+                    }),
+                ),
+                ("asset.save", json!({"logicalPath":"effects/a.vfx.json"})),
+            ] {
+                assert_eq!(
+                    context
+                        .authorize_write(&lease, method, &params)
+                        .await
+                        .expect_err("範囲付きの資産操作は照会前に拒否する"),
+                    ScopeError::AssetOutsideScope.message()
+                );
+            }
+        }
+        assert!(authorization.confirmations().pending().is_empty());
+        assert!(timeout(Duration::from_millis(20), peer.recv())
+            .await
+            .is_err());
+        handle.shutdown().await;
     }
 
     #[tokio::test]
