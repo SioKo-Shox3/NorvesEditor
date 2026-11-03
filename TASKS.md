@@ -579,3 +579,15 @@ M2 の共通規則:
 - verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
 - paths: apps/editor/src-tauri/src/mcp/operations.rs, apps/editor/src-tauri/src/mcp/operations/**, apps/editor/src-tauri/src/mcp/capture/**
 - from: E4-004-P1
+
+## E4-002-CHECK: MCP の道具から資産のプロパティの一覧・設定・保存を呼ぶ(後回しにしたアプリの起動の確かめ)
+- status: todo
+- check: launch
+- gpu: exclusive
+- done-when: E4-002 で、当分アプリを起動しない決まりのため後回しにした確かめ(下の verify)を回し、E4-002 の done-when を満たすことを確かめる。満たさなければ E4-002 の done-when と paths の範囲で直す。
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/tests/mcp_e2e.rs, scripts/verify-mcp-e2e.ps1, bridge/ts/packages/bridge-ui/src/ipc-types.ts, apps/editor/src/state/**
+- from: E4-002
