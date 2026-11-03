@@ -183,3 +183,4 @@
 - 要起票: 要件文書7章は NE19 の前提に NE15 の形と GR136 を挙げ、NE15 を E4 の最初に置く記述が残る。今回 NE19 の一部を先に入れたこととの関係を整理する。
 - E4-001: fixture を19件足したため、往復試験に固定した件数を C++(`engine-sdk/tests`)と Rust(`norves-bridge-core/tests/fixtures_roundtrip.rs`、`paths` の外)で 174→193 に合わせた。件数の期待値だけの変更。
 - E4-001: `verify.ps1` の中の実モック依存試験は環境変数未設定で早期終了する。実モックの合格は環境指定の conformance / mcp_mock_profile の実行を根拠にした。worktree で `pnpm install` を素で回すと esbuild の `ERR_PNPM_IGNORED_BUILDS` で止まるので `--ignore-scripts` を付けた。
+- U10 pnpm 11 の build 許可を allowBuilds で書き、集約ゲートを通す: 着地(直し 0 回)
