@@ -946,6 +946,19 @@ impl McpReadContext {
                     vec![json!({"engineData":value})],
                 )
             }
+            "asset_get_properties" => {
+                norves_bridge_editor_client::parse_asset_properties_result(&value)
+                    .map_err(|_| "asset.getPropertiesの応答形式が不正です。".to_owned())?;
+                let (metadata, items) = array_snapshot_items(value, "properties", "properties")?;
+                (
+                    json!({
+                        "generation":generation,
+                        "logicalPath":metadata["logicalPath"],
+                        "dataType":"assetProperties"
+                    }),
+                    items,
+                )
+            }
             _ => return Err("この読み取り道具はまだ利用できません。".to_owned()),
         };
 
@@ -1490,6 +1503,7 @@ fn validate_cursor_call(name: &str, arguments: &Map<String, Value>) -> Result<()
         "bridge_get_capabilities" | "schema_get_snapshot" => &["cursor", "pageSize"],
         "scene_get_tree" | "scene_get_tree_page" => &["cursor", "pageSize", "rootId", "maxDepth"],
         "object_get_snapshot" => &["cursor", "pageSize", "objectId"],
+        "asset_get_properties" => &["cursor", "pageSize", "logicalPath"],
         "asset_get_manifest" => &["cursor", "pageSize", "filter"],
         "logs_get_recent" => &["cursor", "pageSize", "generation", "afterSequence", "limit"],
         _ => return Err("このMCP道具はcursorによる続きを受け付けません。".to_owned()),
@@ -1514,6 +1528,11 @@ fn validate_cursor_call(name: &str, arguments: &Map<String, Value>) -> Result<()
         || arguments
             .get("objectId")
             .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        || arguments.get("logicalPath").is_some_and(|value| {
+            value
+                .as_str()
+                .is_none_or(|path| path.is_empty() || path.chars().count() > 1024)
+        })
         || arguments
             .get("filter")
             .is_some_and(|value| !value.is_string())
@@ -1571,6 +1590,10 @@ fn bridge_read_request(
             "object.getSnapshot"
         }
         "schema_get_snapshot" => "schema.getSnapshot",
+        "asset_get_properties" => {
+            copy_argument(arguments, &mut params, "logicalPath");
+            "asset.getProperties"
+        }
         "asset_resolve" => {
             copy_argument(arguments, &mut params, "logicalPath");
             copy_argument(arguments, &mut params, "kind");
