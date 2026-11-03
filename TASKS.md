@@ -453,7 +453,7 @@ M2 の共通規則:
 - notes: 先行MCP-028/029。MCP-028評価PASSのnon-blocking 1をNE14の既存契約内で修復する。根拠は.harness/mcp-review-follow-up-028.md。列前拒否を認可・入力検査を飛ばして成功扱いにせず、記録の終端だけを正しくする。進行中の制御ticketを早まって確定させない。試験を削除・SKIP・弱化しない。新規依存/Bridge仕様/SDK/mock/NorvesLib/GUI実機操作は不要。Rustのasync寿命と許可境界の評価はランナーが行い、コミット本文を付ける。元のMCP-028の完了条件・検証・PASSは保持する。最終検証・評価PASSは20261004-170201のeval-5.out.txtとrecheck-MCP-030-5-1〜-3.txtで確認。コードのtreeを変えない本文整備後のコミットは873b7e1（旧6c789b4）、対応表は.harness/mcp-message-hygiene/result.json。
 
 ## E4-001: 資産の編集の方式を決め、Bridge の仕様・SDK・モック・Rust クライアントに資産のプロパティの一覧・設定・保存を足す
-- status: todo
+- status: done
 - done-when: 最初の編集の前に、`docs/mcp-and-edit-layer-requirements.md` の 10 章にある未決事項 4(値の場所の書き方)と 6 の保存の部分を、推奨の案で決めて記録する。作者は後から変えられる。あわせて状態の行を更新し、2026-11-03 の人の指示で NE19 の一部を範囲に入れたことを書く。推奨の案は次のとおり。値の場所は、エンジンが一覧で返す不透明な文字列とし、エディタは解釈しない。資産は既存の `logicalPath` で指す。開く・閉じるは線に出さない。保存は同期の要求 1 回とする。`asset.setProperty` の結果では `previousValue` を必須にする。拒否の理由は機械照合の英語コード `type_mismatch`・`out_of_range`・`unknown_property` を既存のエラーモデルに載せて返す。実装は次の 5 点。(1) `asset.getProperties`・`asset.setProperty`・`asset.save` の params/result の schema と、positive/negative の fixture を足す。(2) `capabilities.md` に能力 `asset.edit` を追記する。(3) SDK の `IBridgeEngineAdapter` に仮想関数を足し、既定は `METHOD_NOT_SUPPORTED` を返す。`server.cpp` の振り分けも足す。(4) モックの MCP 試験プロフィールに、型付きのプロパティ(範囲つきの数値・文字列・真偽)を持つ偽の資産を置く。既定プロフィールの golden は変えない。(5) `norves-bridge-editor-client` に型付きの呼び出しを足し、能力の無い相手には送らない。実プロセスのモックを相手に次を試験する。一覧→設定→保存→一覧で値が一致する。型違い・範囲外・未知の場所は拒否され、前の値を保つ。`previousValue` が設定前の値と一致する。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "if (-not (Test-Path 'build/cpp/CMakeCache.txt')) { cmake -S bridge/cpp -B build/cpp -G 'Visual Studio 17 2022'; exit $LASTEXITCODE }; exit 0"`
 - verify: `python scripts/validate-bridge-fixtures.py`
@@ -526,3 +526,12 @@ M2 の共通規則:
 - paths: bridge/crates/norves-bridge-editor-client/src/ws_transport.rs, bridge/crates/norves-bridge-editor-client/src/dispatcher.rs
 - from: E4-003
 - notes: `dispatcher.rs` に手を入れる場合は危険地帯(Rust の async タスクの寿命、WebSocket の転送)に入る。評価者を通し、コミット本文を書く。アプリも GPU も使わない(試験はローカルの WebSocket だけで完結する)。
+
+## E4-003-P2: `DispatchHandle::request` が切断との競合で `Timeout` まで待たず、すぐに `ConnectionClosed` を返すようにする
+- status: todo
+- done-when: `bridge/crates/norves-bridge-editor-client/src/dispatcher.rs` の `DispatchHandle::request` を直す。今は `self.commands.send(command)` が容量を予約した直後に task が切断(`Ok(None)`・転送エラー)で終わると、送った `SendRequest` と `responder` が排出されないままキューに残り、`response_rx` は値も切断も受け取らない。その結果、`timeout` が満ちるまで待ってから `RequestError::Timeout` を返す。これはモジュール冒頭の約束(30〜32 行。task が止まれば `request` は `ConnectionClosed` を返し、止まらない)に反する。`capture.rs:421-423` は `Timeout` と `ConnectionClosed` を別の誤り(`CaptureError::Timeout(Accept)` / `ConnectionChanged`)に分けているので、分類も誤る。`shutdown`(223〜237 行)と同じ考え方で、時間切れの中の待ちを `response_rx` と `self.commands.closed()` の `select!` にする。`response_rx` を先に見る(`biased`)。task は終了のどの経路でも待っている要求をすべて失敗扱いにしてから Receiver を閉じる。そのため、`response_rx` が値を返さないまま閉鎖だけが来たら、取り残された要求とみなして `ConnectionClosed` を返す。閉鎖で戻った場合は `Cancel` を送らない。応答・時間切れ・`Cancel` の世代トークンの意味は変えない。次の試験を 1 件足す: すぐに切断を返す転送の上で、マルチスレッドの実行環境を使い、長い時間切れ(例: 30 秒)付きの `request` を繰り返し出す。毎回 `ConnectionClosed` が返り、それが短い上限(例: 2 秒)の内に返ることを確かめる。上限は `tokio::time::timeout` で包み、どの回で止まったかを名前で出す。原因と、試験の外の振る舞いを変えた理由をコミット本文に書く。クレートの lib の試験がすべて通り、dispatcher と ws_transport の試験を 50 回続けて走らせても止まらず、すべて通ること。
+- verify: `cargo test -p norves-bridge-editor-client --lib`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "for($i=1;$i -le 50;$i++){ cargo test -p norves-bridge-editor-client --lib dispatcher -- --test-threads=1; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE }; cargo test -p norves-bridge-editor-client --lib ws_transport -- --test-threads=1; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }; exit 0"`
+- paths: bridge/crates/norves-bridge-editor-client/src/dispatcher.rs
+- from: E4-003-P1
+- notes: 危険地帯(Rust の async タスクの寿命、WebSocket の転送)に入る。評価者を通し、コミット本文を書く。アプリも GPU も使わない(試験はメモリ内の転送とローカルの WebSocket だけで完結する)。

@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "response",
+  "id": "req-asset-set-1",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "previousValue": 30,
+    "appliedValue": 120
+  }
+}

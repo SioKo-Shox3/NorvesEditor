@@ -84,6 +84,9 @@ component.add
 component.remove
 asset.resolve
 asset.getManifest
+asset.getProperties
+asset.setProperty
+asset.save
 asset.reloadManifest
 ```
 
@@ -113,6 +116,27 @@ Asset read methods (`asset.resolve`, `asset.getManifest`) are additive optional
 methods in protocol **0.2**. They carry resolution health and manifest DTO
 snapshots only — never asset bytes, package buffers, or references into loaded
 engine memory/storage — and are advertised by the `asset.read` capability token.
+
+Asset editing methods (`asset.getProperties`, `asset.setProperty`, `asset.save`)
+are additive optional methods in protocol **0.2**, advertised by the `asset.edit`
+capability token. The editor sends them only when the engine advertises that
+token. They carry property snapshot DTOs, never references into engine live
+memory. Opening and closing assets stay local to the editor.
+
+- `asset.getProperties`: params `{ logicalPath }`; result `{ logicalPath, properties }`,
+  where each property has `path`, `valueType`, and `value`, with optional `unit`,
+  `minimum`, `maximum`, and `description`.
+- `asset.setProperty`: params `{ logicalPath, path, value }`; result
+  `{ previousValue, appliedValue? }`. `path` is an engine-owned opaque string
+  returned by `asset.getProperties`; the editor passes it unchanged without
+  interpreting it. `previousValue` is required.
+- `asset.save`: params `{ logicalPath }`; result `{ saved: true }` only after the
+  synchronous save completes. This is one request and is not undoable.
+
+Refusals use an id-bearing `ENGINE_ASSET_EDIT_REJECTED` error response; a rejected
+property change leaves the value unchanged. See
+[`message-payloads.md`](./message-payloads.md) for field definitions and
+[`error-model.md`](./error-model.md) for rejection details.
 
 `asset.reloadManifest` is an additive optional method in protocol **0.2**. It
 asks the engine to synchronously reload the manifest path configured at engine

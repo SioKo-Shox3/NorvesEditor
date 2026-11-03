@@ -1,0 +1,16 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "response",
+  "id": "req-asset-set-1",
+  "sessionId": "sess-7f3a",
+  "error": {
+    "code": "ENGINE_ASSET_EDIT_REJECTED",
+    "message": "The value is outside the permitted range.",
+    "data": {
+      "method": "asset.setProperty",
+      "reason": "out_of_range",
+      "path": "emitters/main/rate"
+    }
+  }
+}
