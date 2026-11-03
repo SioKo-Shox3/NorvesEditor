@@ -252,3 +252,7 @@
 - E4-004-P1: 操作記録の `OperationHandle::finish` が要約を道具・result・outcome・pending から選ぶようにした(`record_summary`)。`viewport_capture` の画像検証の失敗(applied/failed)は「撮影は行われましたが、画像を確認できません。…」、エンジンの撮影失敗(rejected/failed)は「エンジンで撮影が失敗しました。固定刻みが進んだ可能性があります。自動再送しません。」になる。それ以外の組と、ほかの道具は従来の `summary(outcome, pending)` のまま(`mcp/writes.rs` の呼び出しも不変)。試験 `capture_failures_have_specific_summaries_without_changing_other_tools` を 1 件足した。単位の作業ツリーで fmt --check exit 0、`--lib mcp::operations` 7 件成功(既存 6 件は無改変)、`--lib mcp::capture` 2 件成功、clippy --all-targets -D warnings exit 0 を出力を開いて確認した。
 - E4-004-P1 の起動の確かめは後回し: タスクの verify(src-tauri 全体の `cargo test`・`cargo fmt --check`・`cargo clippy -D warnings`)は人の決まりで回していない。`E4-004-P1-CHECK` で全体の `cargo test` を回し、既存の試験が書き換えなしで通ることを確かめる。
 - E4-004 の Notes の 1 件目の要起票(撮影の要約)は E4-004-P1 で解消した。
+
+- E4-002: 範囲(`scene_root_id`)を指定した書き込みの許可では、資産はシーンの部分木で表せないため、資産の設定・保存と、資産の記録を含む取り消し・やり直しを拒否する側に倒した(送る前に拒否し、Bridge へは何も送らない)。
+- E4-002: 統合ブランチ(E4-004 の撮影)を取り込んだ。`mcp/reads.rs` の木を引く判定は、資産の設定・保存では引かず、実行制御と撮影では範囲を指定した許可のときだけ引く形に両立させた。受入の印は `asset-edit-save-undo` と `deterministic-capture` の両方を待つ。取り込み後に `verify.ps1 -Cpp` は全ゲート `[OK]`(ctest 8/8、pnpm test 699 件)、src-tauri の `cargo check --all-targets` は exit 0。
+- E4-002: 起動の確かめは後回し。実 HTTP と実モックでの `scripts/verify-mcp-e2e.ps1`(両版で `asset-edit-save-undo` の印)と、src-tauri の `cargo fmt --check`・`cargo clippy -D warnings`・`cargo test` は E4-002-CHECK で回す。モックの `asset.save` は読み戻さないため、受入の「保存→一覧で一致」は保存の中身までは確かめない。
