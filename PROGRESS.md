@@ -65,10 +65,13 @@
 
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
+- 2026-11-03 E4-001-P3 完了: 統合ブランチ(E4-003-P1 まで)を取り込んだ上で verify を 2 本とも回し直した。空の一時ディレクトリでの `-Cpp -SkipFrontend` は cmake configure / build / ctest 8/8 を含むすべてが `[OK]`、exit 0。既定ディレクトリの `-Cpp` は C++ 段に `[SKIP]` が無く、pnpm typecheck / lint / build / test まで `[OK]`、exit 0。どちらにも `[FAIL]` は無い。`scripts/verify.ps1` の先頭の BOM と LF の行末は保たれている。
+
 ## In progress
 - なし。承認済みE0〜E3の実装・受入・評価・コミット文面の整備は完了。過去の失敗・停止・差し戻しは保存したまま、最終PASSの証拠と区別する。
 
 ## Next
+- E4-001-P3 は完了。`-Cpp` で構成が失敗したときの非 0 終了は、書き込めない場所を指定した手元の確かめだけで、自動の試験は無い。
 - 受入と既知の制限は `docs/mcp-undo-test-mapping.md` と要件文書13節を参照する。GUI実機の配置・狭幅・Tauri窓間操作、実NorvesLibの動作は未確認。現行MCP版のクライアント間要求ID衝突、確認commandのcapability未分離、同期ログ保存などの制限を保持する。
 - 本番/実mockの入口はMcpServices、受入窓口はHeadlessEditor。操作記録は現在の起動の最新500件、過去起動分はJSONLのみ。resultは結果分類で、取消後のactor確定でも更新される。outcomeは実適用状態。displayGroupIdが共通履歴の先頭と一致するときだけUI undoを許可する。
 - 全タスク完了のためM2を再起動しない。MyWorkflowのガイドは専用ブランチdocs/norveseditor-mcp-guideのd132623（旧951e3cd）で展開済み・未マージ・未push。NorvesEditorも未push。
