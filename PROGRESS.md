@@ -246,6 +246,7 @@
 - U7 実 HTTP とモックで同じ引数の撮影の一致を受け入れる: 着地(直し 0 回)
 - 要起票: 撮影後の画像検証の失敗は outcome `applied`・result `failed` で記録するが、`operations.rs` の `summary` は outcome だけで決まり「操作が完了しました。」と表示される。エンジンの `Failed` も outcome `rejected` のため「変更は適用されていません。」と出て、刻みが進んだ可能性と合わない。
 - 要起票: 撮影の待ちを取り消し・期限で打ち切ると同時 1 件の排他も外れるため、エンジン側の撮影がまだ続いているうちに次の撮影を受け付け得る(自動再送はしない)。
+
 - U1 撮影の失敗 2 種の操作記録の要約を、道具と result で選ぶ: 着地(直し 0 回)
 
 - E4-004-P1: 操作記録の `OperationHandle::finish` が要約を道具・result・outcome・pending から選ぶようにした(`record_summary`)。`viewport_capture` の画像検証の失敗(applied/failed)は「撮影は行われましたが、画像を確認できません。…」、エンジンの撮影失敗(rejected/failed)は「エンジンで撮影が失敗しました。固定刻みが進んだ可能性があります。自動再送しません。」になる。それ以外の組と、ほかの道具は従来の `summary(outcome, pending)` のまま(`mcp/writes.rs` の呼び出しも不変)。試験 `capture_failures_have_specific_summaries_without_changing_other_tools` を 1 件足した。単位の作業ツリーで fmt --check exit 0、`--lib mcp::operations` 7 件成功(既存 6 件は無改変)、`--lib mcp::capture` 2 件成功、clippy --all-targets -D warnings exit 0 を出力を開いて確認した。
