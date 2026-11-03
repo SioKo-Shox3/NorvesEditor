@@ -64,11 +64,13 @@
 - S-006 / S-010 指摘対応: `docs/norveslib-integration.md` の Known Limitations 6 と `docs/engine-profile.md` の後始末の項を「Job への割り当て成功後」に限り、残りうる条件(作成・割り当ての失敗、割り当て前のエディタ終了、割り当て前の子孫、Windows 以外)を書く。`engine-profile.md` の既定値の説明に残っていた英語を日本語に。README の Known Limitations 2 の末尾を「実装していないメソッドは `METHOD_NOT_SUPPORTED` を返す」に直す(コードは `bridge/spec/docs/capabilities.md` で確認)。S-001 / S-004 のテスト説明とコメントの英語は、既に日本語になっていた。
 
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
+- E4-002: MCP の道具に資産のプロパティの一覧 `asset_get_properties`(読み取り)と設定 `asset_set_property`・保存 `asset_save`(書き込み)を足した。能力 `asset.edit` がある接続だけに出し、書き込みの 2 道具は書き込みを許可したときだけ出る。設定は共通の編集列を通って言語モデル起源の履歴に積まれ、取り消し・やり直しは `asset.setProperty` に `previousValue`・適用値を送る。保存は要求ごとの確認を必須にし、履歴に積まず、結果と操作記録に取り消せない操作として残す。未知の項目・型違い・範囲外は送る前に拒否し、エンジンの拒否は理由コード付きで返す。送信後の時間切れ・通信断は結果不明として自動で再送しない。受入 `MCP_ACCEPTANCE_OK asset-edit-save-undo`(一覧→設定→保存→一覧の一致、UI の取り消しで前の値、型違いの拒否、保存の操作記録)を `mcp_e2e.rs` と `verify-mcp-e2e.ps1` に足した。`verify.ps1 -Cpp` は全ゲート `[OK]`(ctest 8/8、pnpm test 699 件)。
 
 ## In progress
 - なし。承認済みE0〜E3の実装・受入・評価・コミット文面の整備は完了。過去の失敗・停止・差し戻しは保存したまま、最終PASSの証拠と区別する。
 
 ## Next
+- E4-002-CHECK: 実 HTTP と実モックで `scripts/verify-mcp-e2e.ps1` を回し、資産の受入 `asset-edit-save-undo` が両版で出ることを確かめる。
 - 受入と既知の制限は `docs/mcp-undo-test-mapping.md` と要件文書13節を参照する。GUI実機の配置・狭幅・Tauri窓間操作、実NorvesLibの動作は未確認。現行MCP版のクライアント間要求ID衝突、確認commandのcapability未分離、同期ログ保存などの制限を保持する。
 - 本番/実mockの入口はMcpServices、受入窓口はHeadlessEditor。操作記録は現在の起動の最新500件、過去起動分はJSONLのみ。resultは結果分類で、取消後のactor確定でも更新される。outcomeは実適用状態。displayGroupIdが共通履歴の先頭と一致するときだけUI undoを許可する。
 - 全タスク完了のためM2を再起動しない。MyWorkflowのガイドは専用ブランチdocs/norveseditor-mcp-guideのd132623（旧951e3cd）で展開済み・未マージ・未push。NorvesEditorも未push。
@@ -229,3 +231,7 @@
 - U3 資産の書き込みの許可確認(送る前の検査・範囲・確認)を足す: 着地(直し 1 回)
 - U4 資産の書き込みを共通の編集列へつなぎ、道具を公開する: 着地(直し 0 回)
 - U6 受入の資産の場面を当て直し、操作記録に資産の道具名を足す: 着地(直し 0 回)
+
+- E4-002: 範囲(`scene_root_id`)を指定した書き込みの許可では、資産はシーンの部分木で表せないため、資産の設定・保存と、資産の記録を含む取り消し・やり直しを拒否する側に倒した(送る前に拒否し、Bridge へは何も送らない)。
+- E4-002: 起動の確かめは後回し。実 HTTP と実モック(`NORVES_MOCK_PROFILE=mcp-edit`)での `scripts/verify-mcp-e2e.ps1`(両版で `asset-edit-save-undo` の印が出ること)と、`cargo fmt --check`・`cargo clippy -D warnings`・`cargo test` の単独実行は E4-002-CHECK で回す。受入場面はコンパイルだけを確かめた。
+- E4-002: モックの `asset.save` は保存先に書くだけで読み戻さないため、受入の「保存→一覧で一致」は保存の中身までは確かめない(E4-001 の Notes と同じ制限)。
