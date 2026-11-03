@@ -568,3 +568,14 @@ M2 の共通規則:
 - paths: apps/editor/src-tauri/src/mcp/capture.rs, apps/editor/src-tauri/src/mcp/capture/**, apps/editor/src-tauri/src/bridge_state.rs, bridge/crates/norves-bridge-editor-client/src/capture.rs, docs/memory-buffer-policy.md
 - from: E4-004
 - notes: 危険地帯(Rust の async タスクの寿命、撮影の排他とバッファの所有)。評価者を通す。エンジンが受け付けを返す前に打ち切った場合は `captureId` が分からないので、その場合に何を完了とみなすか(世代の変更と上限時間だけで外す、など)を実装で決め、試験と方針の文書に書く。
+
+## E4-004-P1-CHECK: 撮影の操作記録の要約を、画像検証の失敗とエンジンの失敗に合わせる(後回しにしたアプリの起動の確かめ)
+- status: todo
+- check: launch
+- gpu: exclusive
+- done-when: E4-004-P1 で、当分アプリを起動しない決まりのため後回しにした確かめ(下の verify)を回し、E4-004-P1 の done-when を満たすことを確かめる。満たさなければ E4-004-P1 の done-when と paths の範囲で直す。
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- paths: apps/editor/src-tauri/src/mcp/operations.rs, apps/editor/src-tauri/src/mcp/operations/**, apps/editor/src-tauri/src/mcp/capture/**
+- from: E4-004-P1
