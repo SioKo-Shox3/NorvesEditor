@@ -549,7 +549,7 @@ M2 の共通規則:
 - from: E4-004
 
 ## E4-004-P1: 撮影の操作記録の要約を、画像検証の失敗とエンジンの失敗に合わせる
-- status: todo
+- status: done
 - done-when: `mcp/operations.rs` の `OperationHandle::finish` はいま、記録の `summary` を outcome と pending だけで決めている(`operations.rs:255`)。このため撮影の画像検証の失敗(`capture/tool.rs` の `CaptureFailure::invalid_image`、outcome `applied`・result `failed`)では、操作記録に「操作が完了しました。」と出る。エンジンが撮影に失敗したとき(`CaptureError::Failed`、outcome `rejected`・result `failed`)は「変更は適用されていません。」と出る。これを直し、前者は「撮影は行われたが画像を確認できない」こと、後者は「固定刻みが進んだ可能性があり、自動再送しない」ことを表す要約にする。単体試験で、2 つの場合の記録の `summary` にどちらの誤った文言も含まれないことを確かめる。ほかの道具と ほかの outcome の要約は変えない。書き込み道具の拒否(outcome `notApplied`・result `failed`/`rejected`)を含め、既存の試験が書き換えなしで通る。
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
