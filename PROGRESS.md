@@ -68,6 +68,7 @@
 - 2026-11-03 E4-001: 資産の編集の方式を要件文書10章で決定(値の場所はエンジンが返す不透明な文字列、資産は `logicalPath`、開く・閉じるは線に出さない、保存は同期の要求1回、`previousValue` 必須、拒否は `ENGINE_ASSET_EDIT_REJECTED` と `data.reason`)。`asset.getProperties`/`setProperty`/`save` の schema 6本と fixture 19件、能力 `asset.edit` と仕様文書、SDK の既定 `METHOD_NOT_SUPPORTED` の仮想関数と振り分け、モックの mcp-edit プロフィールの偽資産、Rust の `AssetEditClient`、TS の型、実プロセスのモックでの一覧→設定→拒否→保存→一覧の試験を足した。verify 4本 exit 0(fixtures 193、`verify.ps1 -Cpp` 全ゲート合格・C++ 8/8・SKIP なし、conformance 1件、mcp_mock_profile 2件を環境指定の実モックで合格)。証拠 `.harness/runs/20261103-113133/verify-E4-001-final.txt`。
 - 2026-11-03 E4-001(再検証の差し戻し): `verify.ps1 -Cpp` の Frontend 段が、固定の pnpm 11.6.0 で `onlyBuiltDependencies` が build 許可に使われず `pnpm install` が `ERR_PNPM_IGNORED_BUILDS` で落ちていた。`pnpm-workspace.yaml` を `allowBuilds: { esbuild: true }` に書き換えた。項目の作業ツリーで `pnpm install` が esbuild の postinstall を走らせて exit 0、ワークスペースの設定も書き換わらないことを確かめた。verify 4本 exit 0(fixtures 193、`verify.ps1 -Cpp` 全ゲート合格・C++ 8/8・pnpm test 42/45/699、conformance 1件、mcp_mock_profile 2件を環境指定の実モックで合格)。証拠 `.harness/runs/20261103-113133/verify-E4-001-final-2.txt`。
 - 2026-11-03 E4-001(再検証の差し戻し 2): 項目の枠の直下に `build/cpp` が無く、`verify.ps1 -Cpp` は C++ 段を `[SKIP]` で抜けて exit 0、実モックの exe も無いので conformance の `Resolve-Path` が落ちていた。コードは変えず、枠の直下で `cmake -S bridge/cpp -B build/cpp -G "Visual Studio 17 2022"` を構成した。枠の直下で verify 4本 exit 0(fixtures 193、`verify.ps1 -Cpp` は cmake build / ctest 8/8 を含む全ゲート合格で SKIP なし、conformance 1件、mcp_mock_profile 2件を実モックで合格)。証拠 `.harness/runs/20261103-113133/iter3-v1.txt`〜`iter3-v4.txt`。
+- 2026-11-03 E4-001(再開・完了): 評価の残課題 3 に対応し、`asset.getProperties`/`asset.save`/`asset.setProperty` の result schema の説明文で、拒否の理由をそのメソッドで起こるものだけの例示にした(構造は変えていない)。verify 5本 exit 0(build/cpp 構成済みの確認、fixtures 193、`verify.ps1 -Cpp` は C++ 8/8・Rust・pnpm test 42/45/699 を含む全ゲート合格で `[FAIL]`/`[SKIP]` なし、conformance 1件、mcp_mock_profile 2件を実モックで合格)。証拠 `.harness/runs/20261103-163351/verify-E4-001-U12.txt`。
 
 ## In progress
 - なし。承認済みE0〜E3の実装・受入・評価・コミット文面の整備は完了。過去の失敗・停止・差し戻しは保存したまま、最終PASSの証拠と区別する。
@@ -188,3 +189,4 @@
 - U10 pnpm 11 の build 許可を allowBuilds で書き、集約ゲートを通す: 着地(直し 0 回)
 - 要起票: `scripts/verify.ps1 -Cpp` は `build/cpp` が無いと C++ 段を `[SKIP]` にして exit 0 で終わり、偽の合格になる。`-Cpp` のときは構成するか失敗にする(`paths` の外)。
 - U12 U11 の切り直し(作業ツリーの持ち主が前の枠のため着地できなかった)。result schema の説明文の拒否の理由を直し、verify を全部通す: 着地(直し 0 回)
+- E4-001 の残り: モックの `asset.save` は保存先に書くだけでどこからも読まれず、試験の「保存→一覧で一致」は保存が何もしなくても成り立つ。保存の中身の確かめは E4-002 か NorvesLib 側の実装で行う。試験の英語の assert 文言も未対応のまま。
