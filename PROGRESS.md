@@ -224,3 +224,4 @@
 - E4-001-P2: 要件文書の NE15 の節・NE19 の節・7章「E4 の中の依存」の 4 行を、NE19 の一部(資産のプロパティの一覧・設定・保存)を NE15 より先に入れた 2026-11-03 の決定に合わせた。`asset.setProperty` は `previousValue` 必須で NE15 の能力交渉(`returnPrevious`)は `object.setProperty` だけが対象、GR136 は NorvesLib 側の最初の対象の前提とした。verify(`git grep` NE15/previousValue/returnPrevious)の出力を開き、旧文言 2 件が消え、残る NE15 の記述(151・432・481 行)は `object.setProperty` の話で食い違いが無いことを確かめた。numstat は通常・CR 無視とも 4/4。
 
 - U1 要件文書の NE15・NE19 の旧値と依存の記述を、NE19 の一部を先に入れた決定に合わせる: 着地(直し 0 回)
+- U1 request の待ちを応答とコマンドチャネルの閉鎖の select にし、切断との競合の試験を足す: 着地(直し 0 回)
