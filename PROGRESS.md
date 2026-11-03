@@ -65,6 +65,8 @@
 
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
+- E4-001-P2: 要件文書の NE15 の節・NE19 の節・7章「E4 の中の依存」の 4 行を、NE19 の一部(資産のプロパティの一覧・設定・保存)を NE15 より先に入れた 2026-11-03 の決定に合わせた。`asset.setProperty` は `previousValue` 必須で NE15 の能力交渉(`returnPrevious`)は `object.setProperty` だけが対象、GR136 は NorvesLib 側の最初の対象の前提とした。verify(`git grep` NE15/previousValue/returnPrevious)の出力を開き、旧文言 2 件が消え、残る NE15 の記述(151・432・481 行)は `object.setProperty` の話で食い違いが無いことを確かめた。numstat は通常・CR 無視とも 4/4。
+
 ## In progress
 - なし。承認済みE0〜E3の実装・受入・評価・コミット文面の整備は完了。過去の失敗・停止・差し戻しは保存したまま、最終PASSの証拠と区別する。
 
