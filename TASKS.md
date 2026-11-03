@@ -490,7 +490,7 @@ M2 の共通規則:
 - notes: 危険地帯(プロトコルのスキーマ・C++ SDK の公開 API・バッファとメモリの所有権)。評価者を通し、コミット本文を書く。GPU も実際のエンジンも使わない(モックの偽の画像だけ)。NorvesLib の `BridgeDeterministicCapture` へつなぐ作業は NorvesLib 側なので、終わったら PROGRESS.md の Notes に `要起票:` で残す。
 
 ## E4-004: MCP の道具から決定的な撮影を呼ぶ
-- status: todo
+- status: done
 - after: E4-003
 - done-when: 能力 `viewport.capture` がある接続だけに、撮影の道具が出る。撮影はエンジンの状態を変える操作として扱う。書き込みモードの許可を通し、履歴に積まず操作記録に残す(runtime の制御と同じ扱い)。撮影用ディレクトリはバックエンドがアプリのデータディレクトリの下に持ち、E4-003 で決めた件数と日数の規則で古い撮影を片付ける(試験あり)。完了で返った場所がそのディレクトリの中かを確かめる。PNG は既存の検証と上限(MCP-019 の `images.rs`)で確かめてから、MCP の画像(長辺の上限で縮小)と文字(要約値・寸法・刻み)で返す。完了の待ちは、時間切れと HTTP 要求の取り消し(MCP-022-B)に結ぶ。切断と世代の変更は「結果不明」として返し、自動で再送しない。`scripts/verify-mcp-e2e.ps1` の受入の印に `MCP_ACCEPTANCE_OK deterministic-capture` を足し、実 HTTP とモックで、同じ引数で 2 回撮ると要約値が一致することを確かめる。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
@@ -528,10 +528,54 @@ M2 の共通規則:
 - notes: `dispatcher.rs` に手を入れる場合は危険地帯(Rust の async タスクの寿命、WebSocket の転送)に入る。評価者を通し、コミット本文を書く。アプリも GPU も使わない(試験はローカルの WebSocket だけで完結する)。
 
 ## E4-003-P2: `DispatchHandle::request` が切断との競合で `Timeout` まで待たず、すぐに `ConnectionClosed` を返すようにする
-- status: todo
+- status: done
 - done-when: `bridge/crates/norves-bridge-editor-client/src/dispatcher.rs` の `DispatchHandle::request` を直す。今は `self.commands.send(command)` が容量を予約した直後に task が切断(`Ok(None)`・転送エラー)で終わると、送った `SendRequest` と `responder` が排出されないままキューに残り、`response_rx` は値も切断も受け取らない。その結果、`timeout` が満ちるまで待ってから `RequestError::Timeout` を返す。これはモジュール冒頭の約束(30〜32 行。task が止まれば `request` は `ConnectionClosed` を返し、止まらない)に反する。`capture.rs:421-423` は `Timeout` と `ConnectionClosed` を別の誤り(`CaptureError::Timeout(Accept)` / `ConnectionChanged`)に分けているので、分類も誤る。`shutdown`(223〜237 行)と同じ考え方で、時間切れの中の待ちを `response_rx` と `self.commands.closed()` の `select!` にする。`response_rx` を先に見る(`biased`)。task は終了のどの経路でも待っている要求をすべて失敗扱いにしてから Receiver を閉じる。そのため、`response_rx` が値を返さないまま閉鎖だけが来たら、取り残された要求とみなして `ConnectionClosed` を返す。閉鎖で戻った場合は `Cancel` を送らない。応答・時間切れ・`Cancel` の世代トークンの意味は変えない。次の試験を 1 件足す: すぐに切断を返す転送の上で、マルチスレッドの実行環境を使い、長い時間切れ(例: 30 秒)付きの `request` を繰り返し出す。毎回 `ConnectionClosed` が返り、それが短い上限(例: 2 秒)の内に返ることを確かめる。上限は `tokio::time::timeout` で包み、どの回で止まったかを名前で出す。原因と、試験の外の振る舞いを変えた理由をコミット本文に書く。クレートの lib の試験がすべて通り、dispatcher と ws_transport の試験を 50 回続けて走らせても止まらず、すべて通ること。
 - verify: `cargo test -p norves-bridge-editor-client --lib`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "for($i=1;$i -le 50;$i++){ cargo test -p norves-bridge-editor-client --lib dispatcher -- --test-threads=1; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE }; cargo test -p norves-bridge-editor-client --lib ws_transport -- --test-threads=1; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }; exit 0"`
 - paths: bridge/crates/norves-bridge-editor-client/src/dispatcher.rs
 - from: E4-003-P1
 - notes: 危険地帯(Rust の async タスクの寿命、WebSocket の転送)に入る。評価者を通し、コミット本文を書く。アプリも GPU も使わない(試験はメモリ内の転送とローカルの WebSocket だけで完結する)。
+
+## E4-004-CHECK: MCP の道具から決定的な撮影を呼ぶ(後回しにしたアプリの起動の確かめ)
+- status: todo
+- check: launch
+- gpu: exclusive
+- done-when: E4-004 で、当分アプリを起動しない決まりのため後回しにした確かめ(下の verify)を回し、E4-004 の done-when を満たすことを確かめる。満たさなければ E4-004 の done-when と paths の範囲で直す。
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/tests/mcp_e2e.rs, scripts/verify-mcp-e2e.ps1
+- from: E4-004
+
+## E4-004-P1: 撮影の操作記録の要約を、画像検証の失敗とエンジンの失敗に合わせる
+- status: done
+- done-when: `mcp/operations.rs` の `OperationHandle::finish` はいま、記録の `summary` を outcome と pending だけで決めている(`operations.rs:255`)。このため撮影の画像検証の失敗(`capture/tool.rs` の `CaptureFailure::invalid_image`、outcome `applied`・result `failed`)では、操作記録に「操作が完了しました。」と出る。エンジンが撮影に失敗したとき(`CaptureError::Failed`、outcome `rejected`・result `failed`)は「変更は適用されていません。」と出る。これを直し、前者は「撮影は行われたが画像を確認できない」こと、後者は「固定刻みが進んだ可能性があり、自動再送しない」ことを表す要約にする。単体試験で、2 つの場合の記録の `summary` にどちらの誤った文言も含まれないことを確かめる。ほかの道具と ほかの outcome の要約は変えない。書き込み道具の拒否(outcome `notApplied`・result `failed`/`rejected`)を含め、既存の試験が書き換えなしで通る。
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- paths: apps/editor/src-tauri/src/mcp/operations.rs, apps/editor/src-tauri/src/mcp/operations/**, apps/editor/src-tauri/src/mcp/capture/**
+- from: E4-004
+
+## E4-004-P2: 撮影を打ち切った後も、エンジンの撮影が終わるまで同時 1 件の排他を保つ
+- status: todo
+- done-when: いまは `capture/tool.rs` で取り消し・期限切れ・許可失効が起きると関数が返り、`store.try_begin()` の排他も外れる。このため、`docs/memory-buffer-policy.md` の「エディタは 1 接続あたり同時に 1 件だけ撮影を出します」が、エンジンの撮影が続いている間に破られうる。撮影要求をエンジンへ送った後(`sent` が真)に MCP の呼び出しを打ち切った場合は、次のどれかまで排他を持ち続けるようにする: その撮影の完了イベント(成功・失敗)が届く、接続の世代が変わる・切断する、定数で決めた上限時間が過ぎる。その間に来た次の撮影は Bridge へ送らず、`notApplied`「別の撮影が進行中」で返す。送る前に打ち切った場合は、これまでどおりすぐに外す。排他を持ち続けるためのタスクはサービスの shutdown で止まり、後に残らない。打ち切った呼び出しは自動で再送しない。撮影を打ち切った呼び出しが返す outcome と操作記録は変えない。単体試験で次を確かめる: (1) 送信後に取り消したあと、2 件目の撮影が Bridge に送られない (2) 1 件目の完了イベントが届いた後は、次の撮影を受け付ける (3) 世代が変わると排他が外れる (4) 上限時間が過ぎると排他が外れる。`docs/memory-buffer-policy.md` の「上限と撮影用ディレクトリ」に、打ち切り後の排他の扱いを 1 文足す。
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `cargo test --manifest-path bridge/crates/norves-bridge-editor-client/Cargo.toml`
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
+- paths: apps/editor/src-tauri/src/mcp/capture.rs, apps/editor/src-tauri/src/mcp/capture/**, apps/editor/src-tauri/src/bridge_state.rs, bridge/crates/norves-bridge-editor-client/src/capture.rs, docs/memory-buffer-policy.md
+- from: E4-004
+- notes: 危険地帯(Rust の async タスクの寿命、撮影の排他とバッファの所有)。評価者を通す。エンジンが受け付けを返す前に打ち切った場合は `captureId` が分からないので、その場合に何を完了とみなすか(世代の変更と上限時間だけで外す、など)を実装で決め、試験と方針の文書に書く。
+
+## E4-004-P1-CHECK: 撮影の操作記録の要約を、画像検証の失敗とエンジンの失敗に合わせる(後回しにしたアプリの起動の確かめ)
+- status: todo
+- check: launch
+- gpu: exclusive
+- done-when: E4-004-P1 で、当分アプリを起動しない決まりのため後回しにした確かめ(下の verify)を回し、E4-004-P1 の done-when を満たすことを確かめる。満たさなければ E4-004-P1 の done-when と paths の範囲で直す。
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- paths: apps/editor/src-tauri/src/mcp/operations.rs, apps/editor/src-tauri/src/mcp/operations/**, apps/editor/src-tauri/src/mcp/capture/**
+- from: E4-004-P1

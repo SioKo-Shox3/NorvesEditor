@@ -31,6 +31,7 @@ try {
         'MCP_ACCEPTANCE_OK reads-paging-logs-image', 'MCP_ACCEPTANCE_OK scope-group-remap-ui-undo',
         'MCP_ACCEPTANCE_OK mandatory-confirmation-delete-history', 'MCP_ACCEPTANCE_OK reconnect-cursor-group',
         'MCP_ACCEPTANCE_OK token-regeneration', 'MCP_ACCEPTANCE_OK asset-edit-save-undo',
+        'MCP_ACCEPTANCE_OK deterministic-capture',
         'MCP_ACCEPTANCE_OK cancel-response-record 2026-07-28 applied',
         'MCP_ACCEPTANCE_OK cancel-response-record 2026-07-28 rejected',
         'MCP_ACCEPTANCE_OK cancel-response-record 2025-11-25 applied',

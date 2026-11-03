@@ -102,6 +102,15 @@ const SIMPLE_PAGE_SCHEMA: &str = r#"{
     },
     "additionalProperties":false
 }"#;
+const CAPTURE_INPUT_SCHEMA: &str = r#"{
+    "type":"object",
+    "properties":{
+        "settleFrames":{"type":"integer","minimum":0,"maximum":600,"default":0},
+        "maxWidth":{"type":"integer","minimum":1,"maximum":1920,"default":1920},
+        "maxHeight":{"type":"integer","minimum":1,"maximum":1080,"default":1080}
+    },
+    "additionalProperties":false
+}"#;
 const EMPTY_INPUT_SCHEMA: &str = r#"{
     "type":"object",
     "properties":{},
@@ -330,6 +339,14 @@ fn tool_specs() -> &'static [ToolSpec] {
         ToolAccess::Write,
         &["runtime.control"],
         false,
+    ),
+    custom_tool(
+        "viewport_capture",
+        "Game Viewを決定的に撮影する",
+        "固定刻みを進めてから Game View を PNG に撮影し、縮小した画像と画素の要約値を返します。エンジンの状態を進める操作として書き込み許可を通し、操作記録に残します。編集履歴には積みません。",
+        ToolAccess::Write,
+        &["viewport.capture"],
+        CAPTURE_INPUT_SCHEMA,
     ),
     custom_tool(
         "edit_undo",
@@ -1190,6 +1207,59 @@ mod tests {
         catalog.set_connection(Some(1), &[]);
         assert!(catalog.get("engine_get_status").is_some());
         assert!(catalog.get("scene_get_tree").is_none());
+    }
+
+    #[test]
+    fn capture_tool_requires_capability_permission_and_handlers_and_validates_input() {
+        let catalog = connected_catalog(&[]);
+        catalog.set_write_permission(WritePermission::Enabled);
+        catalog.set_write_handlers_ready(true);
+        assert!(catalog.get("viewport_capture").is_none());
+        assert!(catalog
+            .list()
+            .iter()
+            .all(|tool| tool.name != "viewport_capture"));
+
+        catalog.set_connection(Some(2), &[descriptor("viewport.capture")]);
+        catalog.set_write_permission(WritePermission::ReadOnly);
+        assert!(catalog.get("viewport_capture").is_none());
+        assert!(catalog
+            .list()
+            .iter()
+            .all(|tool| tool.name != "viewport_capture"));
+
+        catalog.set_write_permission(WritePermission::Enabled);
+        catalog.set_write_handlers_ready(false);
+        assert!(catalog.get("viewport_capture").is_none());
+        assert!(catalog
+            .list()
+            .iter()
+            .all(|tool| tool.name != "viewport_capture"));
+
+        catalog.set_write_handlers_ready(true);
+        assert!(catalog.get("viewport_capture").is_some());
+        assert!(catalog
+            .list()
+            .iter()
+            .any(|tool| tool.name == "viewport_capture"));
+        for arguments in [
+            json!({"settleFrames":600,"maxWidth":1920,"maxHeight":1080}),
+            json!({}),
+        ] {
+            assert!(catalog
+                .validate_call("viewport_capture", &arguments)
+                .is_ok());
+        }
+        for arguments in [
+            json!({"settleFrames":601}),
+            json!({"maxWidth":0}),
+            json!({"extra":1}),
+        ] {
+            assert_eq!(
+                catalog.validate_call("viewport_capture", &arguments),
+                Err(ToolInputError::Invalid)
+            );
+        }
     }
 
     #[test]

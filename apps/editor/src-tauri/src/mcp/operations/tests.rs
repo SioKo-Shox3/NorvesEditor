@@ -39,6 +39,32 @@ fn finish(
 }
 
 #[test]
+fn capture_failures_have_specific_summaries_without_changing_other_tools() {
+    let dir = TempDir::new();
+    let store = OperationStore::new(Some(dir.0.clone()));
+    let invalid_image = store.begin("viewport_capture", &Value::Null);
+    let capture_failed = store.begin("viewport_capture", &Value::Null);
+    finish(&invalid_image, "failed", "applied", true);
+    finish(&capture_failed, "failed", "rejected", true);
+
+    let invalid_image = invalid_image.snapshot();
+    let capture_failed = capture_failed.snapshot();
+    for record in [&invalid_image, &capture_failed] {
+        assert!(!record.summary.contains("操作が完了しました"));
+        assert!(!record.summary.contains("変更は適用されていません"));
+    }
+    assert!(invalid_image.summary.contains("画像を確認できません"));
+    assert!(capture_failed.summary.contains("固定刻み"));
+    assert!(capture_failed.summary.contains("自動再送"));
+
+    for outcome in ["applied", "rejected"] {
+        let operation = store.begin("object_set_property", &Value::Null);
+        finish(&operation, "failed", outcome, true);
+        assert_eq!(operation.snapshot().summary, summary(outcome, false));
+    }
+}
+
+#[test]
 fn bounded_memory_and_two_file_generations_rotate_during_one_run() {
     let dir = TempDir::new();
     let store = OperationStore::new(Some(dir.0.clone()));

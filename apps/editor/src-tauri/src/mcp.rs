@@ -52,6 +52,7 @@ use crate::mcp_token::McpToken;
 use axum::extract::connect_info::Connected;
 
 pub(crate) mod authorization;
+pub(crate) mod capture;
 pub(crate) mod confirmation;
 // E4で接続するまで、一覧ヘルパーは内部APIとして保持する。
 #[cfg(feature = "mcp-e2e")]
