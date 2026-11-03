@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/events/viewport.captureCompleted.params.schema.json",
+  "title": "viewport.captureCompleted event params",
+  "description": "Completion of an accepted deterministic capture. The image remains in a file; only metadata or failure details are sent over the Bridge.",
+  "type": "object",
+  "required": [
+    "captureId",
+    "status"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "captureId": {
+      "description": "Identifier returned by the accepted request.",
+      "$ref": "#/$defs/captureId"
+    },
+    "status": {
+      "description": "Outcome of the capture.",
+      "enum": [
+        "succeeded",
+        "failed"
+      ]
+    },
+    "path": {
+      "description": "Absolute path of the PNG file written by the engine.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "width": {
+      "description": "Actual image width in pixels, no larger than the requested maxWidth.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1920
+    },
+    "height": {
+      "description": "Actual image height in pixels, no larger than the requested maxHeight.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1080
+    },
+    "frame": {
+      "description": "Fixed step within the capture epoch; equal to the requested settleFrames.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "pixelDigest": {
+      "description": "FNV-1a 64-bit digest of unpadded RGBA8 pixel bytes in top-to-bottom row order before PNG encoding.",
+      "type": "object",
+      "required": [
+        "algorithm",
+        "value"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {
+          "const": "fnv1a64-rgba8"
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "minLength": 16,
+          "maxLength": 16
+        }
+      }
+    },
+    "fileBytes": {
+      "description": "Size of the written PNG file in bytes.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 33554432
+    },
+    "failure": {
+      "description": "Capture failure detail. Known codes include OUTPUT_WRITE_FAILED and RENDER_FAILED.",
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "not": {
+            "pattern": "[^A-Z0-9_]"
+          }
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "status": {
+          "const": "succeeded"
+        },
+        "failure": false
+      },
+      "required": [
+        "path",
+        "width",
+        "height",
+        "frame",
+        "pixelDigest",
+        "fileBytes"
+      ]
+    },
+    {
+      "properties": {
+        "status": {
+          "const": "failed"
+        },
+        "path": false,
+        "width": false,
+        "height": false,
+        "frame": false,
+        "pixelDigest": false,
+        "fileBytes": false
+      },
+      "required": [
+        "failure"
+      ]
+    }
+  ],
+  "$defs": {
+    "captureId": {
+      "description": "Opaque identifier shared by an accepted request and its completion event.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+      "not": {
+        "pattern": "[^A-Za-z0-9._:-]"
+      }
+    }
+  }
+}

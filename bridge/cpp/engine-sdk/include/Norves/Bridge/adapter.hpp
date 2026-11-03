@@ -176,6 +176,21 @@ namespace Norves::Bridge
             return not_supported(params);
         }
 
+        /// @brief viewport.captureDeterministic。能力 viewport.capture に対応する場合に
+        ///        オーバーライドする。受け付けだけを同期で返し、result は {captureId}。
+        ///        撮影結果は後で viewport.captureCompleted イベントを
+        ///        BridgeEngineServer::emitEvent で captureId ごとに 1 回だけ送る。
+        /// @note params の必須欄・型・範囲・outputName の形は SDK が検査済み。
+        ///       params はこの呼び出しの間だけ有効なので、後で要る値はコピーする。
+        ///       画像は <captureDir>/<outputName>.png に書き、Bridge には載せない。
+        ///       完了を別スレッドで作る場合は、サーバを持つスレッドへ渡してから送る。
+        ///       サーバはスレッド安全ではない。所有権・寿命・上限の詳細は
+        ///       docs/memory-buffer-policy.md の「決定的な撮影」を参照。
+        virtual Result<JsonValue, BridgeError> viewportCaptureDeterministic(const JsonValue& params)
+        {
+            return not_supported(params);
+        }
+
         /// @brief asset.reloadManifest。エンジン起動時に構成された asset manifest を
         ///        再読み込みする。params は空の JSON オブジェクトでなければならない。
         virtual Result<JsonValue, BridgeError> assetReloadManifest(const JsonValue& params)

@@ -44,6 +44,7 @@ scene.liveUpdate    push scene.treeChanged / object.changed events without
 viewport.thumbnail  return a low-frequency still thumbnail of the external
                     viewport via viewport.getThumbnail (Phase 7b surface,
                     protocol 0.2)
+viewport.capture    accept deterministic viewport captures and report completion
 asset.read          read asset resolution health and loaded manifest snapshots
                     via asset.resolve and asset.getManifest (asset browser live
                     overlay surface, protocol 0.2)
@@ -114,6 +115,14 @@ the external-window notice). The token is independent of protocol version
 negotiation. The thumbnail path's large-payload limits (PNG, max 640x360,
 256 KiB hard cap, pull-style, <= 1 fps) are specified in
 `docs/memory-buffer-policy.md`.
+
+The `viewport.capture` token advertises deterministic capture support.
+`viewport.captureDeterministic` returns an acceptance with a `captureId`, and
+`viewport.captureCompleted` later reports the outcome for that identifier. The
+engine writes the PNG to a file and sends only metadata or failure details over
+the Bridge; image bytes are not carried over the Bridge. An engine that omits
+the token answers the method with `METHOD_NOT_SUPPORTED`. Capture limits and
+the file handoff are specified in [`docs/memory-buffer-policy.md`](../../../docs/memory-buffer-policy.md).
 
 The `asset.read` token advertises that an engine can answer `asset.resolve`
 (single logical-path resolution / health metadata) and `asset.getManifest` (a

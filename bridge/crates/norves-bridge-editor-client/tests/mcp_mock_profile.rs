@@ -4,13 +4,17 @@ use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use norves_bridge_core::{
     CorrelationId, MethodName, ResponsePayload, ValidatedEnvelope, VersionString,
 };
-use norves_bridge_editor_client::{DispatchHandle, Dispatcher, WsClientTransport};
+use norves_bridge_editor_client::{
+    capture_deterministic, CaptureError, CaptureRequest, CaptureTimeoutPhase, DispatchHandle,
+    Dispatcher, Transport, TransportError, WsClientTransport,
+};
 use serde_json::{json, Value};
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(5);
@@ -60,10 +64,15 @@ fn pick_free_port() -> u16 {
 }
 
 fn spawn_ready_engine(exe: &PathBuf, port: u16) -> ChildGuard {
+    spawn_ready_engine_with_env(exe, port, &[])
+}
+
+fn spawn_ready_engine_with_env(exe: &PathBuf, port: u16, env: &[(&str, &str)]) -> ChildGuard {
     let mut child = Command::new(exe)
         .arg("--bridge-port")
         .arg(port.to_string())
         .env("NORVES_MOCK_PROFILE", "mcp-edit")
+        .envs(env.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -291,5 +300,280 @@ async fn mcp_profile_serves_schema_mutable_scene_and_asset_reads_from_process() 
         })
     );
 
+    handle.shutdown().await;
+}
+
+struct CaptureTestDir(PathBuf);
+
+impl CaptureTestDir {
+    fn new() -> Self {
+        static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("現在時刻を取得する")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "norves-mcp-capture-{}-{stamp}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&path).expect("一時ディレクトリを作成する");
+        Self(path)
+    }
+}
+
+impl Drop for CaptureTestDir {
+    fn drop(&mut self) {
+        let result = std::fs::remove_dir_all(&self.0);
+        if !std::thread::panicking() {
+            result.expect("撮影用の一時ディレクトリを削除する");
+        }
+    }
+}
+
+// 実プロセスへの送信を観測し、送信前の拒否を応答の種類とは独立に検証する。
+struct CountingTransport {
+    inner: WsClientTransport,
+    sent: Arc<AtomicUsize>,
+}
+
+impl Transport for CountingTransport {
+    async fn send(&mut self, frame: String) -> Result<(), TransportError> {
+        self.sent.fetch_add(1, Ordering::SeqCst);
+        self.inner.send(frame).await
+    }
+
+    async fn recv(&mut self) -> Result<Option<String>, TransportError> {
+        self.inner.recv().await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_profile_capture_repeats_identical_pixels_and_png_bytes() {
+    let exe = mock_engine_path();
+    if exe.as_os_str().is_empty() {
+        return;
+    }
+
+    let dir = CaptureTestDir::new();
+    let port = pick_free_port();
+    let _engine = spawn_ready_engine(&exe, port);
+    let transport = connect_with_retry(&format!("ws://127.0.0.1:{port}")).await;
+    let handle = Dispatcher::spawn(transport);
+    request_result(
+        &handle,
+        "capture-repeat-hello",
+        "bridge.hello",
+        json!({ "protocolVersions": ["0.2"] }),
+    )
+    .await;
+    let capabilities = request_result(
+        &handle,
+        "capture-repeat-capabilities",
+        "bridge.getCapabilities",
+        json!({}),
+    )
+    .await;
+    assert!(capabilities["capabilities"]
+        .as_array()
+        .expect("capabilities 配列がある")
+        .iter()
+        .any(|entry| entry["name"] == "viewport.capture"));
+
+    let generation = AtomicU64::new(1);
+    let request = CaptureRequest {
+        capture_dir: dir.0.clone(),
+        output_name: "repeat".to_owned(),
+        settle_frames: 17,
+        max_width: 80,
+        max_height: 24,
+    };
+    let mut captures = Vec::new();
+    for id in ["capture-repeat-first", "capture-repeat-second"] {
+        let completed = capture_deterministic(&handle, id, &request, 1, &generation, RECV_TIMEOUT)
+            .await
+            .expect("撮影が完了する");
+        let bytes = std::fs::read(&completed.path).expect("完了後に PNG を読む");
+        assert!(!bytes.is_empty());
+        assert_eq!(completed.file_bytes, bytes.len() as u64);
+        assert_eq!(completed.width, request.max_width.min(64));
+        assert_eq!(completed.height, request.max_height.min(36));
+        assert_eq!(completed.frame, u64::from(request.settle_frames));
+        captures.push((completed, bytes));
+    }
+    assert_eq!(captures[0].0.path, captures[1].0.path);
+    assert_eq!(captures[0].0.pixel_digest, captures[1].0.pixel_digest);
+    assert_eq!(captures[0].1, captures[1].1);
+    handle.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_profile_capture_rejects_locations_outside_capture_dir() {
+    let exe = mock_engine_path();
+    if exe.as_os_str().is_empty() {
+        return;
+    }
+
+    let dir = CaptureTestDir::new();
+    let capture_dir = dir.0.join("captures");
+    std::fs::create_dir(&capture_dir).expect("撮影用ディレクトリを作成する");
+    let escaped = dir.0.join("escape.png");
+    let port = pick_free_port();
+    let _engine = spawn_ready_engine(&exe, port);
+    let transport = connect_with_retry(&format!("ws://127.0.0.1:{port}")).await;
+    let sent = Arc::new(AtomicUsize::new(0));
+    let handle = Dispatcher::spawn(CountingTransport {
+        inner: transport,
+        sent: Arc::clone(&sent),
+    });
+    request_result(
+        &handle,
+        "capture-location-hello",
+        "bridge.hello",
+        json!({ "protocolVersions": ["0.2"] }),
+    )
+    .await;
+    let generation = AtomicU64::new(1);
+    let request = CaptureRequest {
+        capture_dir: capture_dir.clone(),
+        output_name: "../escape".to_owned(),
+        settle_frames: 2,
+        max_width: 64,
+        max_height: 36,
+    };
+    let before = sent.load(Ordering::SeqCst);
+    let result = capture_deterministic(
+        &handle,
+        "capture-location-client",
+        &request,
+        1,
+        &generation,
+        RECV_TIMEOUT,
+    )
+    .await;
+    assert!(
+        matches!(result, Err(CaptureError::InvalidRequest(_))),
+        "{result:?}"
+    );
+    // 後続の要求の応答まで待ち、送信キューに撮影要求が残っていないことも確かめる。
+    request_result(
+        &handle,
+        "capture-location-barrier",
+        "bridge.getCapabilities",
+        json!({}),
+    )
+    .await;
+    assert_eq!(sent.load(Ordering::SeqCst), before + 1);
+    assert!(!escaped.exists());
+    assert_eq!(
+        std::fs::read_dir(&capture_dir)
+            .expect("撮影先を読む")
+            .count(),
+        0
+    );
+
+    let response = with_timeout(
+        "不正な出力名の生の撮影要求",
+        handle.request(
+            request_envelope(
+                "capture-location-raw",
+                "viewport.captureDeterministic",
+                json!({
+                    "captureDir": capture_dir.to_str().expect("撮影先を UTF-8 に変換する"),
+                    "outputName": "../escape",
+                    "settleFrames": 2,
+                    "maxWidth": 64,
+                    "maxHeight": 36
+                }),
+            ),
+            RECV_TIMEOUT,
+        ),
+    )
+    .await
+    .expect("生の撮影要求の応答が届く");
+    match response {
+        ResponsePayload::Error(error) => assert_eq!(error.code.as_str(), "ENGINE_INVALID_PARAMS"),
+        ResponsePayload::Result(result) => panic!("不正な出力名が受け付けられました: {result:?}"),
+    }
+    assert!(!escaped.exists());
+    assert_eq!(
+        std::fs::read_dir(&capture_dir)
+            .expect("撮影先を読む")
+            .count(),
+        0
+    );
+
+    let relative_request = CaptureRequest {
+        capture_dir: PathBuf::from("relative-captures"),
+        output_name: "relative".to_owned(),
+        ..request
+    };
+    let before = sent.load(Ordering::SeqCst);
+    let result = capture_deterministic(
+        &handle,
+        "capture-location-relative",
+        &relative_request,
+        1,
+        &generation,
+        RECV_TIMEOUT,
+    )
+    .await;
+    assert!(
+        matches!(result, Err(CaptureError::InvalidRequest(_))),
+        "{result:?}"
+    );
+    request_result(
+        &handle,
+        "capture-relative-barrier",
+        "bridge.getCapabilities",
+        json!({}),
+    )
+    .await;
+    assert_eq!(sent.load(Ordering::SeqCst), before + 1);
+    assert!(!escaped.exists());
+    handle.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_profile_capture_stall_times_out_during_completion() {
+    let exe = mock_engine_path();
+    if exe.as_os_str().is_empty() {
+        return;
+    }
+
+    let dir = CaptureTestDir::new();
+    let port = pick_free_port();
+    let _engine = spawn_ready_engine_with_env(&exe, port, &[("NORVES_MOCK_CAPTURE_STALL", "1")]);
+    let transport = connect_with_retry(&format!("ws://127.0.0.1:{port}")).await;
+    let handle = Dispatcher::spawn(transport);
+    request_result(
+        &handle,
+        "capture-stall-hello",
+        "bridge.hello",
+        json!({ "protocolVersions": ["0.2"] }),
+    )
+    .await;
+    let generation = AtomicU64::new(1);
+    let request = CaptureRequest {
+        capture_dir: dir.0.clone(),
+        output_name: "stalled".to_owned(),
+        settle_frames: 3,
+        max_width: 64,
+        max_height: 36,
+    };
+    let result = capture_deterministic(
+        &handle,
+        "capture-stall",
+        &request,
+        1,
+        &generation,
+        Duration::from_millis(500),
+    )
+    .await;
+    assert_eq!(
+        result,
+        Err(CaptureError::Timeout(CaptureTimeoutPhase::Completion))
+    );
+    assert_eq!(std::fs::read_dir(&dir.0).expect("撮影先を読む").count(), 0);
     handle.shutdown().await;
 }

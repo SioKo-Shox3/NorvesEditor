@@ -10,6 +10,7 @@
 
 #include "Norves/Bridge/adapter.hpp"
 #include "Norves/Bridge/codec.hpp"
+#include "Norves/Bridge/Dto/events.hpp"
 #include "Norves/Bridge/envelope.hpp"
 #include "Norves/Bridge/error.hpp"
 #include "Norves/Bridge/json_value.hpp"
@@ -17,7 +18,10 @@
 #include "Norves/Bridge/server.hpp"
 #include "Norves/Bridge/version.hpp"
 
+#include <filesystem>
+#include <fstream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -631,6 +635,118 @@ namespace
         }
     }
 
+    // @brief 撮影の受け付け・事前検査・完了 DTO の排他性を公開境界から確かめる。
+    void TestViewportCaptureDeterministic()
+    {
+        class CaptureAdapter : public FakeAdapter
+        {
+        public:
+            Result<JsonValue, BridgeError> viewportCaptureDeterministic(const JsonValue& params) override
+            {
+                ++m_CallCount;
+                m_LastParams = params;
+                return Result<JsonValue, BridgeError>::ok(
+                    ParseOrFail(R"({"captureId":"mock-capture-1"})"));
+            }
+
+            int m_CallCount = 0;
+            JsonValue m_LastParams;
+        };
+
+        constexpr std::string_view ValidParams =
+            R"({"captureDir":"/captures","outputName":"cap-20261103T000000Z-1","settleFrames":2,"maxWidth":64,"maxHeight":36})";
+        FakeAdapter defaultAdapter;
+        BridgeEngineServer defaultServer(defaultAdapter);
+        auto response = defaultServer.handleFrame(
+            RequestFrame("capture-default", "viewport.captureDeterministic", ValidParams));
+        NORVES_CHECK(response.has_value());
+        if (response.has_value())
+        {
+            const Envelope env = DecodeOrFail(*response);
+            NORVES_CHECK(!env.result.has_value());
+            NORVES_CHECK(env.error.has_value());
+            if (env.error.has_value())
+            {
+                NORVES_CHECK_EQ(env.error->code, std::string{"METHOD_NOT_SUPPORTED"});
+            }
+        }
+
+        CaptureAdapter adapter;
+        BridgeEngineServer server(adapter);
+        constexpr std::string_view InvalidParams[] = {
+            R"({"captureDir":"/captures","outputName":"../x","settleFrames":2,"maxWidth":64,"maxHeight":36})",
+            R"({"captureDir":"/captures","outputName":"cap-valid","settleFrames":2,"maxWidth":1921,"maxHeight":36})",
+        };
+        const JsonValue expectedData =
+            ParseOrFail(R"({"method":"viewport.captureDeterministic"})");
+        for (std::string_view invalidParams : InvalidParams)
+        {
+            response = server.handleFrame(
+                RequestFrame("capture-invalid", "viewport.captureDeterministic", invalidParams));
+            NORVES_CHECK(response.has_value());
+            if (response.has_value())
+            {
+                const Envelope env = DecodeOrFail(*response);
+                NORVES_CHECK(!env.result.has_value());
+                NORVES_CHECK(env.error.has_value());
+                if (env.error.has_value())
+                {
+                    NORVES_CHECK_EQ(env.error->code, std::string(ErrorEngineInvalidParams));
+                    NORVES_CHECK(env.error->data.has_value() && *env.error->data == expectedData);
+                }
+            }
+            NORVES_CHECK_EQ(adapter.m_CallCount, 0);
+        }
+
+        response = server.handleFrame(
+            RequestFrame("capture-valid", "viewport.captureDeterministic", ValidParams));
+        NORVES_CHECK(response.has_value());
+        if (response.has_value())
+        {
+            const Envelope env = DecodeOrFail(*response);
+            NORVES_CHECK(!env.error.has_value());
+            NORVES_CHECK(env.result.has_value() &&
+                         *env.result == ParseOrFail(R"({"captureId":"mock-capture-1"})"));
+        }
+        NORVES_CHECK_EQ(adapter.m_CallCount, 1);
+        NORVES_CHECK(adapter.m_LastParams == ParseOrFail(ValidParams));
+
+        // このターゲットには NORVES_FIXTURES_DIR が無いので、ソースの位置から同じ根を得る。
+        const auto fixtureRoot = std::filesystem::path(__FILE__)
+                                     .parent_path().parent_path().parent_path().parent_path() /
+                                 "spec/fixtures";
+        std::ifstream fixture(
+            fixtureRoot / "events/viewport.captureCompleted/positive/event-succeeded.json",
+            std::ios::binary);
+        NORVES_CHECK(fixture.is_open());
+        if (!fixture.is_open())
+        {
+            return;
+        }
+        std::ostringstream buffer;
+        buffer << fixture.rdbuf();
+        const Envelope expected = DecodeOrFail(buffer.str());
+
+        Norves::Bridge::Dto::ViewportCaptureCompletedEvent completed;
+        completed.captureId = "mock-capture-1";
+        completed.path = "/captures/cap-20261103T000000Z-1.png";
+        completed.width = 64;
+        completed.height = 36;
+        completed.frame = 2;
+        completed.pixelDigest.value = "e50ac19c7e05a665";
+        completed.fileBytes = 9320;
+        completed.failure = {"RENDER_FAILED", "描画に失敗しました。"};
+        NORVES_CHECK(expected.params.has_value() && completed.to_json() == *expected.params);
+        const Envelope event = DecodeOrFail(server.emitEvent(
+            Norves::Bridge::Dto::ViewportCaptureCompletedEventName, completed.to_json()));
+        NORVES_CHECK_EQ(event.event, expected.event);
+        NORVES_CHECK(event.params == expected.params);
+
+        completed.status = Norves::Bridge::Dto::ViewportCaptureStatus::Failed;
+        NORVES_CHECK(completed.to_json() == ParseOrFail(
+            R"({"captureId":"mock-capture-1","status":"failed","failure":{"code":"RENDER_FAILED","message":"描画に失敗しました。"}})"));
+    }
+
     void TestEmitEventRoundTrips()
     {
         FakeAdapter adapter;
@@ -707,6 +823,7 @@ int main()
     TestAssetReloadManifestDispatchesPresentEmptyObject();
     TestAssetReloadManifestDefaultIsMethodNotSupported();
     TestAssetReloadManifestRejectsInvalidParamsWithoutDispatch();
+    TestViewportCaptureDeterministic();
     TestEmitEventRoundTrips();
     TestJsonValueParseDumpRoundTrips();
     TestNonRequestFrameReturnsNullopt();
