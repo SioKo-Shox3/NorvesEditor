@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://norveseditor.dev/bridge/spec/schema/methods/asset.getProperties.result.schema.json",
   "title": "asset.getProperties response result",
-  "description": "Properties of one asset. The values are snapshot copies, never references into engine live memory. Failure is returned as an error response with code ENGINE_ASSET_EDIT_REJECTED and an English message. Its data object contains string fields 'method' (asset.getProperties) and 'reason' (type_mismatch, out_of_range, unknown_property, unknown_asset, or save_failed), and a string 'path' field only when applicable.",
+  "description": "Properties of one asset. The values are snapshot copies, never references into engine live memory. Failure is returned as an error response with code ENGINE_ASSET_EDIT_REJECTED and an English message. Its data object contains string fields 'method' (asset.getProperties) and 'reason' (for example unknown_asset), and a string 'path' field only when applicable.",
   "type": "object",
   "required": ["logicalPath", "properties"],
   "additionalProperties": false,

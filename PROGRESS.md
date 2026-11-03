@@ -187,3 +187,4 @@
 - E4-001: `verify.ps1` の中の実モック依存試験は環境変数未設定で早期終了する。実モックの合格は環境指定の conformance / mcp_mock_profile の実行を根拠にした。worktree で `pnpm install` を素で回すと esbuild の `ERR_PNPM_IGNORED_BUILDS` で止まるので `--ignore-scripts` を付けた。この原因は `allowBuilds` への書き換えで解消した。
 - U10 pnpm 11 の build 許可を allowBuilds で書き、集約ゲートを通す: 着地(直し 0 回)
 - 要起票: `scripts/verify.ps1 -Cpp` は `build/cpp` が無いと C++ 段を `[SKIP]` にして exit 0 で終わり、偽の合格になる。`-Cpp` のときは構成するか失敗にする(`paths` の外)。
+- U12 U11 の切り直し(作業ツリーの持ち主が前の枠のため着地できなかった)。result schema の説明文の拒否の理由を直し、verify を全部通す: 着地(直し 0 回)
