@@ -63,6 +63,10 @@ pub fn run() {
                 config_dir,
                 operations,
                 Some(edit_service::tauri_event_sink(app.handle().clone())),
+                app.path()
+                    .app_local_data_dir()
+                    .ok()
+                    .map(|dir| dir.join("captures")),
             );
             app.manage(services.edits);
             let mut mcp_runtime = services.runtime;

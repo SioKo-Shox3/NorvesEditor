@@ -14,19 +14,31 @@ pub struct HeadlessEditor {
     bridge: BridgeState,
     services: McpServices,
     operations: OperationStore,
+    directory: PathBuf,
 }
 
 impl HeadlessEditor {
     pub fn new(directory: PathBuf) -> Self {
         let bridge = BridgeState::default();
         let operations = OperationStore::new(Some(directory.join("logs")));
-        let services =
-            McpServices::new(&bridge, directory.join("config"), operations.clone(), None);
+        let services = McpServices::new(
+            &bridge,
+            directory.join("config"),
+            operations.clone(),
+            None,
+            Some(directory.join("captures")),
+        );
         Self {
             bridge,
             services,
             operations,
+            directory,
         }
+    }
+
+    /// 受入試験用の撮影ディレクトリを返す。
+    pub fn capture_dir(&self) -> PathBuf {
+        self.directory.join("captures")
     }
 
     pub fn runtime(&self) -> &McpRuntime {

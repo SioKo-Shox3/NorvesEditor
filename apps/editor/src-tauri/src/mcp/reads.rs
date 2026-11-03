@@ -191,7 +191,6 @@ impl McpReadContext {
         self
     }
 
-    #[allow(dead_code)]
     pub(crate) fn with_capture_store(mut self, store: super::capture::CaptureStore) -> Self {
         self.captures = Some(store);
         self
