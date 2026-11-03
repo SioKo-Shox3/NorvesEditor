@@ -535,3 +535,15 @@ M2 の共通規則:
 - paths: bridge/crates/norves-bridge-editor-client/src/dispatcher.rs
 - from: E4-003-P1
 - notes: 危険地帯(Rust の async タスクの寿命、WebSocket の転送)に入る。評価者を通し、コミット本文を書く。アプリも GPU も使わない(試験はメモリ内の転送とローカルの WebSocket だけで完結する)。
+
+## E4-004-CHECK: MCP の道具から決定的な撮影を呼ぶ(後回しにしたアプリの起動の確かめ)
+- status: todo
+- check: launch
+- gpu: exclusive
+- done-when: E4-004 で、当分アプリを起動しない決まりのため後回しにした確かめ(下の verify)を回し、E4-004 の done-when を満たすことを確かめる。満たさなければ E4-004 の done-when と paths の範囲で直す。
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/tests/mcp_e2e.rs, scripts/verify-mcp-e2e.ps1
+- from: E4-004
