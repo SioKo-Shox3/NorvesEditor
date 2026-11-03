@@ -65,16 +65,10 @@
 
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
-- 2026-11-03 E4-001: 資産の編集の方式を要件文書10章で決定(値の場所はエンジンが返す不透明な文字列、資産は `logicalPath`、開く・閉じるは線に出さない、保存は同期の要求1回、`previousValue` 必須、拒否は `ENGINE_ASSET_EDIT_REJECTED` と `data.reason`)。`asset.getProperties`/`setProperty`/`save` の schema 6本と fixture 19件、能力 `asset.edit` と仕様文書、SDK の既定 `METHOD_NOT_SUPPORTED` の仮想関数と振り分け、モックの mcp-edit プロフィールの偽資産、Rust の `AssetEditClient`、TS の型、実プロセスのモックでの一覧→設定→拒否→保存→一覧の試験を足した。verify 4本 exit 0(fixtures 193、`verify.ps1 -Cpp` 全ゲート合格・C++ 8/8・SKIP なし、conformance 1件、mcp_mock_profile 2件を環境指定の実モックで合格)。証拠 `.harness/runs/20261103-113133/verify-E4-001-final.txt`。
-- 2026-11-03 E4-001(再検証の差し戻し): `verify.ps1 -Cpp` の Frontend 段が、固定の pnpm 11.6.0 で `onlyBuiltDependencies` が build 許可に使われず `pnpm install` が `ERR_PNPM_IGNORED_BUILDS` で落ちていた。`pnpm-workspace.yaml` を `allowBuilds: { esbuild: true }` に書き換えた。項目の作業ツリーで `pnpm install` が esbuild の postinstall を走らせて exit 0、ワークスペースの設定も書き換わらないことを確かめた。verify 4本 exit 0(fixtures 193、`verify.ps1 -Cpp` 全ゲート合格・C++ 8/8・pnpm test 42/45/699、conformance 1件、mcp_mock_profile 2件を環境指定の実モックで合格)。証拠 `.harness/runs/20261103-113133/verify-E4-001-final-2.txt`。
-- 2026-11-03 E4-001(再検証の差し戻し 2): 項目の枠の直下に `build/cpp` が無く、`verify.ps1 -Cpp` は C++ 段を `[SKIP]` で抜けて exit 0、実モックの exe も無いので conformance の `Resolve-Path` が落ちていた。コードは変えず、枠の直下で `cmake -S bridge/cpp -B build/cpp -G "Visual Studio 17 2022"` を構成した。枠の直下で verify 4本 exit 0(fixtures 193、`verify.ps1 -Cpp` は cmake build / ctest 8/8 を含む全ゲート合格で SKIP なし、conformance 1件、mcp_mock_profile 2件を実モックで合格)。証拠 `.harness/runs/20261103-113133/iter3-v1.txt`〜`iter3-v4.txt`。
-- 2026-11-03 E4-001(再開・完了): 評価の残課題 3 に対応し、`asset.getProperties`/`asset.save`/`asset.setProperty` の result schema の説明文で、拒否の理由をそのメソッドで起こるものだけの例示にした(構造は変えていない)。verify 5本 exit 0(build/cpp 構成済みの確認、fixtures 193、`verify.ps1 -Cpp` は C++ 8/8・Rust・pnpm test 42/45/699 を含む全ゲート合格で `[FAIL]`/`[SKIP]` なし、conformance 1件、mcp_mock_profile 2件を実モックで合格)。証拠 `.harness/runs/20261103-163351/verify-E4-001-U12.txt`。
-
 ## In progress
 - なし。承認済みE0〜E3の実装・受入・評価・コミット文面の整備は完了。過去の失敗・停止・差し戻しは保存したまま、最終PASSの証拠と区別する。
 
 ## Next
-- E4-001 の後続: MCP の道具から資産の一覧・設定・保存を出す項目(`after: E4-001`)。
 - 受入と既知の制限は `docs/mcp-undo-test-mapping.md` と要件文書13節を参照する。GUI実機の配置・狭幅・Tauri窓間操作、実NorvesLibの動作は未確認。現行MCP版のクライアント間要求ID衝突、確認commandのcapability未分離、同期ログ保存などの制限を保持する。
 - 本番/実mockの入口はMcpServices、受入窓口はHeadlessEditor。操作記録は現在の起動の最新500件、過去起動分はJSONLのみ。resultは結果分類で、取消後のactor確定でも更新される。outcomeは実適用状態。displayGroupIdが共通履歴の先頭と一致するときだけUI undoを許可する。
 - 全タスク完了のためM2を再起動しない。MyWorkflowのガイドは専用ブランチdocs/norveseditor-mcp-guideのd132623（旧951e3cd）で展開済み・未マージ・未push。NorvesEditorも未push。
@@ -173,20 +167,20 @@
 - ループは cmd.exe で `verify:` を実行する(`spawnSync(..., { shell: true })`)。verify に bash の構文を書かない。
 - `pnpm lint` は実体が無い(どのパッケージにも lint スクリプトが無い)。緑でも何も検査していない。
 - NorvesLib の作業ツリーは `feature/rendering-r4-ddgi` の未コミットの変更を抱えている。今回の主題では NorvesLib に触らない。
-- U1 要件文書に値の場所と保存の決定・状態の更新を記録する: 着地(直し 0 回)
-- U2 asset.getProperties / setProperty / save の schema と fixture を足す: 着地(直し 0 回)
-- U4 SDK のアダプタに 3 つの仮想関数と振り分けを足す: 着地(直し 0 回)
-- U3 仕様文書に能力 asset.edit・拒否コード・3 メソッドを書く: 着地(直し 0 回)
-- U5 モックの mcp-edit プロフィールに偽の資産と 3 メソッドを足す: 着地(直し 0 回)
-- U6 Rust クライアントに資産の編集の型付き呼び出しを足す: 着地(直し 1 回)
-- U9 往復試験の fixture 件数を、資産の編集の fixture を足した後の件数に合わせる: 着地(直し 0 回)
-- U7 TS の bridge-types に 3 メソッドの型を足す: 着地(直し 0 回)
-- U8 実プロセスのモックで一覧・設定・保存・拒否を試験し、タスクの verify を通す: 着地(直し 0 回)
-- 要起票: NorvesLib の `NorvesLibBridgeAdapter` に `assetGetProperties`/`assetSetProperty`/`assetSave` を実装し、`BridgeAssetPropertyEditor` へつなぐ(NorvesLib 側の作業)。
-- 要起票: 要件文書7章は NE19 の前提に NE15 の形と GR136 を挙げ、NE15 を E4 の最初に置く記述が残る。今回 NE19 の一部を先に入れたこととの関係を整理する。
-- E4-001: fixture を19件足したため、往復試験に固定した件数を C++(`engine-sdk/tests`)と Rust(`norves-bridge-core/tests/fixtures_roundtrip.rs`、`paths` の外)で 174→193 に合わせた。件数の期待値だけの変更。
-- E4-001: `verify.ps1` の中の実モック依存試験は環境変数未設定で早期終了する。実モックの合格は環境指定の conformance / mcp_mock_profile の実行を根拠にした。worktree で `pnpm install` を素で回すと esbuild の `ERR_PNPM_IGNORED_BUILDS` で止まるので `--ignore-scripts` を付けた。この原因は `allowBuilds` への書き換えで解消した。
-- U10 pnpm 11 の build 許可を allowBuilds で書き、集約ゲートを通す: 着地(直し 0 回)
-- 要起票: `scripts/verify.ps1 -Cpp` は `build/cpp` が無いと C++ 段を `[SKIP]` にして exit 0 で終わり、偽の合格になる。`-Cpp` のときは構成するか失敗にする(`paths` の外)。
-- U12 U11 の切り直し(作業ツリーの持ち主が前の枠のため着地できなかった)。result schema の説明文の拒否の理由を直し、verify を全部通す: 着地(直し 0 回)
-- E4-001 の残り: モックの `asset.save` は保存先に書くだけでどこからも読まれず、試験の「保存→一覧で一致」は保存が何もしなくても成り立つ。保存の中身の確かめは E4-002 か NorvesLib 側の実装で行う。試験の英語の assert 文言も未対応のまま。
+
+- E4-003: 決定的な撮影 `viewport.captureDeterministic` を受け付け(`{captureId}`)と完了イベント `viewport.captureCompleted` に分けて決め、`docs/memory-buffer-policy.md` にファイル受け渡し(上限 1920x1080・32 MiB・settleFrames 600、所有・寿命・場所の検証)、要件文書 10 章の 5・6 と NE18 に決定と NE17 を前提にしない理由を記録した。schema 3 本と positive/negative fixture(計 191 件)、能力 `viewport.capture`、SDK の仮想関数(既定 METHOD_NOT_SUPPORTED)・params 検査・完了 DTO、モック mcp-edit の決定的な無圧縮 PNG と完了の送出(`NORVES_MOCK_CAPTURE_STALL=1` で完了を送らない。既定プロフィールの golden は不変)、Rust クライアントの要求・完了待ち・captureId/世代/場所の照合と時間切れの区別、TS の型を足した。verify 4 本は fixtures 191 件 exit 0、`verify.ps1 -Cpp` exit 0(C++ 8/8・vitest 42/45/699・IPC 名一致)、conformance 1 件・mcp_mock_profile 4 件が実モックで成功(SKIP なし)。証拠 `.harness/runs/20261103-113134/verify-E4-003.txt` を開いて確認。
+- E4-004: MCP の撮影の道具(撮影用ディレクトリの片付け 7 日・200 件、PNG の検証と縮小、取り消しとの結合)を E4-003 の Rust クライアントの上に作る。
+- 要起票: NorvesLib の `BridgeDeterministicCapture` を SDK の `viewportCaptureDeterministic` と完了イベント `viewport.captureCompleted` へつなぐ(NorvesLib 側の作業)。
+- E4-003 差し戻し対応: `verify.ps1 -Cpp` の失敗は撮影の実装ではなく、pnpm 11.6 が `onlyBuiltDependencies` を読まず自動 `pnpm install` が `ERR_PNPM_IGNORED_BUILDS`(esbuild)で落ちることが原因だった。`pnpm-workspace.yaml` に `allowBuilds: { esbuild: true }` を足し(旧キーは古い pnpm 向けに残す。`paths:` の外だが既存の意図どおりの設定の移し替え)、環境変数の上書き無しで verify 4 本が exit 0(fixtures 191 件、`-Cpp` の frontend 4 ゲート OK、conformance 1 件・mcp_mock_profile 4 件が実モックで SKIP なし)。証拠 `.harness/relay/E4-003-U8-verify.txt`。
+- E4-003: 撮影の完了待ちはアプリを起動しない実モックの試験で確かめた。実エンジン・GPU での撮影は未確認。
+- E4-003 差し戻し 2 の対応: ビルドの無い作業ツリーで `verify.ps1 -Cpp` が C++ を SKIP して exit 0 になり、次の verify がモックの exe を見つけられなかった。`-Cpp` で `build/cpp/CMakeCache.txt` が無ければ configure をゲートとして回すようにした(`paths:` の外だが verify を素の作業ツリーで通すための検証手段の修正)。`build/cpp` の無い状態から verify 4 本が exit 0(configure 約 103 秒、ctest 8/8、conformance 1 件・mcp_mock_profile 4 件が実モックで SKIP なし)。証拠 `.harness/runs/20261103-163354/verify-E4-003-U9.txt`。
+- 要起票: `ws_transport.rs` の既存試験 `dispatcher_over_ws_resolves_a_request` が `verify.ps1 -Cpp` の再実行で一度止まり続けた(手で止めて exit -1、再試行で成功)。今回のタスクでは触っていないファイルで、間欠的なハングの原因は未特定。
+- U1 撮影の決定とファイル受け渡しの方針を文書に記録する: 着地(直し 0 回)
+- U2 メソッドとイベントの schema・fixture・能力の文書を足す: 着地(直し 0 回)
+- U7 TS の型に撮影の要求・応答・完了イベントを足す: 着地(直し 0 回)
+- U3 SDK に撮影の仮想関数・params 検査・完了イベントの DTO を足す: 着地(直し 0 回)
+- U5 Rust クライアントに撮影の要求と完了の待ち合わせを足す: 着地(直し 1 回)
+- U4 モックの MCP 試験プロフィールで決定的な PNG を書き完了を送る: 着地(直し 0 回)
+- U6 実プロセスのモックで撮影の一致・場所の拒否・時間切れを試験する: 着地(直し 2 回)
+- U8 pnpm 11 の新しい設定キーで esbuild のビルドを許可し、タスクの verify を素の環境で通す: 着地(直し 0 回)
+- U9 verify.ps1 -Cpp が build/cpp の不在で黙って SKIP せず自分で configure する: 着地(直し 0 回)

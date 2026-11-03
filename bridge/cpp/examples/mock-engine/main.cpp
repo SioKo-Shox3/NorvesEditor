@@ -313,8 +313,14 @@ int main(int argc, char** argv)
                 adapter.emit_log_burst.store(false);
                 adapter.emit_object_changed.store(false);
                 adapter.emit_scene_tree_changed.store(false);
+                adapter.take_capture_completed();
                 continue;
             }
+        }
+
+        if (auto completed = adapter.take_capture_completed(); completed.has_value())
+        {
+            transport->send(server.emitEvent("viewport.captureCompleted", completed.value()));
         }
 
         if (adapter.emit_log_burst.exchange(false))

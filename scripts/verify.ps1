@@ -2,11 +2,11 @@
 #
 # Usage:
 #   ./scripts/verify.ps1              # Run fixtures + Rust gates; C++ skipped unless -Cpp; frontend runs if packages exist
-#   ./scripts/verify.ps1 -Cpp         # Also run C++ cmake/ctest (requires build/cpp to be pre-configured)
+#   ./scripts/verify.ps1 -Cpp         # 必要なら build/cpp を構成し、C++ cmake/ctest も実行
 #   ./scripts/verify.ps1 -SkipFrontend  # Skip pnpm frontend gates
 #
 # Notes:
-#   - C++ section only runs when -Cpp is passed AND build/cpp exists.
+#   - -Cpp 指定時、CMakeCache.txt がなければ C++ ビルドを構成する。
 #   - Frontend section uses "pnpm -r --if-present <script>", so zero workspace packages is not an error.
 #   - Root workspace = bridge crates only. apps/editor/src-tauri is a separate Cargo workspace (excluded).
 #   - The script stops on the first failure and exits non-zero.
@@ -66,24 +66,25 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # 3. C++ engine SDK / mock engine (opt-in via -Cpp; guarded on build/cpp)
+    # 3. C++ エンジン SDK / モックエンジン (-Cpp 指定時に実行)
     # -------------------------------------------------------------------------
     Write-Host ""
     Write-Host "=== [3/4] C++ ===" -ForegroundColor Yellow
     $CppBuildDir = Join-Path $RepoRoot "build/cpp"
     if ($Cpp) {
-        if (-not (Test-Path $CppBuildDir)) {
-            Write-Host "[SKIP] -Cpp requested but build/cpp does not exist." -ForegroundColor DarkYellow
-            Write-Host "       Configure first: cmake -S bridge/cpp -B build/cpp -G 'Visual Studio 17 2022'" -ForegroundColor DarkYellow
-        } else {
-            Invoke-Gate "cmake build Debug" {
-                Write-Host "    cmake --build $CppBuildDir --config Debug" -ForegroundColor DarkGray
-                cmake --build $CppBuildDir --config Debug
+        if (-not (Test-Path (Join-Path $CppBuildDir "CMakeCache.txt") -PathType Leaf)) {
+            Invoke-Gate "cmake configure" {
+                Write-Host "    cmake -S bridge/cpp -B build/cpp -G 'Visual Studio 17 2022'" -ForegroundColor DarkGray
+                cmake -S bridge/cpp -B build/cpp -G "Visual Studio 17 2022"
             }
-            Invoke-Gate "ctest Debug" {
-                Write-Host "    ctest --test-dir $CppBuildDir -C Debug --output-on-failure" -ForegroundColor DarkGray
-                ctest --test-dir $CppBuildDir -C Debug --output-on-failure
-            }
+        }
+        Invoke-Gate "cmake build Debug" {
+            Write-Host "    cmake --build $CppBuildDir --config Debug" -ForegroundColor DarkGray
+            cmake --build $CppBuildDir --config Debug
+        }
+        Invoke-Gate "ctest Debug" {
+            Write-Host "    ctest --test-dir $CppBuildDir -C Debug --output-on-failure" -ForegroundColor DarkGray
+            ctest --test-dir $CppBuildDir -C Debug --output-on-failure
         }
     } else {
         Write-Host "[SKIP] C++ gate skipped (pass -Cpp to enable)" -ForegroundColor DarkYellow

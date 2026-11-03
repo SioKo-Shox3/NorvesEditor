@@ -17,6 +17,7 @@
 pub mod asset;
 pub mod asset_edit;
 pub mod capabilities;
+pub mod capture;
 pub mod dispatcher;
 pub mod handshake;
 pub mod log;
@@ -41,6 +42,10 @@ pub use asset_edit::{
     ASSET_EDIT_REJECTED_CODE,
 };
 pub use capabilities::{parse_capabilities_result, CapabilitiesResult, CapabilityError};
+pub use capture::{
+    capture_deterministic, parse_capture_accepted, validate_capture_completed, CaptureCompleted,
+    CaptureError, CaptureRequest, CaptureTimeoutPhase,
+};
 pub use dispatcher::{DispatchHandle, Dispatcher, RequestError};
 pub use handshake::{
     hello_error_to_handshake, parse_hello_result, HandshakeError, HelloOutcome, HelloParams,

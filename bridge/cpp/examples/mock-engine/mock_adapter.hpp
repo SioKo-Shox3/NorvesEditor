@@ -14,6 +14,7 @@
 
 #include "Norves/Bridge/adapter.hpp"
 #include "Norves/Bridge/Dto/common.hpp"
+#include "Norves/Bridge/Dto/events.hpp"
 #include "Norves/Bridge/Dto/methods.hpp"
 #include "Norves/Bridge/error.hpp"
 #include "Norves/Bridge/json_value.hpp"
@@ -24,6 +25,9 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <set>
@@ -32,6 +36,8 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#include "mock_png.hpp"
 
 namespace norves::mock
 {
@@ -61,7 +67,8 @@ namespace norves::mock
             McpEdit,
         };
 
-        explicit MockAdapter(Profile profile = Profile::Default) : profile_(profile)
+        explicit MockAdapter(Profile profile = Profile::Default)
+            : profile_(profile), capture_stall_(read_capture_stall())
         {
             if (is_mcp_edit_profile())
             {
@@ -103,7 +110,8 @@ namespace norves::mock
                         R"({"name":"viewport.thumbnail"},)"
                         R"({"name":"component.edit"},)"
                         R"({"name":"asset.read"},)"
-                        R"({"name":"asset.edit"}]})"));
+                        R"({"name":"asset.edit"},)"
+                        R"({"name":"viewport.capture"}]})"));
             }
 
             // スペックポジティブフィクスチャ
@@ -748,6 +756,67 @@ namespace norves::mock
                     R"(","mimeType":"image/png","width":2,"height":2})"));
         }
 
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        viewportCaptureDeterministic(const Norves::Bridge::JsonValue& params) override
+        {
+            if (!is_mcp_edit_profile())
+            {
+                return not_supported(params);
+            }
+
+            // SDK が検査済みの値を所有し、画像バイトは完了の DTO に含めない。
+            const std::string paramsText = params.dump();
+            const std::string captureDir = extract_string_field(paramsText, "captureDir").value();
+            const std::string outputName = extract_string_field(paramsText, "outputName").value();
+            const auto settleFrames = static_cast<std::uint32_t>(
+                std::stoul(extract_json_field(paramsText, "settleFrames").value()));
+            const auto maxWidth = static_cast<std::uint32_t>(
+                std::stoul(extract_json_field(paramsText, "maxWidth").value()));
+            const auto maxHeight = static_cast<std::uint32_t>(
+                std::stoul(extract_json_field(paramsText, "maxHeight").value()));
+            const std::string captureId = "mock-capture-" + std::to_string(next_capture_ordinal++);
+            pending_capture_completed_.reset();
+            if (!capture_stall_)
+            {
+                Norves::Bridge::Dto::ViewportCaptureCompletedEvent completed;
+                completed.captureId = captureId;
+                completed.width = (std::min)(maxWidth, std::uint32_t{64});
+                completed.height = (std::min)(maxHeight, std::uint32_t{36});
+                completed.frame = settleFrames;
+                std::vector<std::uint8_t> pixels;
+                pixels.reserve(static_cast<std::size_t>(completed.width) * completed.height * 4);
+                for (std::uint32_t y = 0; y < completed.height; ++y)
+                {
+                    for (std::uint32_t x = 0; x < completed.width; ++x)
+                    {
+                        pixels.push_back(static_cast<std::uint8_t>((x * 4 + settleFrames) & 0xffU));
+                        pixels.push_back(
+                            static_cast<std::uint8_t>((y * 7 + settleFrames * 3) & 0xffU));
+                        pixels.push_back(
+                            static_cast<std::uint8_t>(((x ^ y) + settleFrames * 5) & 0xffU));
+                        pixels.push_back(255);
+                    }
+                }
+                const auto image = png::EncodeRgba8(completed.width, completed.height, pixels);
+                completed.pixelDigest.value = png::PixelDigest(pixels);
+                completed.fileBytes = static_cast<std::uint64_t>(image.size());
+                if (!write_capture_png(captureDir, outputName, image, completed.path))
+                {
+                    completed.status = Norves::Bridge::Dto::ViewportCaptureStatus::Failed;
+                    completed.failure = {"OUTPUT_WRITE_FAILED", "撮影画像を保存できませんでした。"};
+                }
+                pending_capture_completed_ = completed.to_json();
+            }
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>::
+                ok(parse_or_die("{\"captureId\":" + json_quote(captureId) + "}"));
+        }
+
+        // @brief 同一スレッドの recv ループが、応答送信後に完了を一度だけ取り出す。
+        std::optional<Norves::Bridge::JsonValue> take_capture_completed()
+        {
+            return std::exchange(pending_capture_completed_, std::nullopt);
+        }
+
         // @brief logSubscribe() によってセットされ、recv ループが消費する。
         // @note handleFrame とループは同一スレッドで実行されるため、シングルスレッドのハンドオフ。
         // クロスメソッドの契約を明示するため atomic にする。
@@ -788,6 +857,9 @@ namespace norves::mock
         static constexpr std::string_view asset_logical_path = "effects/mcp-test.vfx.json";
 
         Profile profile_ = Profile::Default;
+        bool capture_stall_ = false;
+        std::uint64_t next_capture_ordinal = 1;
+        std::optional<Norves::Bridge::JsonValue> pending_capture_completed_;
         std::uint64_t next_object_ordinal = 1;
         std::uint64_t next_subscription_ordinal = 1;
         std::set<std::string> active_subscriptions;
@@ -795,6 +867,66 @@ namespace norves::mock
         // @note シングルスレッドの受信ループ内で、編集状態と保存状態を別々に保持する。
         EditableAssetValues editable_asset_values;
         EditableAssetValues saved_asset_values;
+
+        static bool read_capture_stall()
+        {
+#if defined(_WIN32)
+            char* rawStall = nullptr;
+            std::size_t rawStallLength = 0;
+            if (_dupenv_s(&rawStall, &rawStallLength, "NORVES_MOCK_CAPTURE_STALL") != 0)
+            {
+                return false;
+            }
+            const bool stall = rawStall != nullptr && std::string_view(rawStall) == "1";
+            std::free(rawStall);
+            return stall;
+#else
+            const char* const rawStall = std::getenv("NORVES_MOCK_CAPTURE_STALL");
+            return rawStall != nullptr && std::string_view(rawStall) == "1";
+#endif
+        }
+
+        // @brief UTF-8 のディレクトリ直下に一時保存し、既存の PNG を rename で置き換える。
+        static bool write_capture_png(const std::string& captureDir, const std::string& outputName,
+                                      const std::vector<std::uint8_t>& image,
+                                      std::string& outputPath)
+        {
+            try
+            {
+                const std::filesystem::path directory(
+                    std::u8string(captureDir.begin(), captureDir.end()));
+                std::error_code error;
+                const auto path =
+                    std::filesystem::absolute(directory / (outputName + ".png"), error)
+                        .lexically_normal();
+                if (error)
+                {
+                    return false;
+                }
+                auto temporaryPath = path;
+                temporaryPath += ".tmp";
+                std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
+                output.write(reinterpret_cast<const char*>(image.data()),
+                             static_cast<std::streamsize>(image.size()));
+                output.close();
+                if (!output)
+                {
+                    return false;
+                }
+                std::filesystem::rename(temporaryPath, path, error);
+                if (error)
+                {
+                    return false;
+                }
+                const auto utf8Path = path.u8string();
+                outputPath.assign(utf8Path.begin(), utf8Path.end());
+                return true;
+            }
+            catch (const std::filesystem::filesystem_error&)
+            {
+                return false;
+            }
+        }
 
         bool is_mcp_edit_profile() const { return profile_ == Profile::McpEdit; }
 

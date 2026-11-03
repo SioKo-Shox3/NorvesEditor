@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/viewport.captureDeterministic.params.schema.json",
+  "title": "viewport.captureDeterministic request params",
+  "description": "Accept a deterministic capture request; the engine reports the outcome separately in viewport.captureCompleted and writes the image to a file.",
+  "type": "object",
+  "required": [
+    "captureDir",
+    "outputName",
+    "settleFrames",
+    "maxWidth",
+    "maxHeight"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "captureDir": {
+      "description": "Absolute UTF-8 path of the existing capture directory created by the editor.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "outputName": {
+      "description": "PNG base name without extension or path separators.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+      "not": {
+        "pattern": "[^A-Za-z0-9_-]"
+      }
+    },
+    "settleFrames": {
+      "description": "Number of fixed steps in the new capture epoch before drawing.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 600
+    },
+    "maxWidth": {
+      "description": "Maximum output width in pixels.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1920
+    },
+    "maxHeight": {
+      "description": "Maximum output height in pixels.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1080
+    }
+  }
+}

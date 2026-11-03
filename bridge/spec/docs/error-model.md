@@ -68,7 +68,7 @@ convention only — there is no closed enumeration of engine codes.
 | code | category | retryable | route | expected `data` (informative) | meaning |
 | --- | --- | --- | --- | --- | --- |
 | `ENGINE_ASSET_LOAD_FAILED` | extension (example) | maybe | `error.reported` event (engine wire) | `asset` | example engine-defined code: an asset failed to load. |
-| `ENGINE_INVALID_PARAMS` | extension | no | `asset.reloadManifest` error response (id-bearing) | `method` | method-specific params failed validation before adapter dispatch. |
+| `ENGINE_INVALID_PARAMS` | extension | no | `asset.reloadManifest`, `viewport.captureDeterministic` error response (id-bearing) | `method` | method-specific params failed validation before adapter dispatch. |
 | `ENGINE_ASSET_EDIT_REJECTED` | extension | no | `asset.getProperties` / `asset.setProperty` / `asset.save` error response (id-bearing) | `method`, `reason`, `path` (optional) | the engine refused an asset property query, property change, or save; a rejected property change leaves the value unchanged. |
 
 ## Code ↔ fixture correspondence

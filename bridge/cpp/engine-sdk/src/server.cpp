@@ -9,6 +9,7 @@
 #include "Norves/Bridge/result.hpp"
 #include "Norves/Bridge/version.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -145,6 +146,80 @@ namespace Norves::Bridge
             return Wrap(std::move(data));
         }
 
+        // 撮影の整数欄は浮動小数点・真偽値を受け付けず、符号付き/なしの範囲を保って調べる。
+        bool CaptureIntegerInRange(const json& obj, const char* key, std::uint64_t min,
+                                   std::uint64_t max)
+        {
+            const auto it = obj.find(key);
+            if (it == obj.end() || !it->is_number_integer())
+            {
+                return false;
+            }
+            if (!it->is_number_unsigned() && it->get<std::int64_t>() < 0)
+            {
+                return false;
+            }
+            const auto value = it->get<std::uint64_t>();
+            return value >= min && value <= max;
+        }
+
+        bool IsAsciiAlphanumeric(unsigned char ch)
+        {
+            return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                   (ch >= '0' && ch <= '9');
+        }
+
+        // 必須の 5 欄だけを許可する。場所の正規化・存在の検査はエディタが送信前に行う。
+        bool ValidCaptureParams(const JsonValue& params)
+        {
+            const json& obj = peek(params)->json;
+            if (!obj.is_object() || obj.size() != 5 || !obj.contains("captureDir") ||
+                !obj["captureDir"].is_string() || !obj.contains("outputName") ||
+                !obj["outputName"].is_string() || !CaptureIntegerInRange(obj, "settleFrames", 0, 600) ||
+                !CaptureIntegerInRange(obj, "maxWidth", 1, 1920) ||
+                !CaptureIntegerInRange(obj, "maxHeight", 1, 1080))
+            {
+                return false;
+            }
+
+            const auto& captureDir = obj["captureDir"].get_ref<const std::string&>();
+            if (captureDir.empty() || captureDir.find('\0') != std::string::npos)
+            {
+                return false;
+            }
+            // デコード済みの UTF-8 なので、継続バイト以外を数えて文字数の上限を調べる。
+            std::size_t characters = 0;
+            for (unsigned char ch : captureDir)
+            {
+                if ((ch & 0xc0) != 0x80 && ++characters > 1024)
+                {
+                    return false;
+                }
+            }
+
+            const auto& outputName = obj["outputName"].get_ref<const std::string&>();
+            if (outputName.empty() || outputName.size() > 64 ||
+                !IsAsciiAlphanumeric(static_cast<unsigned char>(outputName.front())))
+            {
+                return false;
+            }
+            for (unsigned char ch : outputName)
+            {
+                if (!IsAsciiAlphanumeric(ch) && ch != '_' && ch != '-')
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        BridgeError InvalidCaptureParams()
+        {
+            return BridgeError{std::string(ErrorEngineInvalidParams),
+                               "viewport.captureDeterministic params are invalid.",
+                               Wrap(json{{"method", "viewport.captureDeterministic"}})};
+        }
+
     }  // namespace
 
     // --- Impl --------------------------------------------------------------------
@@ -202,6 +277,15 @@ namespace Norves::Bridge
             // 場合は JSON null 値を供給する。
             const JsonValue emptyParams;
             const JsonValue& params = request.params.has_value() ? *request.params : emptyParams;
+
+            if (method == "viewport.captureDeterministic")
+            {
+                if (!ValidCaptureParams(params))
+                {
+                    return MakeErrorResponse(id, InvalidCaptureParams());
+                }
+                return finish(id, m_Adapter.viewportCaptureDeterministic(params));
+            }
 
             if (method == "bridge.hello")
             {
@@ -364,6 +448,7 @@ namespace Norves::Bridge
     {
         std::string normalizedWire;
         bool bAssetReloadParamsNonObject = false;
+        bool bCaptureParamsNonObject = false;
         json root = json::parse(wire, /*cb=*/nullptr, /*allow_exceptions=*/false);
         if (root.is_object())
         {
@@ -377,9 +462,18 @@ namespace Norves::Bridge
                 root["params"] = json::object();
                 normalizedWire = root.dump();
             }
+            if (methodIt != root.end() && methodIt->is_string() &&
+                *methodIt == "viewport.captureDeterministic" && paramsIt != root.end() &&
+                !paramsIt->is_object())
+            {
+                bCaptureParamsNonObject = true;
+                root["params"] = json::object();
+                normalizedWire = root.dump();
+            }
         }
 
-        auto decoded = decode_envelope(bAssetReloadParamsNonObject ? normalizedWire : wire);
+        auto decoded = decode_envelope(
+            (bAssetReloadParamsNonObject || bCaptureParamsNonObject) ? normalizedWire : wire);
         if (decoded.is_err())
         {
             // 回復可能な相関 id がない -> 有効なレスポンスエンベロープを構築できない。
@@ -405,7 +499,8 @@ namespace Norves::Bridge
                       BridgeError{std::string(ErrorEngineInvalidParams),
                                   "asset.reloadManifest params must be an empty object.",
                                   Wrap(json{{"method", "asset.reloadManifest"}})})
-                : m_Impl->dispatch(request);
+                : bCaptureParamsNonObject ? MakeErrorResponse(*request.id, InvalidCaptureParams())
+                                          : m_Impl->dispatch(request);
         auto encoded = encode_envelope(response);
         if (encoded.is_err())
         {

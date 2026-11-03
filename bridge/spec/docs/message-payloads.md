@@ -563,6 +563,41 @@ Saving completes within one request/response pair and is not undoable. Failure
 is an id-bearing `ENGINE_ASSET_EDIT_REJECTED` error response, not a result with
 `saved: false`; see [`error-model.md`](./error-model.md).
 
+### viewport.captureDeterministic
+
+決定的な撮影を受け付ける。対応エンジンは `viewport.capture` を広告し、
+対応しないエンジンは `METHOD_NOT_SUPPORTED` を返す。スキーマ:
+[params](../schema/methods/viewport.captureDeterministic.params.schema.json)、
+[result](../schema/methods/viewport.captureDeterministic.result.schema.json)。
+
+`params`（すべて必須、追加欄は禁止）:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `captureDir` | string、1〜1024 文字 | yes | エディタが作成した撮影用ディレクトリの絶対パス（UTF-8）。 |
+| `outputName` | string | yes | 拡張子なしの名前。`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` に一致する。 |
+| `settleFrames` | integer、0〜600 | yes | 新しい撮影エポックを初期化してから描画まで進める固定刻みの数。 |
+| `maxWidth` | integer、1〜1920 | yes | 出力画像の最大幅。 |
+| `maxHeight` | integer、1〜1080 | yes | 出力画像の最大高さ。 |
+
+`result`（追加欄は禁止）:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `captureId` | string | yes | `^[A-Za-z0-9._:-]{1,128}$` に一致する受付 ID。 |
+
+応答は受付のみを表し、結果は同じ `captureId` の
+[`viewport.captureCompleted`](#viewportcapturecompleted) イベントで応答後に
+1 回送る。不正な `params` はアダプタへの受け渡し前に `ENGINE_INVALID_PARAMS` と
+`data: {"method": "viewport.captureDeterministic"}` を返す。
+
+エンジンは決定的な状態を固定の種で初期化し、撮影エポックの刻みを 0 から数えて
+`settleFrames` だけ進めて描画する。ランタイム全体の刻みや `runtime.step` には依存しない。
+エンジンは `<captureDir>/<outputName>.png.tmp` に書いてから
+`<captureDir>/<outputName>.png` に置き換え、ディレクトリは作らない。
+ディレクトリが存在しない、または書き込めない場合は受付後に `OUTPUT_WRITE_FAILED`
+として完了する。画像バイトは Bridge に載せない。
+
 ## Events
 
 Events are one-way notifications. Some arrive over the engine **wire**; others
@@ -578,6 +613,7 @@ cases; the producer column below mirrors the lifecycle table in
 | `engine.processExited` | editor backend (synthesized) | [schema](../schema/events/engine.processExited.params.schema.json) | `exitCode`; optional `signal`, `origin`. |
 | `runtime.stateChanged` | engine (wire) | [schema](../schema/events/runtime.stateChanged.params.schema.json) | `state` (`runtimeState`); optional `previous`. |
 | `viewport.stateChanged` | engine (wire) | [schema](../schema/events/viewport.stateChanged.params.schema.json) | `state` (`viewportState`); optional `previous`. |
+| `viewport.captureCompleted` | engine (wire) | [schema](../schema/events/viewport.captureCompleted.params.schema.json) | `captureId`、`status`。成功または失敗に応じた欄も必須。 |
 | `log.message` | engine (wire) | [schema](../schema/events/log.message.params.schema.json) | `level`, `message`; optional `category`, `timestamp`. |
 | `error.reported` | both | [schema](../schema/events/error.reported.params.schema.json) | `error` (envelope error object); optional `origin`. |
 | `scene.treeChanged` | engine (wire) | [schema](../schema/events/scene.treeChanged.params.schema.json) | none required; optional `changedNodes` (`sceneNode[]`), `fullRefreshRequired`. Added in protocol 0.2. |
@@ -587,6 +623,34 @@ cases; the producer column below mirrors the lifecycle table in
 [`envelope.schema.json#/$defs/error`](../schema/envelope.schema.json) by
 reference, so the reported error has exactly the same `{ code, message, data? }`
 shape as a response error. The full error code registry is phase C5.
+
+### viewport.captureCompleted
+
+受け付けた撮影の完了をエンジンが通知する。スキーマ:
+[params](../schema/events/viewport.captureCompleted.params.schema.json)。
+すべての状態で `captureId` と `status` が必須で、追加欄は禁止する。
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `captureId` | string | yes | 受付応答と同じ ID。`^[A-Za-z0-9._:-]{1,128}$` に一致する。 |
+| `status` | `succeeded` または `failed` | yes | 撮影結果。 |
+| `path` | string、1〜2048 文字 | 成功時 | 書き込んだ PNG の絶対パス。 |
+| `width` | integer、1〜1920 | 成功時 | 実際の幅。要求の `maxWidth` 以下。 |
+| `height` | integer、1〜1080 | 成功時 | 実際の高さ。要求の `maxHeight` 以下。 |
+| `frame` | integer、0 以上 | 成功時 | 撮影エポック内の刻み。要求の `settleFrames` と同じ。 |
+| `pixelDigest` | object | 成功時 | `algorithm: "fnv1a64-rgba8"` と小文字 16 桁の 16 進数 `value` を持つ。追加欄は禁止。 |
+| `fileBytes` | integer、1〜33554432 | 成功時 | 書き込んだ PNG のバイト数。 |
+| `failure` | object | 失敗時 | `code` と 1 文字以上の `message` を持つ。追加欄は禁止。 |
+
+成功時は `failure` を含めず、失敗時は `path`、`width`、`height`、`frame`、
+`pixelDigest`、`fileBytes` を含めない。`failure.code` は
+`^[A-Z][A-Z0-9_]*$` に一致し、既知の値に `OUTPUT_WRITE_FAILED` と
+`RENDER_FAILED` がある。
+
+`pixelDigest` は PNG に符号化する前の RGBA8 画素バイトを上から下の行順、
+行の詰め物なしで並べた FNV-1a 64 ビット値（offset basis
+`0xcbf29ce484222325`、prime `0x100000001b3`）。ファイルの所有、寿命と受け渡しの
+検証については [メモリ・バッファ方針](../../../docs/memory-buffer-policy.md)を参照。
 
 ## Two-layer validation
 
