@@ -213,3 +213,4 @@
 - U12 U11 の切り直し(作業ツリーの持ち主が前の枠のため着地できなかった)。result schema の説明文の拒否の理由を直し、verify を全部通す: 着地(直し 0 回)
 - 2026-11-03 E4-001(再開・完了): 評価の残課題 3 に対応し、`asset.getProperties`/`asset.save`/`asset.setProperty` の result schema の説明文で、拒否の理由をそのメソッドで起こるものだけの例示にした(構造は変えていない)。verify 5本 exit 0(build/cpp 構成済みの確認、fixtures 193、`verify.ps1 -Cpp` は C++ 8/8・Rust・pnpm test 42/45/699 を含む全ゲート合格で `[FAIL]`/`[SKIP]` なし、conformance 1件、mcp_mock_profile 2件を実モックで合格)。証拠 `.harness/runs/20261103-163351/verify-E4-001-U12.txt`。
 - E4-001 の残り: モックの `asset.save` は保存先に書くだけでどこからも読まれず、試験の「保存→一覧で一致」は保存が何もしなくても成り立つ。保存の中身の確かめは E4-002 か NorvesLib 側の実装で行う。試験の英語の assert 文言も未対応のまま。
+- U1 要件文書の NE15・NE19 の旧値と依存の記述を、NE19 の一部を先に入れた決定に合わせる: 着地(直し 0 回)
