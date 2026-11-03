@@ -455,11 +455,12 @@ M2 の共通規則:
 ## E4-001: 資産の編集の方式を決め、Bridge の仕様・SDK・モック・Rust クライアントに資産のプロパティの一覧・設定・保存を足す
 - status: todo
 - done-when: 最初の編集の前に、`docs/mcp-and-edit-layer-requirements.md` の 10 章にある未決事項 4(値の場所の書き方)と 6 の保存の部分を、推奨の案で決めて記録する。作者は後から変えられる。あわせて状態の行を更新し、2026-11-03 の人の指示で NE19 の一部を範囲に入れたことを書く。推奨の案は次のとおり。値の場所は、エンジンが一覧で返す不透明な文字列とし、エディタは解釈しない。資産は既存の `logicalPath` で指す。開く・閉じるは線に出さない。保存は同期の要求 1 回とする。`asset.setProperty` の結果では `previousValue` を必須にする。拒否の理由は機械照合の英語コード `type_mismatch`・`out_of_range`・`unknown_property` を既存のエラーモデルに載せて返す。実装は次の 5 点。(1) `asset.getProperties`・`asset.setProperty`・`asset.save` の params/result の schema と、positive/negative の fixture を足す。(2) `capabilities.md` に能力 `asset.edit` を追記する。(3) SDK の `IBridgeEngineAdapter` に仮想関数を足し、既定は `METHOD_NOT_SUPPORTED` を返す。`server.cpp` の振り分けも足す。(4) モックの MCP 試験プロフィールに、型付きのプロパティ(範囲つきの数値・文字列・真偽)を持つ偽の資産を置く。既定プロフィールの golden は変えない。(5) `norves-bridge-editor-client` に型付きの呼び出しを足し、能力の無い相手には送らない。実プロセスのモックを相手に次を試験する。一覧→設定→保存→一覧で値が一致する。型違い・範囲外・未知の場所は拒否され、前の値を保つ。`previousValue` が設定前の値と一致する。
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "if (-not (Test-Path 'build/cpp/CMakeCache.txt')) { cmake -S bridge/cpp -B build/cpp -G 'Visual Studio 17 2022'; exit $LASTEXITCODE }; exit 0"`
 - verify: `python scripts/validate-bridge-fixtures.py`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test -p norves-bridge-editor-client --test conformance -- --nocapture; exit $LASTEXITCODE"`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:NORVES_MOCK_ENGINE=(Resolve-Path 'build/cpp/examples/mock-engine/Debug/norves_mock_engine.exe' -ErrorAction Stop).Path; cargo test -p norves-bridge-editor-client --test mcp_mock_profile -- --nocapture; exit $LASTEXITCODE"`
-- paths: docs/mcp-and-edit-layer-requirements.md, bridge/spec/schema/methods/**, bridge/spec/fixtures/methods/**, bridge/spec/docs/**, bridge/cpp/engine-sdk/include/Norves/Bridge/**, bridge/cpp/engine-sdk/src/**, bridge/cpp/engine-sdk/tests/**, bridge/cpp/examples/mock-engine/**, bridge/crates/norves-bridge-core/src/**, bridge/crates/norves-bridge-editor-client/src/**, bridge/crates/norves-bridge-editor-client/tests/**, bridge/conformance/**, bridge/ts/packages/bridge-types/src/**
+- paths: docs/mcp-and-edit-layer-requirements.md, bridge/spec/schema/methods/**, bridge/spec/fixtures/methods/**, bridge/spec/docs/**, bridge/cpp/engine-sdk/include/Norves/Bridge/**, bridge/cpp/engine-sdk/src/**, bridge/cpp/engine-sdk/tests/**, bridge/cpp/examples/mock-engine/**, bridge/crates/norves-bridge-core/src/**, bridge/crates/norves-bridge-core/tests/fixtures_roundtrip.rs, bridge/crates/norves-bridge-editor-client/src/**, bridge/crates/norves-bridge-editor-client/tests/**, bridge/conformance/**, bridge/ts/packages/bridge-types/src/**, pnpm-workspace.yaml
 - from: NorvesLib/GAME-GR137-VFX
 - notes: 危険地帯(プロトコルのスキーマと互換性・C++ SDK の公開 API)。評価者を通し、コミット本文を書く。互換性は `docs/agent-guide/protocol-schema.md` に従い、能力で交渉する。線の上の名前は NorvesLib の GR137 の節(`Docs/Plans/GameFeatureRoadmap.md`)に合わせる。NorvesLib の `NorvesLibBridgeAdapter` から `BridgeAssetPropertyEditor` へつなぐ作業は NorvesLib 側なので、終わったら PROGRESS.md の Notes に `要起票:` で残す。
 
@@ -500,3 +501,19 @@ M2 の共通規則:
 - paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/tests/mcp_e2e.rs, scripts/verify-mcp-e2e.ps1
 - from: NorvesLib/GAME-GR137-VFX
 - notes: 危険地帯(バッファの所有・ファイルの場所の検証)。評価者を通す。実際のエンジンを相手にした一致の確認は、NorvesLib の `GAME-GR137-VFX-CHECK` の側で行う。
+
+## E4-001-P2: 要件文書の NE15・NE19 の依存の記述を、NE19 の一部を先に入れた決定に合わせる
+- status: todo
+- done-when: `docs/mcp-and-edit-layer-requirements.md` を次の 3 点で直す。(1) 7章「E4 の中の依存」の「NE19 は NE15 の形と GR136 が前提」と「NE15 を E4 の最初に入れる」の行に、次の 3 つを書き足す。2026-11-03 の作者の指示で、NE19 の一部(資産のプロパティの一覧・設定・保存)を NE15 より先に入れたこと。`asset.setProperty` は `previousValue` を必ず返すので、NE15 の能力交渉(`returnPrevious`)を前提にしないこと。GR136 が前提になるのは NorvesLib の側の最初の対象(エフェクトの資産)で、エディタ側の仕様・SDK・モック・クライアントの前提ではないこと。(2) NE15 の節の「資産の値の設定（NE19）も同じ形にする」を、6章の NE19 の決定と矛盾しない文に直す。決定では `previousValue` が必須で、交渉はない。(3) NE19 の節の「値の設定（NE15 と同じく旧値を返せる）」も同じく直す。直したあと、文書の中で NE15 と NE19 の旧値の扱いの記述が食い違わない。
+- verify: `git grep -n -e "NE15" -e "previousValue" -e "returnPrevious" -- docs/mcp-and-edit-layer-requirements.md`
+- paths: docs/mcp-and-edit-layer-requirements.md
+- after: E4-001
+- from: E4-001
+
+## E4-001-P3: `verify.ps1 -Cpp` で、C++ のビルドディレクトリが無いときに構成し、構成できなければ失敗にする
+- status: todo
+- done-when: `scripts/verify.ps1` に、ビルドディレクトリを指定する引数 `-CppBuildDir`(既定は `build/cpp`)を足す。`-Cpp` を付けて走らせ、そのディレクトリが無いときは `[SKIP]` で抜けない。代わりに `cmake -S bridge/cpp -B <dir> -G "Visual Studio 17 2022"` を 1 つのゲートとして走らせてから、cmake build と ctest を走らせる。構成が失敗したら exit code を 0 以外にして止める。`-Cpp` が無いときに C++ 段を飛ばす動きは変えない。スクリプト冒頭の Usage と Notes、触ったブロックのコメント、`docs/build.md` の「requires build/cpp to be pre-configured」の記述を、日本語で新しい動きに合わせる。空の一時ディレクトリを指定して `-Cpp -SkipFrontend` で走らせると、構成・ビルド・ctest がすべて `[OK]` になり、exit 0 で終わる。既定のディレクトリでの `-Cpp` も exit 0 で終わる。
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=Join-Path $env:TEMP ('norves-cpp-'+[guid]::NewGuid()); & ./scripts/verify.ps1 -Cpp -SkipFrontend -CppBuildDir $d; $c=$LASTEXITCODE; Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue; exit $c"`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
+- paths: scripts/verify.ps1, docs/build.md
+- from: E4-001
