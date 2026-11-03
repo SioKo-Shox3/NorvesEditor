@@ -4,10 +4,7 @@ use std::{
     fs::{self, File},
     io::Read,
     path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::SystemTime,
 };
 
@@ -17,6 +14,8 @@ use rmcp::model::{CallToolResult, ContentBlock, ResultType};
 use serde_json::{json, Value};
 use tokio::time::Instant;
 
+use super::CAPTURE_EXCLUSION_LIMIT;
+use crate::bridge_state::CaptureSendGate;
 use crate::mcp::{
     images::{prepare_capture_image, CaptureImage, MAX_CAPTURE_FILE_BYTES},
     operations::{OperationHandle, OperationUpdate},
@@ -30,7 +29,7 @@ const HISTORY_NOTICE: &str = "撮影は編集履歴に積みません。";
 /// 呼び出しが破棄された場合も、送信境界に応じた結果を記録する。
 struct CaptureRecord {
     operation: OperationHandle,
-    sent: Arc<AtomicBool>,
+    gate: Option<Arc<CaptureSendGate>>,
     finished: bool,
 }
 
@@ -48,7 +47,15 @@ impl CaptureRecord {
     }
 
     fn sent_outcome(&self) -> &'static str {
-        if self.sent.load(Ordering::SeqCst) {
+        if self.gate.as_ref().is_some_and(|gate| gate.was_sent()) {
+            "unknown"
+        } else {
+            "notApplied"
+        }
+    }
+
+    fn abandon_outcome(&self) -> &'static str {
+        if self.gate.as_ref().is_some_and(|gate| gate.abandon()) {
             "unknown"
         } else {
             "notApplied"
@@ -56,6 +63,7 @@ impl CaptureRecord {
     }
 
     fn failure(&mut self, failure: CaptureFailure) -> CallToolResult {
+        self.abandon_outcome();
         let request_id = self.operation.snapshot().request_id;
         let mut payload = json!({
             "requestId": request_id,
@@ -84,6 +92,7 @@ impl CaptureRecord {
 
 impl Drop for CaptureRecord {
     fn drop(&mut self) {
+        self.abandon_outcome();
         if !self.finished {
             self.finish("cancelled", self.sent_outcome());
         }
@@ -144,10 +153,9 @@ impl McpReadContext {
         arguments: Value,
         lease: Option<McpRequestLease>,
     ) -> CallToolResult {
-        let sent = Arc::new(AtomicBool::new(false));
         let mut record = CaptureRecord {
             operation: self.operations.begin("viewport_capture", &arguments),
-            sent: Arc::clone(&sent),
+            gate: None,
             finished: false,
         };
         let input = match self.catalog.validate_call("viewport_capture", &arguments) {
@@ -182,13 +190,15 @@ impl McpReadContext {
                 "撮影用ディレクトリを利用できません。",
             ));
         };
-        let Some(_guard) = store.try_begin() else {
+        let Some(guard) = store.try_begin() else {
             return record.failure(CaptureFailure::local(
                 "notApplied",
                 "rejected",
                 "別の撮影が進行中です。完了してからやり直してください。",
             ));
         };
+        let gate = CaptureSendGate::new(guard);
+        record.gate = Some(Arc::clone(&gate));
         let permit = match self.authorize_capture(&lease, &params).await {
             Ok(permit) => permit,
             Err(message) => {
@@ -267,24 +277,30 @@ impl McpReadContext {
             max_width,
             max_height,
         };
+        let capture = self.bridge().spawn_capture(
+            bridge_lease.clone(),
+            request,
+            CAPTURE_EXCLUSION_LIMIT,
+            Arc::clone(&gate),
+        );
         let captured = tokio::select! {
             biased;
             _ = tokio::time::sleep_until(lease.request_deadline()) => {
                 return record.failure(CaptureFailure::interrupted(
-                    record.sent_outcome(), "timedOut", "MCP書き込み要求の全体期限を超えました。"
+                    record.abandon_outcome(), "timedOut", "MCP書き込み要求の全体期限を超えました。"
                 ));
             }
             _ = lease.request_cancelled() => {
                 return record.failure(CaptureFailure::interrupted(
-                    record.sent_outcome(), "cancelled", "MCP要求が取り消されました。"
+                    record.abandon_outcome(), "cancelled", "MCP要求が取り消されました。"
                 ));
             }
             _ = lease.authorization_cancelled() => {
                 return record.failure(CaptureFailure::interrupted(
-                    record.sent_outcome(), "cancelled", "MCP要求の許可が失効しました。"
+                    record.abandon_outcome(), "cancelled", "MCP要求の許可が失効しました。"
                 ));
             }
-            result = self.bridge().capture_deterministic(&bridge_lease, &request, timeout, &sent) => result,
+            result = capture => result.unwrap_or(Err(CaptureError::ConnectionChanged)),
         };
         let completed = match captured {
             Ok(completed) => completed,
