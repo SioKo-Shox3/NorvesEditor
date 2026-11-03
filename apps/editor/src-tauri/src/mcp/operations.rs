@@ -252,7 +252,8 @@ impl OperationHandle {
         record.pending = update.pending;
         record.retry_allowed = update.retry_allowed;
         record.actor_finished = update.actor_finished;
-        record.summary = summary(update.outcome, update.pending).to_owned();
+        record.summary =
+            record_summary(&record.tool, update.result, update.outcome, update.pending).to_owned();
         // 同一要求の更新順を保存・通知まで保つ。このロックをBridge I/Oへ持ち出さない。
         self.store.publish(record.clone());
     }
@@ -295,6 +296,19 @@ pub(crate) fn result_kind(
     }
 }
 
+fn record_summary(tool: &str, result: &str, outcome: &str, pending: bool) -> &'static str {
+    // 撮影の失敗はoutcomeだけでは適用状況を表せないため、道具とresultも見る。
+    match (tool, result, outcome, pending) {
+        ("viewport_capture", "failed", "applied", false) => {
+            "撮影は行われましたが、画像を確認できません。自動再送せず、撮影用ディレクトリと要求IDを確認してください。"
+        }
+        ("viewport_capture", "failed", "rejected", false) => {
+            "エンジンで撮影が失敗しました。固定刻みが進んだ可能性があります。自動再送しません。"
+        }
+        _ => summary(outcome, pending),
+    }
+}
+
 pub(crate) fn summary(outcome: &str, pending: bool) -> &'static str {
     match (outcome, pending) {
         ("unknown", _) => "操作結果は不明です。自動再送せず、要求IDとエディタの状態を確認してください。",
@@ -333,6 +347,9 @@ fn known_tool(name: &str) -> &'static str {
         "schema_get_snapshot" => "schema_get_snapshot",
         "asset_get_manifest" => "asset_get_manifest",
         "asset_resolve" => "asset_resolve",
+        "asset_get_properties" => "asset_get_properties",
+        "asset_set_property" => "asset_set_property",
+        "asset_save" => "asset_save",
         "logs_get_recent" => "logs_get_recent",
         "viewport_get_thumbnail" => "viewport_get_thumbnail",
         _ => "unknown_tool",

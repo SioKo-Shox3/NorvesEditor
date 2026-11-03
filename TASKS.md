@@ -465,7 +465,7 @@ M2 の共通規則:
 - notes: 危険地帯(プロトコルのスキーマと互換性・C++ SDK の公開 API)。評価者を通し、コミット本文を書く。互換性は `docs/agent-guide/protocol-schema.md` に従い、能力で交渉する。線の上の名前は NorvesLib の GR137 の節(`Docs/Plans/GameFeatureRoadmap.md`)に合わせる。NorvesLib の `NorvesLibBridgeAdapter` から `BridgeAssetPropertyEditor` へつなぐ作業は NorvesLib 側なので、終わったら PROGRESS.md の Notes に `要起票:` で残す。
 
 ## E4-002: MCP の道具から資産のプロパティの一覧・設定・保存を呼ぶ
-- status: todo
+- status: done
 - after: E4-001
 - done-when: 能力 `asset.edit` がある接続だけに、一覧の読み取りの道具と、設定・保存の書き込みの道具が出る。能力が無い・未接続・読み取りのみのモードでは、書き込みの道具は出ない。params は埋め込みの spec と意味が一致し、未知の項目・型違い・上限違反は送る前に拒否する。設定は共通の列(edit_service)を通り、言語モデル起源の履歴に積まれる。画面の Ctrl+Z に当たる取り消しで、`previousValue` に戻る。MCP から Bridge へ直接は書かない。保存は要求ごとの確認(MCP-022)を必須にする。保存は履歴に積まず、取り消せない操作として操作記録に残す。拒否(理由コード付き)・確認未完了・能力なしの要求は適用されない。通信断と時間切れは「結果不明」として拒否と区別し、自動で再送しない。範囲を指定した許可が資産を表せない場合は、拒否する側に倒し、その扱いを PROGRESS.md に記録する。`scripts/verify-mcp-e2e.ps1` の受入の印に `MCP_ACCEPTANCE_OK asset-edit-save-undo` を足し、実 HTTP とモックで次を確かめる。一覧→設定→保存→一覧で値が一致する。取り消しで前の値に戻る。型違いは拒否される。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
@@ -549,7 +549,7 @@ M2 の共通規則:
 - from: E4-004
 
 ## E4-004-P1: 撮影の操作記録の要約を、画像検証の失敗とエンジンの失敗に合わせる
-- status: todo
+- status: done
 - done-when: `mcp/operations.rs` の `OperationHandle::finish` はいま、記録の `summary` を outcome と pending だけで決めている(`operations.rs:255`)。このため撮影の画像検証の失敗(`capture/tool.rs` の `CaptureFailure::invalid_image`、outcome `applied`・result `failed`)では、操作記録に「操作が完了しました。」と出る。エンジンが撮影に失敗したとき(`CaptureError::Failed`、outcome `rejected`・result `failed`)は「変更は適用されていません。」と出る。これを直し、前者は「撮影は行われたが画像を確認できない」こと、後者は「固定刻みが進んだ可能性があり、自動再送しない」ことを表す要約にする。単体試験で、2 つの場合の記録の `summary` にどちらの誤った文言も含まれないことを確かめる。ほかの道具と ほかの outcome の要約は変えない。書き込み道具の拒否(outcome `notApplied`・result `failed`/`rejected`)を含め、既存の試験が書き換えなしで通る。
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
@@ -568,3 +568,26 @@ M2 の共通規則:
 - paths: apps/editor/src-tauri/src/mcp/capture.rs, apps/editor/src-tauri/src/mcp/capture/**, apps/editor/src-tauri/src/bridge_state.rs, bridge/crates/norves-bridge-editor-client/src/capture.rs, docs/memory-buffer-policy.md
 - from: E4-004
 - notes: 危険地帯(Rust の async タスクの寿命、撮影の排他とバッファの所有)。評価者を通す。エンジンが受け付けを返す前に打ち切った場合は `captureId` が分からないので、その場合に何を完了とみなすか(世代の変更と上限時間だけで外す、など)を実装で決め、試験と方針の文書に書く。
+
+## E4-004-P1-CHECK: 撮影の操作記録の要約を、画像検証の失敗とエンジンの失敗に合わせる(後回しにしたアプリの起動の確かめ)
+- status: todo
+- check: launch
+- gpu: exclusive
+- done-when: E4-004-P1 で、当分アプリを起動しない決まりのため後回しにした確かめ(下の verify)を回し、E4-004-P1 の done-when を満たすことを確かめる。満たさなければ E4-004-P1 の done-when と paths の範囲で直す。
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- paths: apps/editor/src-tauri/src/mcp/operations.rs, apps/editor/src-tauri/src/mcp/operations/**, apps/editor/src-tauri/src/mcp/capture/**
+- from: E4-004-P1
+
+## E4-002-CHECK: MCP の道具から資産のプロパティの一覧・設定・保存を呼ぶ(後回しにしたアプリの起動の確かめ)
+- status: todo
+- check: launch
+- gpu: exclusive
+- done-when: E4-002 で、当分アプリを起動しない決まりのため後回しにした確かめ(下の verify)を回し、E4-002 の done-when を満たすことを確かめる。満たさなければ E4-002 の done-when と paths の範囲で直す。
+- verify: `cargo fmt --manifest-path apps/editor/src-tauri/Cargo.toml --all -- --check`
+- verify: `cargo clippy --manifest-path apps/editor/src-tauri/Cargo.toml --all-targets -- -D warnings`
+- verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-mcp-e2e.ps1`
+- paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/edit_service.rs, apps/editor/src-tauri/src/edit_service/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/tests/mcp_e2e.rs, scripts/verify-mcp-e2e.ps1, bridge/ts/packages/bridge-ui/src/ipc-types.ts, apps/editor/src/state/**
+- from: E4-002

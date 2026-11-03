@@ -49,6 +49,12 @@ pub(crate) enum HistoryRecord {
         old_value: Value,
         new_value: Value,
     },
+    SetAssetProperty {
+        logical_path: String,
+        path: String,
+        old_value: Value,
+        new_value: Value,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -129,6 +135,11 @@ pub(crate) enum HistoryRequest {
         property: String,
         requested_value: Value,
         old_value: PriorCapture<Value>,
+    },
+    SetAssetProperty {
+        logical_path: String,
+        path: String,
+        requested_value: Value,
     },
     /// 成功した削除は履歴と補正情報を空にする。削除自体は記録しない。
     DeleteObject { object_id: String },
@@ -399,6 +410,11 @@ pub(super) enum PreparedHistoryRequest {
         requested_value: Value,
         old_value: Option<Value>,
     },
+    SetAssetProperty {
+        logical_path: String,
+        path: String,
+        requested_value: Value,
+    },
     DeleteObject {
         object_id: String,
     },
@@ -563,7 +579,7 @@ impl HistoryState {
         generation: u64,
         result: Value,
     ) -> Result<bool, BackendError> {
-        if result.get("accepted").and_then(Value::as_bool) != Some(true) {
+        if !history_result_accepted(&action.record, &result) {
             self.discard_action(&action);
             return Err(BackendError::Request {
                 message:
@@ -851,7 +867,7 @@ impl HistoryState {
         context: HistoryOperationContext,
         result: &Value,
     ) -> Result<bool, BackendError> {
-        if result.get("accepted").and_then(Value::as_bool) != Some(true) {
+        if !history_result_accepted(&step.record, result) {
             return Ok(false);
         }
         let updated_record = updated_history_record(&step.record, action.direction, result)?;
@@ -1151,6 +1167,8 @@ impl HistoryState {
                     CorrectionValue::Property(value.clone()),
                 );
             }
+            (HistoryRecord::SetAssetProperty { .. }, HistoryRecord::SetAssetProperty { .. }, _) => {
+            }
             _ => {}
         }
     }
@@ -1229,6 +1247,15 @@ impl HistoryState {
                     old_value,
                 })
             }
+            HistoryRequest::SetAssetProperty {
+                logical_path,
+                path,
+                requested_value,
+            } => Ok(PreparedHistoryRequest::SetAssetProperty {
+                logical_path,
+                path,
+                requested_value,
+            }),
             HistoryRequest::DeleteObject { object_id } => {
                 Ok(PreparedHistoryRequest::DeleteObject { object_id })
             }
@@ -1296,7 +1323,13 @@ impl HistoryState {
         context: HistoryOperationContext,
         result: QueuedEditResult,
     ) {
-        if result.value.get("accepted").and_then(Value::as_bool) != Some(true) {
+        let accepted = match &prepared {
+            PreparedHistoryRequest::SetAssetProperty { .. } => {
+                norves_bridge_editor_client::parse_asset_set_property_result(&result.value).is_ok()
+            }
+            _ => result.value.get("accepted").and_then(Value::as_bool) == Some(true),
+        };
+        if !accepted {
             return;
         }
 
@@ -1419,6 +1452,26 @@ impl HistoryState {
                     .map(|old_value| HistoryRecord::SetProperty {
                         object_id,
                         property,
+                        old_value,
+                        new_value,
+                    })
+            }
+            PreparedHistoryRequest::SetAssetProperty {
+                logical_path,
+                path,
+                requested_value,
+            } => {
+                let old_value = result.value.get("previousValue").cloned();
+                let new_value = result
+                    .value
+                    .get("appliedValue")
+                    .cloned()
+                    .unwrap_or(requested_value);
+                old_value
+                    .filter(|old_value| !property_values_equal(old_value, &new_value))
+                    .map(|old_value| HistoryRecord::SetAssetProperty {
+                        logical_path,
+                        path,
                         old_value,
                         new_value,
                     })
@@ -1751,6 +1804,7 @@ fn replace_record_ids(record: &mut HistoryRecord, old_id: &str, new_id: &str) {
             replace_option(new_parent_id);
         }
         HistoryRecord::SetProperty { object_id, .. } => replace(object_id),
+        HistoryRecord::SetAssetProperty { .. } => {}
     }
 }
 
@@ -1761,7 +1815,17 @@ impl HistoryRecord {
             Self::Duplicate { .. } => "オブジェクトを複製",
             Self::Reparent { .. } => "親を変更",
             Self::SetProperty { .. } => "プロパティを変更",
+            Self::SetAssetProperty { .. } => "資産のプロパティを変更",
         }
+    }
+}
+
+pub(super) fn history_result_accepted(record: &HistoryRecord, result: &Value) -> bool {
+    match record {
+        HistoryRecord::SetAssetProperty { .. } => {
+            norves_bridge_editor_client::parse_asset_set_property_result(result).is_ok()
+        }
+        _ => result.get("accepted").and_then(Value::as_bool) == Some(true),
     }
 }
 

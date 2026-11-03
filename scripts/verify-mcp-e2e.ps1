@@ -30,7 +30,7 @@ try {
         'MCP_ACCEPTANCE_OK authentication-origin-host', 'MCP_ACCEPTANCE_OK disabled',
         'MCP_ACCEPTANCE_OK reads-paging-logs-image', 'MCP_ACCEPTANCE_OK scope-group-remap-ui-undo',
         'MCP_ACCEPTANCE_OK mandatory-confirmation-delete-history', 'MCP_ACCEPTANCE_OK reconnect-cursor-group',
-        'MCP_ACCEPTANCE_OK token-regeneration',
+        'MCP_ACCEPTANCE_OK token-regeneration', 'MCP_ACCEPTANCE_OK asset-edit-save-undo',
         'MCP_ACCEPTANCE_OK deterministic-capture',
         'MCP_ACCEPTANCE_OK cancel-response-record 2026-07-28 applied',
         'MCP_ACCEPTANCE_OK cancel-response-record 2026-07-28 rejected',
@@ -40,7 +40,7 @@ try {
         if (-not $output.Contains($marker)) { throw "受入証拠がありません: $marker" }
     }
     # 一方の版だけの成功や試験の削除を完了として扱わない。
-    foreach ($scenario in @('reads-paging-logs-image', 'scope-group-remap-ui-undo', 'mandatory-confirmation-delete-history', 'reconnect-cursor-group', 'token-regeneration')) {
+    foreach ($scenario in @('reads-paging-logs-image', 'scope-group-remap-ui-undo', 'mandatory-confirmation-delete-history', 'reconnect-cursor-group', 'token-regeneration', 'asset-edit-save-undo')) {
         if ([regex]::Matches($output, "MCP_ACCEPTANCE_OK $scenario").Count -ne 2) {
             throw "両版の受入証拠が揃っていません: $scenario"
         }

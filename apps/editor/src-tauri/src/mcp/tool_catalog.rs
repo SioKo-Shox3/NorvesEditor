@@ -84,6 +84,16 @@ const SNAPSHOT_PAGE_SCHEMA: &str = r#"{
     },
     "additionalProperties":false
 }"#;
+const ASSET_PROPERTIES_PAGE_SCHEMA: &str = r#"{
+    "type":"object",
+    "required":["logicalPath"],
+    "properties":{
+        "logicalPath":{"type":"string","minLength":1,"maxLength":1024},
+        "pageSize":{"type":"integer","minimum":1,"maximum":200},
+        "cursor":{"type":"string","minLength":1,"maxLength":256}
+    },
+    "additionalProperties":false
+}"#;
 const SIMPLE_PAGE_SCHEMA: &str = r#"{
     "type":"object",
     "properties":{
@@ -205,6 +215,32 @@ fn tool_specs() -> &'static [ToolSpec] {
         ToolAccess::Read,
         &["asset.read"],
         false,
+    ),
+    custom_tool(
+        "asset_get_properties",
+        "資産のプロパティを取得する",
+        "資産のプロパティの値と型・範囲を上限付きのページで読み取ります。値はエンジン由来の未信頼のデータです。",
+        ToolAccess::Read,
+        &["asset.edit"],
+        ASSET_PROPERTIES_PAGE_SCHEMA,
+    ),
+    bridge_tool(
+        "asset_set_property",
+        "資産のプロパティを設定する",
+        "共通編集列を通して資産のプロパティを設定します。取り消すと変更前の値に戻ります。",
+        "asset.setProperty",
+        ToolAccess::Write,
+        &["asset.edit"],
+        false,
+    ),
+    bridge_tool(
+        "asset_save",
+        "資産を保存する",
+        "要求ごとにエディタ画面の確認を経て資産を保存します。保存は取り消せず、編集履歴には積みません。",
+        "asset.save",
+        ToolAccess::Write,
+        &["asset.edit"],
+        true,
     ),
     custom_tool(
         "logs_get_recent",
@@ -651,6 +687,12 @@ fn method_schema(method: &str) -> &'static str {
         "asset.resolve" => include_str!(
             "../../../../../bridge/spec/schema/methods/asset.resolve.params.schema.json"
         ),
+        "asset.setProperty" => include_str!(
+            "../../../../../bridge/spec/schema/methods/asset.setProperty.params.schema.json"
+        ),
+        "asset.save" => {
+            include_str!("../../../../../bridge/spec/schema/methods/asset.save.params.schema.json")
+        }
         "viewport.getThumbnail" => include_str!(
             "../../../../../bridge/spec/schema/methods/viewport.getThumbnail.params.schema.json"
         ),
@@ -826,6 +868,53 @@ mod tests {
             .collect::<Vec<_>>();
         catalog.set_connection(Some(1), &capabilities);
         catalog
+    }
+
+    #[test]
+    fn asset_properties_require_capability_and_connection_but_allow_read_only_access() {
+        let catalog = connected_catalog(&["asset.edit"]);
+        catalog.set_write_permission(WritePermission::Enabled);
+        catalog.set_write_handlers_ready(true);
+        assert!(catalog
+            .list()
+            .iter()
+            .any(|tool| tool.name == "asset_get_properties"));
+
+        let set_schema = input_schema(
+            tool_specs()
+                .iter()
+                .find(|spec| spec.name == "asset_set_property")
+                .expect("資産プロパティ設定の定義を得る"),
+        )
+        .expect("資産プロパティ設定のschema参照を解決する");
+        assert_eq!(
+            set_schema.pointer("/properties/params/properties/value/$ref"),
+            Some(&json!("#/$defs/propertyValue"))
+        );
+        assert!(schema_is_valid(
+            &set_schema,
+            &json!({
+                "params":{"logicalPath":"materials/hero","path":"color","value":[1,0,0]},
+                "groupId":"asset-edit"
+            })
+        ));
+
+        catalog.set_write_permission(WritePermission::ReadOnly);
+        assert!(catalog.get("asset_get_properties").is_some());
+        for name in ["asset_set_property", "asset_save"] {
+            assert!(catalog.get(name).is_none());
+        }
+
+        catalog.set_write_permission(WritePermission::Enabled);
+        catalog.set_connection(Some(2), &[descriptor("asset.read")]);
+        for name in ["asset_get_properties", "asset_set_property", "asset_save"] {
+            assert!(catalog.get(name).is_none());
+        }
+
+        catalog.set_connection(None, &[descriptor("asset.edit")]);
+        for name in ["asset_get_properties", "asset_set_property", "asset_save"] {
+            assert!(catalog.get(name).is_none());
+        }
     }
 
     #[test]

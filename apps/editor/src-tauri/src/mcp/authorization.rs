@@ -92,6 +92,13 @@ pub(crate) enum McpWriteOperation {
     Property {
         object_id: String,
     },
+    AssetProperty {
+        logical_path: String,
+        path: String,
+    },
+    AssetSave {
+        logical_path: String,
+    },
     Create {
         parent_id: Option<String>,
     },
@@ -141,6 +148,13 @@ impl McpWriteOperation {
             "object.setProperty" => Ok(Self::Property {
                 object_id: required_id("objectId")?,
             }),
+            "asset.setProperty" => Ok(Self::AssetProperty {
+                logical_path: required_id("logicalPath")?,
+                path: required_id("path")?,
+            }),
+            "asset.save" => Ok(Self::AssetSave {
+                logical_path: required_id("logicalPath")?,
+            }),
             "scene.createObject" => Ok(Self::Create {
                 parent_id: optional_id("parentId")?,
             }),
@@ -172,6 +186,7 @@ impl McpWriteOperation {
     pub(crate) fn required_capabilities(&self) -> Vec<&'static str> {
         match self {
             Self::Property { .. } => vec!["object.edit", "object.query", "scene.query"],
+            Self::AssetProperty { .. } | Self::AssetSave { .. } => vec!["asset.edit"],
             Self::Create { .. } => vec!["scene.edit", "scene.query"],
             Self::Duplicate { .. } | Self::Reparent { .. } | Self::Delete { .. } => {
                 vec!["scene.edit", "scene.query"]
@@ -188,7 +203,7 @@ impl McpWriteOperation {
     /// 書き込み可モードでも、個別確認が欠かせない操作かを返す。
     pub(crate) fn requires_confirmation(&self) -> bool {
         match self {
-            Self::Delete { .. } | Self::ComponentRemove { .. } => true,
+            Self::Delete { .. } | Self::ComponentRemove { .. } | Self::AssetSave { .. } => true,
             Self::History(action) => action.records.iter().any(|record| {
                 matches!(
                     (record, action.direction),
@@ -216,6 +231,9 @@ fn history_required_capabilities(action: &McpHistoryAction) -> Vec<&'static str>
                 required.push("object.edit");
                 required.push("object.query");
             }
+            HistoryRecord::SetAssetProperty { .. } => {
+                required.push("asset.edit");
+            }
         }
     }
     required.sort_unstable();
@@ -235,6 +253,7 @@ pub(crate) enum ScopeError {
     ScopeRootUnknown,
     ObjectUnknown,
     ObjectOutsideScope,
+    AssetOutsideScope,
     ComponentMembershipUnknown,
     ComponentOutsideScope,
     TreeMalformed,
@@ -256,6 +275,7 @@ impl ScopeError {
             Self::ScopeRootUnknown => "許可範囲のシーンIDが現在のツリーに存在しません。",
             Self::ObjectUnknown => "対象IDがシーン内に存在することを確認できません。",
             Self::ObjectOutsideScope => "対象IDが許可されたシーン部分木の外にあります。",
+            Self::AssetOutsideScope => "許可範囲がシーンの部分木に限られているため、資産は編集・保存できません。範囲を指定しない許可で操作してください。",
             Self::ComponentMembershipUnknown => {
                 "componentの所属を確認できないため、操作を拒否しました。"
             }
@@ -435,6 +455,13 @@ impl McpSceneScopeIndex {
     pub(crate) fn check_operation(&self, operation: &McpWriteOperation) -> Result<(), ScopeError> {
         match operation {
             McpWriteOperation::Property { object_id } => self.check_object_or_component(object_id),
+            McpWriteOperation::AssetProperty { .. } | McpWriteOperation::AssetSave { .. } => {
+                if self.is_full_scene() {
+                    Ok(())
+                } else {
+                    Err(ScopeError::AssetOutsideScope)
+                }
+            }
             McpWriteOperation::Create { parent_id } => self.check_parent(parent_id.as_deref()),
             McpWriteOperation::Duplicate {
                 object_id,
@@ -598,6 +625,11 @@ impl McpSceneScopeIndex {
                 (HistoryRecord::SetProperty { object_id, .. }, _) => {
                     projected.check_object_or_component(object_id)?;
                 }
+                (HistoryRecord::SetAssetProperty { .. }, _) => {
+                    if !projected.is_full_scene() {
+                        return Err(ScopeError::AssetOutsideScope);
+                    }
+                }
             }
         }
         Ok(())
@@ -714,6 +746,7 @@ pub(crate) fn history_record_ids(action: &McpHistoryAction) -> HashSet<String> {
             HistoryRecord::SetProperty { object_id, .. } => {
                 ids.insert(object_id.clone());
             }
+            HistoryRecord::SetAssetProperty { .. } => {}
         }
     }
     ids

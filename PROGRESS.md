@@ -65,8 +65,6 @@
 
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
-- E4-004-P2: 撮影の実行を `BridgeFacade::spawn_capture`(`TaskTracker` で追跡するタスク)へ移し、排他権の受け渡しを `CaptureSendGate`(Pending/Sent/Abandoned を 1 つの Mutex で直列化)で決める。送る直前にタスクが排他権を受け取り、送信後に MCP の呼び出しを打ち切っても、完了イベント(成功・失敗)・世代の変化/切断・送信から `CAPTURE_EXCLUSION_LIMIT`(150 秒。MCP 書き込みの全体期限 125 秒より長い)まで持ち続ける。送る前の打ち切りはその場で外す。返す outcome と操作記録は変えていない。`shutdown_on_exit` で取り消しトークンを cancel しトラッカーを close/wait する。`capture/tool_tests.rs` に done-when の 4 件(送信後の取り消しで 2 件目を送らない・完了で解放・世代 1→2 で解放・上限で解放)。方針文書に 1 文。fmt / clippy -D warnings exit 0、`mcp::capture` 6 件×3 回・`bridge_state` 43 件・Bridge クライアント 134 件成功(単位の確かめの出力)。
-
 ## In progress
 - なし。承認済みE0〜E3の実装・受入・評価・コミット文面の整備は完了。過去の失敗・停止・差し戻しは保存したまま、最終PASSの証拠と区別する。
 
@@ -248,8 +246,22 @@
 - U7 実 HTTP とモックで同じ引数の撮影の一致を受け入れる: 着地(直し 0 回)
 - 要起票: 撮影後の画像検証の失敗は outcome `applied`・result `failed` で記録するが、`operations.rs` の `summary` は outcome だけで決まり「操作が完了しました。」と表示される。エンジンの `Failed` も outcome `rejected` のため「変更は適用されていません。」と出て、刻みが進んだ可能性と合わない。
 - 要起票: 撮影の待ちを取り消し・期限で打ち切ると同時 1 件の排他も外れるため、エンジン側の撮影がまだ続いているうちに次の撮影を受け付け得る(自動再送はしない)。
-- U1 Bridge の窓口に、排他権を持ち続ける撮影タスクの入口を足す: 着地(直し 0 回)
-- U3 方針文書に打ち切り後の排他の扱いを 1 文足す: 着地(直し 0 回)
-- U4 レビュー済みの U2 の差分を当て、試験 (3) を世代の変化で確かめる形に直す: 着地(直し 0 回)
-- E4-004-P2 判断: 受け付けの応答が届かず `captureId` が分からないまま打ち切られても、タスクは受け付けの応答を待ち続け、届かなければ世代の変化・切断・上限時間だけで排他を外す。`EventsLagged`・`Protocol` の失敗は完了が見えていないので、同じく世代の変化・切断・上限時間まで持ち続ける。
-- E4-004-P2 の起動の確かめは後回し(人の決まりでアプリを起動しない): src-tauri の `cargo test`(全件)・`cargo fmt --check`・`cargo clippy --all-targets -D warnings` と `scripts/verify-mcp-e2e.ps1` を `E4-004-P2-CHECK` でまとめて回す。
+
+- U1 撮影の失敗 2 種の操作記録の要約を、道具と result で選ぶ: 着地(直し 0 回)
+
+- E4-004-P1: 操作記録の `OperationHandle::finish` が要約を道具・result・outcome・pending から選ぶようにした(`record_summary`)。`viewport_capture` の画像検証の失敗(applied/failed)は「撮影は行われましたが、画像を確認できません。…」、エンジンの撮影失敗(rejected/failed)は「エンジンで撮影が失敗しました。固定刻みが進んだ可能性があります。自動再送しません。」になる。それ以外の組と、ほかの道具は従来の `summary(outcome, pending)` のまま(`mcp/writes.rs` の呼び出しも不変)。試験 `capture_failures_have_specific_summaries_without_changing_other_tools` を 1 件足した。単位の作業ツリーで fmt --check exit 0、`--lib mcp::operations` 7 件成功(既存 6 件は無改変)、`--lib mcp::capture` 2 件成功、clippy --all-targets -D warnings exit 0 を出力を開いて確認した。
+- E4-004-P1 の起動の確かめは後回し: タスクの verify(src-tauri 全体の `cargo test`・`cargo fmt --check`・`cargo clippy -D warnings`)は人の決まりで回していない。`E4-004-P1-CHECK` で全体の `cargo test` を回し、既存の試験が書き換えなしで通ることを確かめる。
+- E4-004 の Notes の 1 件目の要起票(撮影の要約)は E4-004-P1 で解消した。
+
+- E4-002: 範囲(`scene_root_id`)を指定した書き込みの許可では、資産はシーンの部分木で表せないため、資産の設定・保存と、資産の記録を含む取り消し・やり直しを拒否する側に倒した(送る前に拒否し、Bridge へは何も送らない)。
+- E4-002: 統合ブランチ(E4-004 の撮影)を取り込んだ。`mcp/reads.rs` の木を引く判定は、資産の設定・保存では引かず、実行制御と撮影では範囲を指定した許可のときだけ引く形に両立させた。受入の印は `asset-edit-save-undo` と `deterministic-capture` の両方を待つ。取り込み後に `verify.ps1 -Cpp` は全ゲート `[OK]`(ctest 8/8、pnpm test 699 件)、src-tauri の `cargo check --all-targets` は exit 0。
+- E4-002: 起動の確かめは後回し。実 HTTP と実モックでの `scripts/verify-mcp-e2e.ps1`(両版で `asset-edit-save-undo` の印)と、src-tauri の `cargo fmt --check`・`cargo clippy -D warnings`・`cargo test` は E4-002-CHECK で回す。モックの `asset.save` は読み戻さないため、受入の「保存→一覧で一致」は保存の中身までは確かめない。
+- U1 資産の道具を目録に足し、一覧の読み取りを実装する: 着地(直し 0 回)
+- U2 資産のプロパティの履歴記録と取り消し・やり直しを足す: 着地(直し 0 回)
+- U3 資産の書き込みの許可確認(送る前の検査・範囲・確認)を足す: 着地(直し 1 回)
+- U4 資産の書き込みを共通の編集列へつなぎ、道具を公開する: 着地(直し 0 回)
+- U6 受入の資産の場面を当て直し、操作記録に資産の道具名を足す: 着地(直し 0 回)
+- E4-002: MCP の道具に資産のプロパティの一覧 `asset_get_properties`(読み取り)と設定 `asset_set_property`・保存 `asset_save`(書き込み)を足した。能力 `asset.edit` がある接続だけに出し、書き込みの 2 道具は書き込みを許可したときだけ出る。設定は共通の編集列を通って言語モデル起源の履歴に積まれ、取り消し・やり直しは `asset.setProperty` に `previousValue`・適用値を送る。保存は要求ごとの確認を必須にし、履歴に積まず、結果と操作記録に取り消せない操作として残す。未知の項目・型違い・範囲外は送る前に拒否し、エンジンの拒否は理由コード付きで返す。送信後の時間切れ・通信断は結果不明として自動で再送しない。受入 `MCP_ACCEPTANCE_OK asset-edit-save-undo`(一覧→設定→保存→一覧の一致、UI の取り消しで前の値、型違いの拒否、保存の操作記録)を `mcp_e2e.rs` と `verify-mcp-e2e.ps1` に足した。`verify.ps1 -Cpp` は全ゲート `[OK]`(ctest 8/8、pnpm test 699 件)。
+- E4-002-CHECK: 実 HTTP と実モックで `scripts/verify-mcp-e2e.ps1` を回し、資産の受入 `asset-edit-save-undo` が両版で出ることを確かめる。
+- E4-002: 起動の確かめは後回し。実 HTTP と実モック(`NORVES_MOCK_PROFILE=mcp-edit`)での `scripts/verify-mcp-e2e.ps1`(両版で `asset-edit-save-undo` の印が出ること)と、`cargo fmt --check`・`cargo clippy -D warnings`・`cargo test` の単独実行は E4-002-CHECK で回す。受入場面はコンパイルだけを確かめた。
+- E4-002: モックの `asset.save` は保存先に書くだけで読み戻さないため、受入の「保存→一覧で一致」は保存の中身までは確かめない(E4-001 の Notes と同じ制限)。
