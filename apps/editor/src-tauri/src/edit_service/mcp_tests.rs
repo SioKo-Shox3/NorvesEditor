@@ -70,6 +70,268 @@ async fn wait_for_enqueued(service: &EditService) {
     .expect("要求が列へ入る");
 }
 
+#[tokio::test(start_paused = true)]
+async fn asset_writes_confirm_save_preserve_history_and_report_outcomes() {
+    let auth = McpAuthorization::default();
+    auth.set_write_settings(McpWriteSettings {
+        mode: McpWriteMode::Enabled,
+        scene_root_id: None,
+    })
+    .expect("資産の書き込みを許可する");
+    let (service, _control, handle, mut peer) =
+        test_service_with_peer_and_authorization(8, auth.clone());
+    let service = Arc::new(service);
+    let context = confirmed_context(&service, &["asset.edit", "scene.query"])
+        .with_write_service(service.clone());
+    context.set_write_permission(crate::mcp::tool_catalog::WritePermission::Enabled);
+    assert!(context.get_tool("asset_set_property").is_some());
+    assert!(context.get_tool("asset_save").is_some());
+
+    let edit_context = context.clone();
+    let edit_lease = auth.current_lease();
+    let edit = tokio::spawn(async move {
+        edit_context
+            .call_write_tool(
+                "asset_set_property",
+                json!({"params":{"logicalPath":"effects/a.vfx.json","path":"rate","value":6}}),
+                Some(edit_lease),
+            )
+            .await
+    });
+    for _ in 0..2 {
+        let (id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "asset.getProperties");
+        assert_eq!(
+            params.expect("資産の照会引数")["logicalPath"],
+            "effects/a.vfx.json"
+        );
+        respond(
+            &mut peer,
+            id,
+            json!({"logicalPath":"effects/a.vfx.json","properties":[{
+                "path":"rate","valueType":"number","value":5,"minimum":0,"maximum":10
+            }]}),
+        )
+        .await;
+    }
+    let (id, method, params) = next_request(&mut peer).await;
+    assert_eq!(method, "asset.setProperty");
+    assert_eq!(params.expect("資産の編集引数")["value"], 6);
+    respond(&mut peer, id, json!({"previousValue":5,"appliedValue":6})).await;
+    let edit_result = edit
+        .await
+        .expect("資産編集が終了する")
+        .structured_content
+        .expect("資産編集の結果がある");
+    assert_eq!(edit_result["outcome"], "applied");
+    assert_eq!(edit_result["completedCount"], 1);
+    assert_eq!(edit_result["automaticRetryAllowed"], false);
+    assert!(edit_result.get("undoable").is_none());
+    let before_save = service.history.lock().unwrap().undo_records();
+    assert_eq!(
+        before_save,
+        vec![HistoryRecord::SetAssetProperty {
+            logical_path: "effects/a.vfx.json".to_owned(),
+            path: "rate".to_owned(),
+            old_value: json!(5),
+            new_value: json!(6),
+        }]
+    );
+
+    let mut updates = auth.confirmations().subscribe();
+    let save_context = context.clone();
+    let save_lease = auth.current_lease();
+    let save = tokio::spawn(async move {
+        save_context
+            .call_write_tool(
+                "asset_save",
+                json!({"params":{"logicalPath":"effects/a.vfx.json"}}),
+                Some(save_lease),
+            )
+            .await
+    });
+    let confirm = confirmation(&mut updates, None).await;
+    assert_eq!(confirm.method, "asset.save");
+    assert!(!save.is_finished());
+    assert!(tokio::time::timeout(Duration::from_millis(20), peer.recv())
+        .await
+        .is_err());
+    assert!(auth.confirmations().approve(&confirm.id));
+    let (id, method, params) = next_request(&mut peer).await;
+    assert_eq!(method, "asset.save");
+    assert_eq!(
+        params.expect("資産の保存引数")["logicalPath"],
+        "effects/a.vfx.json"
+    );
+    respond(&mut peer, id, json!({"saved":true})).await;
+    let save_result = save
+        .await
+        .expect("資産保存が終了する")
+        .structured_content
+        .expect("資産保存の結果がある");
+    assert_eq!(save_result["outcome"], "applied");
+    assert_eq!(save_result["completedCount"], 1);
+    assert_eq!(save_result["automaticRetryAllowed"], false);
+    assert_eq!(save_result["undoable"], false);
+    assert_eq!(
+        save_result["historyNotice"],
+        "資産の保存は取り消せない操作です。編集履歴には積まず、操作記録に残します。"
+    );
+    assert_eq!(service.history.lock().unwrap().undo_records(), before_save);
+
+    for (name, current, target) in [("edit_undo", 6, 5), ("edit_redo", 5, 6)] {
+        let history_context = context.clone();
+        let history_lease = auth.current_lease();
+        let action = tokio::spawn(async move {
+            history_context
+                .call_write_tool(name, json!({}), Some(history_lease))
+                .await
+        });
+        loop {
+            let (id, method, params) = next_request(&mut peer).await;
+            match method.as_str() {
+                "scene.getTree" => {
+                    respond(&mut peer, id, json!({"root":{"id":"scene","children":[]}})).await;
+                }
+                "asset.getProperties" => {
+                    respond(
+                        &mut peer,
+                        id,
+                        json!({"logicalPath":"effects/a.vfx.json","properties":[{
+                            "path":"rate","valueType":"number","value":current,"minimum":0,"maximum":10
+                        }]}),
+                    )
+                    .await;
+                }
+                "asset.setProperty" => {
+                    assert_eq!(params.expect("履歴操作の引数")["value"], target);
+                    respond(
+                        &mut peer,
+                        id,
+                        json!({"previousValue":current,"appliedValue":target}),
+                    )
+                    .await;
+                    break;
+                }
+                _ => panic!("予期しないBridge要求: {method}"),
+            }
+        }
+        let result = action
+            .await
+            .expect("履歴操作が終了する")
+            .structured_content
+            .expect("履歴操作の結果がある");
+        assert_eq!(result["outcome"], "applied", "{name}");
+        assert_eq!(result["completedCount"], 1, "{name}");
+    }
+
+    let reject_context = context.clone();
+    let reject_lease = auth.current_lease();
+    let rejected = tokio::spawn(async move {
+        reject_context
+            .call_write_tool(
+                "asset_save",
+                json!({"params":{"logicalPath":"effects/a.vfx.json"}}),
+                Some(reject_lease),
+            )
+            .await
+    });
+    let confirm = confirmation(&mut updates, Some(&confirm.id)).await;
+    assert!(auth.confirmations().approve(&confirm.id));
+    let (id, method, _) = next_request(&mut peer).await;
+    assert_eq!(method, "asset.save");
+    peer.send(response_frame(
+        id,
+        ResponsePayload::Error(BridgeError {
+            code: ErrorCode::try_from("ENGINE_ASSET_EDIT_REJECTED".to_owned()).unwrap(),
+            message: "保存を拒否しました。".to_owned(),
+            data: Some(json!({"reason":"あ".repeat(50),"path":"é".repeat(90)})),
+        }),
+    ))
+    .await
+    .expect("拒否応答を返す");
+    let rejected_result = rejected
+        .await
+        .expect("拒否された保存が終了する")
+        .structured_content
+        .expect("拒否結果がある");
+    assert_eq!(rejected_result["outcome"], "rejected");
+    assert_eq!(rejected_result["completedCount"], 0);
+    assert_eq!(rejected_result["automaticRetryAllowed"], false);
+    assert_eq!(rejected_result["engineError"]["reason"], "あ".repeat(42));
+    assert_eq!(rejected_result["engineError"]["path"], "é".repeat(64));
+
+    let timeout_context = context.clone();
+    let timeout_lease = auth.current_lease();
+    let timeout = tokio::spawn(async move {
+        timeout_context
+            .call_write_tool(
+                "asset_save",
+                json!({"params":{"logicalPath":"effects/a.vfx.json"}}),
+                Some(timeout_lease),
+            )
+            .await
+    });
+    let confirm = confirmation(&mut updates, Some(&confirm.id)).await;
+    assert!(auth.confirmations().approve(&confirm.id));
+    let (_id, method, _) = next_request(&mut peer).await;
+    assert_eq!(method, "asset.save");
+    tokio::time::advance(Duration::from_secs(6)).await;
+    let timeout_result = timeout
+        .await
+        .expect("時間切れの保存が終了する")
+        .structured_content
+        .expect("時間切れの結果がある");
+    assert_eq!(timeout_result["outcome"], "unknown");
+    assert_eq!(timeout_result["completedCount"], 0);
+    assert_eq!(timeout_result["automaticRetryAllowed"], false);
+    assert_eq!(timeout_result["operationResult"], "timedOut");
+    assert!(tokio::time::timeout(Duration::from_millis(20), peer.recv())
+        .await
+        .is_err());
+    service.shutdown().await;
+    handle.shutdown().await;
+
+    let auth = McpAuthorization::default();
+    auth.set_write_settings(McpWriteSettings {
+        mode: McpWriteMode::Enabled,
+        scene_root_id: None,
+    })
+    .expect("資産の書き込みを許可する");
+    let (service, _control, handle, mut peer) =
+        test_service_with_peer_and_authorization(8, auth.clone());
+    let service = Arc::new(service);
+    let context = confirmed_context(&service, &["asset.edit"]).with_write_service(service.clone());
+    context.set_write_permission(crate::mcp::tool_catalog::WritePermission::Enabled);
+    let mut updates = auth.confirmations().subscribe();
+    let lease = auth.current_lease();
+    let disconnected = tokio::spawn(async move {
+        context
+            .call_write_tool(
+                "asset_save",
+                json!({"params":{"logicalPath":"effects/a.vfx.json"}}),
+                Some(lease),
+            )
+            .await
+    });
+    let confirm = confirmation(&mut updates, None).await;
+    assert!(auth.confirmations().approve(&confirm.id));
+    let (_id, method, _) = next_request(&mut peer).await;
+    assert_eq!(method, "asset.save");
+    drop(peer);
+    let disconnected_result = disconnected
+        .await
+        .expect("通信断の保存が終了する")
+        .structured_content
+        .expect("通信断の結果がある");
+    assert_eq!(disconnected_result["outcome"], "unknown");
+    assert_eq!(disconnected_result["operationResult"], "unknown");
+    assert_eq!(disconnected_result["completedCount"], 0);
+    assert_eq!(disconnected_result["automaticRetryAllowed"], false);
+    service.shutdown().await;
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn queued_permit_reconfirms_changed_old_value_and_history_without_blocking_ui() {
     queued_reconfirmation_case(McpWriteMode::Confirm).await;

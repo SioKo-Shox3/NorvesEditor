@@ -40,6 +40,8 @@ pub(crate) fn is_implemented_write(name: &str) -> bool {
     matches!(
         name,
         "object_set_property"
+            | "asset_set_property"
+            | "asset_save"
             | "scene_create_object"
             | "scene_duplicate_object"
             | "scene_reparent_object"
@@ -229,6 +231,14 @@ fn write_result(
         Err(BackendError::Engine { code, message }) => {
             payload["engineError"] =
                 json!({"code":bounded(&code, 128), "message":bounded(&message, 4096)});
+            if code == norves_bridge_editor_client::ASSET_EDIT_REJECTED_CODE {
+                if let Some((reason, path)) = execution.engine_rejection() {
+                    payload["engineError"]["reason"] = json!(bounded(&reason, 128));
+                    if let Some(path) = path {
+                        payload["engineError"]["path"] = json!(bounded(&path, 128));
+                    }
+                }
+            }
         }
         Err(BackendError::Request { message }) => {
             payload["detail"] = json!(bounded(&message, 4096))
@@ -246,6 +256,10 @@ fn write_result(
         } else {
             "コンポーネントの付け外しは取り消せない操作です。履歴には積みません。"
         });
+    } else if name == "asset_save" {
+        payload["undoable"] = json!(false);
+        payload["historyNotice"] =
+            json!("資産の保存は取り消せない操作です。編集履歴には積まず、操作記録に残します。");
     } else if name.starts_with("runtime_") {
         payload["undoable"] = json!(false);
         payload["historyNotice"] = json!("実行制御は編集履歴に積みません。");

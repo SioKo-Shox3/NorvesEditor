@@ -178,6 +178,15 @@ impl BridgeFacade {
             Ok(ResponsePayload::Result(value)) => Ok(value),
             Ok(ResponsePayload::Error(error)) => {
                 if let Some(execution) = execution {
+                    if error.code.as_str() == norves_bridge_editor_client::ASSET_EDIT_REJECTED_CODE
+                    {
+                        if let Some(data) = error.data.as_ref() {
+                            if let Some(reason) = data.get("reason").and_then(Value::as_str) {
+                                let path = data.get("path").and_then(Value::as_str);
+                                execution.record_engine_rejection(reason, path);
+                            }
+                        }
+                    }
                     execution.rejected();
                 }
                 Err(error.into())

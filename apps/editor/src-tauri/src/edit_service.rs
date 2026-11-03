@@ -1291,7 +1291,7 @@ async fn run_history_action(
         .await?;
     validate_history_result(method, result_kind, &value)?;
     if let Some(execution) = execution {
-        execution.finished(&value);
+        execution.finished_with(history::history_result_accepted(&action.record, &value));
     }
     Ok(QueuedEditResult::plain(value))
 }
