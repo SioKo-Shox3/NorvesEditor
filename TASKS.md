@@ -503,7 +503,7 @@ M2 の共通規則:
 - notes: 危険地帯(バッファの所有・ファイルの場所の検証)。評価者を通す。実際のエンジンを相手にした一致の確認は、NorvesLib の `GAME-GR137-VFX-CHECK` の側で行う。
 
 ## E4-001-P2: 要件文書の NE15・NE19 の依存の記述を、NE19 の一部を先に入れた決定に合わせる
-- status: todo
+- status: done
 - done-when: `docs/mcp-and-edit-layer-requirements.md` を次の 3 点で直す。(1) 7章「E4 の中の依存」の「NE19 は NE15 の形と GR136 が前提」と「NE15 を E4 の最初に入れる」の行に、次の 3 つを書き足す。2026-11-03 の作者の指示で、NE19 の一部(資産のプロパティの一覧・設定・保存)を NE15 より先に入れたこと。`asset.setProperty` は `previousValue` を必ず返すので、NE15 の能力交渉(`returnPrevious`)を前提にしないこと。GR136 が前提になるのは NorvesLib の側の最初の対象(エフェクトの資産)で、エディタ側の仕様・SDK・モック・クライアントの前提ではないこと。(2) NE15 の節の「資産の値の設定（NE19）も同じ形にする」を、6章の NE19 の決定と矛盾しない文に直す。決定では `previousValue` が必須で、交渉はない。(3) NE19 の節の「値の設定（NE15 と同じく旧値を返せる）」も同じく直す。直したあと、文書の中で NE15 と NE19 の旧値の扱いの記述が食い違わない。
 - verify: `git grep -n -e "NE15" -e "previousValue" -e "returnPrevious" -- docs/mcp-and-edit-layer-requirements.md`
 - paths: docs/mcp-and-edit-layer-requirements.md
