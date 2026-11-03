@@ -265,3 +265,11 @@
 - E4-002-CHECK: 実 HTTP と実モックで `scripts/verify-mcp-e2e.ps1` を回し、資産の受入 `asset-edit-save-undo` が両版で出ることを確かめる。
 - E4-002: 起動の確かめは後回し。実 HTTP と実モック(`NORVES_MOCK_PROFILE=mcp-edit`)での `scripts/verify-mcp-e2e.ps1`(両版で `asset-edit-save-undo` の印が出ること)と、`cargo fmt --check`・`cargo clippy -D warnings`・`cargo test` の単独実行は E4-002-CHECK で回す。受入場面はコンパイルだけを確かめた。
 - E4-002: モックの `asset.save` は保存先に書くだけで読み戻さないため、受入の「保存→一覧で一致」は保存の中身までは確かめない(E4-001 の Notes と同じ制限)。
+
+- E4-004-P2: 撮影の実行を `BridgeFacade::spawn_capture`(`TaskTracker` で追跡するタスク)へ移し、排他権の受け渡しを `CaptureSendGate`(Pending/Sent/Abandoned を 1 つの Mutex で直列化)で決める。送る直前にタスクが排他権を受け取り、送信後に MCP の呼び出しを打ち切っても、完了イベント(成功・失敗)・世代の変化/切断・送信から `CAPTURE_EXCLUSION_LIMIT`(150 秒。MCP 書き込みの全体期限 125 秒より長い)まで持ち続ける。送る前の打ち切りはその場で外す。返す outcome と操作記録は変えていない。`shutdown_on_exit` で取り消しトークンを cancel しトラッカーを close/wait する。`capture/tool_tests.rs` に done-when の 4 件(送信後の取り消しで 2 件目を送らない・完了で解放・世代 1→2 で解放・上限で解放)。方針文書に 1 文。fmt / clippy -D warnings exit 0、`mcp::capture` 6 件×3 回・`bridge_state` 43 件・Bridge クライアント 134 件成功(単位の確かめの出力)。
+
+- U1 Bridge の窓口に、排他権を持ち続ける撮影タスクの入口を足す: 着地(直し 0 回)
+- U3 方針文書に打ち切り後の排他の扱いを 1 文足す: 着地(直し 0 回)
+- U4 レビュー済みの U2 の差分を当て、試験 (3) を世代の変化で確かめる形に直す: 着地(直し 0 回)
+- E4-004-P2 判断: 受け付けの応答が届かず `captureId` が分からないまま打ち切られても、タスクは受け付けの応答を待ち続け、届かなければ世代の変化・切断・上限時間だけで排他を外す。`EventsLagged`・`Protocol` の失敗は完了が見えていないので、同じく世代の変化・切断・上限時間まで持ち続ける。
+- E4-004-P2 の起動の確かめは後回し(人の決まりでアプリを起動しない): src-tauri の `cargo test`(全件)・`cargo fmt --check`・`cargo clippy --all-targets -D warnings` と `scripts/verify-mcp-e2e.ps1` を `E4-004-P2-CHECK` でまとめて回す。

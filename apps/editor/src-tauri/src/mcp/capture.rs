@@ -1,6 +1,8 @@
 //! MCP の撮影用ディレクトリの命名、排他、保存期間を管理する。
 
 mod tool;
+#[cfg(test)]
+mod tool_tests;
 
 use std::{
     fs, io,
@@ -13,6 +15,10 @@ use std::{
 };
 
 use tokio::sync::{Mutex, OwnedMutexGuard};
+
+/// 撮影要求の送信から排他を持ち続ける上限。MCP 書き込み要求の全体期限(125 秒)より
+/// 長くし、呼び出しの打ち切りより先に切れないようにする。
+pub(crate) const CAPTURE_EXCLUSION_LIMIT: Duration = Duration::from_secs(150);
 
 pub(crate) const CAPTURE_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 pub(crate) const MAX_RETAINED_CAPTURES: usize = 200;
