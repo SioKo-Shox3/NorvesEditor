@@ -169,15 +169,21 @@ Use this as the primary gate before committing or merging.
 # Protocol fixtures + Rust gates + frontend typecheck
 ./scripts/verify.ps1
 
-# Also include C++ build and ctest (requires build/cpp to be pre-configured)
+# 未構成なら構成してから C++ のビルドと ctest も実行
 ./scripts/verify.ps1 -Cpp
+
+# C++ のビルドディレクトリを指定
+./scripts/verify.ps1 -Cpp -CppBuildDir $env:TEMP\norves-cpp
 
 # Skip frontend pnpm gates
 ./scripts/verify.ps1 -SkipFrontend
 ```
 
-When `-Cpp` is passed but `build/cpp` does not exist, the script prints a
-`[SKIP]` notice and continues. Always run the script from the repository root.
+`-Cpp` を指定すると C++ 段を実行する。ビルドディレクトリの既定値は `build/cpp` で、
+`-CppBuildDir` で変更できる。相対パスはリポジトリのルートを基準に解決する。
+指定先に `CMakeCache.txt` が無ければ、構成ゲートとして
+`cmake -S bridge/cpp -B <dir> -G "Visual Studio 17 2022"` を実行してからビルドと ctest を実行する。
+構成に失敗すると非 0 で停止する。スクリプトは常にリポジトリのルートから実行する。
 
 ---
 

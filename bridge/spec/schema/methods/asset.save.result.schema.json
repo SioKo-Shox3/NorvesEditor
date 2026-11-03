@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/asset.save.result.schema.json",
+  "title": "asset.save response result",
+  "description": "Acknowledgement that a synchronous asset save completed. Failure is returned as an error response with code ENGINE_ASSET_EDIT_REJECTED and an English message. Its data object contains string fields 'method' (asset.save) and 'reason' (for example unknown_asset or save_failed), and a string 'path' field only when applicable.",
+  "type": "object",
+  "required": ["saved"],
+  "additionalProperties": false,
+  "properties": {
+    "saved": {
+      "description": "Indicates that the asset was saved successfully.",
+      "const": true
+    }
+  }
+}

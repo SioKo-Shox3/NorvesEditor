@@ -12,8 +12,9 @@ use norves_bridge_core::{
     CorrelationId, MethodName, ResponsePayload, ValidatedEnvelope, VersionString,
 };
 use norves_bridge_editor_client::{
-    capture_deterministic, CaptureError, CaptureRequest, CaptureTimeoutPhase, DispatchHandle,
-    Dispatcher, Transport, TransportError, WsClientTransport,
+    capture_deterministic, parse_capabilities_result, AssetEditClient, AssetEditError,
+    AssetEditRejectReason, AssetProperties, CaptureError, CaptureRequest, CaptureTimeoutPhase,
+    DispatchHandle, Dispatcher, Transport, TransportError, WsClientTransport,
 };
 use serde_json::{json, Value};
 
@@ -575,5 +576,162 @@ async fn mcp_profile_capture_stall_times_out_during_completion() {
         Err(CaptureError::Timeout(CaptureTimeoutPhase::Completion))
     );
     assert_eq!(std::fs::read_dir(&dir.0).expect("撮影先を読む").count(), 0);
+    handle.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_profile_edits_and_saves_asset_properties_from_process() {
+    let exe = mock_engine_path();
+    if exe.as_os_str().is_empty() {
+        return;
+    }
+
+    let port = pick_free_port();
+    let _engine = spawn_ready_engine(&exe, port);
+    let url = format!("ws://127.0.0.1:{port}");
+    let transport = connect_with_retry(&url).await;
+    let handle = Dispatcher::spawn(transport);
+
+    let hello = request_result(
+        &handle,
+        "mcp-asset-edit-hello",
+        "bridge.hello",
+        json!({ "protocolVersions": ["0.2"] }),
+    )
+    .await;
+    assert_eq!(
+        hello.get("protocolVersion"),
+        Some(&json!("0.2")),
+        "合意したプロトコルバージョンが異なります"
+    );
+
+    let capabilities = request_result(
+        &handle,
+        "mcp-asset-edit-capabilities",
+        "bridge.getCapabilities",
+        json!({}),
+    )
+    .await;
+    let capabilities = parse_capabilities_result(&capabilities).expect("能力一覧を解析できる");
+    assert!(
+        capabilities
+            .capabilities
+            .iter()
+            .any(|capability| capability.name.as_str() == "asset.edit"),
+        "資産編集の能力が広告されていません"
+    );
+    let client = AssetEditClient::new(handle.clone(), &capabilities, version(), None, RECV_TIMEOUT);
+
+    let logical_path = "effects/mcp-test.vfx.json";
+    let rate_path = "emitters/main/rate";
+    let label_path = "emitters/main/label";
+    let looping_path = "emitters/main/looping";
+    let initial = with_timeout("asset.getProperties", client.get_properties(logical_path))
+        .await
+        .expect("資産のプロパティ一覧を取得できる");
+    assert_eq!(initial.logical_path, logical_path, "資産のパスが異なります");
+    assert_eq!(initial.properties.len(), 3, "プロパティは3項目です");
+
+    let find_initial = |path: &str| {
+        initial
+            .properties
+            .iter()
+            .find(|property| property.path == path)
+            .unwrap_or_else(|| panic!("初期プロパティがありません: {path}"))
+    };
+    for (path, value_type, value) in [
+        (rate_path, "number", json!(30)),
+        (label_path, "string", json!("spark")),
+        (looping_path, "boolean", json!(true)),
+    ] {
+        let property = find_initial(path);
+        assert_eq!(
+            property.value_type, value_type,
+            "値の型が異なります: {path}"
+        );
+        assert_eq!(property.value, value, "初期値が異なります: {path}");
+    }
+    let rate = find_initial(rate_path);
+    assert_eq!(rate.unit.as_deref(), Some("1/s"), "rate の単位が異なります");
+    assert_eq!(rate.minimum, Some(0.0), "rate の最小値が異なります");
+    assert_eq!(rate.maximum, Some(1000.0), "rate の最大値が異なります");
+
+    let expected_values = [
+        (rate_path, json!(120)),
+        (label_path, json!("ember")),
+        (looping_path, json!(false)),
+    ];
+    for (path, value) in &expected_values {
+        let result = with_timeout(
+            "asset.setProperty",
+            client.set_property(logical_path, path, value.clone()),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("プロパティを変更できません: {path}: {error:?}"));
+        assert_eq!(
+            result.previous_value,
+            find_initial(path).value,
+            "変更前の値が異なります: {path}"
+        );
+    }
+
+    let assert_edited_values = |properties: &AssetProperties| {
+        assert_eq!(
+            properties.logical_path, logical_path,
+            "資産のパスが異なります"
+        );
+        assert_eq!(properties.properties.len(), 3, "プロパティは3項目です");
+        for (path, value) in &expected_values {
+            let property = properties
+                .properties
+                .iter()
+                .find(|property| property.path == *path)
+                .unwrap_or_else(|| panic!("プロパティがありません: {path}"));
+            assert_eq!(&property.value, value, "編集後の値が異なります: {path}");
+        }
+    };
+
+    for (path, value, expected_reason) in [
+        (
+            rate_path,
+            json!("fast"),
+            AssetEditRejectReason::TypeMismatch,
+        ),
+        (rate_path, json!(5000), AssetEditRejectReason::OutOfRange),
+        (
+            "emitters/main/missing",
+            json!(1),
+            AssetEditRejectReason::UnknownProperty,
+        ),
+    ] {
+        match with_timeout(
+            "asset.setProperty",
+            client.set_property(logical_path, path, value),
+        )
+        .await
+        {
+            Err(AssetEditError::Rejected(rejection)) => {
+                assert_eq!(
+                    rejection.reason, expected_reason,
+                    "拒否理由が異なります: {path}"
+                );
+            }
+            result => panic!("プロパティの編集が拒否されませんでした: {path}: {result:?}"),
+        }
+        let properties = with_timeout("asset.getProperties", client.get_properties(logical_path))
+            .await
+            .expect("拒否後のプロパティ一覧を取得できる");
+        assert_edited_values(&properties);
+    }
+
+    let saved = with_timeout("asset.save", client.save(logical_path))
+        .await
+        .expect("資産を保存できる");
+    assert!(saved.saved, "資産の保存が完了していません");
+    let properties = with_timeout("asset.getProperties", client.get_properties(logical_path))
+        .await
+        .expect("保存後のプロパティ一覧を取得できる");
+    assert_edited_values(&properties);
+
     handle.shutdown().await;
 }

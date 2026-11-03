@@ -477,6 +477,92 @@ before returning. Schemas:
 | --- | --- | --- | --- |
 | `accepted` | boolean | yes | whether the engine switched to the newly loaded runtime manifest snapshot; `false` is a valid runtime rejection. |
 
+### asset.getProperties
+
+Snapshot of one asset's properties, gated by the `asset.edit` capability. Values
+are DTO copies, never references into engine live memory. Schemas:
+[params](../schema/methods/asset.getProperties.params.schema.json),
+[result](../schema/methods/asset.getProperties.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `logicalPath` | non-empty string | yes | logical path of the asset whose properties are requested. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `logicalPath` | non-empty string | yes | logical path of the asset whose properties are returned. |
+| `properties` | array of `assetProperty` | yes | property snapshots; may be empty. |
+
+Each `assetProperty` is defined by the result schema:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `path` | non-empty string | yes | opaque, engine-owned property path; the editor passes it unchanged to `asset.setProperty` without interpreting it. |
+| `valueType` | non-empty string | yes | free-form generic type name, e.g. `number`, `integer`, `string`, or `boolean`. |
+| `value` | `propertyValue` | yes | snapshot copy of the property value. |
+| `unit` | string | no | unit of the property value. |
+| `minimum` | number | no | minimum property value. |
+| `maximum` | number | no | maximum property value. |
+| `description` | string | no | human-readable description of the property. |
+
+Opening and closing an asset are editor-local operations with no wire methods.
+Refusal uses an id-bearing `ENGINE_ASSET_EDIT_REJECTED` error response (see
+[`error-model.md`](./error-model.md)).
+
+### asset.setProperty
+
+Set one asset property through its engine-owned opaque path, gated by the
+`asset.edit` capability. The request and result values are snapshot copies.
+Schemas:
+[params](../schema/methods/asset.setProperty.params.schema.json),
+[result](../schema/methods/asset.setProperty.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `logicalPath` | non-empty string | yes | logical path of the asset to modify. |
+| `path` | non-empty string | yes | opaque property path returned by `asset.getProperties`, passed unchanged. |
+| `value` | `propertyValue` | yes | new value to apply. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `previousValue` | `propertyValue` | yes | snapshot of the value before the change. |
+| `appliedValue` | `propertyValue` | no | snapshot of the value actually applied; may be normalized from the requested value. |
+
+Refusal is an id-bearing `ENGINE_ASSET_EDIT_REJECTED` error response, leaving the
+value unchanged. Its `data` contains `method`, `reason`, and `path` when
+applicable; see [`error-model.md`](./error-model.md). There is no `accepted`
+field in the success result.
+
+### asset.save
+
+Save one asset synchronously, gated by the `asset.edit` capability. Schemas:
+[params](../schema/methods/asset.save.params.schema.json),
+[result](../schema/methods/asset.save.result.schema.json).
+
+`params`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `logicalPath` | non-empty string | yes | logical path of the asset to save. |
+
+`result`:
+
+| field | type | required | description |
+| --- | --- | --- | --- |
+| `saved` | `true` | yes | saving has completed successfully. |
+
+Saving completes within one request/response pair and is not undoable. Failure
+is an id-bearing `ENGINE_ASSET_EDIT_REJECTED` error response, not a result with
+`saved: false`; see [`error-model.md`](./error-model.md).
+
 ### viewport.captureDeterministic
 
 決定的な撮影を受け付ける。対応エンジンは `viewport.capture` を広告し、

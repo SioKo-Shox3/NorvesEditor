@@ -15,6 +15,7 @@
 //! later phase.
 
 pub mod asset;
+pub mod asset_edit;
 pub mod capabilities;
 pub mod capture;
 pub mod dispatcher;
@@ -33,6 +34,12 @@ pub use asset::{
     parse_asset_manifest_result, parse_asset_reload_manifest_result, parse_asset_resolve_result,
     AssetEntry, AssetError, AssetManifestResult, AssetReloadManifestResult, AssetResolveResult,
     AssetResolveSource, AssetResolveStatus,
+};
+pub use asset_edit::{
+    parse_asset_properties_result, parse_asset_save_result, parse_asset_set_property_result,
+    AssetEditClient, AssetEditError, AssetEditRejectReason, AssetEditRejection, AssetProperties,
+    AssetProperty, AssetSaveResult, AssetSetPropertyResult, ASSET_EDIT_CAPABILITY,
+    ASSET_EDIT_REJECTED_CODE,
 };
 pub use capabilities::{parse_capabilities_result, CapabilitiesResult, CapabilityError};
 pub use capture::{

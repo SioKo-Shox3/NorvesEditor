@@ -1,0 +1,11 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "request",
+  "id": "req-asset-save-1",
+  "method": "asset.save",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "logicalPath": "effects/mcp-test.vfx.json"
+  }
+}

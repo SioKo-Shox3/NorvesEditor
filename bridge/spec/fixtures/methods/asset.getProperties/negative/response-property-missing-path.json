@@ -1,0 +1,16 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "response",
+  "id": "req-asset-props-1",
+  "sessionId": "sess-7f3a",
+  "result": {
+    "logicalPath": "effects/mcp-test.vfx.json",
+    "properties": [
+      {
+        "valueType": "number",
+        "value": 30
+      }
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/asset.setProperty.params.schema.json",
+  "title": "asset.setProperty request params",
+  "description": "Request to set one property on an asset. The value is a snapshot copy, never a reference into engine live memory.",
+  "type": "object",
+  "required": ["logicalPath", "path", "value"],
+  "additionalProperties": false,
+  "properties": {
+    "logicalPath": {
+      "description": "Logical path of the asset to modify.",
+      "type": "string",
+      "minLength": 1
+    },
+    "path": {
+      "description": "Opaque, engine-defined property path returned unchanged from asset.getProperties.",
+      "type": "string",
+      "minLength": 1
+    },
+    "value": {
+      "description": "New value to apply, as a generic snapshot value.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/common.schema.json#/$defs/propertyValue"
+    }
+  }
+}
