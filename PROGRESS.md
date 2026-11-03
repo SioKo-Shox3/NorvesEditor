@@ -65,13 +65,10 @@
 
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
-- 2026-11-03 E4-001-P3 完了: 統合ブランチ(E4-003-P1 まで)を取り込んだ上で verify を 2 本とも回し直した。空の一時ディレクトリでの `-Cpp -SkipFrontend` は cmake configure / build / ctest 8/8 を含むすべてが `[OK]`、exit 0。既定ディレクトリの `-Cpp` は C++ 段に `[SKIP]` が無く、pnpm typecheck / lint / build / test まで `[OK]`、exit 0。どちらにも `[FAIL]` は無い。`scripts/verify.ps1` の先頭の BOM と LF の行末は保たれている。
-
 ## In progress
 - なし。承認済みE0〜E3の実装・受入・評価・コミット文面の整備は完了。過去の失敗・停止・差し戻しは保存したまま、最終PASSの証拠と区別する。
 
 ## Next
-- E4-001-P3 は完了。`-Cpp` で構成が失敗したときの非 0 終了は、書き込めない場所を指定した手元の確かめだけで、自動の試験は無い。
 - 受入と既知の制限は `docs/mcp-undo-test-mapping.md` と要件文書13節を参照する。GUI実機の配置・狭幅・Tauri窓間操作、実NorvesLibの動作は未確認。現行MCP版のクライアント間要求ID衝突、確認commandのcapability未分離、同期ログ保存などの制限を保持する。
 - 本番/実mockの入口はMcpServices、受入窓口はHeadlessEditor。操作記録は現在の起動の最新500件、過去起動分はJSONLのみ。resultは結果分類で、取消後のactor確定でも更新される。outcomeは実適用状態。displayGroupIdが共通履歴の先頭と一致するときだけUI undoを許可する。
 - 全タスク完了のためM2を再起動しない。MyWorkflowのガイドは専用ブランチdocs/norveseditor-mcp-guideのd132623（旧951e3cd）で展開済み・未マージ・未push。NorvesEditorも未push。
@@ -187,9 +184,6 @@
 - U6 実プロセスのモックで撮影の一致・場所の拒否・時間切れを試験する: 着地(直し 2 回)
 - U8 pnpm 11 の新しい設定キーで esbuild のビルドを許可し、タスクの verify を素の環境で通す: 着地(直し 0 回)
 - U9 verify.ps1 -Cpp が build/cpp の不在で黙って SKIP せず自分で configure する: 着地(直し 0 回)
-- U2 U1 のレビュー済み差分をこの枠で作り直す(verify.ps1 の構成ゲートと -CppBuildDir、文書): 着地(直し 0 回)
-- 2026-11-03 E4-001-P3: `verify.ps1` に `-CppBuildDir`(既定 build/cpp、相対はリポジトリのルート基準)を足し、`-Cpp` で `CMakeCache.txt` が無ければ `cmake configure` をゲートとして走らせてから build と ctest を走らせる。構成の失敗は非 0 で止まる(書き込めない場所を指定して `[FAIL] cmake configure` と exit 1 を確認)。空の一時ディレクトリで `-Cpp -SkipFrontend` は configure / build / ctest 8/8 がすべて `[OK]`、exit 0。既定ディレクトリの `-Cpp` は C++ 段が `[OK]` のあと、フロントエンド段の `pnpm typecheck` が `ERR_PNPM_IGNORED_BUILDS`(esbuild、pnpm 11.6.0)で exit 1。この失敗は今回の変更より前からあり、paths の外なので BLOCKED にした(blocked/E4-001-P3.md)。
-- E4-001-P3: Notes に残していた pnpm 11.6.0 の `ERR_PNPM_IGNORED_BUILDS` の要起票は、統合ブランチの `pnpm-workspace.yaml` が `allowBuilds: { esbuild: true }` になったことで解消した(E4-003 の U8 で入った。E4-001 の同じ直しと同じ中身)。
 
 - E4-003-P1: `dispatcher_over_ws_resolves_a_request` の間欠的な停止の原因は `DispatchHandle::shutdown` と接続切断の競合だった。`send` が容量を予約した直後に task が切断で終わって Receiver を捨てる(その時点のキューは排出済み)と、続けて積まれた Shutdown と ack の Sender がハンドルの寿命まで残り、`ack_rx` が返らない。`shutdown` は ack とチャネルの閉鎖(`Sender::closed`)のどちらでも戻るようにした。ws_transport の試験の待ちは段名付きの `with_timeout` で全部包んだ。修正前は 8 プロセス並列 1000 回中 6 回 `timed out: dispatcher shutdown` を再現、修正後は 1000/1000。fmt / clippy(-D warnings) exit 0、ws_transport の試験 50 回連続(各 7 件)exit 0、クレート全体 117 件成功。保存出力 `.harness/relay/E4-003-P1-U1-verify.txt` を開いて確認した。
 - 2026-11-03 E4-003-P1: `shutdown` の修正は危険地帯(Rust の async タスク寿命)。select ループと停止の意味(全要求を失敗扱いにしてから Receiver を閉じる)は変えていない。同じ形の「送信後に応答の oneshot だけを待つ」箇所は `request` にもあるが、こちらは呼び出し側の timeout で必ず戻るので停止はしない。
@@ -219,3 +213,10 @@
 - U12 U11 の切り直し(作業ツリーの持ち主が前の枠のため着地できなかった)。result schema の説明文の拒否の理由を直し、verify を全部通す: 着地(直し 0 回)
 - 2026-11-03 E4-001(再開・完了): 評価の残課題 3 に対応し、`asset.getProperties`/`asset.save`/`asset.setProperty` の result schema の説明文で、拒否の理由をそのメソッドで起こるものだけの例示にした(構造は変えていない)。verify 5本 exit 0(build/cpp 構成済みの確認、fixtures 193、`verify.ps1 -Cpp` は C++ 8/8・Rust・pnpm test 42/45/699 を含む全ゲート合格で `[FAIL]`/`[SKIP]` なし、conformance 1件、mcp_mock_profile 2件を実モックで合格)。証拠 `.harness/runs/20261103-163351/verify-E4-001-U12.txt`。
 - E4-001 の残り: モックの `asset.save` は保存先に書くだけでどこからも読まれず、試験の「保存→一覧で一致」は保存が何もしなくても成り立つ。保存の中身の確かめは E4-002 か NorvesLib 側の実装で行う。試験の英語の assert 文言も未対応のまま。
+
+- 2026-11-03 E4-001-P3 完了: 統合ブランチ(E4-003-P1 まで)を取り込んだ上で verify を 2 本とも回し直した。空の一時ディレクトリでの `-Cpp -SkipFrontend` は cmake configure / build / ctest 8/8 を含むすべてが `[OK]`、exit 0。既定ディレクトリの `-Cpp` は C++ 段に `[SKIP]` が無く、pnpm typecheck / lint / build / test まで `[OK]`、exit 0。どちらにも `[FAIL]` は無い。`scripts/verify.ps1` の先頭の BOM と LF の行末は保たれている。
+- E4-001-P3 は完了。`-Cpp` で構成が失敗したときの非 0 終了は、書き込めない場所を指定した手元の確かめだけで、自動の試験は無い。
+- U2 U1 のレビュー済み差分をこの枠で作り直す(verify.ps1 の構成ゲートと -CppBuildDir、文書): 着地(直し 0 回)
+- 2026-11-03 E4-001-P3: `verify.ps1` に `-CppBuildDir`(既定 build/cpp、相対はリポジトリのルート基準)を足し、`-Cpp` で `CMakeCache.txt` が無ければ `cmake configure` をゲートとして走らせてから build と ctest を走らせる。構成の失敗は非 0 で止まる(書き込めない場所を指定して `[FAIL] cmake configure` と exit 1 を確認)。空の一時ディレクトリで `-Cpp -SkipFrontend` は configure / build / ctest 8/8 がすべて `[OK]`、exit 0。既定ディレクトリの `-Cpp` は C++ 段が `[OK]` のあと、フロントエンド段の `pnpm typecheck` が `ERR_PNPM_IGNORED_BUILDS`(esbuild、pnpm 11.6.0)で exit 1。この失敗は今回の変更より前からあり、paths の外なので BLOCKED にした(blocked/E4-001-P3.md)。
+- E4-001-P3: Notes に残していた pnpm 11.6.0 の `ERR_PNPM_IGNORED_BUILDS` の要起票は、統合ブランチの `pnpm-workspace.yaml` が `allowBuilds: { esbuild: true }` になったことで解消した(E4-003 の U8 で入った。E4-001 の同じ直しと同じ中身)。
+- 要起票: pnpm 11.6.0 で `pnpm -r typecheck` の実行前の依存確認が esbuild のビルドスクリプト未承認(`ERR_PNPM_IGNORED_BUILDS`)で失敗し、`verify.ps1` のフロントエンド段が落ちる。`pnpm-workspace.yaml` の `onlyBuiltDependencies` が pnpm 11 で効いていない疑い。
