@@ -168,3 +168,5 @@
 - `pnpm lint` は実体が無い(どのパッケージにも lint スクリプトが無い)。緑でも何も検査していない。
 - NorvesLib の作業ツリーは `feature/rendering-r4-ddgi` の未コミットの変更を抱えている。今回の主題では NorvesLib に触らない。
 - U2 U1 のレビュー済み差分をこの枠で作り直す(verify.ps1 の構成ゲートと -CppBuildDir、文書): 着地(直し 0 回)
+- 2026-11-03 E4-001-P3: `verify.ps1` に `-CppBuildDir`(既定 build/cpp、相対はリポジトリのルート基準)を足し、`-Cpp` で `CMakeCache.txt` が無ければ `cmake configure` をゲートとして走らせてから build と ctest を走らせる。構成の失敗は非 0 で止まる(書き込めない場所を指定して `[FAIL] cmake configure` と exit 1 を確認)。空の一時ディレクトリで `-Cpp -SkipFrontend` は configure / build / ctest 8/8 がすべて `[OK]`、exit 0。既定ディレクトリの `-Cpp` は C++ 段が `[OK]` のあと、フロントエンド段の `pnpm typecheck` が `ERR_PNPM_IGNORED_BUILDS`(esbuild、pnpm 11.6.0)で exit 1。この失敗は今回の変更より前からあり、paths の外なので BLOCKED にした(blocked/E4-001-P3.md)。
+- 要起票: pnpm 11.6.0 で `pnpm -r typecheck` の実行前の依存確認が esbuild のビルドスクリプト未承認(`ERR_PNPM_IGNORED_BUILDS`)で失敗し、`verify.ps1` のフロントエンド段が落ちる。`pnpm-workspace.yaml` の `onlyBuiltDependencies` が pnpm 11 で効いていない疑い。
