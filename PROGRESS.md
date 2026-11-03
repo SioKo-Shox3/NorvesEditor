@@ -82,7 +82,8 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
-- 2026-11-03 E4-003-P1: `shutdown` の修正は危険地帯(Rust の async タスク寿命)。select ループと停止の意味(全要求を失敗扱いにしてから Receiver を閉じる)は変えていない。同じ形の「送信後に応答の oneshot だけを待つ」箇所は `request` にもあるが、こちらは task 終了時に `fail_all_pending` で Sender が落ちるか、キューに残っても呼び出し側の timeout で戻るので停止はしない。
+- 2026-11-03 E4-003-P1: `shutdown` の修正は危険地帯(Rust の async タスク寿命)。select ループと停止の意味(全要求を失敗扱いにしてから Receiver を閉じる)は変えていない。同じ形の「送信後に応答の oneshot だけを待つ」箇所は `request` にもあるが、こちらは呼び出し側の timeout で必ず戻るので停止はしない。
+- 要起票: `DispatchHandle::request` も同じ競合で、送信容量の予約直後に task が切断で終わると、`ConnectionClosed` を即座に返さず要求の timeout 満了まで待って `Timeout` を返す。`shutdown` と同じく `commands.closed()` を待ちに加えるかを検討する。
 - 2026-10-04 最終整理: 未公開をfetch後の全remote refsで確認し、NorvesEditorの本文不足9件とMyWorkflowのガイド1件を整えた。再基底化した15コミットすべてとガイドのtreeが旧履歴と一致する。旧履歴は `refs/archive/mcp-messages-20261004` / MyWorkflowの `refs/archive/norveseditor-mcp-guide-messages-20261004` に保存し、対応表は `.harness/mcp-message-hygiene/result.json`。評価が参照する旧SHAも保持している。最終コードは873b7e1（旧6c789b4）。本文だけの変更なのでコード試験を重複実行せず、tree照合・git diff・本文検査とガイド展開照合を通した。
 - 2026-10-04 最終評価: MCP-029/030のPASSを開いて確認した。030の非阻害指摘は試験コードの一行表記とGUI実機未確認。S-010の旧差し戻しは2607fd4の修正と現在のREADMEを照合し、原文を `.harness/mcp-closed-s010-findings.md` へ保存してNEXT_FINDINGSの未処理表示から外す。018の過去3失敗/評価差戻し1回、022の過去2回の40分超過、028の40分超過1回と停止時点の未評価は削除しない。
 - 2026-10-04 MCP-030判断: 制御ticketと編集ticketを同じqueue_stateで追跡し、発行成功から最初のawaitまで同期的に登録する。発行失敗は未確定にせず、発行後の呼出終了はactorへ確定を委ねる。本文や秘密は記録へ渡さず、既存の結果分類・通常編集/履歴を維持した。開始ゲートと指定3ゲートの保存出力は全exit 0。新規依存・Bridge/SDK/mock/NorvesLib・GUI操作への変更はなく、評価はランナーが反復後に行う。
