@@ -187,3 +187,8 @@
 - U2 U1 のレビュー済み差分をこの枠で作り直す(verify.ps1 の構成ゲートと -CppBuildDir、文書): 着地(直し 0 回)
 - 2026-11-03 E4-001-P3: `verify.ps1` に `-CppBuildDir`(既定 build/cpp、相対はリポジトリのルート基準)を足し、`-Cpp` で `CMakeCache.txt` が無ければ `cmake configure` をゲートとして走らせてから build と ctest を走らせる。構成の失敗は非 0 で止まる(書き込めない場所を指定して `[FAIL] cmake configure` と exit 1 を確認)。空の一時ディレクトリで `-Cpp -SkipFrontend` は configure / build / ctest 8/8 がすべて `[OK]`、exit 0。既定ディレクトリの `-Cpp` は C++ 段が `[OK]` のあと、フロントエンド段の `pnpm typecheck` が `ERR_PNPM_IGNORED_BUILDS`(esbuild、pnpm 11.6.0)で exit 1。この失敗は今回の変更より前からあり、paths の外なので BLOCKED にした(blocked/E4-001-P3.md)。
 - E4-001-P3: Notes に残していた pnpm 11.6.0 の `ERR_PNPM_IGNORED_BUILDS` の要起票は、統合ブランチの `pnpm-workspace.yaml` が `allowBuilds: { esbuild: true }` になったことで解消した(E4-003 の U8 で入った。E4-001 の同じ直しと同じ中身)。
+
+- E4-003-P1: `dispatcher_over_ws_resolves_a_request` の間欠的な停止の原因は `DispatchHandle::shutdown` と接続切断の競合だった。`send` が容量を予約した直後に task が切断で終わって Receiver を捨てる(その時点のキューは排出済み)と、続けて積まれた Shutdown と ack の Sender がハンドルの寿命まで残り、`ack_rx` が返らない。`shutdown` は ack とチャネルの閉鎖(`Sender::closed`)のどちらでも戻るようにした。ws_transport の試験の待ちは段名付きの `with_timeout` で全部包んだ。修正前は 8 プロセス並列 1000 回中 6 回 `timed out: dispatcher shutdown` を再現、修正後は 1000/1000。fmt / clippy(-D warnings) exit 0、ws_transport の試験 50 回連続(各 7 件)exit 0、クレート全体 117 件成功。保存出力 `.harness/relay/E4-003-P1-U1-verify.txt` を開いて確認した。
+- 2026-11-03 E4-003-P1: `shutdown` の修正は危険地帯(Rust の async タスク寿命)。select ループと停止の意味(全要求を失敗扱いにしてから Receiver を閉じる)は変えていない。同じ形の「送信後に応答の oneshot だけを待つ」箇所は `request` にもあるが、こちらは呼び出し側の timeout で必ず戻るので停止はしない。
+- 要起票: `DispatchHandle::request` も同じ競合で、送信容量の予約直後に task が切断で終わると、`ConnectionClosed` を即座に返さず要求の timeout 満了まで待って `Timeout` を返す。`shutdown` と同じく `commands.closed()` を待ちに加えるかを検討する。
+- U1 ws_transport 試験の待ちを全部時間切れで包み、停止の原因を突き止めて直す: 着地(直し 0 回)
