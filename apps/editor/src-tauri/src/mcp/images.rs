@@ -21,6 +21,12 @@ const MAX_DECODED_RASTER_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RESIZED_RASTER_BYTES: usize = 2 * 1024 * 1024;
 const PNG_DECODER_OVERHEAD_BYTES: usize = 8 * 1024 * 1024;
 
+pub(crate) const MAX_CAPTURE_FILE_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_CAPTURE_WIDTH: u32 = 1920;
+pub(crate) const MAX_CAPTURE_HEIGHT: u32 = 1080;
+/// MCP の画像に載せる長辺の上限。
+pub(crate) const CAPTURE_IMAGE_LONG_EDGE: u32 = 768;
+
 const COLUMNS: usize = 4;
 const CELL_WIDTH: u32 = 500;
 const CELL_HEIGHT: u32 = 500;
@@ -51,6 +57,16 @@ pub(crate) struct TimestampedImageList {
     pub(crate) text: String,
     pub(crate) width: u32,
     pub(crate) height: u32,
+}
+
+/// 縮小した撮影PNGと、復号した元画像のRGBA8の要約値。
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CaptureImage {
+    pub(crate) png: Vec<u8>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixel_digest: String,
 }
 
 #[derive(Clone, Copy)]
@@ -154,6 +170,75 @@ pub(crate) fn build_timestamped_image_list(
         text,
         width: layout.width,
         height: layout.height,
+    })
+}
+
+/// 撮影PNGを検証し、元画像の要約値と長辺768以下のPNGを返す。
+#[allow(dead_code)]
+pub(crate) fn prepare_capture_image(
+    png: &[u8],
+    expected_width: u32,
+    expected_height: u32,
+) -> Result<CaptureImage, BackendError> {
+    if png.is_empty() {
+        return Err(image_error("入力PNGが空です。"));
+    }
+    if png.len() > MAX_CAPTURE_FILE_BYTES {
+        return Err(image_error("入力PNGが32 MiBの上限を超えています。"));
+    }
+
+    let info = png_info(png)?;
+    if info.width != expected_width || info.height != expected_height {
+        return Err(image_error("撮影PNGの寸法が期待値と一致しません。"));
+    }
+    if !(1..=MAX_CAPTURE_WIDTH).contains(&info.width)
+        || !(1..=MAX_CAPTURE_HEIGHT).contains(&info.height)
+    {
+        return Err(image_error(
+            "撮影PNGの幅は1から1920、高さは1から1080 pixelの範囲にしてください。",
+        ));
+    }
+    validate_png_pixel_format(info)?;
+    let decoded_bytes = checked_rgba_bytes(info.width, info.height)?;
+    validate_working_budget(png.len(), decoded_bytes, 0)?;
+
+    let rgba = decode_png(png, info)?.into_rgba8();
+    let digest = rgba
+        .as_raw()
+        .iter()
+        .fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    let pixel_digest = format!("{digest:016x}");
+    let (width, height) = fit_dimensions(
+        info.width,
+        info.height,
+        CAPTURE_IMAGE_LONG_EDGE,
+        CAPTURE_IMAGE_LONG_EDGE,
+    )?;
+    let rgba = if (width, height) == (info.width, info.height) {
+        rgba
+    } else {
+        DynamicImage::ImageRgba8(rgba)
+            .thumbnail_exact(width, height)
+            .into_rgba8()
+    };
+
+    let mut output = BoundedPngWriter::default();
+    PngEncoder::new(&mut output)
+        .write_image(rgba.as_raw(), width, height, ExtendedColorType::Rgba8)
+        .map_err(|_| {
+            if output.exceeded_limit {
+                image_error("出力PNGが2 MiBの上限を超えています。")
+            } else {
+                image_error("撮影PNGを符号化できません。")
+            }
+        })?;
+    Ok(CaptureImage {
+        png: output.bytes,
+        width,
+        height,
+        pixel_digest,
     })
 }
 
@@ -568,6 +653,50 @@ mod tests {
             BackendError::Request { message } => message,
             other => other.to_string(),
         }
+    }
+
+    #[test]
+    fn capture_image_resizes_and_digests_original_rgba_and_rejects_invalid_inputs() {
+        let rgba = RgbaImage::from_fn(1920, 1080, |x, y| {
+            Rgba([
+                (x * 255 / 1919) as u8,
+                (y * 255 / 1079) as u8,
+                ((x + y) * 255 / 2998) as u8,
+                (128 + y * 127 / 1079) as u8,
+            ])
+        });
+        let mut expected_digest = 0xcbf29ce484222325u64;
+        for byte in rgba.as_raw() {
+            expected_digest ^= u64::from(*byte);
+            expected_digest = expected_digest.wrapping_mul(0x100000001b3);
+        }
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(rgba.as_raw(), 1920, 1080, ExtendedColorType::Rgba8)
+            .expect("なだらかな模様の撮影PNGを作る");
+
+        let capture = prepare_capture_image(&png, 1920, 1080).expect("撮影PNGを縮小する");
+        assert_eq!((capture.width, capture.height), (768, 432));
+        assert_eq!(capture.pixel_digest, format!("{expected_digest:016x}"));
+        assert!(capture.png.len() <= MAX_OUTPUT_PNG_BYTES);
+        let rendered = ImageReader::with_format(Cursor::new(&capture.png), ImageFormat::Png)
+            .decode()
+            .expect("縮小した撮影PNGを復号する");
+        assert_eq!((rendered.width(), rendered.height()), (768, 432));
+
+        let error = prepare_capture_image(&png, 1920, 1079)
+            .expect_err("期待寸法と一致しない撮影PNGを拒否する");
+        assert!(request_error(error).contains("期待値"));
+
+        png[16..20].copy_from_slice(&1921u32.to_be_bytes());
+        let checksum = png_chunk_crc32(b"IHDR", &png[16..29]);
+        png[29..33].copy_from_slice(&checksum.to_be_bytes());
+        let error =
+            prepare_capture_image(&png, 1921, 1080).expect_err("幅の上限を超える撮影PNGを拒否する");
+        assert!(request_error(error).contains("1920"));
+
+        let error = prepare_capture_image(&[], 1920, 1080).expect_err("空の撮影PNGを拒否する");
+        assert!(request_error(error).contains("空"));
     }
 
     #[test]
