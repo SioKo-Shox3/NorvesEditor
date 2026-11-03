@@ -490,7 +490,7 @@ M2 の共通規則:
 - notes: 危険地帯(プロトコルのスキーマ・C++ SDK の公開 API・バッファとメモリの所有権)。評価者を通し、コミット本文を書く。GPU も実際のエンジンも使わない(モックの偽の画像だけ)。NorvesLib の `BridgeDeterministicCapture` へつなぐ作業は NorvesLib 側なので、終わったら PROGRESS.md の Notes に `要起票:` で残す。
 
 ## E4-004: MCP の道具から決定的な撮影を呼ぶ
-- status: todo
+- status: done
 - after: E4-003
 - done-when: 能力 `viewport.capture` がある接続だけに、撮影の道具が出る。撮影はエンジンの状態を変える操作として扱う。書き込みモードの許可を通し、履歴に積まず操作記録に残す(runtime の制御と同じ扱い)。撮影用ディレクトリはバックエンドがアプリのデータディレクトリの下に持ち、E4-003 で決めた件数と日数の規則で古い撮影を片付ける(試験あり)。完了で返った場所がそのディレクトリの中かを確かめる。PNG は既存の検証と上限(MCP-019 の `images.rs`)で確かめてから、MCP の画像(長辺の上限で縮小)と文字(要約値・寸法・刻み)で返す。完了の待ちは、時間切れと HTTP 要求の取り消し(MCP-022-B)に結ぶ。切断と世代の変更は「結果不明」として返し、自動で再送しない。`scripts/verify-mcp-e2e.ps1` の受入の印に `MCP_ACCEPTANCE_OK deterministic-capture` を足し、実 HTTP とモックで、同じ引数で 2 回撮ると要約値が一致することを確かめる。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`

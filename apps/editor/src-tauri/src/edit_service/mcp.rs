@@ -462,6 +462,11 @@ impl EditService {
                         None
                     }
                     McpWriteOperation::RuntimeControl => None,
+                    McpWriteOperation::Capture => {
+                        return Err(BackendError::Request {
+                            message: "撮影は編集列を通りません。".to_owned(),
+                        })
+                    }
                     McpWriteOperation::History(_) => {
                         return Err(BackendError::McpAuthorizationRevoked)
                     }

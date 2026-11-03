@@ -53,6 +53,7 @@ pub(crate) fn is_implemented_write(name: &str) -> bool {
             | "runtime_play"
             | "runtime_pause"
             | "runtime_stop"
+            | "viewport_capture"
     )
 }
 
@@ -69,6 +70,9 @@ impl McpReadContext {
         arguments: Value,
         lease: Option<McpRequestLease>,
     ) -> CallToolResult {
+        if name == "viewport_capture" {
+            return self.call_capture_tool(arguments, lease).await;
+        }
         let operation = self.operations.begin(name, &arguments);
         let request_id = operation.snapshot().request_id;
         let execution = Arc::new(McpExecution::with_operation(operation, lease.clone()));
