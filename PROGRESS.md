@@ -184,3 +184,4 @@
 - U6 実プロセスのモックで撮影の一致・場所の拒否・時間切れを試験する: 着地(直し 2 回)
 - U8 pnpm 11 の新しい設定キーで esbuild のビルドを許可し、タスクの verify を素の環境で通す: 着地(直し 0 回)
 - U9 verify.ps1 -Cpp が build/cpp の不在で黙って SKIP せず自分で configure する: 着地(直し 0 回)
+- E4-001 統合ブランチの取り込み: E4-003(決定的な撮影)と衝突した 8 ファイルを、両側の追加を残す形で解いた。フィクスチャの件数は合算で肯定 99・封筒で拒否 14・ペイロードのみ 97(計 210)、モックの MCP 試験プロフィールは `asset.edit` と `viewport.capture` を両方広告する。要件文書 10 章は値の場所・保存の決定と撮影の決定をどちらも決定済みにした。取り込み後に verify 5 本が exit 0(fixtures 210 件、`-Cpp` 全ゲート OK・ctest 8/8・frontend 699 件、conformance 1 件・mcp_mock_profile 5 件が実モックで SKIP なし)。証拠 `.harness/runs/20261103-163351/merge-verify-0..4.txt`。
