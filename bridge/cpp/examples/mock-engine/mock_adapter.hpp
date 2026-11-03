@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -32,6 +33,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -108,6 +110,7 @@ namespace norves::mock
                         R"({"name":"viewport.thumbnail"},)"
                         R"({"name":"component.edit"},)"
                         R"({"name":"asset.read"},)"
+                        R"({"name":"asset.edit"},)"
                         R"({"name":"viewport.capture"}]})"));
             }
 
@@ -615,6 +618,127 @@ namespace norves::mock
                     R"("totalCount":1,"page":0,"pageSize":50})"));
         }
 
+        // @brief 編集中の資産プロパティを値コピーのスナップショットとして返す。
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        assetGetProperties(const Norves::Bridge::JsonValue& params) override
+        {
+            if (!is_mcp_edit_profile())
+            {
+                return not_supported(params);
+            }
+
+            const auto logicalPath = extract_top_level_string_field(params.dump(), "logicalPath");
+            if (!logicalPath.has_value() || logicalPath.value() != asset_logical_path)
+            {
+                return asset_edit_rejected("asset.getProperties", "unknown_asset");
+            }
+
+            std::string response = R"({"logicalPath":)" + json_quote(asset_logical_path);
+            response += R"(,"properties":[{"path":"emitters/main/rate","valueType":"number","value":)";
+            response += editable_asset_values.rate;
+            response += R"(,"unit":"1/s","minimum":0,"maximum":1000},)";
+            response += R"({"path":"emitters/main/label","valueType":"string","value":)";
+            response += editable_asset_values.label;
+            response += R"(},{"path":"emitters/main/looping","valueType":"boolean","value":)";
+            response += editable_asset_values.looping;
+            response += R"(}]})";
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::
+                ok(parse_or_die(response));
+        }
+
+        // @brief 型と範囲を検査してから編集し、変更前後の値をコピーして返す。
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        assetSetProperty(const Norves::Bridge::JsonValue& params) override
+        {
+            if (!is_mcp_edit_profile())
+            {
+                return not_supported(params);
+            }
+
+            const std::string paramsText = params.dump();
+            const auto logicalPath = extract_top_level_string_field(paramsText, "logicalPath");
+            const std::string path =
+                extract_top_level_string_field(paramsText, "path").value_or("");
+            if (!logicalPath.has_value() || logicalPath.value() != asset_logical_path)
+            {
+                return asset_edit_rejected("asset.setProperty", "unknown_asset", path);
+            }
+
+            std::string* currentValue = nullptr;
+            if (path == "emitters/main/rate")
+            {
+                currentValue = &editable_asset_values.rate;
+            }
+            else if (path == "emitters/main/label")
+            {
+                currentValue = &editable_asset_values.label;
+            }
+            else if (path == "emitters/main/looping")
+            {
+                currentValue = &editable_asset_values.looping;
+            }
+            else
+            {
+                return asset_edit_rejected("asset.setProperty", "unknown_property", path);
+            }
+
+            const auto value = extract_top_level_json_field(paramsText, "value");
+            const bool isNumber = value.has_value() && !value->empty() &&
+                                  (value->front() == '-' ||
+                                   (value->front() >= '0' && value->front() <= '9'));
+            const bool isString = value.has_value() && value->size() >= 2 &&
+                                  value->front() == '"' && value->back() == '"';
+            const bool isBoolean = value.has_value() && (*value == "true" || *value == "false");
+            if ((path == "emitters/main/rate" && !isNumber) ||
+                (path == "emitters/main/label" && !isString) ||
+                (path == "emitters/main/looping" && !isBoolean))
+            {
+                return asset_edit_rejected("asset.setProperty", "type_mismatch", path);
+            }
+
+            if (isNumber)
+            {
+                double number = 0;
+                const char* first = value->data();
+                const char* last = first + value->size();
+                const auto parsed = std::from_chars(first, last, number);
+                if (parsed.ec != std::errc{} || parsed.ptr != last || number < 0 || number > 1000)
+                {
+                    return asset_edit_rejected("asset.setProperty", "out_of_range", path);
+                }
+            }
+
+            const std::string previousValue = *currentValue;
+            *currentValue = *value;
+            const std::string response = R"({"previousValue":)" + previousValue +
+                                         R"(,"appliedValue":)" + *currentValue + "}";
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::
+                ok(parse_or_die(response));
+        }
+
+        // @brief 編集中の値を保存済みの状態へコピーする。
+        Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        assetSave(const Norves::Bridge::JsonValue& params) override
+        {
+            if (!is_mcp_edit_profile())
+            {
+                return not_supported(params);
+            }
+
+            const auto logicalPath = extract_top_level_string_field(params.dump(), "logicalPath");
+            if (!logicalPath.has_value() || logicalPath.value() != asset_logical_path)
+            {
+                return asset_edit_rejected("asset.save", "unknown_asset");
+            }
+
+            saved_asset_values = editable_asset_values;
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::
+                ok(parse_or_die(R"({"saved":true})"));
+        }
+
         // @brief viewport.getThumbnail。小さなテスト用 PNG（2x2、base64 後でも 100 バイト程度
         // で 256 KiB ハードキャップの遥か内）の固定スナップショットを返す。返値は正典フィクスチャ
         // （viewport.getThumbnail/positive/response-valid.json）の result と値等価であり、
@@ -723,6 +847,15 @@ namespace norves::mock
             std::map<std::string, EditableProperty> properties;
         };
 
+        struct EditableAssetValues
+        {
+            std::string rate = "30";
+            std::string label = R"("spark")";
+            std::string looping = "true";
+        };
+
+        static constexpr std::string_view asset_logical_path = "effects/mcp-test.vfx.json";
+
         Profile profile_ = Profile::Default;
         bool capture_stall_ = false;
         std::uint64_t next_capture_ordinal = 1;
@@ -731,6 +864,9 @@ namespace norves::mock
         std::uint64_t next_subscription_ordinal = 1;
         std::set<std::string> active_subscriptions;
         std::map<std::string, EditableNode> editable_nodes;
+        // @note シングルスレッドの受信ループ内で、編集状態と保存状態を別々に保持する。
+        EditableAssetValues editable_asset_values;
+        EditableAssetValues saved_asset_values;
 
         static bool read_capture_stall()
         {
@@ -807,6 +943,91 @@ namespace norves::mock
             return Norves::Bridge::Result<Norves::Bridge::JsonValue,
                                           Norves::Bridge::BridgeError>::
                 ok(parse_or_die(response));
+        }
+
+        static Norves::Bridge::Result<Norves::Bridge::JsonValue, Norves::Bridge::BridgeError>
+        asset_edit_rejected(std::string_view method, std::string_view reason,
+                            const std::optional<std::string>& path = std::nullopt)
+        {
+            const char* message = reason == "unknown_asset" ? "The asset is unknown." :
+                                  reason == "unknown_property" ? "The asset property is unknown." :
+                                  reason == "type_mismatch" ? "The value does not match the property type." :
+                                                              "The value is outside the permitted range.";
+            std::string data = R"({"method":)" + json_quote(method) +
+                               R"(,"reason":)" + json_quote(reason);
+            if (path.has_value())
+            {
+                data += R"(,"path":)" + json_quote(path.value());
+            }
+            data += "}";
+            return Norves::Bridge::Result<Norves::Bridge::JsonValue,
+                                          Norves::Bridge::BridgeError>::
+                err(Norves::Bridge::BridgeError{
+                    std::string(Norves::Bridge::ErrorEngineAssetEditRejected), message,
+                    parse_or_die(data)});
+        }
+
+        // @brief ネストした値の同名フィールドを誤認しないよう、直下の欄だけを読む。
+        static std::optional<std::string> extract_top_level_json_field(const std::string& objectText,
+                                                                      std::string_view key)
+        {
+            if (objectText.empty() || objectText.front() != '{')
+            {
+                return std::nullopt;
+            }
+            const std::string needle = "\"" + std::string(key) + "\":";
+            int depth = 0;
+            bool inString = false;
+            bool escaped = false;
+            for (std::size_t pos = 0; pos < objectText.size(); ++pos)
+            {
+                const char c = objectText[pos];
+                if (inString)
+                {
+                    if (escaped)
+                    {
+                        escaped = false;
+                    }
+                    else if (c == '\\')
+                    {
+                        escaped = true;
+                    }
+                    else if (c == '"')
+                    {
+                        inString = false;
+                    }
+                    continue;
+                }
+                if (c == '"')
+                {
+                    if (depth == 1 && objectText.compare(pos, needle.size(), needle) == 0)
+                    {
+                        return extract_json_field(objectText.substr(pos), key);
+                    }
+                    inString = true;
+                }
+                else if (c == '{' || c == '[')
+                {
+                    ++depth;
+                }
+                else if (c == '}' || c == ']')
+                {
+                    --depth;
+                }
+            }
+            return std::nullopt;
+        }
+
+        static std::optional<std::string> extract_top_level_string_field(
+            const std::string& objectText, std::string_view key)
+        {
+            const auto value = extract_top_level_json_field(objectText, key);
+            if (!value.has_value() || value->size() < 2 || value->front() != '"' ||
+                value->back() != '"')
+            {
+                return std::nullopt;
+            }
+            return decode_json_string(value.value());
         }
 
         static std::string json_quote(std::string_view value)

@@ -1,0 +1,9 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "request",
+  "id": "req-asset-props-1",
+  "method": "asset.getProperties",
+  "sessionId": "sess-7f3a",
+  "params": {}
+}
