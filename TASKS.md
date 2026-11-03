@@ -465,7 +465,7 @@ M2 の共通規則:
 - notes: 危険地帯(プロトコルのスキーマと互換性・C++ SDK の公開 API)。評価者を通し、コミット本文を書く。互換性は `docs/agent-guide/protocol-schema.md` に従い、能力で交渉する。線の上の名前は NorvesLib の GR137 の節(`Docs/Plans/GameFeatureRoadmap.md`)に合わせる。NorvesLib の `NorvesLibBridgeAdapter` から `BridgeAssetPropertyEditor` へつなぐ作業は NorvesLib 側なので、終わったら PROGRESS.md の Notes に `要起票:` で残す。
 
 ## E4-002: MCP の道具から資産のプロパティの一覧・設定・保存を呼ぶ
-- status: done
+- status: doing
 - after: E4-001
 - done-when: 能力 `asset.edit` がある接続だけに、一覧の読み取りの道具と、設定・保存の書き込みの道具が出る。能力が無い・未接続・読み取りのみのモードでは、書き込みの道具は出ない。params は埋め込みの spec と意味が一致し、未知の項目・型違い・上限違反は送る前に拒否する。設定は共通の列(edit_service)を通り、言語モデル起源の履歴に積まれる。画面の Ctrl+Z に当たる取り消しで、`previousValue` に戻る。MCP から Bridge へ直接は書かない。保存は要求ごとの確認(MCP-022)を必須にする。保存は履歴に積まず、取り消せない操作として操作記録に残す。拒否(理由コード付き)・確認未完了・能力なしの要求は適用されない。通信断と時間切れは「結果不明」として拒否と区別し、自動で再送しない。範囲を指定した許可が資産を表せない場合は、拒否する側に倒し、その扱いを PROGRESS.md に記録する。`scripts/verify-mcp-e2e.ps1` の受入の印に `MCP_ACCEPTANCE_OK asset-edit-save-undo` を足し、実 HTTP とモックで次を確かめる。一覧→設定→保存→一覧で値が一致する。取り消しで前の値に戻る。型違いは拒否される。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
