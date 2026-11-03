@@ -1,0 +1,15 @@
+{
+  "bridge": "norves.editor.bridge",
+  "version": "0.2",
+  "kind": "request",
+  "id": "req-capture-1",
+  "method": "viewport.captureDeterministic",
+  "sessionId": "sess-7f3a",
+  "params": {
+    "captureDir": "/captures",
+    "outputName": "cap-20261103T000000Z-1",
+    "settleFrames": 2,
+    "maxWidth": 64,
+    "maxHeight": 36
+  }
+}

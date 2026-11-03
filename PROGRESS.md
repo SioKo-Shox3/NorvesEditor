@@ -167,6 +167,23 @@
 - ループは cmd.exe で `verify:` を実行する(`spawnSync(..., { shell: true })`)。verify に bash の構文を書かない。
 - `pnpm lint` は実体が無い(どのパッケージにも lint スクリプトが無い)。緑でも何も検査していない。
 - NorvesLib の作業ツリーは `feature/rendering-r4-ddgi` の未コミットの変更を抱えている。今回の主題では NorvesLib に触らない。
+
+- E4-003: 決定的な撮影 `viewport.captureDeterministic` を受け付け(`{captureId}`)と完了イベント `viewport.captureCompleted` に分けて決め、`docs/memory-buffer-policy.md` にファイル受け渡し(上限 1920x1080・32 MiB・settleFrames 600、所有・寿命・場所の検証)、要件文書 10 章の 5・6 と NE18 に決定と NE17 を前提にしない理由を記録した。schema 3 本と positive/negative fixture(計 191 件)、能力 `viewport.capture`、SDK の仮想関数(既定 METHOD_NOT_SUPPORTED)・params 検査・完了 DTO、モック mcp-edit の決定的な無圧縮 PNG と完了の送出(`NORVES_MOCK_CAPTURE_STALL=1` で完了を送らない。既定プロフィールの golden は不変)、Rust クライアントの要求・完了待ち・captureId/世代/場所の照合と時間切れの区別、TS の型を足した。verify 4 本は fixtures 191 件 exit 0、`verify.ps1 -Cpp` exit 0(C++ 8/8・vitest 42/45/699・IPC 名一致)、conformance 1 件・mcp_mock_profile 4 件が実モックで成功(SKIP なし)。証拠 `.harness/runs/20261103-113134/verify-E4-003.txt` を開いて確認。
+- E4-004: MCP の撮影の道具(撮影用ディレクトリの片付け 7 日・200 件、PNG の検証と縮小、取り消しとの結合)を E4-003 の Rust クライアントの上に作る。
+- 要起票: NorvesLib の `BridgeDeterministicCapture` を SDK の `viewportCaptureDeterministic` と完了イベント `viewport.captureCompleted` へつなぐ(NorvesLib 側の作業)。
+- E4-003 差し戻し対応: `verify.ps1 -Cpp` の失敗は撮影の実装ではなく、pnpm 11.6 が `onlyBuiltDependencies` を読まず自動 `pnpm install` が `ERR_PNPM_IGNORED_BUILDS`(esbuild)で落ちることが原因だった。`pnpm-workspace.yaml` に `allowBuilds: { esbuild: true }` を足し(旧キーは古い pnpm 向けに残す。`paths:` の外だが既存の意図どおりの設定の移し替え)、環境変数の上書き無しで verify 4 本が exit 0(fixtures 191 件、`-Cpp` の frontend 4 ゲート OK、conformance 1 件・mcp_mock_profile 4 件が実モックで SKIP なし)。証拠 `.harness/relay/E4-003-U8-verify.txt`。
+- E4-003: 撮影の完了待ちはアプリを起動しない実モックの試験で確かめた。実エンジン・GPU での撮影は未確認。
+- E4-003 差し戻し 2 の対応: ビルドの無い作業ツリーで `verify.ps1 -Cpp` が C++ を SKIP して exit 0 になり、次の verify がモックの exe を見つけられなかった。`-Cpp` で `build/cpp/CMakeCache.txt` が無ければ configure をゲートとして回すようにした(`paths:` の外だが verify を素の作業ツリーで通すための検証手段の修正)。`build/cpp` の無い状態から verify 4 本が exit 0(configure 約 103 秒、ctest 8/8、conformance 1 件・mcp_mock_profile 4 件が実モックで SKIP なし)。証拠 `.harness/runs/20261103-163354/verify-E4-003-U9.txt`。
+- 要起票: `ws_transport.rs` の既存試験 `dispatcher_over_ws_resolves_a_request` が `verify.ps1 -Cpp` の再実行で一度止まり続けた(手で止めて exit -1、再試行で成功)。今回のタスクでは触っていないファイルで、間欠的なハングの原因は未特定。
+- U1 撮影の決定とファイル受け渡しの方針を文書に記録する: 着地(直し 0 回)
+- U2 メソッドとイベントの schema・fixture・能力の文書を足す: 着地(直し 0 回)
+- U7 TS の型に撮影の要求・応答・完了イベントを足す: 着地(直し 0 回)
+- U3 SDK に撮影の仮想関数・params 検査・完了イベントの DTO を足す: 着地(直し 0 回)
+- U5 Rust クライアントに撮影の要求と完了の待ち合わせを足す: 着地(直し 1 回)
+- U4 モックの MCP 試験プロフィールで決定的な PNG を書き完了を送る: 着地(直し 0 回)
+- U6 実プロセスのモックで撮影の一致・場所の拒否・時間切れを試験する: 着地(直し 2 回)
+- U8 pnpm 11 の新しい設定キーで esbuild のビルドを許可し、タスクの verify を素の環境で通す: 着地(直し 0 回)
+- U9 verify.ps1 -Cpp が build/cpp の不在で黙って SKIP せず自分で configure する: 着地(直し 0 回)
 - U2 U1 のレビュー済み差分をこの枠で作り直す(verify.ps1 の構成ゲートと -CppBuildDir、文書): 着地(直し 0 回)
 - 2026-11-03 E4-001-P3: `verify.ps1` に `-CppBuildDir`(既定 build/cpp、相対はリポジトリのルート基準)を足し、`-Cpp` で `CMakeCache.txt` が無ければ `cmake configure` をゲートとして走らせてから build と ctest を走らせる。構成の失敗は非 0 で止まる(書き込めない場所を指定して `[FAIL] cmake configure` と exit 1 を確認)。空の一時ディレクトリで `-Cpp -SkipFrontend` は configure / build / ctest 8/8 がすべて `[OK]`、exit 0。既定ディレクトリの `-Cpp` は C++ 段が `[OK]` のあと、フロントエンド段の `pnpm typecheck` が `ERR_PNPM_IGNORED_BUILDS`(esbuild、pnpm 11.6.0)で exit 1。この失敗は今回の変更より前からあり、paths の外なので BLOCKED にした(blocked/E4-001-P3.md)。
-- 要起票: pnpm 11.6.0 で `pnpm -r typecheck` の実行前の依存確認が esbuild のビルドスクリプト未承認(`ERR_PNPM_IGNORED_BUILDS`)で失敗し、`verify.ps1` のフロントエンド段が落ちる。`pnpm-workspace.yaml` の `onlyBuiltDependencies` が pnpm 11 で効いていない疑い。
+- E4-001-P3: Notes に残していた pnpm 11.6.0 の `ERR_PNPM_IGNORED_BUILDS` の要起票は、統合ブランチの `pnpm-workspace.yaml` が `allowBuilds: { esbuild: true }` になったことで解消した(E4-003 の U8 で入った。E4-001 の同じ直しと同じ中身)。

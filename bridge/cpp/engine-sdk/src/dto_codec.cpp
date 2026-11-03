@@ -605,4 +605,28 @@ namespace Norves::Bridge::Dto
         return Result<LogMessageEvent, CodecError>::ok(std::move(out));
     }
 
+    // --- ViewportCaptureCompletedEvent -------------------------------------------
+
+    JsonValue ViewportCaptureCompletedEvent::to_json() const
+    {
+        json obj = json::object();
+        obj["captureId"] = captureId;
+        if (status == ViewportCaptureStatus::Succeeded)
+        {
+            obj["status"] = "succeeded";
+            obj["path"] = path;
+            obj["width"] = width;
+            obj["height"] = height;
+            obj["frame"] = frame;
+            obj["pixelDigest"] = json{{"algorithm", "fnv1a64-rgba8"}, {"value", pixelDigest.value}};
+            obj["fileBytes"] = fileBytes;
+        }
+        else
+        {
+            obj["status"] = "failed";
+            obj["failure"] = json{{"code", failure.code}, {"message", failure.message}};
+        }
+        return Wrap(std::move(obj));
+    }
+
 }  // namespace Norves::Bridge::Dto

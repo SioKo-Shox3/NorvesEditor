@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://norveseditor.dev/bridge/spec/schema/methods/viewport.captureDeterministic.result.schema.json",
+  "title": "viewport.captureDeterministic response result",
+  "description": "Acceptance of a capture request; completion arrives in a separate viewport.captureCompleted event.",
+  "type": "object",
+  "required": [
+    "captureId"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "captureId": {
+      "description": "Identifier used to correlate the completion event with this accepted request.",
+      "$ref": "https://norveseditor.dev/bridge/spec/schema/events/viewport.captureCompleted.params.schema.json#/$defs/captureId"
+    }
+  }
+}
