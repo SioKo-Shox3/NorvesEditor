@@ -65,6 +65,8 @@
 
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
+- E4-004: MCP の道具 `viewport_capture` を足した。能力 `viewport.capture` があり書き込みが有効な接続だけに出し、実行制御と同じ範囲検査の書き込み許可を通し、編集履歴に積まず操作記録に残す。撮影用ディレクトリは本番が `app_local_data_dir/captures`、受入は一時ディレクトリの下で、起動時と撮影ごとに 7 日・200 件の規則で片付ける(`mcp/capture.rs` の試験 2 件)。完了で返った場所は canonicalize した親が撮影用ディレクトリと一致することを確かめ、32 MiB 以下の上限付きで読み、既存の PNG 検証で寸法と RGBA の要約値を照合してから長辺 768 以下に縮小した画像と要約値・寸法・刻みの文字で返す。待ちは HTTP 要求の取り消し・許可の失効・全体期限・接続の世代の変化と競わせ、送信後の中断と世代の変化は結果不明として自動で再送しない。受入に `MCP_ACCEPTANCE_OK deterministic-capture`(現行版で同じ引数の 2 回の要約値が一致・ファイルが撮影用ディレクトリ直下・操作記録 success 2 件・履歴不変)を足した。`verify.ps1 -Cpp` exit 0(C++ 8/8、`All requested gates passed`)、feature 付きの clippy -D warnings・mcp_e2e のコンパイル・fmt は exit 0、MCP 単体 136 件成功。
+
 ## In progress
 - なし。承認済みE0〜E3の実装・受入・評価・コミット文面の整備は完了。過去の失敗・停止・差し戻しは保存したまま、最終PASSの証拠と区別する。
 
@@ -79,6 +81,8 @@
   - エンジン起動中にエディタを `taskkill /F` で終わらせると、エンジンも終わる
   - Settings の「エンジン」欄を狭い幅にしても崩れない
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
+
+- E4-004 の起動の確かめは後回し(人の決まりでアプリを起動しない): `cargo fmt --check`・`cargo clippy --all-targets -D warnings`・`cargo test`(src-tauri)と、実 HTTP と実モックの `scripts/verify-mcp-e2e.ps1`(`deterministic-capture` の印と既存の印・両版の数)を `E4-004-CHECK` でまとめて回す。実エンジンでの一致は NorvesLib の `GAME-GR137-VFX-CHECK` で確かめる。
 
 ## Notes
 - 2026-10-04 最終整理: 未公開をfetch後の全remote refsで確認し、NorvesEditorの本文不足9件とMyWorkflowのガイド1件を整えた。再基底化した15コミットすべてとガイドのtreeが旧履歴と一致する。旧履歴は `refs/archive/mcp-messages-20261004` / MyWorkflowの `refs/archive/norveseditor-mcp-guide-messages-20261004` に保存し、対応表は `.harness/mcp-message-hygiene/result.json`。評価が参照する旧SHAも保持している。最終コードは873b7e1（旧6c789b4）。本文だけの変更なのでコード試験を重複実行せず、tree照合・git diff・本文検査とガイド展開照合を通した。
@@ -192,3 +196,5 @@
 - U5 撮影の道具の実行と結果の分類を足す: 着地(直し 0 回)
 - U6 撮影用ディレクトリをアプリのデータディレクトリにつなぐ: 着地(直し 0 回)
 - U7 実 HTTP とモックで同じ引数の撮影の一致を受け入れる: 着地(直し 0 回)
+- 要起票: 撮影後の画像検証の失敗は outcome `applied`・result `failed` で記録するが、`operations.rs` の `summary` は outcome だけで決まり「操作が完了しました。」と表示される。エンジンの `Failed` も outcome `rejected` のため「変更は適用されていません。」と出て、刻みが進んだ可能性と合わない。
+- 要起票: 撮影の待ちを取り消し・期限で打ち切ると同時 1 件の排他も外れるため、エンジン側の撮影がまだ続いているうちに次の撮影を受け付け得る(自動再送はしない)。
