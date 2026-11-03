@@ -60,7 +60,6 @@ pub(crate) struct TimestampedImageList {
 }
 
 /// 縮小した撮影PNGと、復号した元画像のRGBA8の要約値。
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CaptureImage {
     pub(crate) png: Vec<u8>,
@@ -174,7 +173,6 @@ pub(crate) fn build_timestamped_image_list(
 }
 
 /// 撮影PNGを検証し、元画像の要約値と長辺768以下のPNGを返す。
-#[allow(dead_code)]
 pub(crate) fn prepare_capture_image(
     png: &[u8],
     expected_width: u32,

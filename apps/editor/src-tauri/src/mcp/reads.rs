@@ -134,6 +134,7 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
 pub(crate) struct McpReadContext {
     force_confirmation: bool,
     bridge: BridgeFacade,
+    captures: Option<super::capture::CaptureStore>,
     pub(super) catalog: McpToolCatalog,
     pub(super) writes: Option<Arc<crate::edit_service::EditService>>,
     pub(crate) operations: super::operations::OperationStore,
@@ -156,6 +157,7 @@ impl McpReadContext {
     ) -> Self {
         Self {
             bridge,
+            captures: None,
             catalog,
             writes: None,
             operations: super::operations::OperationStore::default(),
@@ -187,6 +189,49 @@ impl McpReadContext {
     pub(crate) fn with_operations(mut self, operations: super::operations::OperationStore) -> Self {
         self.operations = operations;
         self
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_capture_store(mut self, store: super::capture::CaptureStore) -> Self {
+        self.captures = Some(store);
+        self
+    }
+
+    pub(super) fn bridge(&self) -> &BridgeFacade {
+        &self.bridge
+    }
+
+    pub(super) fn capture_store(&self) -> Option<&super::capture::CaptureStore> {
+        self.captures.as_ref()
+    }
+
+    pub(super) fn validate_capture_permit(
+        &self,
+        permit: &McpWritePermit,
+        lease: &McpRequestLease,
+        generation: u64,
+    ) -> Result<(), String> {
+        self.authorization
+            .as_ref()
+            .ok_or_else(|| "MCP書き込みの認証状態がありません。".to_owned())?
+            .validate_write_permit(permit, lease, generation, &McpWriteOperation::Capture)
+            .map_err(|error| error.message().to_owned())
+    }
+
+    pub(crate) async fn authorize_capture(
+        &self,
+        request_lease: &McpRequestLease,
+        params: &Value,
+    ) -> Result<McpWritePermit, String> {
+        self.authorize_operation(
+            request_lease,
+            "viewport_capture",
+            "viewport.captureDeterministic",
+            params.clone(),
+            McpWriteOperation::Capture,
+            None,
+        )
+        .await
     }
 
     pub(crate) fn require_reconfirmation(mut self) -> Self {

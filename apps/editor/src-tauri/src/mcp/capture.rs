@@ -1,5 +1,7 @@
 //! MCP の撮影用ディレクトリの命名、排他、保存期間を管理する。
 
+mod tool;
+
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -16,7 +18,6 @@ pub(crate) const CAPTURE_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 *
 pub(crate) const MAX_RETAINED_CAPTURES: usize = 200;
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub(crate) struct CaptureStore {
     inner: Arc<CaptureStoreInner>,
 }

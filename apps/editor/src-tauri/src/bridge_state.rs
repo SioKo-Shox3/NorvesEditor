@@ -150,7 +150,6 @@ impl BridgeFacade {
 
     /// 撮影を 1 件送り、接続の世代の変化を見張りながら完了を待つ。
     /// `sent` は要求を送る直前に true にする。
-    #[allow(dead_code)]
     pub(crate) async fn capture_deterministic(
         &self,
         lease: &BridgeLease,
