@@ -34,7 +34,7 @@
 //! the mock engine in P6; here it is structural plus the pure mapping tests.
 
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -43,8 +43,9 @@ use norves_bridge_core::{
     VersionString,
 };
 use norves_bridge_editor_client::{
-    connect_with_retry, hello_error_to_handshake, parse_hello_result, DispatchHandle, HelloOutcome,
-    HelloParams, RetryConfig,
+    capture_deterministic, connect_with_retry, hello_error_to_handshake, parse_hello_result,
+    CaptureCompleted, CaptureError, CaptureRequest, DispatchHandle, HelloOutcome, HelloParams,
+    RetryConfig,
 };
 use serde_json::Value;
 use tauri::async_runtime::JoinHandle;
@@ -145,6 +146,66 @@ impl BridgeFacade {
             .clone()
             .filter(|lease| Some(lease.generation) == current)
             .ok_or(BackendError::NotConnected)
+    }
+
+    /// 撮影を 1 件送り、接続の世代の変化を見張りながら完了を待つ。
+    /// `sent` は要求を送る直前に true にする。
+    #[allow(dead_code)]
+    pub(crate) async fn capture_deterministic(
+        &self,
+        lease: &BridgeLease,
+        request: &CaptureRequest,
+        timeout: Duration,
+        sent: &AtomicBool,
+    ) -> Result<CaptureCompleted, CaptureError> {
+        if !self.is_current(lease.generation) {
+            return Err(CaptureError::ConnectionChanged);
+        }
+
+        let request_for_validation = request.clone();
+        tokio::task::spawn_blocking(move || request_for_validation.validate())
+            .await
+            .map_err(|_| CaptureError::Protocol("撮影要求の検査を完了できません".to_owned()))??;
+
+        if !self.is_current(lease.generation) {
+            return Err(CaptureError::ConnectionChanged);
+        }
+
+        let local_generation = AtomicU64::new(lease.generation);
+        let request_id = allocate_request_id(&self.next_request_id);
+        let mut session = self.subscribe();
+        sent.store(true, Ordering::SeqCst);
+        let result = tokio::select! {
+            biased;
+            () = async {
+                loop {
+                    if session.borrow_and_update().as_ref().map(|current| current.generation)
+                        != Some(lease.generation)
+                    {
+                        break;
+                    }
+                    if session.changed().await.is_err() {
+                        break;
+                    }
+                }
+            } => {
+                local_generation.store(u64::MAX, Ordering::SeqCst);
+                return Err(CaptureError::ConnectionChanged);
+            }
+            result = capture_deterministic(
+                &lease.handle,
+                request_id.as_str(),
+                request,
+                lease.generation,
+                &local_generation,
+                timeout,
+            ) => result,
+        };
+
+        if result.is_ok() && !self.is_current(lease.generation) {
+            return Err(CaptureError::ConnectionChanged);
+        }
+        result
     }
 
     /// 捕捉済みhandleへ世代を保ったままBridge要求を送る。
