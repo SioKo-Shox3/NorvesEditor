@@ -213,3 +213,10 @@
 - U12 U11 の切り直し(作業ツリーの持ち主が前の枠のため着地できなかった)。result schema の説明文の拒否の理由を直し、verify を全部通す: 着地(直し 0 回)
 - 2026-11-03 E4-001(再開・完了): 評価の残課題 3 に対応し、`asset.getProperties`/`asset.save`/`asset.setProperty` の result schema の説明文で、拒否の理由をそのメソッドで起こるものだけの例示にした(構造は変えていない)。verify 5本 exit 0(build/cpp 構成済みの確認、fixtures 193、`verify.ps1 -Cpp` は C++ 8/8・Rust・pnpm test 42/45/699 を含む全ゲート合格で `[FAIL]`/`[SKIP]` なし、conformance 1件、mcp_mock_profile 2件を実モックで合格)。証拠 `.harness/runs/20261103-163351/verify-E4-001-U12.txt`。
 - E4-001 の残り: モックの `asset.save` は保存先に書くだけでどこからも読まれず、試験の「保存→一覧で一致」は保存が何もしなくても成り立つ。保存の中身の確かめは E4-002 か NorvesLib 側の実装で行う。試験の英語の assert 文言も未対応のまま。
+
+- 2026-11-03 E4-001-P3 完了: 統合ブランチ(E4-003-P1 まで)を取り込んだ上で verify を 2 本とも回し直した。空の一時ディレクトリでの `-Cpp -SkipFrontend` は cmake configure / build / ctest 8/8 を含むすべてが `[OK]`、exit 0。既定ディレクトリの `-Cpp` は C++ 段に `[SKIP]` が無く、pnpm typecheck / lint / build / test まで `[OK]`、exit 0。どちらにも `[FAIL]` は無い。`scripts/verify.ps1` の先頭の BOM と LF の行末は保たれている。
+- E4-001-P3 は完了。`-Cpp` で構成が失敗したときの非 0 終了は、書き込めない場所を指定した手元の確かめだけで、自動の試験は無い。
+- U2 U1 のレビュー済み差分をこの枠で作り直す(verify.ps1 の構成ゲートと -CppBuildDir、文書): 着地(直し 0 回)
+- 2026-11-03 E4-001-P3: `verify.ps1` に `-CppBuildDir`(既定 build/cpp、相対はリポジトリのルート基準)を足し、`-Cpp` で `CMakeCache.txt` が無ければ `cmake configure` をゲートとして走らせてから build と ctest を走らせる。構成の失敗は非 0 で止まる(書き込めない場所を指定して `[FAIL] cmake configure` と exit 1 を確認)。空の一時ディレクトリで `-Cpp -SkipFrontend` は configure / build / ctest 8/8 がすべて `[OK]`、exit 0。既定ディレクトリの `-Cpp` は C++ 段が `[OK]` のあと、フロントエンド段の `pnpm typecheck` が `ERR_PNPM_IGNORED_BUILDS`(esbuild、pnpm 11.6.0)で exit 1。この失敗は今回の変更より前からあり、paths の外なので BLOCKED にした(blocked/E4-001-P3.md)。
+- E4-001-P3: Notes に残していた pnpm 11.6.0 の `ERR_PNPM_IGNORED_BUILDS` の要起票は、統合ブランチの `pnpm-workspace.yaml` が `allowBuilds: { esbuild: true }` になったことで解消した(E4-003 の U8 で入った。E4-001 の同じ直しと同じ中身)。
+- 要起票: pnpm 11.6.0 で `pnpm -r typecheck` の実行前の依存確認が esbuild のビルドスクリプト未承認(`ERR_PNPM_IGNORED_BUILDS`)で失敗し、`verify.ps1` のフロントエンド段が落ちる。`pnpm-workspace.yaml` の `onlyBuiltDependencies` が pnpm 11 で効いていない疑い。
