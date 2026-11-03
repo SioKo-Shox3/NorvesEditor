@@ -519,10 +519,19 @@ M2 の共通規則:
 - from: E4-001
 
 ## E4-003-P1: `dispatcher_over_ws_resolves_a_request` の間欠的な停止を、時間切れで落ちる形にして原因を直す
-- status: todo
+- status: done
 - done-when: `bridge/crates/norves-bridge-editor-client/src/ws_transport.rs` の試験 `dispatcher_over_ws_resolves_a_request` で、`with_timeout` に包まれていない待ちを残さない。今は `handle.shutdown().await`(375 行)と `server.await`(376 行)が包まれていないので、ここを包み、どの段で止まったかを名前で出す。止まっていた場所を突き止める。原因が試験の外(`dispatcher.rs` の select ループや `WsClientTransport` の split の扱い)にあれば、そちらを直す。原因と、試験の外を変えた場合はその理由をコミット本文に書く。モジュール内の ws_transport の試験を 50 回続けて走らせ、止まらずにすべて通ること。全体の `cargo test -p norves-bridge-editor-client --lib` も通ること。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "for($i=1;$i -le 50;$i++){ cargo test -p norves-bridge-editor-client --lib ws_transport -- --test-threads=1; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }; exit 0"`
 - verify: `cargo test -p norves-bridge-editor-client --lib`
 - paths: bridge/crates/norves-bridge-editor-client/src/ws_transport.rs, bridge/crates/norves-bridge-editor-client/src/dispatcher.rs
 - from: E4-003
 - notes: `dispatcher.rs` に手を入れる場合は危険地帯(Rust の async タスクの寿命、WebSocket の転送)に入る。評価者を通し、コミット本文を書く。アプリも GPU も使わない(試験はローカルの WebSocket だけで完結する)。
+
+## E4-003-P2: `DispatchHandle::request` が切断との競合で `Timeout` まで待たず、すぐに `ConnectionClosed` を返すようにする
+- status: todo
+- done-when: `bridge/crates/norves-bridge-editor-client/src/dispatcher.rs` の `DispatchHandle::request` を直す。今は `self.commands.send(command)` が容量を予約した直後に task が切断(`Ok(None)`・転送エラー)で終わると、送った `SendRequest` と `responder` が排出されないままキューに残り、`response_rx` は値も切断も受け取らない。その結果、`timeout` が満ちるまで待ってから `RequestError::Timeout` を返す。これはモジュール冒頭の約束(30〜32 行。task が止まれば `request` は `ConnectionClosed` を返し、止まらない)に反する。`capture.rs:421-423` は `Timeout` と `ConnectionClosed` を別の誤り(`CaptureError::Timeout(Accept)` / `ConnectionChanged`)に分けているので、分類も誤る。`shutdown`(223〜237 行)と同じ考え方で、時間切れの中の待ちを `response_rx` と `self.commands.closed()` の `select!` にする。`response_rx` を先に見る(`biased`)。task は終了のどの経路でも待っている要求をすべて失敗扱いにしてから Receiver を閉じる。そのため、`response_rx` が値を返さないまま閉鎖だけが来たら、取り残された要求とみなして `ConnectionClosed` を返す。閉鎖で戻った場合は `Cancel` を送らない。応答・時間切れ・`Cancel` の世代トークンの意味は変えない。次の試験を 1 件足す: すぐに切断を返す転送の上で、マルチスレッドの実行環境を使い、長い時間切れ(例: 30 秒)付きの `request` を繰り返し出す。毎回 `ConnectionClosed` が返り、それが短い上限(例: 2 秒)の内に返ることを確かめる。上限は `tokio::time::timeout` で包み、どの回で止まったかを名前で出す。原因と、試験の外の振る舞いを変えた理由をコミット本文に書く。クレートの lib の試験がすべて通り、dispatcher と ws_transport の試験を 50 回続けて走らせても止まらず、すべて通ること。
+- verify: `cargo test -p norves-bridge-editor-client --lib`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "for($i=1;$i -le 50;$i++){ cargo test -p norves-bridge-editor-client --lib dispatcher -- --test-threads=1; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE }; cargo test -p norves-bridge-editor-client --lib ws_transport -- --test-threads=1; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }; exit 0"`
+- paths: bridge/crates/norves-bridge-editor-client/src/dispatcher.rs
+- from: E4-003-P1
+- notes: 危険地帯(Rust の async タスクの寿命、WebSocket の転送)に入る。評価者を通し、コミット本文を書く。アプリも GPU も使わない(試験はメモリ内の転送とローカルの WebSocket だけで完結する)。

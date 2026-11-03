@@ -137,12 +137,10 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio_tungstenite::accept_async;
 
-    /// A short, generous bound on every network await so a hang fails the test
-    /// instead of blocking CI.
+    /// ネットワークとタスクの待機を制限し、停止を段名付きの失敗として報告する。
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-    /// Wraps a future with [`TEST_TIMEOUT`] and unwraps the elapsed case with a
-    /// descriptive panic.
+    /// 時間切れを待機していた段の名前付きで報告する。
     async fn with_timeout<F, T>(label: &str, fut: F) -> T
     where
         F: std::future::Future<Output = T>,
@@ -152,10 +150,9 @@ mod tests {
             .unwrap_or_else(|_| panic!("timed out: {label}"))
     }
 
-    /// Binds an OS-assigned `127.0.0.1` port and returns the listener plus the
-    /// `ws://` URL a client should dial.
+    /// OS が割り当てたローカルポートのリスナーと接続先 URL を返す。
     async fn bind_local() -> (TcpListener, String) {
-        let listener = TcpListener::bind("127.0.0.1:0")
+        let listener = with_timeout("bind listener", TcpListener::bind("127.0.0.1:0"))
             .await
             .expect("bind ephemeral port");
         let addr = listener.local_addr().expect("local addr");
@@ -163,17 +160,19 @@ mod tests {
         (listener, url)
     }
 
-    /// Accepts exactly one WebSocket connection on `listener`, runs `body` with
-    /// the upgraded server-side stream, and returns the spawned task handle so
-    /// the test can join (and surface server-side panics).
+    /// 接続を1つ受けて body を実行し、サーバー側の失敗を確認するハンドルを返す。
     fn serve_one<F, Fut>(listener: TcpListener, body: F) -> JoinHandle<()>
     where
         F: FnOnce(WebSocketStream<TcpStream>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send,
     {
         tokio::spawn(async move {
-            let (tcp, _peer) = listener.accept().await.expect("server accepts tcp");
-            let ws = accept_async(tcp).await.expect("server ws handshake");
+            let (tcp, _peer) = with_timeout("server accept", listener.accept())
+                .await
+                .expect("server accepts tcp");
+            let ws = with_timeout("server handshake", accept_async(tcp))
+                .await
+                .expect("server ws handshake");
             body(ws).await;
         })
     }
@@ -181,10 +180,12 @@ mod tests {
     #[tokio::test]
     async fn round_trips_a_text_frame() {
         let (listener, url) = bind_local().await;
-        // Server echoes the first text frame it receives.
+        // 最初に受け取ったテキストフレームを送り返す。
         let server = serve_one(listener, |mut ws| async move {
-            if let Some(Ok(Message::Text(t))) = ws.next().await {
-                ws.send(Message::Text(t)).await.expect("server echo");
+            if let Some(Ok(Message::Text(t))) = with_timeout("server recv", ws.next()).await {
+                with_timeout("server echo", ws.send(Message::Text(t)))
+                    .await
+                    .expect("server echo");
             }
         });
 
@@ -197,20 +198,27 @@ mod tests {
         let got = with_timeout("recv", client.recv()).await.expect("recv ok");
         assert_eq!(got, Some("hello".to_owned()));
 
-        server.await.expect("server task joins");
+        with_timeout("server task join", server)
+            .await
+            .expect("server task joins");
     }
 
     #[tokio::test]
     async fn preserves_order_of_multiple_frames() {
         let (listener, url) = bind_local().await;
-        // Server pushes three text frames back to back, then closes.
+        // 3つのテキストフレームを続けて送信してから閉じる。
         let server = serve_one(listener, |mut ws| async move {
             for i in 0..3 {
-                ws.send(Message::Text(format!("frame-{i}").into()))
-                    .await
-                    .expect("server send");
+                with_timeout(
+                    "server send",
+                    ws.send(Message::Text(format!("frame-{i}").into())),
+                )
+                .await
+                .expect("server send");
             }
-            ws.close(None).await.expect("server close");
+            with_timeout("server close", ws.close(None))
+                .await
+                .expect("server close");
         });
 
         let mut client = with_timeout("connect", WsClientTransport::connect(&url))
@@ -221,14 +229,18 @@ mod tests {
             assert_eq!(got, Some(format!("frame-{i}")));
         }
 
-        server.await.expect("server task joins");
+        with_timeout("server task join", server)
+            .await
+            .expect("server task joins");
     }
 
     #[tokio::test]
     async fn close_maps_to_clean_eof() {
         let (listener, url) = bind_local().await;
         let server = serve_one(listener, |mut ws| async move {
-            ws.close(None).await.expect("server close");
+            with_timeout("server close", ws.close(None))
+                .await
+                .expect("server close");
         });
 
         let mut client = with_timeout("connect", WsClientTransport::connect(&url))
@@ -237,19 +249,23 @@ mod tests {
         let got = with_timeout("recv", client.recv()).await.expect("recv ok");
         assert_eq!(got, None, "a Close frame must surface as clean EOF");
 
-        server.await.expect("server task joins");
+        with_timeout("server task join", server)
+            .await
+            .expect("server task joins");
     }
 
     #[tokio::test]
     async fn binary_frame_is_an_error() {
         let (listener, url) = bind_local().await;
         let server = serve_one(listener, |mut ws| async move {
-            ws.send(Message::Binary(vec![1, 2, 3].into()))
-                .await
-                .expect("server send binary");
-            // Keep the connection alive briefly so the client reads the binary
-            // frame rather than an early close.
-            let _ = ws.next().await;
+            with_timeout(
+                "server send binary",
+                ws.send(Message::Binary(vec![1, 2, 3].into())),
+            )
+            .await
+            .expect("server send binary");
+            // バイナリフレームを読む前に接続が閉じないよう、クライアントを待つ。
+            let _ = with_timeout("server recv", ws.next()).await;
         });
 
         let mut client = with_timeout("connect", WsClientTransport::connect(&url))
@@ -264,23 +280,25 @@ mod tests {
         );
 
         server.abort();
+        if let Err(err) = with_timeout("server task cancellation", server).await {
+            assert!(err.is_cancelled(), "server task failed: {err}");
+        }
     }
 
     #[tokio::test]
     async fn ping_is_transparent_before_a_text_frame() {
         let (listener, url) = bind_local().await;
-        // Server sends a Ping, then a Text. The client must skip the Ping
-        // (tungstenite auto-Pongs) and deliver the Text.
+        // Ping に続けて Text を送る。クライアントは Ping を読み飛ばして
+        // Text を届け、tungstenite が自動的に Pong を返す。
         let server = serve_one(listener, |mut ws| async move {
-            ws.send(Message::Ping(vec![9, 9].into()))
+            with_timeout("server ping", ws.send(Message::Ping(vec![9, 9].into())))
                 .await
                 .expect("server ping");
-            ws.send(Message::Text("after-ping".into()))
+            with_timeout("server text", ws.send(Message::Text("after-ping".into())))
                 .await
                 .expect("server text");
-            // Drain so the auto-Pong from the client is consumed and the
-            // connection is not torn down mid-write.
-            while let Some(Ok(msg)) = ws.next().await {
+            // 自動返信の Pong を読み、書き込みの途中で接続を切らない。
+            while let Some(Ok(msg)) = with_timeout("server recv", ws.next()).await {
                 if msg.is_close() {
                     break;
                 }
@@ -294,16 +312,18 @@ mod tests {
         assert_eq!(got, Some("after-ping".to_owned()));
 
         server.abort();
+        if let Err(err) = with_timeout("server task cancellation", server).await {
+            assert!(err.is_cancelled(), "server task failed: {err}");
+        }
     }
 
     #[tokio::test]
     async fn connect_to_dead_port_is_io_error() {
-        // Bind to claim a port, then drop the listener so nothing is listening.
+        // ポートを確保してからリスナーを破棄し、接続先を不在にする。
         let (listener, url) = bind_local().await;
         drop(listener);
 
-        // `WsClientTransport` is not `Debug` (its split halves are not), so match
-        // rather than `expect_err`.
+        // 分割したストリームは Debug を実装しないため、結果を match で確認する。
         match with_timeout("connect", WsClientTransport::connect(&url)).await {
             Ok(_) => panic!("connect to a dead port must fail"),
             Err(TransportError::Io(_)) => {}
@@ -311,10 +331,8 @@ mod tests {
         }
     }
 
-    /// End-to-end wiring proof: a real [`crate::Dispatcher`] spawned over the WS
-    /// transport sends a request and resolves it from a server that speaks the
-    /// Bridge wire format. This exercises encode -> WS send -> server decode ->
-    /// server encode -> WS recv -> decode -> correlation on the real transport.
+    /// 実際の WS 接続で要求を送信し、Bridge 形式の応答で解決することを確認する。
+    /// 符号化・送信・サーバー側の復号と応答・受信・要求との対応付けまでを通す。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dispatcher_over_ws_resolves_a_request() {
         use crate::Dispatcher;
@@ -324,9 +342,12 @@ mod tests {
         };
 
         let (listener, url) = bind_local().await;
-        // Server: read one request frame, reply with a matching result.
+        // 要求を1つ読み、その要求に対応する結果を返す。
         let server = serve_one(listener, |mut ws| async move {
-            let msg = ws.next().await.expect("server reads a frame").expect("ok");
+            let msg = with_timeout("server recv", ws.next())
+                .await
+                .expect("server reads a frame")
+                .expect("ok");
             let text = match msg {
                 Message::Text(t) => t.as_str().to_owned(),
                 other => panic!("expected text request, got {other:?}"),
@@ -344,7 +365,7 @@ mod tests {
             }
             .into();
             let frame = encode_envelope(&response).expect("server encodes response");
-            ws.send(Message::Text(frame.into()))
+            with_timeout("server response send", ws.send(Message::Text(frame.into())))
                 .await
                 .expect("server sends response");
         });
@@ -372,7 +393,9 @@ mod tests {
             ResponsePayload::Error(err) => panic!("expected result, got error {err:?}"),
         }
 
-        handle.shutdown().await;
-        server.await.expect("server task joins");
+        with_timeout("dispatcher shutdown", handle.shutdown()).await;
+        with_timeout("server task join", server)
+            .await
+            .expect("server task joins");
     }
 }

@@ -217,20 +217,23 @@ impl DispatchHandle {
         self.events.subscribe()
     }
 
-    /// Requests an orderly shutdown and waits for the task to finish failing all
-    /// in-flight requests.
+    /// 正常停止を要求し、実行中の要求がすべて失敗扱いになるまで待つ。
     ///
-    /// Idempotent in effect: if the task has already stopped, this returns
-    /// immediately.
+    /// タスクがすでに停止していれば直ちに戻るため、繰り返し呼び出せる。
     pub async fn shutdown(&self) {
         let (ack, ack_rx) = oneshot::channel();
         if self.commands.send(Command::Shutdown { ack }).await.is_err() {
-            // Task already gone; nothing to wait for.
+            // タスクがすでに終了しているため、待つ必要はない。
             return;
         }
-        // If the ack sender is dropped (task ended without acking) we still
-        // return — the task is no longer running either way.
-        let _ = ack_rx.await;
+        // send が容量を予約した直後に Receiver が破棄されると、その後に送った
+        // Shutdown はキューに残り、ack の Sender も最後のハンドルまで残りうる。
+        // タスクは全要求を失敗扱いにしてから Receiver を閉じるため、ack だけで
+        // なくチャネルの閉鎖も停止完了として扱う。
+        tokio::select! {
+            _ = ack_rx => {}
+            _ = self.commands.closed() => {}
+        }
     }
 }
 
