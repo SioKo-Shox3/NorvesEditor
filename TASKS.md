@@ -500,3 +500,19 @@ M2 の共通規則:
 - paths: apps/editor/src-tauri/src/mcp.rs, apps/editor/src-tauri/src/mcp/**, apps/editor/src-tauri/src/bridge_state.rs, apps/editor/src-tauri/src/lib.rs, apps/editor/src-tauri/tests/mcp_e2e.rs, scripts/verify-mcp-e2e.ps1
 - from: NorvesLib/GAME-GR137-VFX
 - notes: 危険地帯(バッファの所有・ファイルの場所の検証)。評価者を通す。実際のエンジンを相手にした一致の確認は、NorvesLib の `GAME-GR137-VFX-CHECK` の側で行う。
+
+## E4-001-P2: 要件文書の NE15・NE19 の依存の記述を、NE19 の一部を先に入れた決定に合わせる
+- status: todo
+- done-when: `docs/mcp-and-edit-layer-requirements.md` を次の 3 点で直す。(1) 7章「E4 の中の依存」の「NE19 は NE15 の形と GR136 が前提」と「NE15 を E4 の最初に入れる」の行に、次の 3 つを書き足す。2026-11-03 の作者の指示で、NE19 の一部(資産のプロパティの一覧・設定・保存)を NE15 より先に入れたこと。`asset.setProperty` は `previousValue` を必ず返すので、NE15 の能力交渉(`returnPrevious`)を前提にしないこと。GR136 が前提になるのは NorvesLib の側の最初の対象(エフェクトの資産)で、エディタ側の仕様・SDK・モック・クライアントの前提ではないこと。(2) NE15 の節の「資産の値の設定（NE19）も同じ形にする」を、6章の NE19 の決定と矛盾しない文に直す。決定では `previousValue` が必須で、交渉はない。(3) NE19 の節の「値の設定（NE15 と同じく旧値を返せる）」も同じく直す。直したあと、文書の中で NE15 と NE19 の旧値の扱いの記述が食い違わない。
+- verify: `git grep -n -e "NE15" -e "previousValue" -e "returnPrevious" -- docs/mcp-and-edit-layer-requirements.md`
+- paths: docs/mcp-and-edit-layer-requirements.md
+- after: E4-001
+- from: E4-001
+
+## E4-001-P3: `verify.ps1 -Cpp` で、C++ のビルドディレクトリが無いときに構成し、構成できなければ失敗にする
+- status: todo
+- done-when: `scripts/verify.ps1` に、ビルドディレクトリを指定する引数 `-CppBuildDir`(既定は `build/cpp`)を足す。`-Cpp` を付けて走らせ、そのディレクトリが無いときは `[SKIP]` で抜けない。代わりに `cmake -S bridge/cpp -B <dir> -G "Visual Studio 17 2022"` を 1 つのゲートとして走らせてから、cmake build と ctest を走らせる。構成が失敗したら exit code を 0 以外にして止める。`-Cpp` が無いときに C++ 段を飛ばす動きは変えない。スクリプト冒頭の Usage と Notes、触ったブロックのコメント、`docs/build.md` の「requires build/cpp to be pre-configured」の記述を、日本語で新しい動きに合わせる。空の一時ディレクトリを指定して `-Cpp -SkipFrontend` で走らせると、構成・ビルド・ctest がすべて `[OK]` になり、exit 0 で終わる。既定のディレクトリでの `-Cpp` も exit 0 で終わる。
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=Join-Path $env:TEMP ('norves-cpp-'+[guid]::NewGuid()); & ./scripts/verify.ps1 -Cpp -SkipFrontend -CppBuildDir $d; $c=$LASTEXITCODE; Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue; exit $c"`
+- verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
+- paths: scripts/verify.ps1, docs/build.md
+- from: E4-001
