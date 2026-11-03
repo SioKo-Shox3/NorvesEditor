@@ -52,7 +52,9 @@ use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{watch, Mutex};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::dto::{
     ConnectionStatePayload, EditHistorySummaryDto, UiParentCaptureDto, UiPropertyCaptureDto,
@@ -125,12 +127,75 @@ pub(crate) struct BridgeLease {
     pub(crate) capabilities: Vec<CapabilityDescriptor>,
 }
 
+enum CaptureGateState {
+    Pending(Box<dyn Send>),
+    Sent,
+    Abandoned,
+}
+
+/// 送信前の打ち切りと、撮影タスクへの排他権の移譲を直列化する関門。
+pub(crate) struct CaptureSendGate {
+    state: StdMutex<CaptureGateState>,
+}
+
+impl CaptureSendGate {
+    pub(crate) fn new(exclusion: impl Send + 'static) -> Arc<Self> {
+        Arc::new(Self {
+            state: StdMutex::new(CaptureGateState::Pending(Box::new(exclusion))),
+        })
+    }
+
+    /// 未送信なら排他権を解放し、送信済みかどうかを返す。
+    pub(crate) fn abandon(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*state {
+            CaptureGateState::Pending(_) => {
+                let pending = std::mem::replace(&mut *state, CaptureGateState::Abandoned);
+                drop(state);
+                drop(pending);
+                false
+            }
+            CaptureGateState::Sent => true,
+            CaptureGateState::Abandoned => false,
+        }
+    }
+
+    pub(crate) fn was_sent(&self) -> bool {
+        matches!(
+            *self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            CaptureGateState::Sent
+        )
+    }
+
+    fn take_for_send(&self) -> Option<Box<dyn Send>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !matches!(*state, CaptureGateState::Pending(_)) {
+            return None;
+        }
+        match std::mem::replace(&mut *state, CaptureGateState::Sent) {
+            CaptureGateState::Pending(exclusion) => Some(exclusion),
+            _ => None,
+        }
+    }
+}
+
 /// 編集側が接続のロックを持ち越さず、世代付きhandleを得るための内部窓口。
 #[derive(Clone)]
 pub(crate) struct BridgeFacade {
     current_generation: Arc<StdMutex<Option<u64>>>,
     session: watch::Receiver<Option<BridgeLease>>,
     next_request_id: Arc<AtomicU64>,
+    capture_tasks: TaskTracker,
+    capture_shutdown: CancellationToken,
 }
 
 impl BridgeFacade {
@@ -205,6 +270,111 @@ impl BridgeFacade {
             return Err(CaptureError::ConnectionChanged);
         }
         result
+    }
+
+    /// 呼び出し側が受信口を落としても、撮影完了・世代変更・`limit` 経過・shutdown の
+    /// いずれかまでタスクを走らせ、その間は `gate` から受け取った排他権を保持する。
+    pub(crate) fn spawn_capture(
+        &self,
+        lease: BridgeLease,
+        request: CaptureRequest,
+        limit: Duration,
+        gate: Arc<CaptureSendGate>,
+    ) -> tokio::sync::oneshot::Receiver<Result<CaptureCompleted, CaptureError>> {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        if self.capture_shutdown.is_cancelled() {
+            let _ = result_tx.send(Err(CaptureError::ConnectionChanged));
+            return result_rx;
+        }
+
+        let facade = self.clone();
+        self.capture_tasks.spawn(async move {
+            if !facade.is_current(lease.generation) {
+                let _ = result_tx.send(Err(CaptureError::ConnectionChanged));
+                return;
+            }
+
+            let request_for_validation = request.clone();
+            let validation = tokio::task::spawn_blocking(move || request_for_validation.validate())
+                .await
+                .map_err(|_| CaptureError::Protocol("撮影要求の検査を完了できません".to_owned()))
+                .and_then(|result| result);
+            if let Err(error) = validation {
+                let _ = result_tx.send(Err(error));
+                return;
+            }
+            if !facade.is_current(lease.generation) {
+                let _ = result_tx.send(Err(CaptureError::ConnectionChanged));
+                return;
+            }
+
+            let local_generation = AtomicU64::new(lease.generation);
+            let request_id = allocate_request_id(&facade.next_request_id);
+            let mut session = facade.subscribe();
+            let Some(exclusion) = gate.take_for_send() else {
+                return;
+            };
+            let deadline = Instant::now() + limit;
+            let result = tokio::select! {
+                biased;
+                () = facade.capture_shutdown.cancelled() => Err(CaptureError::ConnectionChanged),
+                () = async {
+                    loop {
+                        if session.borrow_and_update().as_ref().map(|current| current.generation)
+                            != Some(lease.generation)
+                        {
+                            break;
+                        }
+                        if session.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                } => {
+                    local_generation.store(u64::MAX, Ordering::SeqCst);
+                    Err(CaptureError::ConnectionChanged)
+                }
+                result = capture_deterministic(
+                    &lease.handle,
+                    request_id.as_str(),
+                    &request,
+                    lease.generation,
+                    &local_generation,
+                    limit,
+                ) => result,
+            };
+            let result = if result.is_ok() && !facade.is_current(lease.generation) {
+                Err(CaptureError::ConnectionChanged)
+            } else {
+                result
+            };
+            let completion_unknown = matches!(
+                &result,
+                Err(CaptureError::EventsLagged(_) | CaptureError::Protocol(_))
+            );
+            let _ = result_tx.send(result);
+
+            if completion_unknown {
+                tokio::select! {
+                    biased;
+                    () = facade.capture_shutdown.cancelled() => {},
+                    () = async {
+                        loop {
+                            if session.borrow_and_update().as_ref().map(|current| current.generation)
+                                != Some(lease.generation)
+                            {
+                                break;
+                            }
+                            if session.changed().await.is_err() {
+                                break;
+                            }
+                        }
+                    } => {},
+                    () = tokio::time::sleep_until(deadline) => {},
+                }
+            }
+            drop(exclusion);
+        });
+        result_rx
     }
 
     /// 捕捉済みhandleへ世代を保ったままBridge要求を送る。
@@ -283,6 +453,8 @@ impl BridgeFacade {
 pub(crate) struct BridgeSessionTestControl {
     current_generation: Arc<StdMutex<Option<u64>>>,
     session_tx: watch::Sender<Option<BridgeLease>>,
+    capture_tasks: TaskTracker,
+    capture_shutdown: CancellationToken,
 }
 
 #[cfg(test)]
@@ -307,6 +479,13 @@ impl BridgeSessionTestControl {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.session_tx.send_replace(None);
     }
+
+    /// 撮影タスクを停止し、排他権が解放されるまで待つ。
+    pub(crate) async fn shutdown_captures(&self) {
+        self.capture_shutdown.cancel();
+        self.capture_tasks.close();
+        self.capture_tasks.wait().await;
+    }
 }
 
 #[cfg(test)]
@@ -320,15 +499,21 @@ pub(crate) fn test_edit_facade(
         capabilities: Vec::new(),
     }));
     let current_generation = Arc::new(StdMutex::new(Some(generation)));
+    let capture_tasks = TaskTracker::new();
+    let capture_shutdown = CancellationToken::new();
     (
         BridgeFacade {
             current_generation: Arc::clone(&current_generation),
             session: session_rx,
             next_request_id: Arc::new(AtomicU64::new(0)),
+            capture_tasks: capture_tasks.clone(),
+            capture_shutdown: capture_shutdown.clone(),
         },
         BridgeSessionTestControl {
             current_generation,
             session_tx,
+            capture_tasks,
+            capture_shutdown,
         },
     )
 }
@@ -346,6 +531,8 @@ enum Phase {
 #[derive(Clone)]
 pub struct BridgeState {
     inner: Arc<Mutex<Phase>>,
+    capture_tasks: TaskTracker,
+    capture_shutdown: CancellationToken,
     /// 全コマンドが共有する、要求相関IDの単調カウンタ。
     next_request_id: Arc<AtomicU64>,
     /// 接続試行ごとの世代。setup、relayの切断処理、接続確定で共有する。
@@ -366,6 +553,8 @@ impl Default for BridgeState {
         let (session_tx, _) = watch::channel(None);
         let state = BridgeState {
             inner: Arc::new(Mutex::new(Phase::Disconnected)),
+            capture_tasks: TaskTracker::new(),
+            capture_shutdown: CancellationToken::new(),
             next_request_id: Arc::new(AtomicU64::new(0)),
             next_generation: Arc::new(AtomicU64::new(0)),
             session_tx,
@@ -414,6 +603,8 @@ impl BridgeState {
             current_generation: Arc::clone(&self.current_generation),
             session: self.session_tx.subscribe(),
             next_request_id: Arc::clone(&self.next_request_id),
+            capture_tasks: self.capture_tasks.clone(),
+            capture_shutdown: self.capture_shutdown.clone(),
         }
     }
 
@@ -1111,6 +1302,9 @@ pub(crate) async fn shutdown_on_exit(state: &BridgeState) {
         state.publish_session(None);
         (taken, generation)
     };
+    state.capture_shutdown.cancel();
+    state.capture_tasks.close();
+    state.capture_tasks.wait().await;
     if let Some(generation) = generation {
         state.cancel_attempt(generation);
         state.end_log_generation(generation);
