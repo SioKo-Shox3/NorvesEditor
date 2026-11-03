@@ -65,6 +65,8 @@
 
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
+- E4-003-P2: `DispatchHandle::request` の送信後の待ちを、`response_rx` を優先(biased)して `commands.closed()` も見る select にした。閉鎖だけが見えたら `try_recv` で結果を拾い、無ければ `ConnectionClosed` を返す(Cancel は送らない)。時間切れ・Cancel の世代トークンは不変。追加した試験(すぐ切断する転送・マルチスレッド・30 秒の時間切れ付き request を 500 回、各回 2 秒の上限)は修正前に 2 回とも 289 回目・250 回目で上限に当たり、修正後は通る。`.harness/relay/E4-003-P2-U1-verify.txt` を開き、lib 120 件成功、dispatcher 12 件・ws_transport 7 件の 50 回ループ exit 0、clippy -D warnings exit 0 を確認した。lib 試験は自分でも回し直して 120 件成功。
+
 ## In progress
 - なし。承認済みE0〜E3の実装・受入・評価・コミット文面の整備は完了。過去の失敗・停止・差し戻しは保存したまま、最終PASSの証拠と区別する。
 
@@ -80,7 +82,10 @@
   - Settings の「エンジン」欄を狭い幅にしても崩れない
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
+- E4-003-P2 は危険地帯(async タスクの寿命・WebSocket の転送)の変更なので、ランナーの評価を待つ。
+
 ## Notes
+- 2026-11-03 E4-003-P2: 競合の試験は確率的(修正前は 500 回のうち 250〜289 回目で再現)。閉鎖の枝の try_recv は、マルチスレッドで応答の poll と閉鎖の poll の間にタスクが結果を送って閉じる場合に本物の応答を取りこぼさないためのもの。
 - 2026-10-04 最終整理: 未公開をfetch後の全remote refsで確認し、NorvesEditorの本文不足9件とMyWorkflowのガイド1件を整えた。再基底化した15コミットすべてとガイドのtreeが旧履歴と一致する。旧履歴は `refs/archive/mcp-messages-20261004` / MyWorkflowの `refs/archive/norveseditor-mcp-guide-messages-20261004` に保存し、対応表は `.harness/mcp-message-hygiene/result.json`。評価が参照する旧SHAも保持している。最終コードは873b7e1（旧6c789b4）。本文だけの変更なのでコード試験を重複実行せず、tree照合・git diff・本文検査とガイド展開照合を通した。
 - 2026-10-04 最終評価: MCP-029/030のPASSを開いて確認した。030の非阻害指摘は試験コードの一行表記とGUI実機未確認。S-010の旧差し戻しは2607fd4の修正と現在のREADMEを照合し、原文を `.harness/mcp-closed-s010-findings.md` へ保存してNEXT_FINDINGSの未処理表示から外す。018の過去3失敗/評価差戻し1回、022の過去2回の40分超過、028の40分超過1回と停止時点の未評価は削除しない。
 - 2026-10-04 MCP-030判断: 制御ticketと編集ticketを同じqueue_stateで追跡し、発行成功から最初のawaitまで同期的に登録する。発行失敗は未確定にせず、発行後の呼出終了はactorへ確定を委ねる。本文や秘密は記録へ渡さず、既存の結果分類・通常編集/履歴を維持した。開始ゲートと指定3ゲートの保存出力は全exit 0。新規依存・Bridge/SDK/mock/NorvesLib・GUI操作への変更はなく、評価はランナーが反復後に行う。
