@@ -184,3 +184,8 @@
 - U6 実プロセスのモックで撮影の一致・場所の拒否・時間切れを試験する: 着地(直し 2 回)
 - U8 pnpm 11 の新しい設定キーで esbuild のビルドを許可し、タスクの verify を素の環境で通す: 着地(直し 0 回)
 - U9 verify.ps1 -Cpp が build/cpp の不在で黙って SKIP せず自分で configure する: 着地(直し 0 回)
+
+- E4-003-P1: `dispatcher_over_ws_resolves_a_request` の間欠的な停止の原因は `DispatchHandle::shutdown` と接続切断の競合だった。`send` が容量を予約した直後に task が切断で終わって Receiver を捨てる(その時点のキューは排出済み)と、続けて積まれた Shutdown と ack の Sender がハンドルの寿命まで残り、`ack_rx` が返らない。`shutdown` は ack とチャネルの閉鎖(`Sender::closed`)のどちらでも戻るようにした。ws_transport の試験の待ちは段名付きの `with_timeout` で全部包んだ。修正前は 8 プロセス並列 1000 回中 6 回 `timed out: dispatcher shutdown` を再現、修正後は 1000/1000。fmt / clippy(-D warnings) exit 0、ws_transport の試験 50 回連続(各 7 件)exit 0、クレート全体 117 件成功。保存出力 `.harness/relay/E4-003-P1-U1-verify.txt` を開いて確認した。
+- 2026-11-03 E4-003-P1: `shutdown` の修正は危険地帯(Rust の async タスク寿命)。select ループと停止の意味(全要求を失敗扱いにしてから Receiver を閉じる)は変えていない。同じ形の「送信後に応答の oneshot だけを待つ」箇所は `request` にもあるが、こちらは呼び出し側の timeout で必ず戻るので停止はしない。
+- 要起票: `DispatchHandle::request` も同じ競合で、送信容量の予約直後に task が切断で終わると、`ConnectionClosed` を即座に返さず要求の timeout 満了まで待って `Timeout` を返す。`shutdown` と同じく `commands.closed()` を待ちに加えるかを検討する。
+- U1 ws_transport 試験の待ちを全部時間切れで包み、停止の原因を突き止めて直す: 着地(直し 0 回)
