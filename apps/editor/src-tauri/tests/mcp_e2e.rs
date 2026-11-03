@@ -412,17 +412,81 @@ async fn visible(peer: &Peer<RoleClient>) -> Value {
         .clone()
 }
 
+async fn capture_case(editor: &HeadlessEditor, peer: &Peer<RoleClient>) {
+    let tools = peer.list_tools(None).await.expect("道具一覧").tools;
+    assert!(tools.iter().any(|tool| tool.name == "viewport_capture"));
+    let before = editor.history();
+    let args = json!({"settleFrames":3,"maxWidth":64,"maxHeight":36});
+    let mut captures = Vec::new();
+    for _ in 0..2 {
+        let result = call(peer, "viewport_capture", args.clone()).await;
+        assert_eq!(result.is_error, Some(false), "撮影が成功する: {result:?}");
+        let content = serde_json::to_value(&result.content).expect("画像contentを直列化");
+        assert!(content
+            .as_array()
+            .expect("contentの配列")
+            .iter()
+            .any(|part| part["type"] == "image" && part["mimeType"] == "image/png"));
+        let capture = data(result);
+        assert_eq!(capture["outcome"], "applied");
+        assert_eq!(capture["frame"], 3);
+        assert_eq!(capture["width"], 64);
+        assert_eq!(capture["height"], 36);
+        assert_eq!(capture["pixelDigest"]["algorithm"], "fnv1a64-rgba8");
+        captures.push(capture);
+    }
+    assert_eq!(
+        captures[0]["pixelDigest"]["value"]
+            .as_str()
+            .expect("画素の要約値"),
+        captures[1]["pixelDigest"]["value"]
+            .as_str()
+            .expect("画素の要約値")
+    );
+    assert_ne!(
+        captures[0]["captureId"].as_str().expect("撮影ID"),
+        captures[1]["captureId"].as_str().expect("撮影ID")
+    );
+    assert_ne!(captures[0]["fileName"], captures[1]["fileName"]);
+    for capture in &captures {
+        let file_name = capture["fileName"].as_str().expect("撮影ファイル名");
+        assert_eq!(
+            std::path::Path::new(file_name)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some(file_name),
+            "撮影ディレクトリ直下のファイル名"
+        );
+        assert!(editor.capture_dir().join(file_name).is_file());
+    }
+    let operations = editor.operations();
+    let records = operations["records"].as_array().expect("操作記録がある");
+    assert!(
+        records
+            .iter()
+            .filter(|record| record["tool"] == "viewport_capture" && record["result"] == "success")
+            .count()
+            >= 2
+    );
+    assert_eq!(editor.history(), before, "撮影は編集履歴を変更しない");
+    println!("MCP_ACCEPTANCE_OK deterministic-capture");
+}
+
 async fn protocol_case(
     editor: Arc<HeadlessEditor>,
     peer: Peer<RoleClient>,
     token: String,
     directory: PathBuf,
     bridge_port: u16,
+    legacy: bool,
 ) {
     read_case(&peer).await;
     let status = data(call(&peer, "engine_get_status", json!({})).await);
     assert_eq!(status["items"][0]["engineData"]["engineState"], "ready");
     assert_eq!(visible(&peer).await, true);
+    if !legacy {
+        capture_case(&editor, &peer).await;
+    }
     let args = json!({"params":{"objectId":"n-0","property":"visible","value":false}});
     editor
         .runtime()
@@ -660,6 +724,7 @@ async fn run_protocol(
         token,
         directory,
         bridge_port,
+        legacy,
     ));
     let result = scenario.await;
     drop(subscription);
