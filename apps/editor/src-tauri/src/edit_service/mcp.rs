@@ -18,6 +18,7 @@ pub(crate) struct McpExecution {
     state: AtomicU8,
     completed: std::sync::atomic::AtomicUsize,
     queue_state: StdMutex<Option<Arc<AtomicU8>>>,
+    engine_rejection: StdMutex<Option<(String, Option<String>)>>,
     operation: Option<crate::mcp::operations::OperationHandle>,
     request_lease: Option<McpRequestLease>,
 }
@@ -125,8 +126,27 @@ impl McpExecution {
         self.state.store(2, Ordering::Release);
     }
 
+    pub(crate) fn record_engine_rejection(&self, reason: &str, path: Option<&str>) {
+        *self
+            .engine_rejection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((reason.to_owned(), path.map(str::to_owned)));
+    }
+
+    pub(crate) fn engine_rejection(&self) -> Option<(String, Option<String>)> {
+        self.engine_rejection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     pub(crate) fn finished(&self, value: &Value) {
-        if value.get("accepted").and_then(Value::as_bool) == Some(true) {
+        self.finished_with(value.get("accepted").and_then(Value::as_bool) == Some(true));
+    }
+
+    pub(crate) fn finished_with(&self, accepted: bool) {
+        if accepted {
             self.completed.fetch_add(1, Ordering::AcqRel);
             self.state.store(3, Ordering::Release);
         } else {
@@ -247,6 +267,7 @@ impl EditService {
                     let keep = matches!(
                         *method,
                         "object.setProperty"
+                            | "asset.setProperty"
                             | "scene.createObject"
                             | "scene.duplicateObject"
                             | "scene.reparentObject"
@@ -418,6 +439,26 @@ impl EditService {
                             old_value: PriorCapture::InAction,
                         })
                     }
+                    McpWriteOperation::AssetProperty { logical_path, path } => {
+                        Some(HistoryRequest::SetAssetProperty {
+                            logical_path: logical_path.clone(),
+                            path: path.clone(),
+                            requested_value: params.get("value").cloned().ok_or_else(|| {
+                                BackendError::Request {
+                                    message: "設定する値がありません。".to_owned(),
+                                }
+                            })?,
+                        })
+                    }
+                    McpWriteOperation::AssetSave { logical_path } => {
+                        event_input = Some(EditEventInput {
+                            operation: "assetSave",
+                            object_id: None,
+                            property: None,
+                            value: Some(serde_json::json!({"logicalPath": logical_path})),
+                        });
+                        None
+                    }
                     McpWriteOperation::Create { parent_id } => Some(HistoryRequest::CreateObject {
                         parent_id: parent_id.clone(),
                         kind: params
@@ -499,7 +540,19 @@ impl EditService {
                                 .send_tracked_mcp(&bridge_lease, method, Some(params), Some(&trace))
                                 .await?;
                             validate_write_result(method, &value)?;
-                            trace.finished(&value);
+                            match method {
+                                "asset.setProperty" => trace.finished_with(
+                                    norves_bridge_editor_client::parse_asset_set_property_result(
+                                        &value,
+                                    )
+                                    .is_ok(),
+                                ),
+                                "asset.save" => trace.finished_with(
+                                    norves_bridge_editor_client::parse_asset_save_result(&value)
+                                        .is_ok(),
+                                ),
+                                _ => trace.finished(&value),
+                            }
                             Ok(QueuedEditResult { value, prior })
                         })
                     })),
@@ -553,6 +606,12 @@ fn validate_write_result(method: &str, value: &Value) -> Result<(), BackendError
             .map(|_| ())
             .map_err(|error| error.to_string()),
         "object.setProperty" => client::parse_set_property_result(value)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        "asset.setProperty" => client::parse_asset_set_property_result(value)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        "asset.save" => client::parse_asset_save_result(value)
             .map(|_| ())
             .map_err(|error| error.to_string()),
         "component.add" => client::parse_component_add_result(value)

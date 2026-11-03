@@ -144,12 +144,15 @@ export interface EditHistorySummary {
   pendingGroup?: EditPendingGroup | null;
 }
 
+/** 編集サービスの適用通知で使う操作名。 */
 export type EditAppliedOperation =
   | 'createObject'
   | 'deleteObject'
   | 'duplicateObject'
   | 'reparentObject'
   | 'setProperty'
+  | 'assetSetProperty'
+  | 'assetSave'
   | 'componentAdd'
   | 'componentRemove'
   | 'undo'
