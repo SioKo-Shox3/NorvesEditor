@@ -84,7 +84,7 @@
 
 ## Notes
 - 要起票: NorvesLib の `BridgeDeterministicCapture` を SDK の `viewportCaptureDeterministic` と完了イベント `viewport.captureCompleted` へつなぐ(NorvesLib 側の作業)。
-- 要起票: pnpm 11.6 は `pnpm-workspace.yaml` の `onlyBuiltDependencies` を読まず、新しい作業ツリーの `verify.ps1` の frontend ゲートが自動 `pnpm install` の `ERR_PNPM_IGNORED_BUILDS`(esbuild)で落ちる。E4-003 では `pnpm_config_verify_deps_before_run=warn` を付けて同じゲートを走らせた(設定は変えていない)。
+- E4-003 差し戻し対応: `verify.ps1 -Cpp` の失敗は撮影の実装ではなく、pnpm 11.6 が `onlyBuiltDependencies` を読まず自動 `pnpm install` が `ERR_PNPM_IGNORED_BUILDS`(esbuild)で落ちることが原因だった。`pnpm-workspace.yaml` に `allowBuilds: { esbuild: true }` を足し(旧キーは古い pnpm 向けに残す。`paths:` の外だが既存の意図どおりの設定の移し替え)、環境変数の上書き無しで verify 4 本が exit 0(fixtures 191 件、`-Cpp` の frontend 4 ゲート OK、conformance 1 件・mcp_mock_profile 4 件が実モックで SKIP なし)。証拠 `.harness/relay/E4-003-U8-verify.txt`。
 - E4-003: 撮影の完了待ちはアプリを起動しない実モックの試験で確かめた。実エンジン・GPU での撮影は未確認。
 - 2026-10-04 最終整理: 未公開をfetch後の全remote refsで確認し、NorvesEditorの本文不足9件とMyWorkflowのガイド1件を整えた。再基底化した15コミットすべてとガイドのtreeが旧履歴と一致する。旧履歴は `refs/archive/mcp-messages-20261004` / MyWorkflowの `refs/archive/norveseditor-mcp-guide-messages-20261004` に保存し、対応表は `.harness/mcp-message-hygiene/result.json`。評価が参照する旧SHAも保持している。最終コードは873b7e1（旧6c789b4）。本文だけの変更なのでコード試験を重複実行せず、tree照合・git diff・本文検査とガイド展開照合を通した。
 - 2026-10-04 最終評価: MCP-029/030のPASSを開いて確認した。030の非阻害指摘は試験コードの一行表記とGUI実機未確認。S-010の旧差し戻しは2607fd4の修正と現在のREADMEを照合し、原文を `.harness/mcp-closed-s010-findings.md` へ保存してNEXT_FINDINGSの未処理表示から外す。018の過去3失敗/評価差戻し1回、022の過去2回の40分超過、028の40分超過1回と停止時点の未評価は削除しない。
