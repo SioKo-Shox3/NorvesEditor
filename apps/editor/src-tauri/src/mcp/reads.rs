@@ -497,8 +497,10 @@ impl McpReadContext {
         let show_confirmation = requires_confirmation
             || matches!(operation, McpWriteOperation::Property { .. })
             || policy.settings.mode == crate::mcp::McpWriteMode::Confirm;
-        let needs_tree = !matches!(operation, McpWriteOperation::RuntimeControl)
-            || policy.settings.scene_root_id.is_some();
+        let needs_tree = !matches!(
+            operation,
+            McpWriteOperation::RuntimeControl | McpWriteOperation::Capture
+        ) || policy.settings.scene_root_id.is_some();
         if needs_tree {
             let resolution = async {
                 let (mut index, mut budget, tree_result) = self
@@ -1300,6 +1302,11 @@ fn make_confirmation_preview(
             target_ids.push("engine".to_owned());
             target_count = 1;
             after = Some(json!({ "method": method }));
+        }
+        McpWriteOperation::Capture => {
+            target_ids.push("engine".to_owned());
+            target_count = 1;
+            after = Some(params.clone());
         }
         McpWriteOperation::History(action) => {
             let mut before_values = Vec::new();

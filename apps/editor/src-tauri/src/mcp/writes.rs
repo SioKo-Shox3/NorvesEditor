@@ -53,6 +53,7 @@ pub(crate) fn is_implemented_write(name: &str) -> bool {
             | "runtime_play"
             | "runtime_pause"
             | "runtime_stop"
+            | "viewport_capture"
     )
 }
 

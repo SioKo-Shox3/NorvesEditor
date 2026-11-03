@@ -113,6 +113,7 @@ pub(crate) enum McpWriteOperation {
         component_id: String,
     },
     RuntimeControl,
+    Capture,
     History(McpHistoryAction),
 }
 
@@ -179,6 +180,7 @@ impl McpWriteOperation {
                 vec!["component.edit", "object.query", "scene.query"]
             }
             Self::RuntimeControl => vec!["runtime.control"],
+            Self::Capture => vec!["viewport.capture"],
             Self::History(action) => history_required_capabilities(action),
         }
     }
@@ -463,7 +465,7 @@ impl McpSceneScopeIndex {
             McpWriteOperation::ComponentRemove { component_id } => {
                 self.check_component(component_id)
             }
-            McpWriteOperation::RuntimeControl => {
+            McpWriteOperation::RuntimeControl | McpWriteOperation::Capture => {
                 if self.is_full_scene() {
                     Ok(())
                 } else {

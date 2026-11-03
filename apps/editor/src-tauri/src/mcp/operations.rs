@@ -325,6 +325,7 @@ fn known_tool(name: &str) -> &'static str {
         "runtime_play" => "runtime_play",
         "runtime_pause" => "runtime_pause",
         "runtime_stop" => "runtime_stop",
+        "viewport_capture" => "viewport_capture",
         "engine_get_status" => "engine_get_status",
         "bridge_get_capabilities" => "bridge_get_capabilities",
         "scene_get_tree_page" => "scene_get_tree_page",
