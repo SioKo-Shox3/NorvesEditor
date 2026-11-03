@@ -220,3 +220,7 @@
 - 2026-11-03 E4-001-P3: `verify.ps1` に `-CppBuildDir`(既定 build/cpp、相対はリポジトリのルート基準)を足し、`-Cpp` で `CMakeCache.txt` が無ければ `cmake configure` をゲートとして走らせてから build と ctest を走らせる。構成の失敗は非 0 で止まる(書き込めない場所を指定して `[FAIL] cmake configure` と exit 1 を確認)。空の一時ディレクトリで `-Cpp -SkipFrontend` は configure / build / ctest 8/8 がすべて `[OK]`、exit 0。既定ディレクトリの `-Cpp` は C++ 段が `[OK]` のあと、フロントエンド段の `pnpm typecheck` が `ERR_PNPM_IGNORED_BUILDS`(esbuild、pnpm 11.6.0)で exit 1。この失敗は今回の変更より前からあり、paths の外なので BLOCKED にした(blocked/E4-001-P3.md)。
 - E4-001-P3: Notes に残していた pnpm 11.6.0 の `ERR_PNPM_IGNORED_BUILDS` の要起票は、統合ブランチの `pnpm-workspace.yaml` が `allowBuilds: { esbuild: true }` になったことで解消した(E4-003 の U8 で入った。E4-001 の同じ直しと同じ中身)。
 - 要起票: pnpm 11.6.0 で `pnpm -r typecheck` の実行前の依存確認が esbuild のビルドスクリプト未承認(`ERR_PNPM_IGNORED_BUILDS`)で失敗し、`verify.ps1` のフロントエンド段が落ちる。`pnpm-workspace.yaml` の `onlyBuiltDependencies` が pnpm 11 で効いていない疑い。
+
+- E4-001-P2: 要件文書の NE15 の節・NE19 の節・7章「E4 の中の依存」の 4 行を、NE19 の一部(資産のプロパティの一覧・設定・保存)を NE15 より先に入れた 2026-11-03 の決定に合わせた。`asset.setProperty` は `previousValue` 必須で NE15 の能力交渉(`returnPrevious`)は `object.setProperty` だけが対象、GR136 は NorvesLib 側の最初の対象の前提とした。verify(`git grep` NE15/previousValue/returnPrevious)の出力を開き、旧文言 2 件が消え、残る NE15 の記述(151・432・481 行)は `object.setProperty` の話で食い違いが無いことを確かめた。numstat は通常・CR 無視とも 4/4。
+
+- U1 要件文書の NE15・NE19 の旧値と依存の記述を、NE19 の一部を先に入れた決定に合わせる: 着地(直し 0 回)
