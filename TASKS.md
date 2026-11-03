@@ -453,7 +453,7 @@ M2 の共通規則:
 - notes: 先行MCP-028/029。MCP-028評価PASSのnon-blocking 1をNE14の既存契約内で修復する。根拠は.harness/mcp-review-follow-up-028.md。列前拒否を認可・入力検査を飛ばして成功扱いにせず、記録の終端だけを正しくする。進行中の制御ticketを早まって確定させない。試験を削除・SKIP・弱化しない。新規依存/Bridge仕様/SDK/mock/NorvesLib/GUI実機操作は不要。Rustのasync寿命と許可境界の評価はランナーが行い、コミット本文を付ける。元のMCP-028の完了条件・検証・PASSは保持する。最終検証・評価PASSは20261004-170201のeval-5.out.txtとrecheck-MCP-030-5-1〜-3.txtで確認。コードのtreeを変えない本文整備後のコミットは873b7e1（旧6c789b4）、対応表は.harness/mcp-message-hygiene/result.json。
 
 ## E4-001: 資産の編集の方式を決め、Bridge の仕様・SDK・モック・Rust クライアントに資産のプロパティの一覧・設定・保存を足す
-- status: blocked
+- status: todo
 - done-when: 最初の編集の前に、`docs/mcp-and-edit-layer-requirements.md` の 10 章にある未決事項 4(値の場所の書き方)と 6 の保存の部分を、推奨の案で決めて記録する。作者は後から変えられる。あわせて状態の行を更新し、2026-11-03 の人の指示で NE19 の一部を範囲に入れたことを書く。推奨の案は次のとおり。値の場所は、エンジンが一覧で返す不透明な文字列とし、エディタは解釈しない。資産は既存の `logicalPath` で指す。開く・閉じるは線に出さない。保存は同期の要求 1 回とする。`asset.setProperty` の結果では `previousValue` を必須にする。拒否の理由は機械照合の英語コード `type_mismatch`・`out_of_range`・`unknown_property` を既存のエラーモデルに載せて返す。実装は次の 5 点。(1) `asset.getProperties`・`asset.setProperty`・`asset.save` の params/result の schema と、positive/negative の fixture を足す。(2) `capabilities.md` に能力 `asset.edit` を追記する。(3) SDK の `IBridgeEngineAdapter` に仮想関数を足し、既定は `METHOD_NOT_SUPPORTED` を返す。`server.cpp` の振り分けも足す。(4) モックの MCP 試験プロフィールに、型付きのプロパティ(範囲つきの数値・文字列・真偽)を持つ偽の資産を置く。既定プロフィールの golden は変えない。(5) `norves-bridge-editor-client` に型付きの呼び出しを足し、能力の無い相手には送らない。実プロセスのモックを相手に次を試験する。一覧→設定→保存→一覧で値が一致する。型違い・範囲外・未知の場所は拒否され、前の値を保つ。`previousValue` が設定前の値と一致する。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "if (-not (Test-Path 'build/cpp/CMakeCache.txt')) { cmake -S bridge/cpp -B build/cpp -G 'Visual Studio 17 2022'; exit $LASTEXITCODE }; exit 0"`
 - verify: `python scripts/validate-bridge-fixtures.py`
@@ -511,7 +511,7 @@ M2 の共通規則:
 - from: E4-001
 
 ## E4-001-P3: `verify.ps1 -Cpp` で、C++ のビルドディレクトリが無いときに構成し、構成できなければ失敗にする
-- status: blocked
+- status: todo
 - done-when: `scripts/verify.ps1` に、ビルドディレクトリを指定する引数 `-CppBuildDir`(既定は `build/cpp`)を足す。`-Cpp` を付けて走らせ、そのディレクトリが無いときは `[SKIP]` で抜けない。代わりに `cmake -S bridge/cpp -B <dir> -G "Visual Studio 17 2022"` を 1 つのゲートとして走らせてから、cmake build と ctest を走らせる。構成が失敗したら exit code を 0 以外にして止める。`-Cpp` が無いときに C++ 段を飛ばす動きは変えない。スクリプト冒頭の Usage と Notes、触ったブロックのコメント、`docs/build.md` の「requires build/cpp to be pre-configured」の記述を、日本語で新しい動きに合わせる。空の一時ディレクトリを指定して `-Cpp -SkipFrontend` で走らせると、構成・ビルド・ctest がすべて `[OK]` になり、exit 0 で終わる。既定のディレクトリでの `-Cpp` も exit 0 で終わる。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=Join-Path $env:TEMP ('norves-cpp-'+[guid]::NewGuid()); & ./scripts/verify.ps1 -Cpp -SkipFrontend -CppBuildDir $d; $c=$LASTEXITCODE; Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue; exit $c"`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
