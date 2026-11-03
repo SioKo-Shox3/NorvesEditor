@@ -519,7 +519,7 @@ M2 の共通規則:
 - from: E4-001
 
 ## E4-003-P1: `dispatcher_over_ws_resolves_a_request` の間欠的な停止を、時間切れで落ちる形にして原因を直す
-- status: todo
+- status: done
 - done-when: `bridge/crates/norves-bridge-editor-client/src/ws_transport.rs` の試験 `dispatcher_over_ws_resolves_a_request` で、`with_timeout` に包まれていない待ちを残さない。今は `handle.shutdown().await`(375 行)と `server.await`(376 行)が包まれていないので、ここを包み、どの段で止まったかを名前で出す。止まっていた場所を突き止める。原因が試験の外(`dispatcher.rs` の select ループや `WsClientTransport` の split の扱い)にあれば、そちらを直す。原因と、試験の外を変えた場合はその理由をコミット本文に書く。モジュール内の ws_transport の試験を 50 回続けて走らせ、止まらずにすべて通ること。全体の `cargo test -p norves-bridge-editor-client --lib` も通ること。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "for($i=1;$i -le 50;$i++){ cargo test -p norves-bridge-editor-client --lib ws_transport -- --test-threads=1; if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE } }; exit 0"`
 - verify: `cargo test -p norves-bridge-editor-client --lib`
