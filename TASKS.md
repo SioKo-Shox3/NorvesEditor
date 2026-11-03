@@ -558,7 +558,7 @@ M2 の共通規則:
 - from: E4-004
 
 ## E4-004-P2: 撮影を打ち切った後も、エンジンの撮影が終わるまで同時 1 件の排他を保つ
-- status: todo
+- status: done
 - done-when: いまは `capture/tool.rs` で取り消し・期限切れ・許可失効が起きると関数が返り、`store.try_begin()` の排他も外れる。このため、`docs/memory-buffer-policy.md` の「エディタは 1 接続あたり同時に 1 件だけ撮影を出します」が、エンジンの撮影が続いている間に破られうる。撮影要求をエンジンへ送った後(`sent` が真)に MCP の呼び出しを打ち切った場合は、次のどれかまで排他を持ち続けるようにする: その撮影の完了イベント(成功・失敗)が届く、接続の世代が変わる・切断する、定数で決めた上限時間が過ぎる。その間に来た次の撮影は Bridge へ送らず、`notApplied`「別の撮影が進行中」で返す。送る前に打ち切った場合は、これまでどおりすぐに外す。排他を持ち続けるためのタスクはサービスの shutdown で止まり、後に残らない。打ち切った呼び出しは自動で再送しない。撮影を打ち切った呼び出しが返す outcome と操作記録は変えない。単体試験で次を確かめる: (1) 送信後に取り消したあと、2 件目の撮影が Bridge に送られない (2) 1 件目の完了イベントが届いた後は、次の撮影を受け付ける (3) 世代が変わると排他が外れる (4) 上限時間が過ぎると排他が外れる。`docs/memory-buffer-policy.md` の「上限と撮影用ディレクトリ」に、打ち切り後の排他の扱いを 1 文足す。
 - verify: `cargo test --manifest-path apps/editor/src-tauri/Cargo.toml`
 - verify: `cargo test --manifest-path bridge/crates/norves-bridge-editor-client/Cargo.toml`
