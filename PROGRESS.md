@@ -4,6 +4,7 @@
 `git log` が第二の記録。ここには git に無いこと(判断・未解決・次に見るべき場所)を書く。
 
 ## Done
+- E4-003: 決定的な撮影 `viewport.captureDeterministic` を受け付け(`{captureId}`)と完了イベント `viewport.captureCompleted` に分けて決め、`docs/memory-buffer-policy.md` にファイル受け渡し(上限 1920x1080・32 MiB・settleFrames 600、所有・寿命・場所の検証)、要件文書 10 章の 5・6 と NE18 に決定と NE17 を前提にしない理由を記録した。schema 3 本と positive/negative fixture(計 191 件)、能力 `viewport.capture`、SDK の仮想関数(既定 METHOD_NOT_SUPPORTED)・params 検査・完了 DTO、モック mcp-edit の決定的な無圧縮 PNG と完了の送出(`NORVES_MOCK_CAPTURE_STALL=1` で完了を送らない。既定プロフィールの golden は不変)、Rust クライアントの要求・完了待ち・captureId/世代/場所の照合と時間切れの区別、TS の型を足した。verify 4 本は fixtures 191 件 exit 0、`verify.ps1 -Cpp` exit 0(C++ 8/8・vitest 42/45/699・IPC 名一致)、conformance 1 件・mcp_mock_profile 4 件が実モックで成功(SKIP なし)。証拠 `.harness/runs/20261103-113134/verify-E4-003.txt` を開いて確認。
 - MCP / 編集層の E0〜E3（NE01〜NE14）は全34タスクの実装・指定検証・別文脈評価PASSを完了した。最終評価 `.harness/runs/20261004-170201/eval-5.out.txt` と再検証3出力を開き、Rust単体407件・両版実HTTP受入1件・実mockログ1件、SKIP/ignoredなし、fmt/feature付きclippy exit 0を確認。集約-Cppの受入ではC++8/8・画面699件・IPC46/15が成功。20261004-170201はALL_DONEで終了し、未完・blockedはない。
 - MCP-030: begin/endの制御ticket発行成功をMcpExecutionへ記録し、列前の拒否を道具名によらず確定する。両版HTTPで入力不正・ReadOnly・未接続・サービス側ReadOnlyの各版7ケースと正常制御/再end拒否、公開入口で許可失効・リースなし・Bridge未接続・受付停止・列満杯を検査。queued制御の取消・呼出future破棄・許可失効・期限と後続actor確定、秘密非記録も確認した。指定fmt / feature付きclippy / verify-mcp-e2e.ps1はexit 0、Rust単体407件・両版実HTTP受入1件・実mockログ1件成功、SKIP/ignoredなし。保存出力20261004-170201/verify-MCP-030-2〜-4.txtと関連21件の-1.txtを開いた。要件NE14と試験対応表へ証拠を追記した。
 - MCP-029差し戻し対応: ランナー経由で失敗したGet-FileHashのSHA256照合をNode.js標準cryptoへ置換した。正本と展開コピーの2本を同じアルゴリズムで比較し、読取り失敗・不一致を拒否する。指定3検査をランナーと同じcmd.exe経由で実行し、verify-MCP-029-7〜-9.txtを開いて全exit 0と2本の一致を確認。deploy --checkも-10.txtで追加差分なし、exit 0。MyWorkflowの951e3cdと展開済み2本は維持し、製品文書との整合を再確認した。旧検証失敗と再現失敗-6.txtは保持。MCP-030の具体計画をそのままtodoへ追加した。
@@ -69,6 +70,7 @@
 - なし。承認済みE0〜E3の実装・受入・評価・コミット文面の整備は完了。過去の失敗・停止・差し戻しは保存したまま、最終PASSの証拠と区別する。
 
 ## Next
+- E4-004: MCP の撮影の道具(撮影用ディレクトリの片付け 7 日・200 件、PNG の検証と縮小、取り消しとの結合)を E4-003 の Rust クライアントの上に作る。
 - 受入と既知の制限は `docs/mcp-undo-test-mapping.md` と要件文書13節を参照する。GUI実機の配置・狭幅・Tauri窓間操作、実NorvesLibの動作は未確認。現行MCP版のクライアント間要求ID衝突、確認commandのcapability未分離、同期ログ保存などの制限を保持する。
 - 本番/実mockの入口はMcpServices、受入窓口はHeadlessEditor。操作記録は現在の起動の最新500件、過去起動分はJSONLのみ。resultは結果分類で、取消後のactor確定でも更新される。outcomeは実適用状態。displayGroupIdが共通履歴の先頭と一致するときだけUI undoを許可する。
 - 全タスク完了のためM2を再起動しない。MyWorkflowのガイドは専用ブランチdocs/norveseditor-mcp-guideのd132623（旧951e3cd）で展開済み・未マージ・未push。NorvesEditorも未push。
@@ -81,6 +83,9 @@
   - Outliner のドラッグで親を付け替えられる(Windows の WebView2)
 
 ## Notes
+- 要起票: NorvesLib の `BridgeDeterministicCapture` を SDK の `viewportCaptureDeterministic` と完了イベント `viewport.captureCompleted` へつなぐ(NorvesLib 側の作業)。
+- 要起票: pnpm 11.6 は `pnpm-workspace.yaml` の `onlyBuiltDependencies` を読まず、新しい作業ツリーの `verify.ps1` の frontend ゲートが自動 `pnpm install` の `ERR_PNPM_IGNORED_BUILDS`(esbuild)で落ちる。E4-003 では `pnpm_config_verify_deps_before_run=warn` を付けて同じゲートを走らせた(設定は変えていない)。
+- E4-003: 撮影の完了待ちはアプリを起動しない実モックの試験で確かめた。実エンジン・GPU での撮影は未確認。
 - 2026-10-04 最終整理: 未公開をfetch後の全remote refsで確認し、NorvesEditorの本文不足9件とMyWorkflowのガイド1件を整えた。再基底化した15コミットすべてとガイドのtreeが旧履歴と一致する。旧履歴は `refs/archive/mcp-messages-20261004` / MyWorkflowの `refs/archive/norveseditor-mcp-guide-messages-20261004` に保存し、対応表は `.harness/mcp-message-hygiene/result.json`。評価が参照する旧SHAも保持している。最終コードは873b7e1（旧6c789b4）。本文だけの変更なのでコード試験を重複実行せず、tree照合・git diff・本文検査とガイド展開照合を通した。
 - 2026-10-04 最終評価: MCP-029/030のPASSを開いて確認した。030の非阻害指摘は試験コードの一行表記とGUI実機未確認。S-010の旧差し戻しは2607fd4の修正と現在のREADMEを照合し、原文を `.harness/mcp-closed-s010-findings.md` へ保存してNEXT_FINDINGSの未処理表示から外す。018の過去3失敗/評価差戻し1回、022の過去2回の40分超過、028の40分超過1回と停止時点の未評価は削除しない。
 - 2026-10-04 MCP-030判断: 制御ticketと編集ticketを同じqueue_stateで追跡し、発行成功から最初のawaitまで同期的に登録する。発行失敗は未確定にせず、発行後の呼出終了はactorへ確定を委ねる。本文や秘密は記録へ渡さず、既存の結果分類・通常編集/履歴を維持した。開始ゲートと指定3ゲートの保存出力は全exit 0。新規依存・Bridge/SDK/mock/NorvesLib・GUI操作への変更はなく、評価はランナーが反復後に行う。

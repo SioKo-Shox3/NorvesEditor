@@ -478,7 +478,7 @@ M2 の共通規則:
 - notes: 履歴の種類を足して画面の型や表示が要るときだけ、`ipc-types.ts` と `apps/editor/src/state/**` を触る。資産を編集する画面は作らない。
 
 ## E4-003: 決定的な撮影の方式を決め、バッファの方針・Bridge の仕様・SDK・モック・Rust クライアントに足す
-- status: todo
+- status: done
 - done-when: 最初の編集の前に、`docs/mcp-and-edit-layer-requirements.md` の 10 章にある未決事項 5(撮影のディレクトリと片付け)と 6 の撮影の部分を、推奨の案で決めて記録する。作者は後から変えられる。推奨の案は次のとおり。撮影は、受け付けの応答 `{captureId}` と、完了のイベント `viewport.captureCompleted`(captureId・ファイルの場所・寸法・刻み・画素の要約値・失敗の理由)に分ける。params は `settleFrames` と `maxWidth`/`maxHeight`(上限あり)、それにエディタが決める撮影用ディレクトリと出力名とする。エンジンは PNG をファイルに書き、Bridge に画像を載せない。片付けは件数と日数で決める。NE17(刻み)を前提にしない理由(エンジンがエポックを始め直して進める)も書く。その前に、`docs/memory-buffer-policy.md` にファイルで受け渡す方式を書く(上限・寿命・所有・場所の検証)。実装は次の 4 点。(1) メソッド `viewport.captureDeterministic` とイベントの schema、positive/negative の fixture を足し、能力 `viewport.capture` を `capabilities.md` に追記する。(2) SDK に仮想関数を足し、既定は `METHOD_NOT_SUPPORTED` を返す。振り分けと、既存の `emitEvent` による完了の送出も足す。(3) モックの MCP 試験プロフィールは、同じ引数なら同じバイトになる PNG を指定のディレクトリに書き、完了を送る。既定プロフィールの golden は変えない。(4) Rust クライアントは、要求を送って完了を時間切れ付きで待つ。captureId と接続の世代を照合し、ディレクトリの外・`..`・別の captureId を拒否する。時間切れは拒否と区別する。実プロセスのモックを相手に次を試験する。同じ引数で 2 回撮ると要約値とバイトが一致する。場所の外は拒否される。時間切れが区別される。
 - verify: `python scripts/validate-bridge-fixtures.py`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
