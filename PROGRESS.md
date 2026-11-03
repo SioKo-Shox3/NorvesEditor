@@ -65,10 +65,13 @@
 
 - 仕上げ: S-001 の修正(`8312f19`)と S-006 / S-010 の修正(`2607fd4`)は round 2 の評価で PASS。`2607fd4` の時点で `./scripts/verify.ps1 -Cpp` exit 0(fixtures 174、bridge cargo test 183、ctest 7/7、IPC 名 commands 32 / events 11、pnpm test 42/43/649)、src-tauri の fmt / clippy exit 0、cargo test 164 + 14 件通過。`pnpm tauri dev` で起動したエディタが `%LOCALAPPDATA%\com.norves.editor\logs\backend.log` を作ることを確認した(警告が無いので中身は空)。
 
+- 2026-11-03 E4-001: 資産の編集の方式を要件文書10章で決定(値の場所はエンジンが返す不透明な文字列、資産は `logicalPath`、開く・閉じるは線に出さない、保存は同期の要求1回、`previousValue` 必須、拒否は `ENGINE_ASSET_EDIT_REJECTED` と `data.reason`)。`asset.getProperties`/`setProperty`/`save` の schema 6本と fixture 19件、能力 `asset.edit` と仕様文書、SDK の既定 `METHOD_NOT_SUPPORTED` の仮想関数と振り分け、モックの mcp-edit プロフィールの偽資産、Rust の `AssetEditClient`、TS の型、実プロセスのモックでの一覧→設定→拒否→保存→一覧の試験を足した。verify 4本 exit 0(fixtures 193、`verify.ps1 -Cpp` 全ゲート合格・C++ 8/8・SKIP なし、conformance 1件、mcp_mock_profile 2件を環境指定の実モックで合格)。証拠 `.harness/runs/20261103-113133/verify-E4-001-final.txt`。
+
 ## In progress
 - なし。承認済みE0〜E3の実装・受入・評価・コミット文面の整備は完了。過去の失敗・停止・差し戻しは保存したまま、最終PASSの証拠と区別する。
 
 ## Next
+- E4-001 の後続: MCP の道具から資産の一覧・設定・保存を出す項目(`after: E4-001`)。
 - 受入と既知の制限は `docs/mcp-undo-test-mapping.md` と要件文書13節を参照する。GUI実機の配置・狭幅・Tauri窓間操作、実NorvesLibの動作は未確認。現行MCP版のクライアント間要求ID衝突、確認commandのcapability未分離、同期ログ保存などの制限を保持する。
 - 本番/実mockの入口はMcpServices、受入窓口はHeadlessEditor。操作記録は現在の起動の最新500件、過去起動分はJSONLのみ。resultは結果分類で、取消後のactor確定でも更新される。outcomeは実適用状態。displayGroupIdが共通履歴の先頭と一致するときだけUI undoを許可する。
 - 全タスク完了のためM2を再起動しない。MyWorkflowのガイドは専用ブランチdocs/norveseditor-mcp-guideのd132623（旧951e3cd）で展開済み・未マージ・未push。NorvesEditorも未push。
@@ -176,3 +179,7 @@
 - U9 往復試験の fixture 件数を、資産の編集の fixture を足した後の件数に合わせる: 着地(直し 0 回)
 - U7 TS の bridge-types に 3 メソッドの型を足す: 着地(直し 0 回)
 - U8 実プロセスのモックで一覧・設定・保存・拒否を試験し、タスクの verify を通す: 着地(直し 0 回)
+- 要起票: NorvesLib の `NorvesLibBridgeAdapter` に `assetGetProperties`/`assetSetProperty`/`assetSave` を実装し、`BridgeAssetPropertyEditor` へつなぐ(NorvesLib 側の作業)。
+- 要起票: 要件文書7章は NE19 の前提に NE15 の形と GR136 を挙げ、NE15 を E4 の最初に置く記述が残る。今回 NE19 の一部を先に入れたこととの関係を整理する。
+- E4-001: fixture を19件足したため、往復試験に固定した件数を C++(`engine-sdk/tests`)と Rust(`norves-bridge-core/tests/fixtures_roundtrip.rs`、`paths` の外)で 174→193 に合わせた。件数の期待値だけの変更。
+- E4-001: `verify.ps1` の中の実モック依存試験は環境変数未設定で早期終了する。実モックの合格は環境指定の conformance / mcp_mock_profile の実行を根拠にした。worktree で `pnpm install` を素で回すと esbuild の `ERR_PNPM_IGNORED_BUILDS` で止まるので `--ignore-scripts` を付けた。
