@@ -27,9 +27,10 @@
 //! * On shutdown, peer close, or transport error the task drains the pending
 //!   table and fails every waiter with [`RequestError::ConnectionClosed`] before
 //!   exiting, so no caller hangs.
-//! * If the task itself ever stops, the command channel closes; every
-//!   [`DispatchHandle::request`] then observes the closed sender and returns
-//!   [`RequestError::ConnectionClosed`] instead of hanging.
+//! * タスクが停止するとコマンドチャネルが閉じる。[`DispatchHandle::request`] は
+//!   送信失敗だけでなく送信後の待機中も閉鎖を監視する。送信の容量予約直後にタスクが
+//!   終了してコマンドがキューに取り残された場合も、時間切れを待たずに
+//!   [`RequestError::ConnectionClosed`] を返す。
 //! * Request timeouts are enforced on the handle side with
 //!   `tokio::time::timeout`; on firing, the handle sends [`Command::Cancel`] so
 //!   the task removes the now-orphaned pending entry (no leak). The `Cancel`
@@ -185,21 +186,39 @@ impl DispatchHandle {
             responder,
         };
 
-        // A closed command channel means the task is gone.
+        // コマンドチャネルの閉鎖はタスクが終了したことを示す。
         if self.commands.send(command).await.is_err() {
             return Err(RequestError::ConnectionClosed);
         }
 
-        match tokio::time::timeout(timeout, response_rx).await {
-            // Task delivered an outcome (Ok response or a closed/error variant).
-            Ok(Ok(outcome)) => outcome,
-            // Responder dropped without sending: the task ended (shutdown/close).
-            Ok(Err(_recv_err)) => Err(RequestError::ConnectionClosed),
-            // Timed out: ask the task to drop the orphaned pending entry so it
-            // does not leak, then report the timeout. The token ensures we only
-            // drop *our* entry, not a newer request that reused this `id`.
+        let mut response_rx = response_rx;
+        let waited = tokio::time::timeout(timeout, async {
+            tokio::select! {
+                biased;
+                result = &mut response_rx => Some(result),
+                _ = self.commands.closed() => None,
+            }
+        })
+        .await;
+        match waited {
+            // タスクから届いた結果を、チャネルの閉鎖より優先する。
+            Ok(Some(Ok(outcome))) => outcome,
+            // 結果を送らずに送信側が破棄された場合も閉鎖として扱う。
+            Ok(Some(Err(_recv_err))) => Err(RequestError::ConnectionClosed),
+            Ok(None) => {
+                // タスクは登録済みの要求へ結果を送ってからチャネルを閉じる。
+                // 応答の poll と閉鎖の poll の間に届いた結果も取りこぼさない。
+                // 結果が無ければ、要求はタスクに届かずキューに残ったとみなす。
+                // タスクは終了しているため Cancel は送らない。
+                match response_rx.try_recv() {
+                    Ok(outcome) => outcome,
+                    Err(_) => Err(RequestError::ConnectionClosed),
+                }
+            }
+            // 時間切れでは待機エントリの破棄を要求してから Timeout を返す。
+            // 世代トークンにより、同じ id を再利用した後続の要求は破棄しない。
             Err(_elapsed) => {
-                // Best effort: if the task is already gone the cleanup is moot.
+                // タスクが終了済みなら後処理は不要なため、送信失敗は無視する。
                 let _ = self.commands.send(Command::Cancel { id, token }).await;
                 Err(RequestError::Timeout(timeout))
             }
@@ -791,6 +810,27 @@ mod tests {
             .expect("task joins")
             .expect_err("must fail on peer close");
         assert!(matches!(err, RequestError::ConnectionClosed));
+    }
+
+    // 切断と要求送信が競合しても、要求自身の時間切れを待たずに閉鎖を返す。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_racing_disconnect_returns_connection_closed_promptly() {
+        for i in 1..=500 {
+            let (client, peer) = loopback_pair(8);
+            drop(peer);
+            let handle = Dispatcher::spawn(client);
+
+            let result = tokio::time::timeout(
+                Duration::from_secs(2),
+                handle.request(request_envelope("req-1"), Duration::from_secs(30)),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("iteration {i}: request が 2 秒以内に戻らなかった"));
+            assert!(
+                matches!(result, Err(RequestError::ConnectionClosed)),
+                "iteration {i}: ConnectionClosed を期待したが、実際は {result:?}"
+            );
+        }
     }
 
     #[tokio::test]

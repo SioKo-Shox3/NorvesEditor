@@ -224,3 +224,10 @@
 - E4-001-P2: 要件文書の NE15 の節・NE19 の節・7章「E4 の中の依存」の 4 行を、NE19 の一部(資産のプロパティの一覧・設定・保存)を NE15 より先に入れた 2026-11-03 の決定に合わせた。`asset.setProperty` は `previousValue` 必須で NE15 の能力交渉(`returnPrevious`)は `object.setProperty` だけが対象、GR136 は NorvesLib 側の最初の対象の前提とした。verify(`git grep` NE15/previousValue/returnPrevious)の出力を開き、旧文言 2 件が消え、残る NE15 の記述(151・432・481 行)は `object.setProperty` の話で食い違いが無いことを確かめた。numstat は通常・CR 無視とも 4/4。
 
 - U1 要件文書の NE15・NE19 の旧値と依存の記述を、NE19 の一部を先に入れた決定に合わせる: 着地(直し 0 回)
+
+- E4-003-P2: `DispatchHandle::request` の送信後の待ちを、`response_rx` を優先(biased)して `commands.closed()` も見る select にした。閉鎖だけが見えたら `try_recv` で結果を拾い、無ければ `ConnectionClosed` を返す(Cancel は送らない)。時間切れ・Cancel の世代トークンは不変。追加した試験(すぐ切断する転送・マルチスレッド・30 秒の時間切れ付き request を 500 回、各回 2 秒の上限)は修正前に 2 回とも 289 回目・250 回目で上限に当たり、修正後は通る。`.harness/relay/E4-003-P2-U1-verify.txt` を開き、lib 120 件成功、dispatcher 12 件・ws_transport 7 件の 50 回ループ exit 0、clippy -D warnings exit 0 を確認した。lib 試験は自分でも回し直して 120 件成功。
+- E4-003-P2 は危険地帯(async タスクの寿命・WebSocket の転送)の変更なので、ランナーの評価を待つ。
+- 2026-11-03 E4-003-P2: 競合の試験は確率的(修正前は 500 回のうち 250〜289 回目で再現)。閉鎖の枝の try_recv は、マルチスレッドで応答の poll と閉鎖の poll の間にタスクが結果を送って閉じる場合に本物の応答を取りこぼさないためのもの。
+
+
+- U1 request の待ちを応答とコマンドチャネルの閉鎖の select にし、切断との競合の試験を足す: 着地(直し 0 回)
