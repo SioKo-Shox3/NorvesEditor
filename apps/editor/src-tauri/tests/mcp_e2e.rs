@@ -218,6 +218,8 @@ async fn confirmed_call(
             request.tool_name,
             if name == "scene_delete_object" {
                 "scene.deleteObject"
+            } else if name == "asset_save" {
+                "asset.save"
             } else {
                 "edit_undo_redo"
             }
@@ -230,6 +232,106 @@ async fn confirmed_call(
     };
     let (result, ()) = tokio::join!(call(peer, name, args), confirmation);
     result
+}
+
+async fn asset_case(editor: &HeadlessEditor, peer: &Peer<RoleClient>) {
+    editor
+        .runtime()
+        .set_write_access(McpWriteMode::Enabled, None)
+        .await
+        .expect("資産の書き込みを範囲なしで許可する");
+    let tools = peer.list_tools(None).await.expect("道具一覧").tools;
+    for name in ["asset_get_properties", "asset_set_property", "asset_save"] {
+        assert!(tools.iter().any(|tool| tool.name == name), "{name} がある");
+    }
+
+    let logical_path = "effects/mcp-test.vfx.json";
+    let path = "emitters/main/rate";
+    let read_rate = || async {
+        let properties = pages(
+            peer,
+            "asset_get_properties",
+            json!({"logicalPath":logical_path}),
+        )
+        .await;
+        properties
+            .iter()
+            .find(|item| item["engineData"]["path"] == path)
+            .expect("資産のrateプロパティ")["engineData"]["value"]
+            .clone()
+    };
+    let before = read_rate().await;
+    let before_number = before.as_f64().expect("rateは数値");
+    assert!((0.0..=1000.0).contains(&before_number));
+    let after_number = if before_number + 1.0 <= 1000.0 {
+        before_number + 1.0
+    } else {
+        before_number - 1.0
+    };
+
+    let applied = call(
+        peer,
+        "asset_set_property",
+        json!({"params":{"logicalPath":logical_path,"path":path,"value":after_number}}),
+    )
+    .await;
+    assert_eq!(applied.is_error, Some(false));
+    let applied = data(applied);
+    assert_eq!(applied["outcome"], "applied");
+    assert_eq!(
+        applied["result"]["previousValue"].as_f64(),
+        Some(before_number)
+    );
+    assert_eq!(
+        applied["result"]["appliedValue"].as_f64(),
+        Some(after_number)
+    );
+    let history = editor.history();
+    assert_eq!(history["canUndo"], true);
+    assert_eq!(history["undoGroup"]["source"], "mcp");
+
+    let saved = data(
+        confirmed_call(
+            editor,
+            peer,
+            "asset_save",
+            json!({"params":{"logicalPath":logical_path}}),
+            true,
+        )
+        .await,
+    );
+    assert_eq!(saved["outcome"], "applied");
+    assert_eq!(saved["undoable"], false);
+    assert_eq!(editor.history()["undoHeadId"], history["undoHeadId"]);
+    assert_eq!(read_rate().await.as_f64(), Some(after_number));
+
+    editor
+        .undo_from_ui()
+        .await
+        .expect("UI入口から資産の編集を取り消す");
+    assert_eq!(read_rate().await.as_f64(), Some(before_number));
+    let rejected = call(
+        peer,
+        "asset_set_property",
+        json!({"params":{"logicalPath":logical_path,"path":path,"value":"not-a-number"}}),
+    )
+    .await;
+    assert_eq!(rejected.is_error, Some(true));
+    assert_eq!(
+        rejected.structured_content.expect("型違いの拒否結果")["outcome"],
+        "notApplied"
+    );
+    assert_eq!(read_rate().await.as_f64(), Some(before_number));
+
+    let operations = editor.operations();
+    let records = operations["records"].as_array().expect("操作記録がある");
+    assert!(records
+        .iter()
+        .any(|record| record["requestId"] == saved["requestId"]
+            && record["tool"] == "asset_save"
+            && record["outcome"] == "applied"
+            && record["actorFinished"] == true));
+    println!("MCP_ACCEPTANCE_OK asset-edit-save-undo");
 }
 
 async fn group_and_scope_case(editor: &HeadlessEditor, peer: &Peer<RoleClient>) {
@@ -654,6 +756,7 @@ async fn run_protocol(
         .tools
         .iter()
         .any(|tool| tool.name == "object_set_property"));
+    asset_case(&editor, client.peer()).await;
     let scenario = tokio::spawn(protocol_case(
         editor,
         client.peer().clone(),
