@@ -511,7 +511,7 @@ M2 の共通規則:
 - from: E4-001
 
 ## E4-001-P3: `verify.ps1 -Cpp` で、C++ のビルドディレクトリが無いときに構成し、構成できなければ失敗にする
-- status: todo
+- status: blocked
 - done-when: `scripts/verify.ps1` に、ビルドディレクトリを指定する引数 `-CppBuildDir`(既定は `build/cpp`)を足す。`-Cpp` を付けて走らせ、そのディレクトリが無いときは `[SKIP]` で抜けない。代わりに `cmake -S bridge/cpp -B <dir> -G "Visual Studio 17 2022"` を 1 つのゲートとして走らせてから、cmake build と ctest を走らせる。構成が失敗したら exit code を 0 以外にして止める。`-Cpp` が無いときに C++ 段を飛ばす動きは変えない。スクリプト冒頭の Usage と Notes、触ったブロックのコメント、`docs/build.md` の「requires build/cpp to be pre-configured」の記述を、日本語で新しい動きに合わせる。空の一時ディレクトリを指定して `-Cpp -SkipFrontend` で走らせると、構成・ビルド・ctest がすべて `[OK]` になり、exit 0 で終わる。既定のディレクトリでの `-Cpp` も exit 0 で終わる。
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=Join-Path $env:TEMP ('norves-cpp-'+[guid]::NewGuid()); & ./scripts/verify.ps1 -Cpp -SkipFrontend -CppBuildDir $d; $c=$LASTEXITCODE; Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue; exit $c"`
 - verify: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Cpp`
