@@ -11,6 +11,7 @@ import type {
   RuntimeState,
   LogLevel,
 } from './common.js';
+import type { PropertyValue } from './object.js';
 
 // ---- bridge.hello -------------------------------------------------------
 
@@ -150,3 +151,61 @@ export interface FocusViewportResult {
 export interface AssetReloadManifestResult {
   accepted: boolean;
 }
+
+// ---- asset.getProperties ------------------------------------------------
+
+export interface AssetGetPropertiesParams {
+  logicalPath: string;
+}
+
+/** 資産のプロパティと値のスナップショット。 */
+export interface AssetProperty {
+  /** 不透明なパス。エディタは解釈せず、そのまま返す。 */
+  path: string;
+  valueType: string;
+  value: PropertyValue;
+  unit?: string;
+  minimum?: number;
+  maximum?: number;
+  description?: string;
+}
+
+export interface AssetGetPropertiesResult {
+  logicalPath: string;
+  properties: AssetProperty[];
+}
+
+// ---- asset.setProperty --------------------------------------------------
+
+export interface AssetSetPropertyParams {
+  logicalPath: string;
+  /** asset.getProperties が返した不透明なパスをそのまま指定する。 */
+  path: string;
+  value: PropertyValue;
+}
+
+export interface AssetSetPropertyResult {
+  previousValue: PropertyValue;
+  /** 正規化などを経て実際に適用された値。 */
+  appliedValue?: PropertyValue;
+}
+
+// ---- asset.save ---------------------------------------------------------
+
+export interface AssetSaveParams {
+  logicalPath: string;
+}
+
+export interface AssetSaveResult {
+  /** 同期保存が完了したことを示す。 */
+  saved: true;
+}
+
+/** 資産編集の拒否時の data.reason。未知の理由も受け取れる。 */
+export type AssetEditRejectReason =
+  | 'type_mismatch'
+  | 'out_of_range'
+  | 'unknown_property'
+  | 'unknown_asset'
+  | 'save_failed'
+  | (string & {});
