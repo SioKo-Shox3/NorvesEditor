@@ -1261,6 +1261,29 @@ async fn run_history_action(
             params.insert("value".to_owned(), new_value.clone());
             ("object.setProperty", HistoryResultKind::Property)
         }
+        (
+            history::HistoryRecord::SetAssetProperty {
+                logical_path,
+                path,
+                old_value,
+                new_value,
+            },
+            direction,
+        ) => {
+            params.insert(
+                "logicalPath".to_owned(),
+                Value::String(logical_path.clone()),
+            );
+            params.insert("path".to_owned(), Value::String(path.clone()));
+            params.insert(
+                "value".to_owned(),
+                match direction {
+                    HistoryDirection::Undo => old_value.clone(),
+                    HistoryDirection::Redo => new_value.clone(),
+                },
+            );
+            ("asset.setProperty", HistoryResultKind::AssetProperty)
+        }
     };
 
     let value = bridge
@@ -1280,6 +1303,7 @@ enum HistoryResultKind {
     Delete,
     Reparent,
     Property,
+    AssetProperty,
 }
 
 fn insert_optional_string(
@@ -1316,6 +1340,11 @@ fn validate_history_result(
         }
         HistoryResultKind::Property => {
             norves_bridge_editor_client::parse_set_property_result(value)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        HistoryResultKind::AssetProperty => {
+            norves_bridge_editor_client::parse_asset_set_property_result(value)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         }
@@ -1849,6 +1878,12 @@ async fn process_item_inner(
                                 Err(error) => Err(error),
                             }
                         } else {
+                            let accepted = edit_result_accepted(
+                                event_request.as_ref(),
+                                event_input.as_ref(),
+                                None,
+                                &value.value,
+                            );
                             if let Some(prepared) = prepared_history.take() {
                                 state.record_success_in_group(
                                     prepared,
@@ -1861,10 +1896,7 @@ async fn process_item_inner(
                                     },
                                     value.clone(),
                                 );
-                            } else if item.kind == EditKind::Edit
-                                && value.value.get("accepted").and_then(Value::as_bool)
-                                    == Some(true)
-                            {
+                            } else if item.kind == EditKind::Edit && accepted {
                                 state.record_untracked_success(
                                     item.source,
                                     item.kind,
@@ -1872,7 +1904,7 @@ async fn process_item_inner(
                                     item.lease.generation,
                                 );
                             }
-                            if item.group_token.is_some() && value.value.get("accepted").and_then(Value::as_bool) != Some(true) {
+                            if item.group_token.is_some() && !accepted {
                                 state.close_group_unless(None);
                             }
                             Ok(value)
@@ -1925,7 +1957,12 @@ async fn process_item_inner(
     if !grouped_action {
         if let (Some(sink), Ok(result)) = (event_sink, outcome.as_ref()) {
             if history_after.applied_revision != history_before.applied_revision
-                && result.value.get("accepted").and_then(Value::as_bool) == Some(true)
+                && edit_result_accepted(
+                    event_request.as_ref(),
+                    event_input.as_ref(),
+                    prepared_action.as_ref(),
+                    &result.value,
+                )
                 && event_kind != EditKind::RuntimeControl
             {
                 if let Some(details) = edit_event_details(
@@ -2149,9 +2186,7 @@ async fn run_group_history_action(
         )
         .await;
         let value = match result {
-            Ok(value) if value.value.get("accepted").and_then(Value::as_bool) == Some(true) => {
-                value
-            }
+            Ok(value) if history::history_result_accepted(&step.record, &value.value) => value,
             Ok(_) => {
                 let current_generation = bridge.current_generation();
                 let mut state = history
@@ -2259,6 +2294,24 @@ struct EditEventDetails {
     property: Option<String>,
     value: Option<Value>,
     new_id: Option<String>,
+}
+
+fn edit_result_accepted(
+    request: Option<&HistoryRequest>,
+    input: Option<&EditEventInput>,
+    action: Option<&HistoryAction>,
+    result: &Value,
+) -> bool {
+    if let Some(action) = action {
+        return history::history_result_accepted(&action.record, result);
+    }
+    if matches!(request, Some(HistoryRequest::SetAssetProperty { .. })) {
+        return norves_bridge_editor_client::parse_asset_set_property_result(result).is_ok();
+    }
+    if input.is_some_and(|input| input.operation == "assetSave") {
+        return norves_bridge_editor_client::parse_asset_save_result(result).is_ok();
+    }
+    result.get("accepted").and_then(Value::as_bool) == Some(true)
 }
 
 fn source_dto(source: EditSource) -> EditSourceDto {
@@ -2376,6 +2429,31 @@ fn edit_event_details(
                     ),
                     None,
                 ),
+                (
+                    history::HistoryRecord::SetAssetProperty {
+                        path,
+                        old_value,
+                        new_value,
+                        ..
+                    },
+                    direction,
+                ) => {
+                    (
+                        match direction {
+                            HistoryDirection::Undo => "undo",
+                            HistoryDirection::Redo => "redo",
+                        },
+                        None,
+                        Some(path.clone()),
+                        Some(result.get("appliedValue").cloned().unwrap_or_else(
+                            || match direction {
+                                HistoryDirection::Undo => old_value.clone(),
+                                HistoryDirection::Redo => new_value.clone(),
+                            },
+                        )),
+                        None,
+                    )
+                }
             };
         return Some(EditEventDetails {
             operation: operation.to_owned(),
@@ -2437,6 +2515,22 @@ fn edit_event_details(
                 operation: "setProperty".to_owned(),
                 object_id: Some(object_id.clone()),
                 property: Some(property.clone()),
+                value: Some(
+                    result
+                        .get("appliedValue")
+                        .cloned()
+                        .unwrap_or_else(|| requested_value.clone()),
+                ),
+                new_id: None,
+            },
+            HistoryRequest::SetAssetProperty {
+                path,
+                requested_value,
+                ..
+            } => EditEventDetails {
+                operation: "assetSetProperty".to_owned(),
+                object_id: None,
+                property: Some(path.clone()),
                 value: Some(
                     result
                         .get("appliedValue")
@@ -4840,6 +4934,186 @@ mod tests {
             .expect("missing MCP old value is queued");
         assert!(missing.result().await.is_err());
         assert_eq!(*missing_order.lock().unwrap(), ["snapshot"]);
+
+        service.shutdown().await;
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn asset_property_history_undo_redo_and_notifications() {
+        let (transport, mut peer) = loopback_pair(8);
+        let handle = Dispatcher::spawn(transport);
+        let (bridge, _control) = test_edit_facade(1, handle.clone());
+        let emitted = Arc::new(TestMutex::new(Vec::new()));
+        let event_log = Arc::clone(&emitted);
+        let sink: EditEventSink = Arc::new(move |event| {
+            event_log.lock().unwrap().push(event);
+        });
+        let service = EditService::with_capacity_and_sink(bridge, 8, Some(sink));
+
+        let request = HistoryRequest::SetAssetProperty {
+            logical_path: "materials/example".to_owned(),
+            path: "parentId".to_owned(),
+            requested_value: serde_json::json!(30),
+        };
+        service
+            .enqueue_recorded_from_mcp(EditKind::Edit, request.clone(), |_| async {
+                Ok(QueuedEditResult::plain(serde_json::json!({
+                    "previousValue": 10,
+                    "appliedValue": 25
+                })))
+            })
+            .expect("資産編集を列に入れる")
+            .result()
+            .await
+            .expect("資産編集を記録する");
+        assert_eq!(
+            service.history.lock().unwrap().undo_records(),
+            vec![HistoryRecord::SetAssetProperty {
+                logical_path: "materials/example".to_owned(),
+                path: "parentId".to_owned(),
+                old_value: serde_json::json!(10),
+                new_value: serde_json::json!(25),
+            }]
+        );
+
+        let undo = queue_history_action(&service, HistoryDirection::Undo);
+        let (id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "asset.setProperty");
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            serde_json::json!({"logicalPath": "materials/example", "path": "parentId", "value": 10})
+        );
+        respond(
+            &mut peer,
+            id,
+            serde_json::json!({"previousValue": 25, "appliedValue": 10}),
+        )
+        .await;
+        undo.result().await.expect("資産編集を取り消す");
+
+        let redo = queue_history_action(&service, HistoryDirection::Redo);
+        let (id, method, params) = next_request(&mut peer).await;
+        assert_eq!(method, "asset.setProperty");
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            serde_json::json!({"logicalPath": "materials/example", "path": "parentId", "value": 25})
+        );
+        respond(&mut peer, id, serde_json::json!({"previousValue": 10})).await;
+        redo.result().await.expect("資産編集をやり直す");
+
+        service
+            .enqueue_with_event_from_ui(
+                EditKind::Edit,
+                EditEventInput {
+                    operation: "assetSave",
+                    object_id: None,
+                    property: None,
+                    value: None,
+                },
+                |_| async { Ok(serde_json::json!({"saved": true})) },
+            )
+            .expect("資産保存を列に入れる")
+            .result()
+            .await
+            .expect("資産保存を通知する");
+
+        {
+            let events = emitted.lock().unwrap();
+            let applied = events
+                .iter()
+                .filter_map(|event| match event {
+                    EditServiceEvent::Applied(payload) => Some(payload),
+                    EditServiceEvent::HistoryChanged(_) => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(applied.len(), 4);
+            for (event, operation, property, value) in [
+                (applied[0], "assetSetProperty", Some("parentId"), Some(25)),
+                (applied[1], "undo", Some("parentId"), Some(10)),
+                (applied[2], "redo", Some("parentId"), Some(25)),
+                (applied[3], "assetSave", None, None),
+            ] {
+                assert_eq!(event.operation, operation);
+                assert_eq!(event.object_id, None);
+                assert_eq!(event.property.as_deref(), property);
+                assert_eq!(event.value, value.map(|value| serde_json::json!(value)));
+            }
+            assert_eq!(applied[0].source, EditSourceDto::Mcp);
+        }
+
+        let previous_records = service.history.lock().unwrap().undo_records();
+        for result in [
+            serde_json::json!({"appliedValue": 50}),
+            serde_json::json!({"previousValue": 30}),
+        ] {
+            service
+                .enqueue_recorded_from_mcp(EditKind::Edit, request.clone(), move |_| async move {
+                    Ok(QueuedEditResult::plain(result))
+                })
+                .expect("資産編集を列に入れる")
+                .result()
+                .await
+                .expect("応答を受け取る");
+            assert_eq!(
+                service.history.lock().unwrap().undo_records(),
+                previous_records
+            );
+        }
+
+        let group = service
+            .begin_group_from_mcp("資産の編集".to_owned())
+            .await
+            .expect("まとまりを開始する");
+        for (old, new) in [(25, 26), (26, 27)] {
+            let group_request = HistoryRequest::SetAssetProperty {
+                logical_path: "materials/example".to_owned(),
+                path: "parentId".to_owned(),
+                requested_value: serde_json::json!(new),
+            };
+            service
+                .enqueue_recorded_in_group_from_mcp(
+                    group,
+                    EditKind::Edit,
+                    group_request,
+                    move |_| async move {
+                        Ok(QueuedEditResult::plain(serde_json::json!({
+                            "previousValue": old,
+                            "appliedValue": new
+                        })))
+                    },
+                )
+                .expect("まとまりの編集を列に入れる")
+                .result()
+                .await
+                .expect("まとまりの編集を記録する");
+        }
+        service
+            .end_group_from_mcp(group)
+            .await
+            .expect("まとまりを閉じる");
+        let undo_group = queue_history_action(&service, HistoryDirection::Undo);
+        for (old, new) in [(26, 27), (25, 26)] {
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, "asset.setProperty");
+            assert_eq!(
+                serde_json::to_value(params).unwrap(),
+                serde_json::json!({"logicalPath": "materials/example", "path": "parentId", "value": old})
+            );
+            respond(&mut peer, id, serde_json::json!({"previousValue": new})).await;
+        }
+        undo_group.result().await.expect("まとまりを取り消す");
+        let redo_group = queue_history_action(&service, HistoryDirection::Redo);
+        for (old, new) in [(25, 26), (26, 27)] {
+            let (id, method, params) = next_request(&mut peer).await;
+            assert_eq!(method, "asset.setProperty");
+            assert_eq!(
+                serde_json::to_value(params).unwrap(),
+                serde_json::json!({"logicalPath": "materials/example", "path": "parentId", "value": new})
+            );
+            respond(&mut peer, id, serde_json::json!({"previousValue": old})).await;
+        }
+        redo_group.result().await.expect("まとまりをやり直す");
 
         service.shutdown().await;
         handle.shutdown().await;

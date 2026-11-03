@@ -230,7 +230,8 @@ function applyServiceEdit(state: BridgeState, payload: EditAppliedPayload): Brid
     payload.operation === 'duplicateObject' ||
     payload.operation === 'reparentObject' ||
     ((payload.operation === 'undo' || payload.operation === 'redo') &&
-      (payload.property === null || payload.property.toLowerCase() === 'parentid'));
+      (payload.property === null ||
+        (payload.objectId !== null && payload.property.toLowerCase() === 'parentid')));
   needsSceneRefresh ||= structureChanged;
   if (payload.operation === 'componentAdd' || payload.operation === 'componentRemove') {
     needsObjectRefresh ||= state.selectedObjectId !== undefined;

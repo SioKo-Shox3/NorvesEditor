@@ -214,6 +214,9 @@ fn history_required_capabilities(action: &McpHistoryAction) -> Vec<&'static str>
                 required.push("object.edit");
                 required.push("object.query");
             }
+            HistoryRecord::SetAssetProperty { .. } => {
+                required.push("asset.edit");
+            }
         }
     }
     required.sort_unstable();
@@ -596,6 +599,7 @@ impl McpSceneScopeIndex {
                 (HistoryRecord::SetProperty { object_id, .. }, _) => {
                     projected.check_object_or_component(object_id)?;
                 }
+                (HistoryRecord::SetAssetProperty { .. }, _) => {}
             }
         }
         Ok(())
@@ -712,6 +716,7 @@ pub(crate) fn history_record_ids(action: &McpHistoryAction) -> HashSet<String> {
             HistoryRecord::SetProperty { object_id, .. } => {
                 ids.insert(object_id.clone());
             }
+            HistoryRecord::SetAssetProperty { .. } => {}
         }
     }
     ids

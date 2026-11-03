@@ -1422,6 +1422,7 @@ fn make_confirmation_preview(
                             json!({"objectId":object_id,"property":property,"value":new_value}),
                         );
                     }
+                    crate::edit_service::HistoryRecord::SetAssetProperty { .. } => {}
                 }
             }
             before = Some(Value::Array(before_values));
